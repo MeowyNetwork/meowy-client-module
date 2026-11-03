@@ -78,7 +78,7 @@ namespace
 	bool FieldString(ILuaBase* L, int tableIdx, const char* key, size_t max, std::string& out)
 	{
 		L->GetField(tableIdx, key);
-		bool ok = L->IsType(-1, Type::STRING);
+		bool ok = L->IsType(-1, Type::String);
 		if (ok)
 		{
 			unsigned int len = 0;
@@ -92,7 +92,7 @@ namespace
 	bool FieldNumber(ILuaBase* L, int tableIdx, const char* key, double& out)
 	{
 		L->GetField(tableIdx, key);
-		bool ok = L->IsType(-1, Type::NUMBER);
+		bool ok = L->IsType(-1, Type::Number);
 		if (ok)
 			out = L->GetNumber(-1);
 		L->Pop();
@@ -147,7 +147,7 @@ namespace
 		}
 
 		L->GetField(1, "buttons");
-		if (L->IsType(-1, Type::TABLE))
+		if (L->IsType(-1, Type::Table))
 		{
 			std::string buttons;
 			int count = 0;
@@ -155,7 +155,7 @@ namespace
 			{
 				L->PushNumber(i);
 				L->GetTable(-2);
-				if (L->IsType(-1, Type::TABLE))
+				if (L->IsType(-1, Type::Table))
 				{
 					std::string label, url;
 					int btn = L->Top();
@@ -191,8 +191,9 @@ namespace
 		return n >= 15 && n <= 25;
 	}
 
-	int DiscordStart(lua_State* state)
+	int DiscordStart(lua_State* L)
 	{
+		ILuaBase* LUA = L->luabase;
 		const char* id = LUA->CheckString(1);
 		if (!IsSnowflake(id))
 			LUA->ArgError(1, "not a Discord application id");
@@ -200,9 +201,10 @@ namespace
 		return 0;
 	}
 
-	int DiscordSetActivity(lua_State* state)
+	int DiscordSetActivity(lua_State* L)
 	{
-		LUA->CheckType(1, Type::TABLE);
+		ILuaBase* LUA = L->luabase;
+		LUA->CheckType(1, Type::Table);
 		discord::SetActivity(BuildActivity(LUA));
 		return 0;
 	}
@@ -213,14 +215,16 @@ namespace
 		return 0;
 	}
 
-	int DiscordState(lua_State* state)
+	int DiscordState(lua_State* L)
 	{
+		ILuaBase* LUA = L->luabase;
 		LUA->PushString(discord::State());
 		return 1;
 	}
 
-	int DiscordLastError(lua_State* state)
+	int DiscordLastError(lua_State* L)
 	{
+		ILuaBase* LUA = L->luabase;
 		std::string err = discord::LastError();
 		if (err.empty())
 			LUA->PushNil();
@@ -256,7 +260,7 @@ GMOD_MODULE_OPEN()
 
 GMOD_MODULE_CLOSE()
 {
-	(void)state;
+	(void)LUA;
 	discord::Shutdown();
 	return 0;
 }

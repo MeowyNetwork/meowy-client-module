@@ -10,7 +10,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 include(FetchContent)
 FetchContent_Declare(gmod_module_base
 	GIT_REPOSITORY https://github.com/Facepunch/gmod-module-base.git
-	GIT_TAG 4fdafe7d762fe63f0360c67d9e119a129292712e
+	GIT_TAG e0156e5f96cd0bad8eed738f0d20e2c9a14b2a0d  # development: has the 64-bit lua_State layout (master does not)
 	SOURCE_SUBDIR do-not-build)
 FetchContent_MakeAvailable(gmod_module_base)
 
@@ -18,7 +18,7 @@ add_library(meowy SHARED
 	src/module.cpp
 	src/discord_ipc.cpp)
 target_include_directories(meowy PRIVATE ${gmod_module_base_SOURCE_DIR}/include)
-target_compile_definitions(meowy PRIVATE GMMODULE)
+
 
 if(MSVC)
 	# Static CRT: players don't need a VC++ redistributable installed.
