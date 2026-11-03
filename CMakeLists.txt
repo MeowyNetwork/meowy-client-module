@@ -18,6 +18,7 @@ add_library(meowy SHARED
 	src/module.cpp
 	src/crash_reports.cpp
 	src/hardware.cpp
+	src/server_gate.cpp
 	src/discord_ipc.cpp)
 target_include_directories(meowy PRIVATE ${gmod_module_base_SOURCE_DIR}/include)
 

@@ -33,10 +33,13 @@ from this repository by its CI (`gh attestation verify MeowyClientPack.exe --rep
   `engine.dll+0x200660 (0xC0000005)`, read from the game's own crash dump. Only the module's file
   name and the offset are used; the dump itself never leaves your PC.
 - Since 1.2 it can describe your hardware: CPU and GPU model, thread count, RAM, video memory and
-  Windows version. No serial numbers, user names or IDs. The server uses it with frame-time
-  stats to see what players' machines struggle with.
+  Windows version. No serial numbers or user names. The server stores it with your Steam account
+  ID, next to your frame-time stats, to see what players' machines struggle with.
 - It makes no network connections, writes no files, and doesn't touch the game's memory.
-- It only runs when a server's Lua calls `require("meowy")`. Other servers can use it the same way.
+- It only works on Meowy Network servers. The DLL asks the game itself which server it's connected to
+  and compares that with the addresses built into it, so another server can't use it or read anything
+  from it, even by faking its name or address in Lua. In singleplayer, the main menu or on any other
+  server every call returns `false` and a reason.
 - Windows only for now (32-bit and 64-bit Garry's Mod).
 
 ## Lua API
@@ -49,12 +52,13 @@ if util.IsBinaryModuleInstalled("meowy") and pcall(require, "meowy") then
 		start = os.time(),                    -- shows time elapsed
 		large_image = "https://...", large_text = "...",
 		party_size = 14, party_max = 32,
-		buttons = { { label = "Join", url = "https://..." } },  -- up to 2, http(s) only
+		buttons = { { label = "Join", url = "https://..." } },  -- up to 2, https only
 	})
 end
 -- meowy.VERSION, meowy.DiscordClear(), meowy.DiscordState(), meowy.DiscordLastError()
 -- meowy.CrashReports(since_unix, max) -> { { time = <unix>, lua = "<stack traces>", fault = "engine.dll+0x... (0xC0000005)" }, ... }
 -- meowy.Hardware() -> { cpu, threads, ram_mb, gpu, vram_mb, os }
+-- meowy.ServerAllowed() -> true | false, reason   (1.2.1+; every call above needs it to be true)
 ```
 Identical updates are dropped, and updates are sent at most once every 4 s (Discord's rate limit).
 

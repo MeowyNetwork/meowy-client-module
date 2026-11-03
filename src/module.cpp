@@ -1,7 +1,7 @@
 // gmcl_meowy: optional client module for Meowy Network.
 //
 // Lua API (global table `meowy`, created by require("meowy")):
-//   meowy.VERSION                     "1.2.0"
+//   meowy.VERSION                     "1.2.1"
 //   meowy.DiscordStart(clientId)      connect to the local Discord app
 //   meowy.DiscordSetActivity(tbl)     set Rich Presence (fields below)
 //   meowy.DiscordClear()              remove it
@@ -15,13 +15,19 @@
 //                                     dump beside it, or "" (1.2+); the same as
 //                                     fault_module / fault_offset / fault_code
 //   meowy.Hardware()                  { cpu, threads, ram_mb, gpu, vram_mb, os } (1.2+)
+//   meowy.ServerAllowed()             true | false, reason (1.2.1+)
+//
+// Since 1.2.1 everything except VERSION, DiscordState and DiscordClear only
+// works while the game is connected to a Meowy Network server, checked against
+// the engine's own connection (server_gate.h). Anywhere else the calls return
+// false (CrashReports: an empty table; Hardware: nil) and a reason.
 //
 // DiscordSetActivity fields, all optional:
 //   details, state       strings, shown on two lines
 //   start                unix time; Discord shows "elapsed"
 //   large_image, large_text
 //   party_size, party_max
-//   buttons              up to 2 { label = "...", url = "https://..." }
+//   buttons              up to 2 { label = "...", url = "https://..." } (https only)
 //
 // The module only talks to Discord's local IPC pipe, reads the game's own
 // crashes/ folder and asks Windows for the CPU/GPU/RAM description. It makes
@@ -31,6 +37,7 @@
 #include "crash_reports.h"
 #include "discord_ipc.h"
 #include "hardware.h"
+#include "server_gate.h"
 
 #include <cstdio>
 #include <string>
@@ -40,7 +47,7 @@ using namespace GarrysMod::Lua;
 
 namespace
 {
-	const char* const VERSION = "1.2.0";
+	const char* const VERSION = "1.2.1";
 
 	// Discord's own limits; anything longer makes it reject the whole activity.
 	constexpr size_t MAX_TEXT = 128;
@@ -111,9 +118,10 @@ namespace
 		return ok;
 	}
 
+	// https only: a button on someone's Discord profile shouldn't lead anywhere in the clear.
 	bool IsHttpUrl(const std::string& url)
 	{
-		return url.rfind("https://", 0) == 0 || url.rfind("http://", 0) == 0;
+		return url.rfind("https://", 0) == 0;
 	}
 
 	std::string BuildActivity(ILuaBase* L)
@@ -203,9 +211,37 @@ namespace
 		return n >= 15 && n <= 25;
 	}
 
+	// Pushes `false, reason` and returns true when this game isn't connected to one
+	// of our servers. Every call that reads the player's data or acts for them
+	// goes through this; see server_gate.h for why it can't be done in Lua.
+	bool Refuse(ILuaBase* LUA, int& results)
+	{
+		server_gate::Result r = server_gate::Check();
+		if (r == server_gate::Result::Allowed)
+			return false;
+		LUA->PushBool(false);
+		LUA->PushString(server_gate::Describe(r));
+		results = 2;
+		return true;
+	}
+
+	// meowy.ServerAllowed() -> true | false, reason
+	int ServerAllowed(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		int results = 0;
+		if (Refuse(LUA, results))
+			return results;
+		LUA->PushBool(true);
+		return 1;
+	}
+
 	int DiscordStart(lua_State* L)
 	{
 		ILuaBase* LUA = L->luabase;
+		int results = 0;
+		if (Refuse(LUA, results))
+			return results;
 		const char* id = LUA->CheckString(1);
 		if (!IsSnowflake(id))
 			LUA->ArgError(1, "not a Discord application id");
@@ -216,6 +252,9 @@ namespace
 	int DiscordSetActivity(lua_State* L)
 	{
 		ILuaBase* LUA = L->luabase;
+		int results = 0;
+		if (Refuse(LUA, results))
+			return results;
 		LUA->CheckType(1, Type::Table);
 		discord::SetActivity(BuildActivity(LUA));
 		return 0;
@@ -237,6 +276,9 @@ namespace
 	int DiscordLastError(lua_State* L)
 	{
 		ILuaBase* LUA = L->luabase;
+		int results = 0;
+		if (Refuse(LUA, results))
+			return results;
 		std::string err = discord::LastError();
 		if (err.empty())
 			LUA->PushNil();
@@ -248,6 +290,13 @@ namespace
 	int CrashReports(lua_State* L)
 	{
 		ILuaBase* LUA = L->luabase;
+		server_gate::Result gate = server_gate::Check();
+		if (gate != server_gate::Result::Allowed)
+		{
+			LUA->CreateTable();
+			LUA->PushString(server_gate::Describe(gate));
+			return 2;
+		}
 		long long since = static_cast<long long>(LUA->CheckNumber(1));
 		double max = LUA->IsType(2, Type::Number) ? LUA->GetNumber(2) : 5;
 		std::vector<crashes::Report> reports = crashes::Since(since, max < 1 ? 1 : max > 20 ? 20 : static_cast<size_t>(max));
@@ -278,6 +327,13 @@ namespace
 	int Hardware(lua_State* L)
 	{
 		ILuaBase* LUA = L->luabase;
+		server_gate::Result gate = server_gate::Check();
+		if (gate != server_gate::Result::Allowed)
+		{
+			LUA->PushNil();
+			LUA->PushString(server_gate::Describe(gate));
+			return 2;
+		}
 		hardware::Info hw = hardware::Get();
 		LUA->CreateTable();
 		LUA->PushString(hw.cpu.c_str());
@@ -316,6 +372,7 @@ GMOD_MODULE_OPEN()
 	SetFunction(LUA, "DiscordLastError", DiscordLastError);
 	SetFunction(LUA, "CrashReports", CrashReports);
 	SetFunction(LUA, "Hardware", Hardware);
+	SetFunction(LUA, "ServerAllowed", ServerAllowed);
 
 	LUA->SetField(-2, "meowy");
 	LUA->Pop();
