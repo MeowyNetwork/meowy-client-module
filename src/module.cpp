@@ -1,12 +1,16 @@
 // gmcl_meowy: optional client module for Meowy Network.
 //
 // Lua API (global table `meowy`, created by require("meowy")):
-//   meowy.VERSION                     "1.0.0"
+//   meowy.VERSION                     "1.1.0"
 //   meowy.DiscordStart(clientId)      connect to the local Discord app
 //   meowy.DiscordSetActivity(tbl)     set Rich Presence (fields below)
 //   meowy.DiscordClear()              remove it
 //   meowy.DiscordState()              "unsupported" | "stopped" | "connecting" | "ready"
 //   meowy.DiscordLastError()          Discord's last error reply (raw JSON), or nil
+//   meowy.CrashReports(since, max)    the game's crash reports written after
+//                                     `since` (unix time): { { time, lua }, ... },
+//                                     newest first; `lua` is only the report's
+//                                     Lua stack trace section (max 4 KB)
 //
 // DiscordSetActivity fields, all optional:
 //   details, state       strings, shown on two lines
@@ -15,20 +19,22 @@
 //   party_size, party_max
 //   buttons              up to 2 { label = "...", url = "https://..." }
 //
-// The module only talks to Discord's local IPC pipe. It makes no network
-// connections and writes no files.
+// The module only talks to Discord's local IPC pipe and reads the game's own
+// crashes/ folder. It makes no network connections and writes no files.
 
 #include "GarrysMod/Lua/Interface.h"
+#include "crash_reports.h"
 #include "discord_ipc.h"
 
 #include <cstdio>
 #include <string>
+#include <vector>
 
 using namespace GarrysMod::Lua;
 
 namespace
 {
-	const char* const VERSION = "1.0.0";
+	const char* const VERSION = "1.1.0";
 
 	// Discord's own limits; anything longer makes it reject the whole activity.
 	constexpr size_t MAX_TEXT = 128;
@@ -233,6 +239,28 @@ namespace
 		return 1;
 	}
 
+	int CrashReports(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		long long since = static_cast<long long>(LUA->CheckNumber(1));
+		double max = LUA->IsType(2, Type::Number) ? LUA->GetNumber(2) : 5;
+		std::vector<crashes::Report> reports = crashes::Since(since, max < 1 ? 1 : max > 20 ? 20 : static_cast<size_t>(max));
+
+		LUA->CreateTable();
+		int i = 0;
+		for (const crashes::Report& r : reports)
+		{
+			LUA->PushNumber(++i);
+			LUA->CreateTable();
+			LUA->PushNumber(static_cast<double>(r.time));
+			LUA->SetField(-2, "time");
+			LUA->PushString(r.luaTrace.c_str(), static_cast<unsigned int>(r.luaTrace.size()));
+			LUA->SetField(-2, "lua");
+			LUA->SetTable(-3);
+		}
+		return 1;
+	}
+
 	void SetFunction(ILuaBase* L, const char* name, CFunc fn)
 	{
 		L->PushCFunction(fn);
@@ -252,6 +280,7 @@ GMOD_MODULE_OPEN()
 	SetFunction(LUA, "DiscordClear", DiscordClear);
 	SetFunction(LUA, "DiscordState", DiscordState);
 	SetFunction(LUA, "DiscordLastError", DiscordLastError);
+	SetFunction(LUA, "CrashReports", CrashReports);
 
 	LUA->SetField(-2, "meowy");
 	LUA->Pop();

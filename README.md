@@ -43,6 +43,7 @@ if util.IsBinaryModuleInstalled("meowy") and pcall(require, "meowy") then
 	})
 end
 -- meowy.VERSION, meowy.DiscordClear(), meowy.DiscordState(), meowy.DiscordLastError()
+-- meowy.CrashReports(since_unix, max) -> { { time = <unix>, lua = "<stack traces>" }, ... }
 ```
 Identical updates are dropped, and updates are sent at most once every 4 s (Discord's rate limit).
 
