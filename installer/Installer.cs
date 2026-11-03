@@ -24,7 +24,7 @@ using Microsoft.Win32;
 
 [assembly: AssemblyTitle("Meowy Client Pack")]
 [assembly: AssemblyProduct("Meowy Client Pack")]
-[assembly: AssemblyVersion("1.2.0.0")]
+[assembly: AssemblyVersion("1.4.0.0")]
 
 namespace MeowyInstaller
 {
@@ -234,8 +234,8 @@ namespace MeowyInstaller
 
 			var intro = new Label
 			{
-				Text = "Adds Discord status for Meowy Network: your job, the player count and a button friends can use to join.\n" +
-					"It only talks to the Discord app on this PC. Source code: " + Program.SourceUrl,
+				Text = "For Meowy Network: faster joins, our own loading screen with games, and Discord status.\n" +
+					"It only works on Meowy Network servers. Source code: " + Program.SourceUrl,
 				Location = new Point(12, 12),
 				Size = new Size(496, 52),
 			};
