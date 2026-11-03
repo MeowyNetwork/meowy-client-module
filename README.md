@@ -25,6 +25,10 @@ from this repository by its CI (`gh attestation verify MeowyClientPack.exe --rep
 ## What it does, and doesn't
 - It talks only to the Discord app on your PC, over Discord's local connection
   (`\\.\pipe\discord-ipc-N`), on its own thread so the game never waits on it.
+- Since 1.1 it also reads the game's own crash reports (`GarrysMod/crashes/*.txt`), so the
+  server can see which addon crashed your game. Only the "Lua Stack Traces" section is read
+  (at most 3 reports per join, 4 KB each, any `C:\...` paths masked). The rest of the report,
+  which names your install path, never leaves your PC.
 - It makes no network connections, writes no files, and doesn't touch the game's memory.
 - It only runs when a server's Lua calls `require("meowy")`. Other servers can use it the same way.
 - Windows only for now (32-bit and 64-bit Garry's Mod).
