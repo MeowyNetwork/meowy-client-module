@@ -59,8 +59,16 @@ the game closes while the pack is starting, the next start skips it once by itse
     everyone.
   - It's switched on only while you join a Meowy Network server and put back as soon as you're
     in game, so other servers you visit in the same session are never affected.
-- It makes no network connections. The only file it writes is `garrysmod/data/meowy/boot.lock`,
-  for a moment at start-up (see "Start with the game").
+- With "Start with the game" on, joins to a Meowy Network server get the pack's own loading
+  screen instead of Garry's Mod's. It's a separate window over the game, drawn on its own thread,
+  so it keeps moving while the game is busy (Garry's Mod's own screen freezes for most of a join).
+  It shows each stage, a clock time for when you'll be in, and has **Cancel** and **Game's screen**
+  buttons. It appears only when the game's real connection is to one of our servers, only when the
+  game is windowed or borderless, and stays until the game runs smoothly after you spawn.
+  `meowy_loadingscreen 0` turns it off.
+- It makes no network connections. It writes only in `garrysmod/data/meowy/`: `boot.lock` for a
+  moment at start-up, and for the loading screen `join_times.txt` (how long each stage of your
+  last join took, for its time estimate) and `last_join.txt` (what that join went through).
 - It only works on Meowy Network servers. The DLL asks the game itself which server it's connected to
   and compares that with the addresses built into it, so another server can't use it or read anything
   from it, even by faking its name or address in Lua. In singleplayer, the main menu or on any other

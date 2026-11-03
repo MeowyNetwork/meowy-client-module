@@ -21,6 +21,8 @@
 //   meowy.RestoreMaterialReload()     undo it
 //   meowy.MaterialReloadState()       "patched" | "not patched" | "unsupported"
 //   meowy.ServerAllowed()             true | false, reason (1.2.1+)
+//   meowy.LoadingDone()               the player has spawned and the game runs
+//                                     smoothly: fade out our loading screen (1.4+)
 //
 // Since 1.2.1 everything except VERSION, DiscordState, DiscordClear,
 // RestoreMaterialReload and MaterialReloadState only
@@ -37,8 +39,9 @@
 //
 // The module only talks to Discord's local IPC pipe, reads the game's own
 // crashes/ folder and asks Windows for the CPU/GPU/RAM description. It makes
-// no network connections and writes no files (the start-up stub writes
-// data/meowy/boot.lock for a moment). The one change it can make to
+// no network connections. It writes only in garrysmod/data/meowy: the
+// start-up stub's boot.lock, and the loading screen's join_times.txt and
+// last_join.txt (loading_screen.h). The one change it can make to
 // the game is SkipMaterialReload, in memory only, and only when Lua asks.
 
 #include "GarrysMod/Lua/Interface.h"
@@ -46,6 +49,7 @@
 #include "discord_ipc.h"
 #include "engine_patches.h"
 #include "hardware.h"
+#include "loading_screen.h"
 #include "server_gate.h"
 
 #include <cstdio>
@@ -398,6 +402,120 @@ namespace
 		L->PushCFunction(fn);
 		L->SetField(-2, name);
 	}
+
+	// --- Loading screen (loading_screen.h) ----------------------------------
+
+#ifdef _WIN32
+	// garrysmod\data\meowy, from this DLL's own path (garrysmod\lua\bin).
+	std::wstring DataDir()
+	{
+		HMODULE self = nullptr;
+		GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+			reinterpret_cast<LPCWSTR>(&DataDir), &self);
+		wchar_t path[MAX_PATH];
+		DWORD n = GetModuleFileNameW(self, path, MAX_PATH);
+		std::wstring s(path, n < MAX_PATH ? n : 0);
+		size_t slash = s.find_last_of(L"\\/");
+		return slash == std::wstring::npos ? L"" : s.substr(0, slash + 1) + L"..\\..\\data\\meowy";
+	}
+#endif
+
+	// Menu: is the join that's loading one to our server? Same check as everything else.
+	int LoadingTarget(lua_State* L)
+	{
+		L->luabase->PushBool(server_gate::Check() == server_gate::Result::Allowed);
+		return 1;
+	}
+
+	int LoadingBegin(lua_State*)
+	{
+		if (server_gate::Check() != server_gate::Result::Allowed)
+			return 0;
+#ifdef _WIN32
+		loading_screen::Begin(DataDir());
+#endif
+		return 0;
+	}
+
+	int LoadingDetails(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		loading_screen::Details(LUA->CheckString(1), LUA->CheckString(2));
+		return 0;
+	}
+
+	int LoadingStatus(lua_State* L)
+	{
+		loading_screen::Status(L->luabase->CheckString(1));
+		return 0;
+	}
+
+	int LoadingCancelRequested(lua_State* L)
+	{
+		L->luabase->PushBool(loading_screen::CancelRequested());
+		return 1;
+	}
+
+	int LoadingInGame(lua_State*)
+	{
+		loading_screen::InGame();
+		return 0;
+	}
+
+	int LoadingEnd(lua_State*)
+	{
+		loading_screen::End();
+		return 0;
+	}
+
+	// Client: the player has spawned and the game runs smoothly; fade out.
+	int LoadingDone(lua_State*)
+	{
+		loading_screen::Done();
+		return 0;
+	}
+
+	// Runs in the menu state. The loading panel is active from the moment a
+	// connect starts (IsInLoading); once the engine's connection is to one of
+	// our servers, our screen takes over. It only gets fed while the game's
+	// main thread runs, but draws on its own thread regardless.
+	const char* const kMenuLua = R"lua(
+local meowy = meowy
+local enabled = CreateConVar("meowy_loadingscreen", "1", FCVAR_ARCHIVE,
+	"Meowy Client Pack: our own loading screen when joining Meowy Network (0 = Garry's Mod's)")
+local active, lastStatus, details = false, nil, nil
+
+local stockGameDetails = GameDetails
+if isfunction(stockGameDetails) then
+	GameDetails = function(name, url, map, ...)
+		details = { tostring(name or ""), tostring(map or "") }
+		if active then meowy.LoadingDetails(details[1], details[2]) end
+		return stockGameDetails(name, url, map, ...)
+	end
+end
+
+hook.Add("Think", "MeowyClientPack.Loading", function()
+	local loading = IsInLoading()
+	if not active then
+		if not loading then details = nil return end
+		if not enabled:GetBool() or not system.IsWindowed() or not meowy.LoadingTarget() then return end
+		active, lastStatus = true, nil
+		meowy.LoadingBegin()
+		if details then meowy.LoadingDetails(details[1], details[2]) end
+	end
+	if meowy.LoadingCancelRequested() then RunConsoleCommand("disconnect") end
+	if loading then
+		local s = GetLoadStatus()
+		if isstring(s) and s ~= lastStatus then
+			lastStatus = s
+			meowy.LoadingStatus(s)
+		end
+	else
+		active, details = false, nil
+		if IsInGame() then meowy.LoadingInGame() else meowy.LoadingEnd() end
+	end
+end)
+)lua";
 }
 
 GMOD_MODULE_OPEN()
@@ -418,9 +536,14 @@ GMOD_MODULE_OPEN()
 	SetFunction(LUA, "RestoreMaterialReload", RestoreMaterialReload);
 	SetFunction(LUA, "MaterialReloadState", MaterialReloadState);
 	SetFunction(LUA, "ServerAllowed", ServerAllowed);
+	SetFunction(LUA, "LoadingDone", LoadingDone);
 
 	LUA->SetField(-2, "meowy");
 	LUA->Pop();
+
+	// Client Lua starting is the start of the join's longest stage, and the
+	// menu can't report it: the game's main thread is busy until it's over.
+	loading_screen::ClientLuaStarted();
 	return 0;
 }
 
@@ -442,7 +565,26 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	LUA->SetField(-2, "VERSION");
 	LUA->PushString("menu");
 	LUA->SetField(-2, "REALM");
+	SetFunction(LUA, "LoadingTarget", LoadingTarget);
+	SetFunction(LUA, "LoadingBegin", LoadingBegin);
+	SetFunction(LUA, "LoadingDetails", LoadingDetails);
+	SetFunction(LUA, "LoadingStatus", LoadingStatus);
+	SetFunction(LUA, "LoadingCancelRequested", LoadingCancelRequested);
+	SetFunction(LUA, "LoadingInGame", LoadingInGame);
+	SetFunction(LUA, "LoadingEnd", LoadingEnd);
 	LUA->SetField(-2, "meowy");
+
+	LUA->GetField(-1, "RunString");
+	if (LUA->IsType(-1, Type::Function))
+	{
+		LUA->PushString(kMenuLua);
+		LUA->PushString("meowy_client_pack/menu");
+		LUA->Call(2, 0);
+	}
+	else
+	{
+		LUA->Pop();
+	}
 
 	LUA->GetField(-1, "print");
 	if (LUA->IsType(-1, Type::Function))

@@ -20,8 +20,12 @@ add_library(meowy SHARED
 	src/hardware.cpp
 	src/engine_patches.cpp
 	src/server_gate.cpp
-	src/discord_ipc.cpp)
+	src/discord_ipc.cpp
+	src/loading_screen.cpp)
 target_include_directories(meowy PRIVATE ${gmod_module_base_SOURCE_DIR}/include)
+if(WIN32)
+	target_link_libraries(meowy PRIVATE msimg32)   # GradientFill, for the loading screen
+endif()
 
 
 if(MSVC)
