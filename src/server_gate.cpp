@@ -176,6 +176,17 @@ namespace server_gate
 #endif
 	}
 
+	bool IsOurAddress(const std::string& address)
+	{
+		std::string ip;
+		if (!ParseIpv4WithPort(address.c_str(), ip))
+			return false;
+		for (const char* allowed : kAllowedIps)
+			if (ip == allowed)
+				return true;
+		return false;
+	}
+
 	const char* Describe(Result r)
 	{
 		switch (r)

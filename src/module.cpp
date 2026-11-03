@@ -49,6 +49,7 @@
 #include "discord_ipc.h"
 #include "engine_patches.h"
 #include "hardware.h"
+#include "connect_watch.h"
 #include "loading_screen.h"
 #include "server_gate.h"
 
@@ -427,22 +428,50 @@ namespace
 		return 1;
 	}
 
-	int LoadingBegin(lua_State*)
+	// LoadingBegin(ms): ms = how long GMod's own loading panel had been open.
+	int LoadingBegin(lua_State* L)
 	{
-		if (server_gate::Check() != server_gate::Result::Allowed)
+		// Either the engine's real connection is ours, or it has just printed
+		// that it's connecting to one of ours (connect_watch.h).
+		if (server_gate::Check() != server_gate::Result::Allowed && !connect_watch::HeadingToUs(10000))
 			return 0;
 #ifdef _WIN32
-		loading_screen::Begin(DataDir());
+		ILuaBase* LUA = L->luabase;
+		loading_screen::Begin(DataDir(), LUA->IsType(1, Type::Number) ? LUA->GetNumber(1) : -1);
+		loading_screen::Note("watch", connect_watch::Describe());
 #endif
 		return 0;
 	}
 
+	// The server's name, the map and the player's SteamID go to the page only
+	// once the real connection is to one of our servers.
 	int LoadingDetails(lua_State* L)
 	{
 		ILuaBase* LUA = L->luabase;
+		if (server_gate::Check() != server_gate::Result::Allowed)
+			return 0;
 		loading_screen::Details(LUA->CheckString(1), LUA->CheckString(2),
 			LUA->IsType(3, Type::String) ? LUA->GetString(3) : "");
 		return 0;
+	}
+
+	// Menu: before the connection exists, the join is "heading to us" from the
+	// engine's own "Connecting to ..." line. Then: "ours", "other" or "waiting".
+	int LoadingHeadsUp(lua_State* L)
+	{
+		L->luabase->PushBool(connect_watch::HeadingToUs(10000));
+		return 1;
+	}
+
+	int LoadingTargetState(lua_State* L)
+	{
+		switch (server_gate::Check())
+		{
+		case server_gate::Result::Allowed: L->luabase->PushString("ours"); break;
+		case server_gate::Result::OtherServer: L->luabase->PushString("other"); break;
+		default: L->luabase->PushString("waiting"); break;
+		}
+		return 1;
 	}
 
 	int LoadingStatus(lua_State* L)
@@ -484,13 +513,14 @@ namespace
 local meowy = meowy
 local enabled = CreateConVar("meowy_loadingscreen", "1", FCVAR_ARCHIVE,
 	"Meowy Client Pack: our own loading screen when joining Meowy Network (0 = Garry's Mod's)")
-local active, lastStatus, details = false, nil, nil
+local active, sure, lastStatus, details = false, false, nil, nil
+local panelSince -- SysTime when GMod's loading panel opened, for how long it showed before ours
 
 local stockGameDetails = GameDetails
 if isfunction(stockGameDetails) then
 	GameDetails = function(name, url, map, maxplayers, visible, steamid, ...)
 		details = { tostring(name or ""), tostring(map or ""), tostring(steamid or "") }
-		if active then meowy.LoadingDetails(details[1], details[2], details[3]) end
+		if active and sure then meowy.LoadingDetails(details[1], details[2], details[3]) end
 		return stockGameDetails(name, url, map, maxplayers, visible, steamid, ...)
 	end
 end
@@ -498,11 +528,27 @@ end
 hook.Add("Think", "MeowyClientPack.Loading", function()
 	local loading = IsInLoading()
 	if not active then
-		if not loading then details = nil return end
-		if not enabled:GetBool() or not system.IsWindowed() or not meowy.LoadingTarget() then return end
-		active, lastStatus = true, nil
-		meowy.LoadingBegin()
-		if details then meowy.LoadingDetails(details[1], details[2], details[3]) end
+		if not loading then details, panelSince = nil, nil return end
+		panelSince = panelSince or SysTime()
+		if not enabled:GetBool() or not system.IsWindowed() then return end
+		-- Start as soon as the engine says it's connecting to one of ours; the
+		-- real connection confirms it a moment later (or ends it).
+		local confirmed = meowy.LoadingTarget()
+		if not confirmed and not meowy.LoadingHeadsUp() then return end
+		active, sure, lastStatus = true, confirmed, nil
+		meowy.LoadingBegin((SysTime() - panelSince) * 1000)
+		if sure and details then meowy.LoadingDetails(details[1], details[2], details[3]) end
+	end
+	if not sure then
+		local state = meowy.LoadingTargetState()
+		if state == "ours" then
+			sure = true
+			if details then meowy.LoadingDetails(details[1], details[2], details[3]) end
+		elseif state == "other" then
+			active, details = false, nil
+			meowy.LoadingEnd()
+			return
+		end
 	end
 	if meowy.LoadingCancelRequested() then RunConsoleCommand("disconnect") end
 	if loading then
@@ -512,7 +558,7 @@ hook.Add("Think", "MeowyClientPack.Loading", function()
 			meowy.LoadingStatus(s)
 		end
 	else
-		active, details = false, nil
+		active, sure, details = false, false, nil
 		if IsInGame() then meowy.LoadingInGame() else meowy.LoadingEnd() end
 	end
 end)
@@ -567,6 +613,8 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	LUA->PushString("menu");
 	LUA->SetField(-2, "REALM");
 	SetFunction(LUA, "LoadingTarget", LoadingTarget);
+	SetFunction(LUA, "LoadingHeadsUp", LoadingHeadsUp);
+	SetFunction(LUA, "LoadingTargetState", LoadingTargetState);
 	SetFunction(LUA, "LoadingBegin", LoadingBegin);
 	SetFunction(LUA, "LoadingDetails", LoadingDetails);
 	SetFunction(LUA, "LoadingStatus", LoadingStatus);
@@ -574,6 +622,8 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	SetFunction(LUA, "LoadingInGame", LoadingInGame);
 	SetFunction(LUA, "LoadingEnd", LoadingEnd);
 	LUA->SetField(-2, "meowy");
+
+	connect_watch::Start();
 
 	LUA->GetField(-1, "RunString");
 	if (LUA->IsType(-1, Type::Function))

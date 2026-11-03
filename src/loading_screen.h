@@ -19,8 +19,9 @@
 
 namespace loading_screen
 {
-	// `dataDir` is garrysmod\data\meowy (for the last join's stage times).
-	void Begin(const std::wstring& dataDir);
+	// `dataDir` is garrysmod\data\meowy (for the last join's stage times);
+	// `panelOpenMs` is how long GMod's own loading panel was up before this (logged).
+	void Begin(const std::wstring& dataDir, double panelOpenMs = -1);
 	// From GameDetails; the SteamID64 lets the web page greet the player.
 	void Details(const std::string& serverName, const std::string& map, const std::string& steamid);
 	void Status(const std::string& status);
@@ -33,5 +34,7 @@ namespace loading_screen
 	void End();
 	// The Cancel button was clicked; the menu Lua disconnects when it can.
 	bool CancelRequested();
+	// Adds a line to this join's log (data/meowy/last_join.txt).
+	void Note(const char* what, const std::string& detail);
 	bool Active();
 }

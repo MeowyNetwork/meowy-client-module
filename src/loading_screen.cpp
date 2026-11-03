@@ -33,7 +33,8 @@ namespace
 	// Seconds per stage on a warm join (2026-11-03 profiles), until this PC
 	// has its own times in data/meowy/join_times.txt.
 	const double kDefaultSecs[STAGES] = { 6, 4, 22, 30, 4 };
-	constexpr ULONGLONG kFadeInMs = 250, kFadeOutMs = 600, kQuickFadeMs = 150;
+	// Fade-in is short: while it runs, GMod's own loading page shows through.
+	constexpr ULONGLONG kFadeInMs = 60, kFadeOutMs = 600, kQuickFadeMs = 150;
 	// After the loading panel closes, wait this long for the client Lua's Done
 	// before fading out anyway.
 	constexpr ULONGLONG kInGameTimeoutMs = 15000;
@@ -684,7 +685,11 @@ namespace
 						ShowWindow(v.hwnd, SW_SHOWNOACTIVATE);
 						shown = true;
 						if (!shownAt)
+						{
 							shownAt = now;
+							std::lock_guard<std::mutex> lock(g.m);
+							Log("shown");
+						}
 					}
 
 					int w = rc.right, h = rc.bottom;
@@ -757,7 +762,7 @@ namespace
 
 namespace loading_screen
 {
-	void Begin(const std::wstring& dataDir)
+	void Begin(const std::wstring& dataDir, double panelOpenMs)
 	{
 		static bool ghostingOff = false;
 		if (!ghostingOff)
@@ -787,7 +792,7 @@ namespace loading_screen
 		CloseLog();
 		CreateDirectoryW(dataDir.c_str(), nullptr);
 		g.log = _wfopen((dataDir + L"\\last_join.txt").c_str(), L"w");
-		Log("begin");
+		Log("begin", "GMod's loading panel open " + std::to_string(static_cast<long long>(panelOpenMs)) + " ms");
 
 		if (!g.running)
 		{
@@ -876,6 +881,13 @@ namespace loading_screen
 		return g_cancel.exchange(false);
 	}
 
+	void Note(const char* what, const std::string& detail)
+	{
+		std::lock_guard<std::mutex> lock(g.m);
+		if (g.running)
+			Log(what, detail);
+	}
+
 	bool Active()
 	{
 		std::lock_guard<std::mutex> lock(g.m);
@@ -887,7 +899,7 @@ namespace loading_screen
 
 namespace loading_screen
 {
-	void Begin(const std::wstring&) {}
+	void Begin(const std::wstring&, double) {}
 	void Details(const std::string&, const std::string&, const std::string&) {}
 	void Status(const std::string&) {}
 	void ClientLuaStarted() {}
@@ -895,6 +907,7 @@ namespace loading_screen
 	void Done() {}
 	void End() {}
 	bool CancelRequested() { return false; }
+	void Note(const char*, const std::string&) {}
 	bool Active() { return false; }
 }
 

@@ -22,7 +22,8 @@ add_library(meowy SHARED
 	src/server_gate.cpp
 	src/discord_ipc.cpp
 	src/loading_screen.cpp
-	src/loading_webview.cpp)
+	src/loading_webview.cpp
+	src/connect_watch.cpp)
 target_include_directories(meowy PRIVATE ${gmod_module_base_SOURCE_DIR}/include)
 if(WIN32)
 	target_link_libraries(meowy PRIVATE msimg32 shlwapi)   # GradientFill and file streams, for the loading screen

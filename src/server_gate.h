@@ -29,4 +29,7 @@ namespace server_gate
 	Result Check(std::string* address = nullptr);
 
 	const char* Describe(Result r);
+
+	// Whether "a.b.c.d:port" is one of our servers (the same list as Check).
+	bool IsOurAddress(const std::string& address);
 }
