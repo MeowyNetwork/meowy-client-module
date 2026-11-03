@@ -828,7 +828,12 @@ namespace loading_screen
 			if (c == '\r' || c == '\n')
 				c = ' ';
 		g.status = Widen(flat);
-		Advance(StageFor(status), GetTickCount64());
+		// Ready comes from being in game (InGame), or from these statuses once the
+		// scripts stage has started; a stray one can't skip the join ahead.
+		int stage = StageFor(status);
+		if (stage == READY && g.stage < SCRIPTS)
+			stage = -1;
+		Advance(stage, GetTickCount64());
 		Log("status", status);
 	}
 

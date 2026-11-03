@@ -535,7 +535,9 @@ hook.Add("Think", "MeowyClientPack.Loading", function()
 		-- real connection confirms it a moment later (or ends it).
 		local confirmed = meowy.LoadingTarget()
 		if not confirmed and not meowy.LoadingHeadsUp() then return end
-		active, sure, lastStatus = true, confirmed, nil
+		-- Whatever status is showing now is left over from the last join (a retry
+		-- starts on "Ready to play!"), so only changes from here on count.
+		active, sure, lastStatus = true, confirmed, GetLoadStatus()
 		meowy.LoadingBegin((SysTime() - panelSince) * 1000)
 		if sure and details then meowy.LoadingDetails(details[1], details[2], details[3]) end
 	end
