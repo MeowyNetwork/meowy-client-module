@@ -1,7 +1,7 @@
 // gmcl_meowy: optional client module for Meowy Network.
 //
 // Lua API (global table `meowy`, created by require("meowy")):
-//   meowy.VERSION                     "1.2.0"
+//   meowy.VERSION                     "1.3.0"
 //   meowy.DiscordStart(clientId)      connect to the local Discord app
 //   meowy.DiscordSetActivity(tbl)     set Rich Presence (fields below)
 //   meowy.DiscordClear()              remove it
@@ -15,6 +15,11 @@
 //                                     dump beside it, or "" (1.2+); the same as
 //                                     fault_module / fault_offset / fault_code
 //   meowy.Hardware()                  { cpu, threads, ram_mb, gpu, vram_mb, os } (1.2+)
+//   meowy.SkipMaterialReload()        true | false, reason (1.3+, 64-bit only): stop
+//                                     GMod reloading every material at the end of
+//                                     client Lua start-up; call from client autorun
+//   meowy.RestoreMaterialReload()     undo it
+//   meowy.MaterialReloadState()       "patched" | "not patched" | "unsupported"
 //
 // DiscordSetActivity fields, all optional:
 //   details, state       strings, shown on two lines
@@ -25,11 +30,13 @@
 //
 // The module only talks to Discord's local IPC pipe, reads the game's own
 // crashes/ folder and asks Windows for the CPU/GPU/RAM description. It makes
-// no network connections and writes no files.
+// no network connections and writes no files. The one change it can make to
+// the game is SkipMaterialReload, in memory only, and only when Lua asks.
 
 #include "GarrysMod/Lua/Interface.h"
 #include "crash_reports.h"
 #include "discord_ipc.h"
+#include "engine_patches.h"
 #include "hardware.h"
 
 #include <cstdio>
@@ -40,7 +47,7 @@ using namespace GarrysMod::Lua;
 
 namespace
 {
-	const char* const VERSION = "1.2.0";
+	const char* const VERSION = "1.3.0";
 
 	// Discord's own limits; anything longer makes it reject the whole activity.
 	constexpr size_t MAX_TEXT = 128;
@@ -275,6 +282,31 @@ namespace
 		return 1;
 	}
 
+	// meowy.SkipMaterialReload() -> true | false, reason
+	int SkipMaterialReload(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		std::string why;
+		bool ok = engine_patches::SkipMaterialReload(why);
+		LUA->PushBool(ok);
+		if (ok)
+			return 1;
+		LUA->PushString(why.c_str());
+		return 2;
+	}
+
+	int RestoreMaterialReload(lua_State* L)
+	{
+		L->luabase->PushBool(engine_patches::RestoreMaterialReload());
+		return 1;
+	}
+
+	int MaterialReloadState(lua_State* L)
+	{
+		L->luabase->PushString(engine_patches::MaterialReloadState());
+		return 1;
+	}
+
 	int Hardware(lua_State* L)
 	{
 		ILuaBase* LUA = L->luabase;
@@ -316,6 +348,9 @@ GMOD_MODULE_OPEN()
 	SetFunction(LUA, "DiscordLastError", DiscordLastError);
 	SetFunction(LUA, "CrashReports", CrashReports);
 	SetFunction(LUA, "Hardware", Hardware);
+	SetFunction(LUA, "SkipMaterialReload", SkipMaterialReload);
+	SetFunction(LUA, "RestoreMaterialReload", RestoreMaterialReload);
+	SetFunction(LUA, "MaterialReloadState", MaterialReloadState);
 
 	LUA->SetField(-2, "meowy");
 	LUA->Pop();

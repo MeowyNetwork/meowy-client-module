@@ -1,3 +1,5 @@
+**New in 1.3:** faster joins. At the end of loading a server's Lua, Garry's Mod throws away every material and loads them all again; on Meowy Network's map that is 5-15 seconds of every join. The pack now skips that second load (the materials stay as they were loaded seconds earlier). It's an in-memory change to the game for that session only, it switches itself off if Garry's Mod updates that code, and `meowy_skipmatreload 0` in the console turns it off.
+
 **New in 1.2:** crash reports also say where the game crashed (the module and offset, e.g. `engine.dll+0x200660`), and the pack can describe your hardware (CPU, GPU, RAM, Windows version) so the server can see what players' machines struggle with. Nothing identifying is collected.
 
 **New in 1.1:** when you join, the server receives the Lua part of any game crash reports since your last visit, so crashes caused by addons can be found and fixed. Only the "Lua Stack Traces" section is sent; nothing else from the report leaves your PC.

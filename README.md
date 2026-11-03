@@ -35,7 +35,19 @@ from this repository by its CI (`gh attestation verify MeowyClientPack.exe --rep
 - Since 1.2 it can describe your hardware: CPU and GPU model, thread count, RAM, video memory and
   Windows version. No serial numbers, user names or IDs. The server uses it with frame-time
   stats to see what players' machines struggle with.
-- It makes no network connections, writes no files, and doesn't touch the game's memory.
+- Since 1.3 it can make joins faster. At the end of loading a server's Lua, Garry's Mod throws
+  away every material it has loaded and loads them all again; on a large map that is 5-15
+  seconds of every join. When the server asks for it, the module skips the "throw away" step
+  (anything new still loads). The game's materials stay exactly as they were loaded seconds
+  earlier.
+  - This is the one place the module changes the game: 6 bytes of `client.dll`, in memory, for
+    that session only. Nothing on disk changes, and no other game is affected.
+  - It finds that code by an exact byte pattern and does nothing if anything differs (a
+    Garry's Mod update, for example).
+  - Turn it off with `meowy_skipmatreload 0` in the console. A server can also turn it off for
+    everyone.
+  - It only runs on 64-bit Garry's Mod.
+- It makes no network connections and writes no files.
 - It only runs when a server's Lua calls `require("meowy")`. Other servers can use it the same way.
 - Windows only for now (32-bit and 64-bit Garry's Mod).
 
@@ -55,6 +67,8 @@ end
 -- meowy.VERSION, meowy.DiscordClear(), meowy.DiscordState(), meowy.DiscordLastError()
 -- meowy.CrashReports(since_unix, max) -> { { time = <unix>, lua = "<stack traces>", fault = "engine.dll+0x... (0xC0000005)" }, ... }
 -- meowy.Hardware() -> { cpu, threads, ram_mb, gpu, vram_mb, os }
+-- meowy.SkipMaterialReload() -> true | false, reason   (call from a client autorun file)
+-- meowy.RestoreMaterialReload(), meowy.MaterialReloadState() -> "patched" | "not patched" | "unsupported"
 ```
 Identical updates are dropped, and updates are sent at most once every 4 s (Discord's rate limit).
 
