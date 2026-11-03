@@ -1,0 +1,62 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: write       # create releases on tags
+  id-token: write       # build provenance attestations
+  attestations: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build gmcl_meowy_win32.dll
+        run: |
+          cmake -S . -B build32 -A Win32
+          cmake --build build32 --config Release
+
+      - name: Build gmcl_meowy_win64.dll
+        run: |
+          cmake -S . -B build64 -A x64
+          cmake --build build64 --config Release
+
+      - name: Build installer
+        shell: pwsh
+        run: ./installer/build.ps1 -Win32 build32/Release/gmcl_meowy_win32.dll -Win64 build64/Release/gmcl_meowy_win64.dll -Out MeowyClientPack.exe
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory dist | Out-Null
+          Copy-Item build32/Release/gmcl_meowy_win32.dll, build64/Release/gmcl_meowy_win64.dll, MeowyClientPack.exe dist/
+          Compress-Archive -Path dist/gmcl_meowy_win32.dll, dist/gmcl_meowy_win64.dll -DestinationPath dist/meowy-client-module-manual.zip
+          Get-ChildItem dist -File | ForEach-Object { "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name } | Set-Content dist/SHA256SUMS.txt
+          Get-Content dist/SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: meowy-client-module
+          path: dist/*
+
+      - name: Attest build provenance
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            dist/gmcl_meowy_win32.dll
+            dist/gmcl_meowy_win64.dll
+            dist/MeowyClientPack.exe
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ github.ref_name }}" dist/MeowyClientPack.exe dist/meowy-client-module-manual.zip dist/SHA256SUMS.txt --title "${{ github.ref_name }}" --notes-file RELEASE_NOTES.md
