@@ -21,10 +21,28 @@ add_library(meowy SHARED
 	src/engine_patches.cpp
 	src/server_gate.cpp
 	src/discord_ipc.cpp
-	src/loading_screen.cpp)
+	src/loading_screen.cpp
+	src/loading_webview.cpp)
 target_include_directories(meowy PRIVATE ${gmod_module_base_SOURCE_DIR}/include)
 if(WIN32)
-	target_link_libraries(meowy PRIVATE msimg32)   # GradientFill, for the loading screen
+	target_link_libraries(meowy PRIVATE msimg32 shlwapi)   # GradientFill and file streams, for the loading screen
+
+	# Microsoft's WebView2 SDK (headers and the static loader, so there's no
+	# extra DLL to ship), pinned by hash: the loading screen's web page.
+	FetchContent_Declare(webview2
+		URL https://www.nuget.org/api/v2/package/Microsoft.Web.WebView2/1.0.2903.40
+		URL_HASH SHA256=ef128016dd1e51c59178c827ed5b8aa3322c57afa8675d930f8109505542ad74
+		DOWNLOAD_NAME webview2-1.0.2903.40.zip
+		DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+		SOURCE_SUBDIR do-not-build)
+	FetchContent_MakeAvailable(webview2)
+	if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+		set(MEOWY_WV2_ARCH x64)
+	else()
+		set(MEOWY_WV2_ARCH x86)
+	endif()
+	target_include_directories(meowy PRIVATE ${webview2_SOURCE_DIR}/build/native/include)
+	target_link_libraries(meowy PRIVATE ${webview2_SOURCE_DIR}/build/native/${MEOWY_WV2_ARCH}/WebView2LoaderStatic.lib)
 endif()
 
 

@@ -21,7 +21,8 @@ namespace loading_screen
 {
 	// `dataDir` is garrysmod\data\meowy (for the last join's stage times).
 	void Begin(const std::wstring& dataDir);
-	void Details(const std::string& serverName, const std::string& map);
+	// From GameDetails; the SteamID64 lets the web page greet the player.
+	void Details(const std::string& serverName, const std::string& map, const std::string& steamid);
 	void Status(const std::string& status);
 	void ClientLuaStarted();
 	// The loading panel closed and the game is in: hold until Done (or a

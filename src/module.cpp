@@ -440,7 +440,8 @@ namespace
 	int LoadingDetails(lua_State* L)
 	{
 		ILuaBase* LUA = L->luabase;
-		loading_screen::Details(LUA->CheckString(1), LUA->CheckString(2));
+		loading_screen::Details(LUA->CheckString(1), LUA->CheckString(2),
+			LUA->IsType(3, Type::String) ? LUA->GetString(3) : "");
 		return 0;
 	}
 
@@ -487,10 +488,10 @@ local active, lastStatus, details = false, nil, nil
 
 local stockGameDetails = GameDetails
 if isfunction(stockGameDetails) then
-	GameDetails = function(name, url, map, ...)
-		details = { tostring(name or ""), tostring(map or "") }
-		if active then meowy.LoadingDetails(details[1], details[2]) end
-		return stockGameDetails(name, url, map, ...)
+	GameDetails = function(name, url, map, maxplayers, visible, steamid, ...)
+		details = { tostring(name or ""), tostring(map or ""), tostring(steamid or "") }
+		if active then meowy.LoadingDetails(details[1], details[2], details[3]) end
+		return stockGameDetails(name, url, map, maxplayers, visible, steamid, ...)
 	end
 end
 
@@ -501,7 +502,7 @@ hook.Add("Think", "MeowyClientPack.Loading", function()
 		if not enabled:GetBool() or not system.IsWindowed() or not meowy.LoadingTarget() then return end
 		active, lastStatus = true, nil
 		meowy.LoadingBegin()
-		if details then meowy.LoadingDetails(details[1], details[2]) end
+		if details then meowy.LoadingDetails(details[1], details[2], details[3]) end
 	end
 	if meowy.LoadingCancelRequested() then RunConsoleCommand("disconnect") end
 	if loading then

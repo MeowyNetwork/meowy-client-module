@@ -4,6 +4,10 @@
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <objbase.h>
+
+#include "loading_webview.h"
+#undef small   // rpcndr.h (via objbase.h) defines it; it's a font name below
 
 #include <atomic>
 #include <cmath>
@@ -56,7 +60,7 @@ namespace
 		ULONGLONG begin = 0, inGameAt = 0, doneAt = 0;
 		ULONGLONG stageStart[STAGES] = {};
 		double expected[STAGES] = {};
-		std::wstring server = L"Meowy Network", map, status;
+		std::wstring server = L"Meowy Network", map, status, steamid;
 		std::wstring dataDir;
 		FILE* log = nullptr;            // data/meowy/last_join.txt: what this join went through
 	};
@@ -359,6 +363,90 @@ namespace
 
 	bool Inside(const RECT& r, int x, int y) { return x >= r.left && x < r.right && y >= r.top && y < r.bottom; }
 
+	// --- The web page (loading_webview.h) ---------------------------------------
+
+	const wchar_t* const kPageUrl = L"https://meowynetwork.com/pack-loading.html";
+
+	// The page, or for developing it a local dev server given at launch with
+	// -meowy_loading_url http://localhost:5173/pack-loading.html (only
+	// localhost addresses are accepted there).
+	std::wstring PageUrl()
+	{
+		const wchar_t* cmd = GetCommandLineW();
+		const wchar_t* at = std::wcsstr(cmd, L"-meowy_loading_url ");
+		if (!at)
+			return kPageUrl;
+		at += std::wcslen(L"-meowy_loading_url ");
+		std::wstring url;
+		while (*at && *at != L' ' && *at != L'"')
+			url += *at++;
+		if (url.rfind(L"http://localhost:", 0) == 0 || url.rfind(L"http://127.0.0.1:", 0) == 0)
+			return url;
+		return kPageUrl;
+	}
+
+	// WebView2's profile (cache, cookies of our site only): %LOCALAPPDATA%\MeowyClientPack\WebView2.
+	std::wstring WebProfileDir()
+	{
+		wchar_t base[MAX_PATH];
+		DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", base, MAX_PATH);
+		if (n == 0 || n >= MAX_PATH)
+			return L"";
+		std::wstring dir = std::wstring(base) + L"\\MeowyClientPack";
+		CreateDirectoryW(dir.c_str(), nullptr);
+		return dir + L"\\WebView2";
+	}
+
+	void JsonString(std::wstring& out, const std::wstring& s)
+	{
+		out += L'"';
+		for (wchar_t c : s)
+		{
+			if (c == L'"' || c == L'\\')
+			{
+				out += L'\\';
+				out += c;
+			}
+			else if (c < 0x20)
+			{
+				wchar_t buf[8];
+				swprintf(buf, 8, L"\\u%04x", static_cast<unsigned>(c));
+				out += buf;
+			}
+			else
+			{
+				out += c;
+			}
+		}
+		out += L'"';
+	}
+
+	// What the page draws from; see Website/src/pack-loading/main.ts.
+	std::wstring StateJson(ULONGLONG now)
+	{
+		std::lock_guard<std::mutex> lock(g.m);
+		wchar_t num[64];
+		std::wstring j = L"{\"type\":\"state\",\"stage\":" + std::to_wstring(g.stage);
+		ULONGLONG start = g.stageStart[g.stage] ? g.stageStart[g.stage] : g.begin;
+		swprintf(num, 64, L",\"stageElapsed\":%.2f,\"elapsed\":%.2f,\"expected\":[", (now - start) / 1000.0, (now - g.begin) / 1000.0);
+		j += num;
+		for (int i = 0; i < STAGES; ++i)
+		{
+			swprintf(num, 64, i ? L",%.1f" : L"%.1f", g.expected[i]);
+			j += num;
+		}
+		j += L"],\"status\":";
+		JsonString(j, g.status);
+		j += L",\"server\":";
+		JsonString(j, g.server);
+		j += L",\"map\":";
+		JsonString(j, g.map);
+		j += L",\"steamid\":";
+		JsonString(j, g.steamid);
+		j += L"}";
+		return j;
+	}
+
 	// Development aid: with data/meowy/screenshot_debug present, the screen
 	// saves what it draws to data/meowy/shots/ every few seconds (it's a
 	// separate window, so the game's own screenshots don't include it).
@@ -419,6 +507,8 @@ namespace
 
 	DWORD WINAPI Run(void*)
 	{
+		// WebView2 needs a single-threaded COM apartment with a message loop: this thread.
+		HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 		HINSTANCE inst = GetModuleHandleW(nullptr);
 		WNDCLASSW wc = {};
 		wc.lpfnWndProc = WndProc;
@@ -427,14 +517,27 @@ namespace
 		wc.lpszClassName = L"MeowyLoadingScreen";
 		RegisterClassW(&wc);   // fails harmlessly when already registered
 		v.hwnd = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, wc.lpszClassName, L"Meowy Network",
-			WS_POPUP, 0, 0, 1, 1, nullptr, nullptr, inst, nullptr);
+			WS_POPUP | WS_CLIPCHILDREN, 0, 0, 1, 1, nullptr, nullptr, inst, nullptr);
 		if (!v.hwnd)
 		{
 			std::lock_guard<std::mutex> lock(g.m);
 			g.running = false;
+			if (SUCCEEDED(com))
+				CoUninitialize();
 			return 0;
 		}
 		SetLayeredWindowAttributes(v.hwnd, 0, 0, LWA_ALPHA);
+
+		// The web page loads behind the native drawing and takes over once it says
+		// it's ready. It gets 8 s; after that, or on any failure, the native drawing stays.
+		const ULONGLONG webStarted = GetTickCount64();
+		bool webOn = SUCCEEDED(com) && loading_webview::Start(v.hwnd, PageUrl(), WebProfileDir());
+		bool webShown = false;
+		ULONGLONG lastPost = 0;
+		{
+			std::lock_guard<std::mutex> lock(g.m);
+			Log(webOn ? "web start" : "web unavailable");
+		}
 
 		RECT last = {};
 		std::wstring shotDir;
@@ -463,6 +566,37 @@ namespace
 				DispatchMessageW(&msg);
 			}
 			ULONGLONG now = GetTickCount64();
+
+			if (webOn)
+			{
+				if (!webShown && loading_webview::Ready())
+				{
+					webShown = true;
+					std::lock_guard<std::mutex> lock(g.m);
+					Log("web ready");
+				}
+				else if (!webShown && (loading_webview::Failed() || now - webStarted > 8000))
+				{
+					loading_webview::Stop();
+					webOn = false;
+					std::lock_guard<std::mutex> lock(g.m);
+					Log(loading_webview::Failed() ? "web failed" : "web too slow");
+				}
+				char action = loading_webview::TakeAction();
+				if (action)
+				{
+					std::lock_guard<std::mutex> lock(g.m);
+					if (action == 'c')
+						g_cancel = true;
+					Log(action == 'c' ? "cancel" : "hide");
+					FinishLocked(true);
+				}
+				if (webShown && now - lastPost >= 200)
+				{
+					loading_webview::Post(StateJson(now));
+					lastPost = now;
+				}
+			}
 
 			// Fading and exit decisions.
 			double alpha;
@@ -514,6 +648,8 @@ namespace
 					if (std::memcmp(&pos, &last, sizeof(pos)) != 0)
 					{
 						SetWindowPos(v.hwnd, nullptr, pos.left, pos.top, rc.right, rc.bottom, SWP_NOACTIVATE | SWP_NOZORDER);
+						if (webOn)
+							loading_webview::Resize(rc.right, rc.bottom);
 						last = pos;
 					}
 					HWND fg = GetForegroundWindow();
@@ -542,14 +678,20 @@ namespace
 						bw = w;
 						bh = h;
 					}
-					Draw(mem, w, h);
-					BitBlt(dc, 0, 0, w, h, mem, 0, 0, SRCCOPY);
+					if (!webShown)
+					{
+						Draw(mem, w, h);
+						BitBlt(dc, 0, 0, w, h, mem, 0, 0, SRCCOPY);
+					}
 					++frames;
 					if (!shotDir.empty() && now - lastShot >= 4000)
 					{
 						wchar_t name[32];
-						swprintf(name, 32, L"\\shot_%02d.bmp", shotNo++);
-						SaveBmp(mem, bmp, w, h, shotDir + name);
+						swprintf(name, 32, webShown ? L"\\shot_%02d.png" : L"\\shot_%02d.bmp", shotNo++);
+						if (webShown)
+							loading_webview::Capture(shotDir + name);
+						else
+							SaveBmp(mem, bmp, w, h, shotDir + name);
 						lastShot = now;
 					}
 					ReleaseDC(v.hwnd, dc);
@@ -567,6 +709,7 @@ namespace
 			Sleep(33);
 		}
 
+		loading_webview::Stop();
 		if (mem)
 		{
 			DeleteObject(bmp);
@@ -574,6 +717,8 @@ namespace
 		}
 		DestroyWindow(v.hwnd);
 		v.hwnd = nullptr;
+		if (SUCCEEDED(com))
+			CoUninitialize();
 		{
 			std::lock_guard<std::mutex> lock(g.m);
 			CloseLog();
@@ -606,6 +751,7 @@ namespace loading_screen
 		g.stageStart[CONNECT] = now;
 		g.server = L"Meowy Network";
 		g.map.clear();
+		g.steamid.clear();
 		g.status = L"Connecting…";
 		g_cancel = false;
 		LoadExpected();
@@ -625,7 +771,7 @@ namespace loading_screen
 		}
 	}
 
-	void Details(const std::string& serverName, const std::string& map)
+	void Details(const std::string& serverName, const std::string& map, const std::string& steamid)
 	{
 		std::lock_guard<std::mutex> lock(g.m);
 		if (!g.running)
@@ -633,6 +779,7 @@ namespace loading_screen
 		if (!serverName.empty())
 			g.server = Widen(serverName);
 		g.map = Widen(map);
+		g.steamid = Widen(steamid);
 		Log("details", serverName + " / " + map);
 	}
 
@@ -712,7 +859,7 @@ namespace loading_screen
 namespace loading_screen
 {
 	void Begin(const std::wstring&) {}
-	void Details(const std::string&, const std::string&) {}
+	void Details(const std::string&, const std::string&, const std::string&) {}
 	void Status(const std::string&) {}
 	void ClientLuaStarted() {}
 	void InGame() {}

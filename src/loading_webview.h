@@ -1,0 +1,34 @@
+#pragma once
+// The loading screen's web page (Windows): meowynetwork.com/pack-loading.html
+// in WebView2, Windows' own Chromium runtime, as a child of the loading screen
+// window. Everything here runs on the loading screen's thread, which must be
+// COM single-threaded and pump messages. WebView2's processes are separate
+// from the game's, so the page costs the game no address space (32-bit).
+//
+// The page can't leave the origin it was loaded from, can't open windows, and
+// has no dev tools, context menu or browser shortcuts. Until it reports ready
+// (or if WebView2 is missing, the site is down or it takes too long) the native
+// drawing in loading_screen.cpp stays on screen.
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <string>
+
+namespace loading_webview
+{
+	// Starts creating the browser inside `parent`. False if that can't even start.
+	bool Start(HWND parent, const std::wstring& url, const std::wstring& userDataDir);
+	// The page loaded and said it's ready; it is now shown over the native drawing.
+	bool Ready();
+	// Creation or navigation failed; the native drawing stays.
+	bool Failed();
+	void Resize(int w, int h);
+	// Sends a JSON object to the page (window.chrome.webview "message" event).
+	void Post(const std::wstring& json);
+	// The page's last button press: 'c' Cancel, 'h' Game's screen, 0 none.
+	char TakeAction();
+	// Development aid: saves what the page shows as a PNG (asynchronously).
+	void Capture(const std::wstring& path);
+	void Stop();
+}
+#endif
