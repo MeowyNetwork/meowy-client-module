@@ -30,6 +30,10 @@ namespace loading_webview
 	char TakeAction();
 	// Gives the page keyboard focus (after the window itself was activated).
 	void Focus();
+	// Shows or hides the page (hidden, WebView2 throttles it).
+	void SetVisible(bool visible);
+	// Reloads the page; Ready() is false until it reports ready again.
+	void Reload();
 	// Development aid: saves what the page shows as a PNG (asynchronously).
 	void Capture(const std::wstring& path);
 	void Stop();

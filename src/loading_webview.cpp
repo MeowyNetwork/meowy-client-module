@@ -114,10 +114,7 @@ namespace
 					if (std::wcsstr(json, L"\"type\":\"ready\""))
 					{
 						if (!g_ready && !g_failed && g_controller)
-						{
-							g_ready = true;
-							g_controller->put_IsVisible(TRUE);
-						}
+							g_ready = true;   // shown by SetVisible when a join is on screen
 					}
 					else if (std::wcsstr(json, L"\"type\":\"cancel\""))
 						g_action = 'c';
@@ -185,6 +182,21 @@ namespace loading_webview
 	{
 		if (g_ready && g_view)
 			g_view->PostWebMessageAsJson(json.c_str());
+	}
+
+	void SetVisible(bool visible)
+	{
+		if (g_controller)
+			g_controller->put_IsVisible(visible ? TRUE : FALSE);
+	}
+
+	void Reload()
+	{
+		if (!g_view)
+			return;
+		g_ready = false;
+		SetVisible(false);
+		g_view->Reload();
 	}
 
 	void Capture(const std::wstring& path)

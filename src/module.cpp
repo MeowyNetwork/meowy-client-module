@@ -492,6 +492,14 @@ namespace
 		return 0;
 	}
 
+	int LoadingPrewarm(lua_State*)
+	{
+#ifdef _WIN32
+		loading_screen::Prewarm(DataDir());
+#endif
+		return 0;
+	}
+
 	int LoadingEnd(lua_State*)
 	{
 		loading_screen::End();
@@ -514,6 +522,9 @@ local meowy = meowy
 local enabled = CreateConVar("meowy_loadingscreen", "1", FCVAR_ARCHIVE,
 	"Meowy Client Pack: our own loading screen when joining Meowy Network (0 = Garry's Mod's)")
 local active, sure, lastStatus, details = false, false, nil, nil
+
+-- Load the screen's page now, hidden, so a join shows it at once.
+if enabled:GetBool() and system.IsWindowed() then meowy.LoadingPrewarm() end
 local panelSince -- SysTime when GMod's loading panel opened, for how long it showed before ours
 
 local stockGameDetails = GameDetails
@@ -623,6 +634,7 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	SetFunction(LUA, "LoadingCancelRequested", LoadingCancelRequested);
 	SetFunction(LUA, "LoadingInGame", LoadingInGame);
 	SetFunction(LUA, "LoadingEnd", LoadingEnd);
+	SetFunction(LUA, "LoadingPrewarm", LoadingPrewarm);
 	LUA->SetField(-2, "meowy");
 
 	connect_watch::Start();

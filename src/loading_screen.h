@@ -22,6 +22,9 @@ namespace loading_screen
 	// `dataDir` is garrysmod\data\meowy (for the last join's stage times);
 	// `panelOpenMs` is how long GMod's own loading panel was up before this (logged).
 	void Begin(const std::wstring& dataDir, double panelOpenMs = -1);
+	// At game start: load the screen's web page now, hidden, so a join can show
+	// it straight away instead of the native drawing while it loads.
+	void Prewarm(const std::wstring& dataDir);
 	// From GameDetails; the SteamID64 lets the web page greet the player.
 	void Details(const std::string& serverName, const std::string& map, const std::string& steamid);
 	void Status(const std::string& status);

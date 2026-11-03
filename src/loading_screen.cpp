@@ -57,7 +57,9 @@ namespace
 	struct State
 	{
 		std::mutex m;
-		bool running = false;           // the window thread is alive
+		bool running = false;           // the window thread is alive (for the session, once started)
+		bool joining = false;           // a join is on screen
+		unsigned joinSeq = 0;           // counts joins, so the thread notices a new one
 		bool finishing = false;         // fading out; the thread exits when done
 		bool quick = false;             // fade out fast (cancel, failure, hide)
 		ULONGLONG finishAt = 0;
@@ -512,6 +514,10 @@ namespace
 		return DefWindowProcW(hwnd, msg, wp, lp);
 	}
 
+	// The screen's thread. Started at game start (Prewarm) or at the first join,
+	// and then kept for the session: the window and the web page stay loaded,
+	// hidden, so a join only has to show them. Between joins the page is
+	// hidden (WebView2 throttles it) and reloaded fresh for the next one.
 	DWORD WINAPI Run(void*)
 	{
 		// WebView2 needs a single-threaded COM apartment with a message loop: this thread.
@@ -529,37 +535,27 @@ namespace
 		{
 			std::lock_guard<std::mutex> lock(g.m);
 			g.running = false;
+			g.joining = false;
 			if (SUCCEEDED(com))
 				CoUninitialize();
 			return 0;
 		}
 		SetLayeredWindowAttributes(v.hwnd, 0, 0, LWA_ALPHA);
 
-		// The web page loads behind the native drawing and takes over once it says
-		// it's ready. It gets 8 s; after that, or on any failure, the native drawing stays.
-		const ULONGLONG webStarted = GetTickCount64();
+		// The web page. If it isn't ready when a join starts, the native drawing
+		// shows until it is (up to 8 s into the join); if it failed, the next join
+		// tries again.
 		bool webOn = SUCCEEDED(com) && loading_webview::Start(v.hwnd, PageUrl(), WebProfileDir());
 		bool webShown = false;
 		ULONGLONG lastPost = 0;
-		{
-			std::lock_guard<std::mutex> lock(g.m);
-			Log(webOn ? "web start" : "web unavailable");
-		}
 
 		RECT last = {};
 		std::wstring shotDir;
-		{
-			std::lock_guard<std::mutex> lock(g.m);
-			if (GetFileAttributesW((g.dataDir + L"\\screenshot_debug").c_str()) != INVALID_FILE_ATTRIBUTES)
-			{
-				shotDir = g.dataDir + L"\\shots";
-				CreateDirectoryW(shotDir.c_str(), nullptr);
-			}
-		}
 		ULONGLONG countFrom = GetTickCount64(), lastShot = 0;
 		int frames = 0, shotNo = 0;
 		bool shown = false;
 		ULONGLONG shownAt = 0;
+		unsigned seenJoin = 0;
 		HDC mem = nullptr;
 		HBITMAP bmp = nullptr;
 		int bw = 0, bh = 0;
@@ -574,20 +570,68 @@ namespace
 			}
 			ULONGLONG now = GetTickCount64();
 
+			bool joining;
+			unsigned join;
+			{
+				std::lock_guard<std::mutex> lock(g.m);
+				joining = g.joining;
+				join = g.joinSeq;
+			}
+
+			// ─── Between joins: hidden, page loaded and waiting ────────────────
+			if (!joining)
+			{
+				if (shown)
+				{
+					ShowWindow(v.hwnd, SW_HIDE);
+					shown = false;
+				}
+				Sleep(50);
+				continue;
+			}
+
+			// ─── A join started ────────────────────────────────────────────────
+			if (join != seenJoin)
+			{
+				seenJoin = join;
+				shownAt = 0;
+				webShown = false;
+				lastPost = 0;
+				countFrom = now;
+				frames = 0;
+				std::lock_guard<std::mutex> lock(g.m);
+				shotDir.clear();
+				if (GetFileAttributesW((g.dataDir + L"\\screenshot_debug").c_str()) != INVALID_FILE_ATTRIBUTES)
+				{
+					shotDir = g.dataDir + L"\\shots";
+					CreateDirectoryW(shotDir.c_str(), nullptr);
+				}
+				if (!webOn && SUCCEEDED(com))
+				{
+					webOn = loading_webview::Start(v.hwnd, PageUrl(), WebProfileDir());
+					Log(webOn ? "web start" : "web unavailable");
+				}
+				else
+				{
+					Log(loading_webview::Ready() ? "web already loaded" : "web loading");
+				}
+			}
+
 			if (webOn)
 			{
 				if (!webShown && loading_webview::Ready())
 				{
 					webShown = true;
+					loading_webview::SetVisible(true);
 					std::lock_guard<std::mutex> lock(g.m);
-					Log("web ready");
+					Log("web shown");
 				}
-				else if (!webShown && (loading_webview::Failed() || now - webStarted > 8000))
+				else if (!webShown && loading_webview::Failed())
 				{
 					loading_webview::Stop();
 					webOn = false;
 					std::lock_guard<std::mutex> lock(g.m);
-					Log(loading_webview::Failed() ? "web failed" : "web too slow");
+					Log("web failed");
 				}
 				char action = loading_webview::TakeAction();
 				if (action == 'c' || action == 'h')
@@ -623,8 +667,9 @@ namespace
 				}
 			}
 
-			// Fading and exit decisions.
+			// Fading, and the end of the join.
 			double alpha;
+			bool ended = false;
 			{
 				std::lock_guard<std::mutex> lock(g.m);
 				if (!g.finishing && g.done && now - g.doneAt > 300 && now >= g.holdUntil)
@@ -637,15 +682,34 @@ namespace
 					ULONGLONG t = now - g.finishAt;
 					if (t >= len)
 					{
-						g.running = false;
-						break;
+						g.joining = false;
+						g.finishing = false;
+						CloseLog();
+						ended = true;
 					}
-					alpha = 1.0 - static_cast<double>(t) / len;
+					alpha = t >= len ? 0.0 : 1.0 - static_cast<double>(t) / len;
 				}
 				else
 				{
-					alpha = shown ? (now - shownAt >= kFadeInMs ? 1.0 : static_cast<double>(now - shownAt) / kFadeInMs) : 0.0;
+					alpha = shown && shownAt ? (now - shownAt >= kFadeInMs ? 1.0 : static_cast<double>(now - shownAt) / kFadeInMs) : 0.0;
 				}
+			}
+			if (ended)
+			{
+				// Keyboard focus goes back to the game if this screen had it.
+				if (g_focusMode)
+				{
+					if (v.game && GetForegroundWindow() == v.hwnd)
+						SetForegroundWindow(v.game);
+					SetWindowLongPtrW(v.hwnd, GWL_EXSTYLE, GetWindowLongPtrW(v.hwnd, GWL_EXSTYLE) | WS_EX_NOACTIVATE);
+					g_focusMode = false;
+				}
+				ShowWindow(v.hwnd, SW_HIDE);
+				SetLayeredWindowAttributes(v.hwnd, 0, 0, LWA_ALPHA);
+				shown = false;
+				if (webOn)
+					loading_webview::Reload();   // fresh for the next join
+				continue;
 			}
 
 			// Cover the game window's client area; follow it, hide when minimised.
@@ -673,24 +737,13 @@ namespace
 					if (std::memcmp(&pos, &last, sizeof(pos)) != 0)
 					{
 						SetWindowPos(v.hwnd, nullptr, pos.left, pos.top, rc.right, rc.bottom, SWP_NOACTIVATE | SWP_NOZORDER);
-						if (webOn)
-							loading_webview::Resize(rc.right, rc.bottom);
 						last = pos;
 					}
+					if (webOn)
+						loading_webview::Resize(rc.right, rc.bottom);
 					HWND fg = GetForegroundWindow();
 					if (fg == v.game || fg == v.hwnd)
 						SetWindowPos(v.hwnd, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-					if (!shown)
-					{
-						ShowWindow(v.hwnd, SW_SHOWNOACTIVATE);
-						shown = true;
-						if (!shownAt)
-						{
-							shownAt = now;
-							std::lock_guard<std::mutex> lock(g.m);
-							Log("shown");
-						}
-					}
 
 					int w = rc.right, h = rc.bottom;
 					HDC dc = GetDC(v.hwnd);
@@ -711,6 +764,17 @@ namespace
 					{
 						Draw(mem, w, h);
 						BitBlt(dc, 0, 0, w, h, mem, 0, 0, SRCCOPY);
+					}
+					if (!shown)
+					{
+						ShowWindow(v.hwnd, SW_SHOWNOACTIVATE);
+						shown = true;
+						if (!shownAt)
+						{
+							shownAt = now;
+							std::lock_guard<std::mutex> lock(g.m);
+							Log(webShown ? "shown (web page)" : "shown (native)");
+						}
 					}
 					++frames;
 					if (!shotDir.empty() && now - lastShot >= 4000)
@@ -735,28 +799,23 @@ namespace
 				frames = 0;
 				countFrom = now;
 			}
-			Sleep(33);
+			Sleep(webShown ? 16 : 33);
 		}
+	}
+}
 
-		// Keyboard focus goes back to the game if this screen had it.
-		if (g_focusMode && v.game && GetForegroundWindow() == v.hwnd)
-			SetForegroundWindow(v.game);
-		g_focusMode = false;
-		loading_webview::Stop();
-		if (mem)
+namespace
+{
+	void StartThreadLocked()
+	{
+		if (g.running)
+			return;
+		HANDLE t = CreateThread(nullptr, 0, Run, nullptr, 0, nullptr);
+		if (t)
 		{
-			DeleteObject(bmp);
-			DeleteDC(mem);
+			g.running = true;
+			CloseHandle(t);
 		}
-		DestroyWindow(v.hwnd);
-		v.hwnd = nullptr;
-		if (SUCCEEDED(com))
-			CoUninitialize();
-		{
-			std::lock_guard<std::mutex> lock(g.m);
-			CloseLog();
-		}
-		return 0;
 	}
 }
 
@@ -794,21 +853,23 @@ namespace loading_screen
 		g.log = _wfopen((dataDir + L"\\last_join.txt").c_str(), L"w");
 		Log("begin", "GMod's loading panel open " + std::to_string(static_cast<long long>(panelOpenMs)) + " ms");
 
-		if (!g.running)
-		{
-			HANDLE t = CreateThread(nullptr, 0, Run, nullptr, 0, nullptr);
-			if (t)
-			{
-				g.running = true;
-				CloseHandle(t);
-			}
-		}
+		g.joining = true;
+		++g.joinSeq;
+		StartThreadLocked();
+	}
+
+	void Prewarm(const std::wstring& dataDir)
+	{
+		std::lock_guard<std::mutex> lock(g.m);
+		if (g.dataDir.empty())
+			g.dataDir = dataDir;
+		StartThreadLocked();
 	}
 
 	void Details(const std::string& serverName, const std::string& map, const std::string& steamid)
 	{
 		std::lock_guard<std::mutex> lock(g.m);
-		if (!g.running)
+		if (!g.joining)
 			return;
 		if (!serverName.empty())
 			g.server = Widen(serverName);
@@ -820,7 +881,7 @@ namespace loading_screen
 	void Status(const std::string& status)
 	{
 		std::lock_guard<std::mutex> lock(g.m);
-		if (!g.running || status.empty())
+		if (!g.joining || status.empty())
 			return;
 		// Workshop lines put the item's title on a second line.
 		std::string flat = status;
@@ -840,7 +901,7 @@ namespace loading_screen
 	void ClientLuaStarted()
 	{
 		std::lock_guard<std::mutex> lock(g.m);
-		if (!g.running)
+		if (!g.joining)
 			return;
 		Advance(SCRIPTS, GetTickCount64());
 		Log("client lua");
@@ -849,7 +910,7 @@ namespace loading_screen
 	void InGame()
 	{
 		std::lock_guard<std::mutex> lock(g.m);
-		if (!g.running || g.inGame)
+		if (!g.joining || g.inGame)
 			return;
 		ULONGLONG now = GetTickCount64();
 		g.inGame = true;
@@ -861,7 +922,7 @@ namespace loading_screen
 	void Done()
 	{
 		std::lock_guard<std::mutex> lock(g.m);
-		if (!g.running || g.done)
+		if (!g.joining || g.done)
 			return;
 		ULONGLONG now = GetTickCount64();
 		g.done = true;
@@ -875,7 +936,7 @@ namespace loading_screen
 	void End()
 	{
 		std::lock_guard<std::mutex> lock(g.m);
-		if (!g.running)
+		if (!g.joining)
 			return;
 		Log("end");
 		FinishLocked(true);
@@ -889,14 +950,14 @@ namespace loading_screen
 	void Note(const char* what, const std::string& detail)
 	{
 		std::lock_guard<std::mutex> lock(g.m);
-		if (g.running)
+		if (g.joining)
 			Log(what, detail);
 	}
 
 	bool Active()
 	{
 		std::lock_guard<std::mutex> lock(g.m);
-		return g.running && !g.finishing;
+		return g.joining && !g.finishing;
 	}
 }
 
@@ -905,6 +966,7 @@ namespace loading_screen
 namespace loading_screen
 {
 	void Begin(const std::wstring&, double) {}
+	void Prewarm(const std::wstring&) {}
 	void Details(const std::string&, const std::string&, const std::string&) {}
 	void Status(const std::string&) {}
 	void ClientLuaStarted() {}

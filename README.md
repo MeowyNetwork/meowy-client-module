@@ -62,13 +62,21 @@ the game closes while the pack is starting, the next start skips it once by itse
 - With "Start with the game" on, joins to a Meowy Network server get the pack's own loading
   screen instead of Garry's Mod's. It's a separate window over the game, drawn on its own thread,
   so it keeps moving while the game is busy (Garry's Mod's own screen freezes for most of a join).
-  It shows each stage, a clock time for when you'll be in, and has **Cancel** and **Game's screen**
-  buttons. It appears only when the game's real connection is to one of our servers, only when the
-  game is windowed or borderless, and stays until the game runs smoothly after you spawn.
-  `meowy_loadingscreen 0` turns it off.
-- It makes no network connections. It writes only in `garrysmod/data/meowy/`: `boot.lock` for a
-  moment at start-up, and for the loading screen `join_times.txt` (how long each stage of your
-  last join took, for its time estimate) and `last_join.txt` (what that join went through).
+  - It is our web page (meowynetwork.com/pack-loading.html) shown with WebView2, the browser engine
+    built into Windows, in its own processes. It has the join's stages, a clock time for when
+    you'll be in, games to play while you wait, a map of the city, and **Cancel** and **Game's
+    screen** buttons. If WebView2 or the site isn't available, a simpler built-in screen is shown.
+  - The page is loaded, hidden, when the game starts, so a join shows it at once. Between joins
+    it waits hidden (WebView2's processes use some memory, outside the game).
+  - It starts the moment the game says it's connecting to one of our servers, so Garry's Mod's own
+    page never shows. Your name and Steam avatar are only passed to the page once the game's real
+    connection is confirmed to be ours; for any other server it doesn't appear, or closes.
+  - Only when the game is windowed or borderless. It stays until the game runs smoothly after you
+    spawn. `meowy_loadingscreen 0` turns it off.
+- Its only network traffic is that page and its data, from meowynetwork.com, through WebView2. It
+  writes only in `garrysmod/data/meowy/` (`boot.lock` for a moment at start-up; for the loading
+  screen `join_times.txt`, how long each stage of your last join took, and `last_join.txt`, what
+  that join went through) and WebView2's profile in `%LOCALAPPDATA%\MeowyClientPack`.
 - It only works on Meowy Network servers. The DLL asks the game itself which server it's connected to
   and compares that with the addresses built into it, so another server can't use it or read anything
   from it, even by faking its name or address in Lua. In singleplayer, the main menu or on any other
