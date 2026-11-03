@@ -65,21 +65,20 @@ namespace
 		return out;
 	}
 
-	// "engine.dll+0x34b67c (0xC0000409)" from the minidump the game wrote
-	// beside the report: the exception record says where it crashed, the
-	// module list says in which module. Only the file name is kept, never the
-	// path. Read-only, through a mapped view of the file.
-	std::string Fault(const std::wstring& dmpPath)
+	// Where the game crashed, from the minidump it wrote beside the report: the
+	// exception record says at which address, the module list in which module.
+	// Only the module's file name is kept, never its path. Read-only, through a
+	// mapped view of the file, with every offset checked against its size.
+	void ReadFault(const std::wstring& dmpPath, crashes::Report& r)
 	{
 		HANDLE file = CreateFileW(dmpPath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
 		if (file == INVALID_HANDLE_VALUE)
-			return std::string();
+			return;
 		LARGE_INTEGER fileSize{};
 		GetFileSizeEx(file, &fileSize);
 		const ULONG64 bytes = static_cast<ULONG64>(fileSize.QuadPart);
 		HANDLE mapping = bytes > 0 ? CreateFileMappingW(file, nullptr, PAGE_READONLY, 0, 0, nullptr) : nullptr;
 		void* view = mapping ? MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, 0) : nullptr;
-		std::string out;
 
 		PMINIDUMP_DIRECTORY dir = nullptr;
 		void* stream = nullptr;
@@ -88,10 +87,9 @@ namespace
 		{
 			const auto* ex = static_cast<const MINIDUMP_EXCEPTION_STREAM*>(stream);
 			ULONG64 addr = ex->ExceptionRecord.ExceptionAddress;
-			char code[16];
-			snprintf(code, sizeof(code), "0x%08lX", static_cast<unsigned long>(ex->ExceptionRecord.ExceptionCode));
+			r.faultCode = ex->ExceptionRecord.ExceptionCode;
+			r.faultOffset = addr;     // stays the raw address when no module holds it
 
-			std::string where = "no module";   // e.g. a call through a bad pointer
 			void* modStream = nullptr;
 			if (MiniDumpReadDumpStream(view, ModuleListStream, &dir, &modStream, &size) && modStream)
 			{
@@ -109,21 +107,23 @@ namespace
 						break;
 					std::wstring full(name->Buffer, name->Length / sizeof(wchar_t));
 					size_t slash = full.find_last_of(L"\\/");
-					std::string base = Narrow(full.c_str() + (slash == std::wstring::npos ? 0 : slash + 1),
-						full.size() - (slash == std::wstring::npos ? 0 : slash + 1));
-					char off[32];
-					snprintf(off, sizeof(off), "+0x%llx", static_cast<unsigned long long>(addr - m.BaseOfImage));
-					where = base + off;
+					size_t from = slash == std::wstring::npos ? 0 : slash + 1;
+					r.faultModule = Narrow(full.c_str() + from, full.size() - from);
+					r.faultOffset = addr - m.BaseOfImage;
 					break;
 				}
 			}
-			out = where + " (" + code + ")";
+
+			char text[96];
+			snprintf(text, sizeof(text), "%s+0x%llx (0x%08lX)",
+				r.faultModule.empty() ? "no module" : r.faultModule.c_str(),
+				static_cast<unsigned long long>(r.faultOffset), static_cast<unsigned long>(r.faultCode));
+			r.fault = text;
 		}
 
 		if (view) UnmapViewOfFile(view);
 		if (mapping) CloseHandle(mapping);
 		CloseHandle(file);
-		return out;
 	}
 
 	std::string LuaSection(const std::wstring& path)
@@ -175,8 +175,13 @@ namespace crashes
 				continue;
 			std::wstring txt = root + L"\\crashes\\" + fd.cFileName;
 			std::string trace = LuaSection(txt);
-			if (!trace.empty())
-				out.push_back({ t, trace, Fault(txt.substr(0, txt.size() - 4) + L".dmp") });
+			if (trace.empty())
+				continue;
+			Report r;
+			r.time = t;
+			r.luaTrace = trace;
+			ReadFault(txt.substr(0, txt.size() - 4) + L".dmp", r);
+			out.push_back(r);
 		} while (FindNextFileW(h, &fd));
 		FindClose(h);
 

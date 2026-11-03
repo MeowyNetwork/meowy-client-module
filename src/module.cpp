@@ -12,7 +12,8 @@
 //                                     newest first; `lua` is only the report's
 //                                     Lua stack trace section (max 4 KB); `fault`
 //                                     is "module.dll+0xOFFSET (0xCODE)" from the
-//                                     dump beside it, or "" (1.2+)
+//                                     dump beside it, or "" (1.2+); the same as
+//                                     fault_module / fault_offset / fault_code
 //   meowy.Hardware()                  { cpu, threads, ram_mb, gpu, vram_mb, os } (1.2+)
 //
 // DiscordSetActivity fields, all optional:
@@ -263,6 +264,12 @@ namespace
 			LUA->SetField(-2, "lua");
 			LUA->PushString(r.fault.c_str(), static_cast<unsigned int>(r.fault.size()));
 			LUA->SetField(-2, "fault");
+			LUA->PushString(r.faultModule.c_str(), static_cast<unsigned int>(r.faultModule.size()));
+			LUA->SetField(-2, "fault_module");
+			LUA->PushNumber(static_cast<double>(r.faultOffset));
+			LUA->SetField(-2, "fault_offset");
+			LUA->PushNumber(static_cast<double>(r.faultCode));
+			LUA->SetField(-2, "fault_code");
 			LUA->SetTable(-3);
 		}
 		return 1;
