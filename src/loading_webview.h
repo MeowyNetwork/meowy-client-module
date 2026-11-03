@@ -25,8 +25,11 @@ namespace loading_webview
 	void Resize(int w, int h);
 	// Sends a JSON object to the page (window.chrome.webview "message" event).
 	void Post(const std::wstring& json);
-	// The page's last button press: 'c' Cancel, 'h' Game's screen, 0 none.
+	// The page's last request: 'c' Cancel, 'h' Game's screen, 'k' hold the
+	// fade-out a moment (a game is mid-move), 'f' take keyboard focus; 0 none.
 	char TakeAction();
+	// Gives the page keyboard focus (after the window itself was activated).
+	void Focus();
 	// Development aid: saves what the page shows as a PNG (asynchronously).
 	void Capture(const std::wstring& path);
 	void Stop();

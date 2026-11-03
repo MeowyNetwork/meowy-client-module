@@ -37,6 +37,11 @@ namespace
 	// After the loading panel closes, wait this long for the client Lua's Done
 	// before fading out anyway.
 	constexpr ULONGLONG kInGameTimeoutMs = 15000;
+	// How long the page may hold the fade-out for a game in progress (once).
+	constexpr ULONGLONG kHoldMs = 5000;
+	// The page asked for keyboard focus (a game uses Space): the window may be
+	// activated, and gives activation back to the game when it goes.
+	bool g_focusMode = false;
 
 	std::wstring Widen(const std::string& s)
 	{
@@ -58,6 +63,7 @@ namespace
 		bool inGame = false, done = false;
 		int stage = CONNECT;
 		ULONGLONG begin = 0, inGameAt = 0, doneAt = 0;
+		ULONGLONG holdUntil = 0;        // the page asked to wait a moment before fading out
 		ULONGLONG stageStart[STAGES] = {};
 		double expected[STAGES] = {};
 		std::wstring server = L"Meowy Network", map, status, steamid;
@@ -481,7 +487,7 @@ namespace
 		switch (msg)
 		{
 		case WM_MOUSEACTIVATE:
-			return MA_NOACTIVATE;
+			return g_focusMode ? MA_ACTIVATE : MA_NOACTIVATE;
 		case WM_LBUTTONUP:
 		{
 			int x = static_cast<short>(LOWORD(lp)), y = static_cast<short>(HIWORD(lp));
@@ -583,13 +589,31 @@ namespace
 					Log(loading_webview::Failed() ? "web failed" : "web too slow");
 				}
 				char action = loading_webview::TakeAction();
-				if (action)
+				if (action == 'c' || action == 'h')
 				{
 					std::lock_guard<std::mutex> lock(g.m);
 					if (action == 'c')
 						g_cancel = true;
 					Log(action == 'c' ? "cancel" : "hide");
 					FinishLocked(true);
+				}
+				else if (action == 'k')
+				{
+					std::lock_guard<std::mutex> lock(g.m);
+					if (!g.holdUntil)
+					{
+						g.holdUntil = now + kHoldMs;
+						Log("hold");
+					}
+				}
+				else if (action == 'f' && !g_focusMode)
+				{
+					g_focusMode = true;
+					SetWindowLongPtrW(v.hwnd, GWL_EXSTYLE, GetWindowLongPtrW(v.hwnd, GWL_EXSTYLE) & ~WS_EX_NOACTIVATE);
+					SetForegroundWindow(v.hwnd);
+					loading_webview::Focus();
+					std::lock_guard<std::mutex> lock(g.m);
+					Log("focus");
 				}
 				if (webShown && now - lastPost >= 200)
 				{
@@ -602,7 +626,7 @@ namespace
 			double alpha;
 			{
 				std::lock_guard<std::mutex> lock(g.m);
-				if (!g.finishing && g.done && now - g.doneAt > 300)
+				if (!g.finishing && g.done && now - g.doneAt > 300 && now >= g.holdUntil)
 					FinishLocked(false);
 				if (!g.finishing && g.inGame && !g.done && now - g.inGameAt > kInGameTimeoutMs)
 					FinishLocked(false);
@@ -709,6 +733,10 @@ namespace
 			Sleep(33);
 		}
 
+		// Keyboard focus goes back to the game if this screen had it.
+		if (g_focusMode && v.game && GetForegroundWindow() == v.hwnd)
+			SetForegroundWindow(v.game);
+		g_focusMode = false;
 		loading_webview::Stop();
 		if (mem)
 		{
@@ -744,6 +772,7 @@ namespace loading_screen
 		ULONGLONG now = GetTickCount64();
 		g.dataDir = dataDir;
 		g.finishing = g.quick = g.inGame = g.done = false;
+		g.holdUntil = 0;
 		g.stage = CONNECT;
 		g.begin = now;
 		for (int i = 0; i < STAGES; ++i)

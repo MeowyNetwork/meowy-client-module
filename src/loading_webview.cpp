@@ -123,6 +123,10 @@ namespace
 						g_action = 'c';
 					else if (std::wcsstr(json, L"\"type\":\"hide\""))
 						g_action = 'h';
+					else if (std::wcsstr(json, L"\"type\":\"hold\""))
+						g_action = 'k';
+					else if (std::wcsstr(json, L"\"type\":\"focus\""))
+						g_action = 'f';
 					CoTaskMemFree(json);
 					return S_OK;
 				})
@@ -192,6 +196,12 @@ namespace loading_webview
 			return;
 		g_view->CapturePreview(COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG, file.Get(),
 			Callback<ICoreWebView2CapturePreviewCompletedHandler>([file](HRESULT) -> HRESULT { return S_OK; }).Get());
+	}
+
+	void Focus()
+	{
+		if (g_controller)
+			g_controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
 	}
 
 	char TakeAction()
