@@ -17,10 +17,21 @@ hashes in `SHA256SUMS.txt`, and its files carry a GitHub build attestation provi
 from this repository by its CI (`gh attestation verify MeowyClientPack.exe --repo MeowyNetwork/meowy-client-module`).
 
 **Manual install:** unzip `meowy-client-module-manual.zip` into
-`steamapps/common/GarrysMod/garrysmod/lua/bin/` (create `bin` if it doesn't exist).
+`steamapps/common/GarrysMod/garrysmod/lua/bin/` (create `bin` if it doesn't exist). To have it
+start with the game, also add this line at the end of `garrysmod/lua/includes/menu.lua`:
+`pcall(require, "meowy_boot") -- meowy-client-pack v1`
 
-**Uninstall:** run the installer and click **Uninstall**, or delete `gmcl_meowy_win32.dll` and
-`gmcl_meowy_win64.dll` from that folder.
+**Uninstall:** run the installer and click **Uninstall**, or delete the four `gmcl_meowy_*` and
+`gmsv_meowy_boot_*` files from that folder and the `meowy-client-pack` line from
+`lua/includes/menu.lua`.
+
+**Start with the game** (on by default in the installer): the installer adds that one line to
+`lua/includes/menu.lua`, so the pack is loaded at the main menu instead of only once a server's
+Lua starts. This is what later join speed-ups and our own loading screen need. Untick it to keep
+the old behaviour. If the game ever fails to start with it, hold **Shift** while Garry's Mod
+starts (or add `-meowy_safe` to its launch options) and the pack isn't loaded at start-up. If
+the game closes while the pack is starting, the next start skips it once by itself. A Steam
+"Verify integrity of game files" removes the line; run the installer again to add it back.
 
 ## What it does, and doesn't
 - It talks only to the Discord app on your PC, over Discord's local connection
@@ -48,11 +59,12 @@ from this repository by its CI (`gh attestation verify MeowyClientPack.exe --rep
     everyone.
   - It's switched on only while you join a Meowy Network server and put back as soon as you're
     in game, so other servers you visit in the same session are never affected.
-- It makes no network connections and writes no files.
+- It makes no network connections. The only file it writes is `garrysmod/data/meowy/boot.lock`,
+  for a moment at start-up (see "Start with the game").
 - It only works on Meowy Network servers. The DLL asks the game itself which server it's connected to
   and compares that with the addresses built into it, so another server can't use it or read anything
   from it, even by faking its name or address in Lua. In singleplayer, the main menu or on any other
-  server every call returns `false` and a reason.
+  server every call returns `false` and a reason. At the main menu it only reports its version.
 - Windows only for now (32-bit and 64-bit Garry's Mod).
 
 ## Lua API

@@ -1,10 +1,13 @@
 // Meowy Client Pack installer.
 //
 // Finds Garry's Mod through Steam's own files, then copies the embedded
-// gmcl_meowy_win32.dll and gmcl_meowy_win64.dll into garrysmod/lua/bin (both,
-// so it works on either Steam branch). Uninstall removes exactly those two
-// files. It touches nothing else and needs no admin rights when the Steam
-// folder is writable, which is Steam's default.
+// modules into garrysmod/lua/bin: gmcl_meowy_win32/win64.dll (both, so it
+// works on either Steam branch) and the start-up stubs gmsv_meowy_boot_win32/
+// win64.dll. With "Start with the game" on (the default) it also adds one
+// marked line to garrysmod/lua/includes/menu.lua that loads the stub when the
+// game starts. Uninstall removes exactly those files, that line and
+// data/meowy. It needs no admin rights when the Steam folder is writable,
+// which is Steam's default.
 //
 // Built with the .NET Framework 4.x compiler that ships with Windows
 // (C# 5), so there is nothing to install to build or run it. See build.ps1.
@@ -29,15 +32,26 @@ namespace MeowyInstaller
 	{
 		public const string ServerAddress = "138.201.62.52:27015";
 		public const string SourceUrl = "https://github.com/MeowyNetwork/meowy-client-module";
-		public static readonly string[] Modules = { "gmcl_meowy_win32.dll", "gmcl_meowy_win64.dll" };
+		public static readonly string[] Modules = {
+			"gmcl_meowy_win32.dll", "gmcl_meowy_win64.dll", "gmsv_meowy_boot_win32.dll", "gmsv_meowy_boot_win64.dll" };
 
-		// No arguments: the window. "--install" / "--uninstall" [path]: no window;
-		// exit code 0 on success, 1 on failure, details on stdout.
+		// The start-up line. Matched by its marker, so later versions can rewrite it.
+		const string HookMarker = "meowy-client-pack";
+		const string HookLine = "pcall(require, \"meowy_boot\") -- meowy-client-pack v1 " +
+			"(loads the Meowy Client Pack at start-up; delete this line to disable)";
+		static readonly string[] HookHosts = { @"lua\includes\menu.lua", @"lua\menu\menu.lua" };
+
+		// No arguments: the window. "--install" / "--uninstall" [path] [--no-startup]:
+		// no window; exit code 0 on success, 1 on failure, details on stdout.
 		[STAThread]
 		static int Main(string[] args)
 		{
 			if (args.Length > 0 && (args[0] == "--install" || args[0] == "--uninstall"))
-				return RunCommandLine(args[0] == "--install", args.Length > 1 ? args[1] : FindGarrysMod());
+			{
+				bool startup = Array.IndexOf(args, "--no-startup") < 0;
+				string path = args.Length > 1 && !args[1].StartsWith("--") ? args[1] : FindGarrysMod();
+				return RunCommandLine(args[0] == "--install", path, startup);
+			}
 
 			Application.EnableVisualStyles();
 			Application.SetCompatibleTextRenderingDefault(false);
@@ -49,7 +63,7 @@ namespace MeowyInstaller
 		[System.Runtime.InteropServices.DllImport("kernel32.dll")]
 		static extern bool AttachConsole(int processId);
 
-		static int RunCommandLine(bool install, string garrysmod)
+		static int RunCommandLine(bool install, string garrysmod, bool startup)
 		{
 			AttachConsole(-1);
 			if (string.IsNullOrEmpty(garrysmod) || !Directory.Exists(Path.Combine(garrysmod, "lua")))
@@ -75,6 +89,13 @@ namespace MeowyInstaller
 						File.Delete(file);
 					Console.WriteLine((install ? "installed " : "removed ") + file);
 				}
+				if (install && startup)
+					AddStartupHook(garrysmod);
+				else
+					RemoveStartupHook(garrysmod);
+				if (!install)
+					RemoveData(garrysmod);
+				Console.WriteLine("start with the game: " + (StartupHookPresent(garrysmod) ? "on" : "off"));
 				return 0;
 			}
 			catch (Exception e)
@@ -116,6 +137,76 @@ namespace MeowyInstaller
 			return Process.GetProcessesByName("gmod").Length > 0 || Process.GetProcessesByName("hl2").Length > 0;
 		}
 
+		// --- Start-up line ------------------------------------------------------
+
+		public static bool StartupHookPresent(string garrysmod)
+		{
+			foreach (string host in HookHosts)
+			{
+				string file = Path.Combine(garrysmod, host);
+				if (File.Exists(file) && File.ReadAllText(file).Contains(HookMarker))
+					return true;
+			}
+			return false;
+		}
+
+		// Appends the line to lua/includes/menu.lua (CRLF, like the file), unless
+		// a line with the marker is already in either host file.
+		public static void AddStartupHook(string garrysmod)
+		{
+			if (StartupHookPresent(garrysmod))
+				return;
+			string file = Path.Combine(garrysmod, HookHosts[0]);
+			if (!File.Exists(file))
+				throw new IOException(@"lua\includes\menu.lua not found; verify Garry's Mod's files in Steam");
+			string text = File.ReadAllText(file);
+			if (text.Length > 0 && !text.EndsWith("\n"))
+				text += "\r\n";
+			WriteReplacing(file, text + HookLine + "\r\n");
+		}
+
+		// Removes every line with the marker from both host files, and the line
+		// break AddStartupHook put in front of it.
+		public static void RemoveStartupHook(string garrysmod)
+		{
+			foreach (string host in HookHosts)
+			{
+				string file = Path.Combine(garrysmod, host);
+				if (!File.Exists(file))
+					continue;
+				string text = File.ReadAllText(file);
+				if (!text.Contains(HookMarker))
+					continue;
+				var kept = new List<string>();
+				foreach (string line in text.Split('\n'))
+					if (!line.Contains(HookMarker))
+						kept.Add(line);
+				string result = string.Join("\n", kept.ToArray());
+				if (result.EndsWith("\r\n"))
+					result = result.Substring(0, result.Length - 2);
+				WriteReplacing(file, result);
+			}
+		}
+
+		// Write to a temporary file next to the target, then swap it in.
+		static void WriteReplacing(string file, string text)
+		{
+			var attrs = File.GetAttributes(file);
+			if ((attrs & FileAttributes.ReadOnly) != 0)
+				File.SetAttributes(file, attrs & ~FileAttributes.ReadOnly);
+			string temp = file + ".meowy-tmp";
+			File.WriteAllText(temp, text);
+			File.Replace(temp, file, null);
+		}
+
+		// data/meowy: the stub's start-up lock file.
+		public static void RemoveData(string garrysmod)
+		{
+			string dir = Path.Combine(garrysmod, @"data\meowy");
+			if (Directory.Exists(dir))
+				Directory.Delete(dir, true);
+		}
+
 		public static void ExtractTo(string module, string path)
 		{
 			using (Stream src = Assembly.GetExecutingAssembly().GetManifestResourceStream(module))
@@ -130,6 +221,7 @@ namespace MeowyInstaller
 		readonly Label m_status = new Label();
 		readonly Button m_install = new Button();
 		readonly Button m_uninstall = new Button();
+		readonly CheckBox m_startup = new CheckBox();
 
 		public MainForm()
 		{
@@ -137,7 +229,7 @@ namespace MeowyInstaller
 			FormBorderStyle = FormBorderStyle.FixedDialog;
 			MaximizeBox = false;
 			StartPosition = FormStartPosition.CenterScreen;
-			ClientSize = new Size(520, 250);
+			ClientSize = new Size(520, 280);
 			Font = new Font("Segoe UI", 9f);
 
 			var intro = new Label
@@ -157,20 +249,25 @@ namespace MeowyInstaller
 			m_status.Location = new Point(12, 124);
 			m_status.Size = new Size(496, 48);
 
+			m_startup.Text = @"Start with the game (for faster Meowy joins; adds one line to lua\includes\menu.lua)";
+			m_startup.Location = new Point(12, 180);
+			m_startup.Size = new Size(496, 22);
+			m_startup.Checked = true;
+
 			m_install.Text = "Install";
-			m_install.Location = new Point(12, 200);
+			m_install.Location = new Point(12, 230);
 			m_install.Size = new Size(110, 32);
 			m_install.Click += delegate { Install(); };
 
 			m_uninstall.Text = "Uninstall";
-			m_uninstall.Location = new Point(130, 200);
+			m_uninstall.Location = new Point(130, 230);
 			m_uninstall.Size = new Size(110, 32);
 			m_uninstall.Click += delegate { Uninstall(); };
 
-			var join = new Button { Text = "Join Meowy Network", Location = new Point(358, 200), Size = new Size(150, 32) };
+			var join = new Button { Text = "Join Meowy Network", Location = new Point(358, 230), Size = new Size(150, 32) };
 			join.Click += delegate { Process.Start("steam://connect/" + Program.ServerAddress); };
 
-			Controls.AddRange(new Control[] { intro, pathLabel, m_path, browse, m_status, m_install, m_uninstall, join });
+			Controls.AddRange(new Control[] { intro, pathLabel, m_path, browse, m_status, m_startup, m_install, m_uninstall, join });
 
 			m_path.Text = Program.FindGarrysMod() ?? "";
 			m_path.TextChanged += delegate { RefreshStatus(); };
@@ -197,7 +294,11 @@ namespace MeowyInstaller
 				return;
 			}
 			bool installed = File.Exists(Path.Combine(BinDir(), Program.Modules[0])) || File.Exists(Path.Combine(BinDir(), Program.Modules[1]));
-			m_status.Text = installed ? "Installed. Install again to update." : "Not installed.";
+			bool hook = Program.StartupHookPresent(m_path.Text.Trim());
+			m_status.Text = !installed ? "Not installed." :
+				"Installed" + (hook ? ", starts with the game" : ", doesn't start with the game") + ". Install again to update.";
+			if (installed)
+				m_startup.Checked = hook;
 			m_install.Enabled = true;
 			m_uninstall.Enabled = installed;
 		}
@@ -229,6 +330,10 @@ namespace MeowyInstaller
 				Directory.CreateDirectory(BinDir());
 				foreach (string module in Program.Modules)
 					Program.ExtractTo(module, Path.Combine(BinDir(), module));
+				if (m_startup.Checked)
+					Program.AddStartupHook(m_path.Text.Trim());
+				else
+					Program.RemoveStartupHook(m_path.Text.Trim());
 				RefreshStatus();
 				MessageBox.Show(this, "Installed. Join Meowy Network and your Discord status will show where you are.", Text,
 					MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -251,6 +356,8 @@ namespace MeowyInstaller
 					if (File.Exists(file))
 						File.Delete(file);
 				}
+				Program.RemoveStartupHook(m_path.Text.Trim());
+				Program.RemoveData(m_path.Text.Trim());
 				RefreshStatus();
 			}
 			catch (Exception e)

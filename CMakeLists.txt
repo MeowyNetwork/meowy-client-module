@@ -47,6 +47,21 @@ set_target_properties(meowy PROPERTIES
 	OUTPUT_NAME "gmcl_meowy_${MEOWY_SUFFIX}"
 	SUFFIX ".dll")
 
+# Start-up stub: GMod's menu state only loads gmsv_ modules, so this small
+# DLL is what lua/includes/menu.lua requires; it loads gmcl_meowy (src/boot).
+if(WIN32)
+	add_library(meowy_boot SHARED src/boot/boot.cpp)
+	target_include_directories(meowy_boot PRIVATE ${gmod_module_base_SOURCE_DIR}/include)
+	if(MSVC)
+		set_property(TARGET meowy_boot PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+		target_compile_options(meowy_boot PRIVATE /W4 /utf-8)
+	endif()
+	set_target_properties(meowy_boot PROPERTIES
+		PREFIX ""
+		OUTPUT_NAME "gmsv_meowy_boot_${MEOWY_SUFFIX}"
+		SUFFIX ".dll")
+endif()
+
 # Standalone check of the Discord IPC layer, no game needed:
 #   ipc_smoke <client id> [seconds]
 option(MEOWY_BUILD_TESTS "Build tests/ipc_smoke" OFF)

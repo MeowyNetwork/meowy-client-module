@@ -37,7 +37,8 @@
 //
 // The module only talks to Discord's local IPC pipe, reads the game's own
 // crashes/ folder and asks Windows for the CPU/GPU/RAM description. It makes
-// no network connections and writes no files. The one change it can make to
+// no network connections and writes no files (the start-up stub writes
+// data/meowy/boot.lock for a moment). The one change it can make to
 // the game is SkipMaterialReload, in memory only, and only when Lua asks.
 
 #include "GarrysMod/Lua/Interface.h"
@@ -50,6 +51,11 @@
 #include <cstdio>
 #include <string>
 #include <vector>
+
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
 
 using namespace GarrysMod::Lua;
 
@@ -417,6 +423,42 @@ GMOD_MODULE_OPEN()
 	LUA->Pop();
 	return 0;
 }
+
+#ifdef _WIN32
+// Menu-state entry point, called by gmsv_meowy_boot when the game starts
+// (src/boot/boot.cpp). Only the version is exposed there for now; the menu
+// realm is where the join features (our loading screen) will live.
+GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
+{
+	// The client realm's require("meowy") gets this same DLL and frees it when
+	// the player leaves a server. Pinned, it stays loaded for the menu realm.
+	HMODULE self = nullptr;
+	GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+		reinterpret_cast<LPCWSTR>(&meowy_menu_open), &self);
+
+	LUA->PushSpecial(SPECIAL_GLOB);
+	LUA->CreateTable();
+	LUA->PushString(VERSION);
+	LUA->SetField(-2, "VERSION");
+	LUA->PushString("menu");
+	LUA->SetField(-2, "REALM");
+	LUA->SetField(-2, "meowy");
+
+	LUA->GetField(-1, "print");
+	if (LUA->IsType(-1, Type::Function))
+	{
+		std::string msg = std::string("[Meowy Client Pack] ") + VERSION + " started with the game";
+		LUA->PushString(msg.c_str());
+		LUA->Call(1, 0);
+	}
+	else
+	{
+		LUA->Pop();
+	}
+	LUA->Pop();
+	return 0;
+}
+#endif
 
 GMOD_MODULE_CLOSE()
 {

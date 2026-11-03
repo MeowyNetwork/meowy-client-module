@@ -29,14 +29,14 @@ jobs:
 
       - name: Build installer
         shell: pwsh
-        run: ./installer/build.ps1 -Win32 build32/Release/gmcl_meowy_win32.dll -Win64 build64/Release/gmcl_meowy_win64.dll -Out MeowyClientPack.exe
+        run: ./installer/build.ps1 -Win32 build32/Release/gmcl_meowy_win32.dll -Win64 build64/Release/gmcl_meowy_win64.dll -Boot32 build32/Release/gmsv_meowy_boot_win32.dll -Boot64 build64/Release/gmsv_meowy_boot_win64.dll -Out MeowyClientPack.exe
 
       - name: Package
         shell: pwsh
         run: |
           New-Item -ItemType Directory dist | Out-Null
-          Copy-Item build32/Release/gmcl_meowy_win32.dll, build64/Release/gmcl_meowy_win64.dll, MeowyClientPack.exe dist/
-          Compress-Archive -Path dist/gmcl_meowy_win32.dll, dist/gmcl_meowy_win64.dll -DestinationPath dist/meowy-client-module-manual.zip
+          Copy-Item build32/Release/gmcl_meowy_win32.dll, build64/Release/gmcl_meowy_win64.dll, build32/Release/gmsv_meowy_boot_win32.dll, build64/Release/gmsv_meowy_boot_win64.dll, MeowyClientPack.exe dist/
+          Compress-Archive -Path dist/gmcl_meowy_win32.dll, dist/gmcl_meowy_win64.dll, dist/gmsv_meowy_boot_win32.dll, dist/gmsv_meowy_boot_win64.dll -DestinationPath dist/meowy-client-module-manual.zip
           Get-ChildItem dist -File | ForEach-Object { "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name } | Set-Content dist/SHA256SUMS.txt
           Get-Content dist/SHA256SUMS.txt
 
@@ -52,6 +52,8 @@ jobs:
           subject-path: |
             dist/gmcl_meowy_win32.dll
             dist/gmcl_meowy_win64.dll
+            dist/gmsv_meowy_boot_win32.dll
+            dist/gmsv_meowy_boot_win64.dll
             dist/MeowyClientPack.exe
 
       - name: Release
