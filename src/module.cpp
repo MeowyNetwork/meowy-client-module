@@ -1,16 +1,19 @@
 // gmcl_meowy: optional client module for Meowy Network.
 //
 // Lua API (global table `meowy`, created by require("meowy")):
-//   meowy.VERSION                     "1.1.0"
+//   meowy.VERSION                     "1.2.0"
 //   meowy.DiscordStart(clientId)      connect to the local Discord app
 //   meowy.DiscordSetActivity(tbl)     set Rich Presence (fields below)
 //   meowy.DiscordClear()              remove it
 //   meowy.DiscordState()              "unsupported" | "stopped" | "connecting" | "ready"
 //   meowy.DiscordLastError()          Discord's last error reply (raw JSON), or nil
 //   meowy.CrashReports(since, max)    the game's crash reports written after
-//                                     `since` (unix time): { { time, lua }, ... },
+//                                     `since` (unix time): { { time, lua, fault }, ... },
 //                                     newest first; `lua` is only the report's
-//                                     Lua stack trace section (max 4 KB)
+//                                     Lua stack trace section (max 4 KB); `fault`
+//                                     is "module.dll+0xOFFSET (0xCODE)" from the
+//                                     dump beside it, or "" (1.2+)
+//   meowy.Hardware()                  { cpu, threads, ram_mb, gpu, vram_mb, os } (1.2+)
 //
 // DiscordSetActivity fields, all optional:
 //   details, state       strings, shown on two lines
@@ -19,12 +22,14 @@
 //   party_size, party_max
 //   buttons              up to 2 { label = "...", url = "https://..." }
 //
-// The module only talks to Discord's local IPC pipe and reads the game's own
-// crashes/ folder. It makes no network connections and writes no files.
+// The module only talks to Discord's local IPC pipe, reads the game's own
+// crashes/ folder and asks Windows for the CPU/GPU/RAM description. It makes
+// no network connections and writes no files.
 
 #include "GarrysMod/Lua/Interface.h"
 #include "crash_reports.h"
 #include "discord_ipc.h"
+#include "hardware.h"
 
 #include <cstdio>
 #include <string>
@@ -34,7 +39,7 @@ using namespace GarrysMod::Lua;
 
 namespace
 {
-	const char* const VERSION = "1.1.0";
+	const char* const VERSION = "1.2.0";
 
 	// Discord's own limits; anything longer makes it reject the whole activity.
 	constexpr size_t MAX_TEXT = 128;
@@ -256,8 +261,30 @@ namespace
 			LUA->SetField(-2, "time");
 			LUA->PushString(r.luaTrace.c_str(), static_cast<unsigned int>(r.luaTrace.size()));
 			LUA->SetField(-2, "lua");
+			LUA->PushString(r.fault.c_str(), static_cast<unsigned int>(r.fault.size()));
+			LUA->SetField(-2, "fault");
 			LUA->SetTable(-3);
 		}
+		return 1;
+	}
+
+	int Hardware(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		hardware::Info hw = hardware::Get();
+		LUA->CreateTable();
+		LUA->PushString(hw.cpu.c_str());
+		LUA->SetField(-2, "cpu");
+		LUA->PushNumber(hw.threads);
+		LUA->SetField(-2, "threads");
+		LUA->PushNumber(static_cast<double>(hw.ramMb));
+		LUA->SetField(-2, "ram_mb");
+		LUA->PushString(hw.gpu.c_str());
+		LUA->SetField(-2, "gpu");
+		LUA->PushNumber(static_cast<double>(hw.vramMb));
+		LUA->SetField(-2, "vram_mb");
+		LUA->PushString(hw.os.c_str());
+		LUA->SetField(-2, "os");
 		return 1;
 	}
 
@@ -281,6 +308,7 @@ GMOD_MODULE_OPEN()
 	SetFunction(LUA, "DiscordState", DiscordState);
 	SetFunction(LUA, "DiscordLastError", DiscordLastError);
 	SetFunction(LUA, "CrashReports", CrashReports);
+	SetFunction(LUA, "Hardware", Hardware);
 
 	LUA->SetField(-2, "meowy");
 	LUA->Pop();

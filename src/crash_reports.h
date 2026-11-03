@@ -14,8 +14,12 @@ namespace crashes
 	{
 		long long time;        // unix time the report was written
 		std::string luaTrace;  // the Lua stack trace section, trimmed
+		std::string fault;     // "module.dll+0xOFFSET (0xCODE)" from the .dmp, or ""
 	};
 
 	// Reports written after `since` (unix time), newest first, at most `max`.
 	std::vector<Report> Since(long long since, size_t max);
+
+	// The same, for an explicit game folder (the one holding crashes/). For tests.
+	std::vector<Report> SinceIn(const std::wstring& root, long long since, size_t max);
 }

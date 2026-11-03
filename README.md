@@ -29,6 +29,12 @@ from this repository by its CI (`gh attestation verify MeowyClientPack.exe --rep
   server can see which addon crashed your game. Only the "Lua Stack Traces" section is read
   (at most 3 reports per join, 4 KB each, any `C:\...` paths masked). The rest of the report,
   which names your install path, never leaves your PC.
+- Since 1.2 each crash report also says where the game crashed, e.g.
+  `engine.dll+0x200660 (0xC0000005)`, read from the game's own crash dump. Only the module's file
+  name and the offset are used; the dump itself never leaves your PC.
+- Since 1.2 it can describe your hardware: CPU and GPU model, thread count, RAM, video memory and
+  Windows version. No serial numbers, user names or IDs. The server uses it with frame-time
+  stats to see what players' machines struggle with.
 - It makes no network connections, writes no files, and doesn't touch the game's memory.
 - It only runs when a server's Lua calls `require("meowy")`. Other servers can use it the same way.
 - Windows only for now (32-bit and 64-bit Garry's Mod).
@@ -47,7 +53,8 @@ if util.IsBinaryModuleInstalled("meowy") and pcall(require, "meowy") then
 	})
 end
 -- meowy.VERSION, meowy.DiscordClear(), meowy.DiscordState(), meowy.DiscordLastError()
--- meowy.CrashReports(since_unix, max) -> { { time = <unix>, lua = "<stack traces>" }, ... }
+-- meowy.CrashReports(since_unix, max) -> { { time = <unix>, lua = "<stack traces>", fault = "engine.dll+0x... (0xC0000005)" }, ... }
+-- meowy.Hardware() -> { cpu, threads, ram_mb, gpu, vram_mb, os }
 ```
 Identical updates are dropped, and updates are sent at most once every 4 s (Discord's rate limit).
 

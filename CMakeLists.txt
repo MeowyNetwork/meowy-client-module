@@ -17,6 +17,7 @@ FetchContent_MakeAvailable(gmod_module_base)
 add_library(meowy SHARED
 	src/module.cpp
 	src/crash_reports.cpp
+	src/hardware.cpp
 	src/discord_ipc.cpp)
 target_include_directories(meowy PRIVATE ${gmod_module_base_SOURCE_DIR}/include)
 
@@ -51,5 +52,13 @@ if(MEOWY_BUILD_TESTS)
 	add_executable(ipc_smoke tests/ipc_smoke.cpp src/discord_ipc.cpp)
 	if(MSVC)
 		set_property(TARGET ipc_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+	endif()
+endif()
+if(MEOWY_BUILD_TESTS)
+	# Hardware profile and crash-dump faults, without the game:
+	#   info_smoke [path to the GarrysMod folder]
+	add_executable(info_smoke tests/info_smoke.cpp src/crash_reports.cpp src/hardware.cpp)
+	if(MSVC)
+		set_property(TARGET info_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 	endif()
 endif()
