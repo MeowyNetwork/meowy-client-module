@@ -11,9 +11,16 @@
 
 namespace
 {
-#if defined(_WIN32) && defined(_WIN64)
+#ifdef _WIN32
+	constexpr int WILD = -1;
+
+	// The routine at the end of client Lua start-up that throws away every
+	// material and loads them all again. Both builds have the same shape: load
+	// the material system, call UncacheAllMaterials, load it again and
+	// tail-jump to CacheUsedMaterials. Its only caller is a thunk (call it,
+	// then jump on to BuildAmmoTypes) that is itself called once.
+#ifdef _WIN64
 	// client.dll, x86-64 (GMod 2026.10.26, x86-64 branch):
-	//
 	//   sub  rsp, 28h
 	//   mov  rcx, [rip+materials]      ; IMaterialSystem*
 	//   mov  rax, [rcx]
@@ -22,10 +29,6 @@ namespace
 	//   mov  rax, [rcx]
 	//   add  rsp, 28h
 	//   jmp  [rax+238h]                ; CacheUsedMaterials
-	//
-	// Its only caller is a thunk (call it, then jump on to BuildAmmoTypes) that is
-	// itself called once, at the end of client Lua start-up.
-	constexpr int WILD = -1;
 	const int kPattern[] = {
 		0x48, 0x83, 0xEC, 0x28,
 		0x48, 0x8B, 0x0D, WILD, WILD, WILD, WILD,
@@ -36,11 +39,33 @@ namespace
 		0x48, 0x83, 0xC4, 0x28,
 		0x48, 0xFF, 0xA0, 0x38, 0x02, 0x00, 0x00,
 	};
+	constexpr size_t kCallOffset = 14;
+	const uint8_t kOriginal[] = { 0xFF, 0x90, 0x28, 0x02, 0x00, 0x00 };
+	constexpr size_t kLoad1 = 4, kLoad2 = 20;   // the two "mov rcx, [rip+x]"
+#else
+	// client.dll, x86 (same build, 32-bit):
+	//   mov  ecx, [materials]          ; IMaterialSystem*
+	//   mov  eax, [ecx]
+	//   call [eax+114h]                ; UncacheAllMaterials   <- replaced by a NOP
+	//   mov  ecx, [materials]
+	//   mov  eax, [ecx]
+	//   jmp  [eax+11Ch]                ; CacheUsedMaterials
+	const int kPattern[] = {
+		0x8B, 0x0D, WILD, WILD, WILD, WILD,
+		0x8B, 0x01,
+		0xFF, 0x90, 0x14, 0x01, 0x00, 0x00,
+		0x8B, 0x0D, WILD, WILD, WILD, WILD,
+		0x8B, 0x01,
+		0xFF, 0xA0, 0x1C, 0x01, 0x00, 0x00,
+	};
+	constexpr size_t kCallOffset = 8;
+	const uint8_t kOriginal[] = { 0xFF, 0x90, 0x14, 0x01, 0x00, 0x00 };
+	constexpr size_t kLoad1 = 0, kLoad2 = 14;   // the two "mov ecx, [x]"
+#endif
 	constexpr size_t kPatternLen = sizeof(kPattern) / sizeof(kPattern[0]);
-	constexpr size_t kCallOffset = 14;     // the "call [rax+228h]"
-	constexpr size_t kCallLen = 6;
+	constexpr size_t kCallLen = sizeof(kOriginal);
+	// "nop word ptr [eax+eax+0]": one 6-byte instruction on both architectures.
 	const uint8_t kNop6[kCallLen] = { 0x66, 0x0F, 0x1F, 0x44, 0x00, 0x00 };
-	const uint8_t kOriginal[kCallLen] = { 0xFF, 0x90, 0x28, 0x02, 0x00, 0x00 };
 
 	uint8_t* g_patchedAt = nullptr;
 
@@ -74,12 +99,19 @@ namespace
 		return true;
 	}
 
-	// Target of the RIP-relative operand of the 7-byte "mov rcx, [rip+x]" at p.
-	const uint8_t* RipTarget(const uint8_t* p)
+	// Where the pointer load at p reads from. x64: "mov rcx, [rip+rel32]";
+	// x86: "mov ecx, [abs32]".
+	const uint8_t* LoadTarget(const uint8_t* p)
 	{
+#ifdef _WIN64
 		int32_t rel;
 		std::memcpy(&rel, p + 3, sizeof(rel));
 		return p + 7 + rel;
+#else
+		uint32_t abs;
+		std::memcpy(&abs, p + 2, sizeof(abs));
+		return reinterpret_cast<const uint8_t*>(static_cast<uintptr_t>(abs));
+#endif
 	}
 
 	// Addresses of every "call rel32" or "jmp rel32" in [text, text+size) that lands on target.
@@ -96,6 +128,26 @@ namespace
 				out.push_back(text + i);
 		}
 		return out;
+	}
+
+	// The single caller must be the thunk: [sub rsp,28h] call <routine> [add rsp,28h] jmp <next>.
+	// Returns the thunk's first byte, or nullptr if the shape doesn't match.
+	const uint8_t* ThunkFor(const uint8_t* callSite)
+	{
+		if (*callSite != 0xE8)
+			return nullptr;
+#ifdef _WIN64
+		static const uint8_t kHead[] = { 0x48, 0x83, 0xEC, 0x28 };
+		static const uint8_t kTail[] = { 0x48, 0x83, 0xC4, 0x28, 0xE9 };
+		const uint8_t* thunk = callSite - sizeof(kHead);
+		if (std::memcmp(thunk, kHead, sizeof(kHead)) != 0 || std::memcmp(callSite + 5, kTail, sizeof(kTail)) != 0)
+			return nullptr;
+		return thunk;
+#else
+		if (callSite[5] != 0xE9)
+			return nullptr;
+		return callSite;   // the call is the thunk's first instruction
+#endif
 	}
 
 	bool WriteCode(uint8_t* at, const uint8_t* bytes, size_t len)
@@ -116,7 +168,7 @@ namespace engine_patches
 {
 	bool SkipMaterialReload(std::string& why)
 	{
-#if defined(_WIN32) && defined(_WIN64)
+#ifdef _WIN32
 		if (g_patchedAt)
 			return true;
 
@@ -144,25 +196,20 @@ namespace engine_patches
 			why = count == 0 ? "pattern not found (different GMod build)" : "pattern found more than once";
 			return false;
 		}
-		if (RipTarget(found + 4) != RipTarget(found + 20))
+		if (LoadTarget(found + kLoad1) != LoadTarget(found + kLoad2))
 		{
 			why = "the two calls use different objects";
 			return false;
 		}
 
-		// Exactly one caller, and it is the expected thunk:
-		//   sub rsp,28h / call <found> / add rsp,28h / jmp <BuildAmmoTypes>
 		std::vector<const uint8_t*> refs = DirectRefs(text, size, found);
-		if (refs.size() != 1 || *refs[0] != 0xE8)
+		if (refs.size() != 1)
 		{
 			why = "unexpected callers";
 			return false;
 		}
-		const uint8_t* thunk = refs[0] - 4;
-		static const uint8_t kThunkHead[] = { 0x48, 0x83, 0xEC, 0x28 };
-		static const uint8_t kThunkTail[] = { 0x48, 0x83, 0xC4, 0x28, 0xE9 };
-		if (std::memcmp(thunk, kThunkHead, sizeof(kThunkHead)) != 0 ||
-			std::memcmp(refs[0] + 5, kThunkTail, sizeof(kThunkTail)) != 0)
+		const uint8_t* thunk = ThunkFor(refs[0]);
+		if (!thunk)
 		{
 			why = "unexpected caller shape";
 			return false;
@@ -182,14 +229,14 @@ namespace engine_patches
 		g_patchedAt = at;
 		return true;
 #else
-		why = "only the 64-bit game is supported";
+		why = "Windows only";
 		return false;
 #endif
 	}
 
 	bool RestoreMaterialReload()
 	{
-#if defined(_WIN32) && defined(_WIN64)
+#ifdef _WIN32
 		if (!g_patchedAt || !WriteCode(g_patchedAt, kOriginal, kCallLen))
 			return false;
 		g_patchedAt = nullptr;
@@ -201,7 +248,7 @@ namespace engine_patches
 
 	const char* MaterialReloadState()
 	{
-#if defined(_WIN32) && defined(_WIN64)
+#ifdef _WIN32
 		return g_patchedAt ? "patched" : "not patched";
 #else
 		return "unsupported";

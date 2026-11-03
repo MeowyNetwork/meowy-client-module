@@ -46,7 +46,8 @@ from this repository by its CI (`gh attestation verify MeowyClientPack.exe --rep
     Garry's Mod update, for example).
   - Turn it off with `meowy_skipmatreload 0` in the console. A server can also turn it off for
     everyone.
-  - It only runs on 64-bit Garry's Mod.
+  - It's switched on only while you join a Meowy Network server and put back as soon as you're
+    in game, so other servers you visit in the same session are never affected.
 - It makes no network connections and writes no files.
 - It only works on Meowy Network servers. The DLL asks the game itself which server it's connected to
   and compares that with the addresses built into it, so another server can't use it or read anything

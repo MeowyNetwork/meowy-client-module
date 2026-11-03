@@ -15,7 +15,7 @@
 //                                     dump beside it, or "" (1.2+); the same as
 //                                     fault_module / fault_offset / fault_code
 //   meowy.Hardware()                  { cpu, threads, ram_mb, gpu, vram_mb, os } (1.2+)
-//   meowy.SkipMaterialReload()        true | false, reason (1.3+, 64-bit only): stop
+//   meowy.SkipMaterialReload()        true | false, reason (1.3+): stop
 //                                     GMod reloading every material at the end of
 //                                     client Lua start-up; call from client autorun
 //   meowy.RestoreMaterialReload()     undo it
