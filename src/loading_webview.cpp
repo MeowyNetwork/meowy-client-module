@@ -184,6 +184,15 @@ namespace loading_webview
 			g_view->PostWebMessageAsJson(json.c_str());
 	}
 
+	double RasterScale()
+	{
+		ComPtr<ICoreWebView2Controller3> c3;
+		double scale = 0;
+		if (g_controller && SUCCEEDED(g_controller.As(&c3)))
+			c3->get_RasterizationScale(&scale);
+		return scale;
+	}
+
 	void SetVisible(bool visible)
 	{
 		if (g_controller)

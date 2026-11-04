@@ -30,6 +30,9 @@ namespace loading_webview
 	char TakeAction();
 	// Gives the page keyboard focus (after the window itself was activated).
 	void Focus();
+	// Device pixels per CSS pixel the page is drawn at (the display's scaling),
+	// or 0 if WebView2 isn't running.
+	double RasterScale();
 	// Shows or hides the page (hidden, WebView2 throttles it).
 	void SetVisible(bool visible);
 	// Reloads the page; Ready() is false until it reports ready again.

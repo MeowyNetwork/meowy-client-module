@@ -276,9 +276,13 @@ namespace
 		return f;
 	}
 
+	// Device pixels per CSS pixel, as WebView2 draws the page (the display's
+	// scaling); the fallback is laid out in the same units. 1 without WebView2.
+	double g_cssScale = 1.0;
+
 	// The same layout and colours as the web page's Home page (Website
-	// pack-loading.css), so the switch to the page when it's ready is barely
-	// visible: top bar, server name, the three game cards, and the join strip.
+	// pack-loading.css), in its CSS pixels, so the switch to the page when it's
+	// ready is barely visible: top bar, server name, the game cards, the strip.
 	void Draw(HDC dc, int w, int h)
 	{
 		ULONGLONG now = GetTickCount64();
@@ -300,9 +304,11 @@ namespace
 			status = g.status;
 		}
 		SetBkMode(dc, TRANSPARENT);
-		// Page sizes are for 1600x900; scale with the window.
-		const double k = std::max(0.6, std::min(w / 1600.0, h / 900.0));
+		// Work in the page's CSS pixels: cw x ch is its viewport.
+		const double k = g_cssScale > 0.5 ? g_cssScale : 1.0;
 		auto S = [&](double px) { return static_cast<int>(px * k + 0.5); };
+		const double cw = w / k;
+		auto clampd = [](double lo, double x, double hi) { return std::max(lo, std::min(x, hi)); };
 
 		const COLORREF white = RGB(255, 255, 255), dim = RGB(190, 188, 196), faint = RGB(128, 126, 134),
 			rose = RGB(225, 29, 72), rose2 = RGB(251, 113, 133), glass = RGB(22, 21, 27), glass2 = RGB(30, 28, 36),
@@ -316,19 +322,19 @@ namespace
 		GRADIENT_RECT gr = { 0, 1 };
 		GradientFill(dc, vert, 2, &gr, 1, GRADIENT_FILL_RECT_V);
 
-		const int pad = std::max(20, std::min(56, static_cast<int>(w * 0.032)));
+		const int pad = S(clampd(20, cw * 0.032, 56));   // --pl-pad: clamp(20px, 3.2vw, 56px)
 		const int topH = S(68), stripH = S(84);
 
 		// ─── Top bar: brand and the page buttons (the page makes them work) ───
 		int cy = topH / 2;
-		Fill(dc, { pad, cy - S(13), pad + S(26), cy + S(13) }, rose, S(10));
-		Text(dc, FontFor(S(15), FW_BOLD), white, L"MEOWY NETWORK", { pad + S(40), 0, pad + S(300), topH }, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-		int navX = pad + S(300);
-		Fill(dc, { navX, cy - S(22), navX + S(260), cy + S(22) }, RGB(24, 23, 28), S(44));
+		Fill(dc, { pad, cy - S(14), pad + S(28), cy + S(14) }, rose, S(10));
+		Text(dc, FontFor(S(15), FW_BOLD), white, L"MEOWY NETWORK", { pad + S(40), 0, pad + S(260), topH }, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+		int navX = pad + S(40) + S(178) + S(clampd(16, cw * 0.03, 48));
+		Fill(dc, { navX, cy - S(21), navX + S(4) + 3 * S(76) + S(4), cy + S(21) }, RGB(24, 23, 28), S(42));
 		const wchar_t* tabs[] = { L"Home", L"Play", L"City" };
 		for (int i = 0; i < 3; ++i)
 		{
-			RECT t = { navX + S(4) + i * S(84), cy - S(18), navX + S(4) + i * S(84) + S(84), cy + S(18) };
+			RECT t = { navX + S(4) + i * S(76), cy - S(17), navX + S(4) + i * S(76) + S(76), cy + S(17) };
 			if (i == 0)
 				Fill(dc, t, rose, S(36));
 			Text(dc, FontFor(S(15), FW_SEMIBOLD), i == 0 ? white : dim, tabs[i], t, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
@@ -336,39 +342,42 @@ namespace
 
 		// ─── Hero (left) ───────────────────────────────────────────────────────
 		int pageTop = topH, pageBottom = h - stripH;
-		int colGap = std::max(20, static_cast<int>(w * 0.04));
+		int colGap = S(clampd(20, cw * 0.04, 72));
 		int leftW = (w - 2 * pad - colGap) * 11 / 21;
-		int heroY = pageTop + (pageBottom - pageTop) / 2 - S(150);
+		const int titlePx = S(clampd(34, cw * 0.042, 76));
+		int heroY = pageTop + (pageBottom - pageTop) / 2 - titlePx * 2;
 		std::wstring eyebrow = L"JOINING " + (map.empty() ? std::wstring(L"DOWNTOWN") : map);
 		for (auto& c : eyebrow)
 			c = static_cast<wchar_t>(towupper(c));
 		Text(dc, FontFor(S(13), FW_BOLD), rose2, eyebrow, { pad, heroY, pad + leftW, heroY + S(20) }, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
-		RECT title = { pad, heroY + S(26), pad + leftW, heroY + S(26) + S(280) };   // three lines of the title
-		Text(dc, FontFor(S(64), FW_HEAVY), white, server, title, DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS);
+		RECT title = { pad, heroY + S(26), pad + leftW, heroY + S(26) + titlePx * 7 / 2 };   // up to three lines
+		Text(dc, FontFor(titlePx, FW_HEAVY), white, server, title, DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS);
 
 		// ─── Game cards (right) ────────────────────────────────────────────────
 		int rx = pad + leftW + colGap, rw = w - pad - rx;
-		int cardsTop = pageTop + S(24);
-		Text(dc, FontFor(S(15), FW_BOLD), faint, L"SOMETHING TO DO WHILE YOU WAIT", { rx, cardsTop, rx + rw, cardsTop + S(24) }, DT_LEFT | DT_SINGLELINE);
+		int cardH = S(108), cardGap = S(12);
+		int cardsTop = pageTop + (pageBottom - pageTop - (S(30) + 3 * cardH + 2 * cardGap)) / 2;
+		Text(dc, FontFor(S(clampd(13, cw * 0.0095, 16)), FW_BOLD), faint, L"SOMETHING TO DO WHILE YOU WAIT", { rx, cardsTop, rx + rw, cardsTop + S(24) }, DT_LEFT | DT_SINGLELINE);
 		const wchar_t* names[] = { L"Where in Downtown?", L"Rooftop run", L"The city cat" };
 		const wchar_t* blurbs[] = {
 			L"A photo from somewhere in the city. Find it on the map.",
 			L"Leap across the real rooftops of Downtown. You arrive when the game is ready.",
 			L"Pet the cat. Head, cheeks, nose, belly or tail: she reacts to all of them.",
 		};
-		int cardH = S(150), cardGap = S(18), y0 = cardsTop + S(34);
+		int y0 = cardsTop + S(30);
 		for (int i = 0; i < 3; ++i)
 		{
 			int y = y0 + i * (cardH + cardGap);
 			if (y + cardH > pageBottom - S(10))
 				break;
 			Fill(dc, { rx, y, rx + rw, y + cardH }, glass, S(16));
-			RECT art = { rx + S(18), y + S(18), rx + S(18) + S(196), y + cardH - S(18) };
+			RECT art = { rx + S(12), y + S(12), rx + S(12) + S(132), y + S(12) + S(84) };
 			Fill(dc, art, glass2, S(12));
 			Fill(dc, { art.left, art.bottom - S(4), art.right, art.bottom }, i == 1 ? rose : glass2, 0);
-			RECT text = { art.right + S(26), y + S(32), rx + rw - S(20), y + cardH - S(14) };
-			Text(dc, FontFor(S(22), FW_BOLD), white, names[i], { text.left, text.top, text.right, text.top + S(30) }, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
-			Text(dc, FontFor(S(17), FW_NORMAL), dim, blurbs[i], { text.left, text.top + S(36), text.right, text.bottom }, DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS);
+			RECT text = { art.right + S(18), y + S(22), rx + rw - S(12), y + cardH - S(10) };
+			int titleCss = static_cast<int>(clampd(16, cw * 0.012, 20));
+			Text(dc, FontFor(S(titleCss), FW_BOLD), white, names[i], { text.left, text.top, text.right, text.top + S(titleCss + 8) }, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
+			Text(dc, FontFor(S(14), FW_NORMAL), dim, blurbs[i], { text.left, text.top + S(titleCss + 10), text.right, text.bottom }, DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS);
 		}
 
 		// ─── Join strip (bottom) ───────────────────────────────────────────────
@@ -401,15 +410,16 @@ namespace
 			detail = L"Garry’s Mod may say “Not Responding” here. It’s working.";
 		else if (elapsed > 3 * expected[stage] && elapsed > 60)
 			detail = L"This is taking longer than usual.";
-		int tx = sx + sr + S(18), tw = std::max(S(220), std::min(S(380), static_cast<int>(w * 0.22)));
+		int gapS = S(clampd(12, cw * 0.016, 28));   // .pl-strip gap: clamp(12px, 1.6vw, 28px)
+		int tx = sx + sr + gapS, tw = S(clampd(220, cw * 0.22, 380));
 		Text(dc, FontFor(S(17), FW_BOLD), white, stage == READY ? L"You’re in! Spawning…" : kStageLines[stage],
 			{ tx, sy - S(22), tx + tw, sy }, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
 		Text(dc, FontFor(S(13), FW_NORMAL), dim, detail, { tx, sy + S(2), tx + tw, sy + S(22) }, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
 
 		// Buttons on the right, then the clock, then the segments between.
 		int bh = S(44);
-		RECT cancel = { w - pad - S(132), sy - bh / 2, w - pad, sy + bh / 2 };
-		RECT hide = { cancel.left - S(16) - S(170), sy - bh / 2, cancel.left - S(16), sy + bh / 2 };
+		RECT cancel = { w - pad - S(92), sy - bh / 2, w - pad, sy + bh / 2 };
+		RECT hide = { cancel.left - gapS - S(126), sy - bh / 2, cancel.left - gapS, sy + bh / 2 };
 		v.cancelBtn = cancel;
 		v.hideBtn = hide;
 		Fill(dc, cancel, rose, S(12));
@@ -426,11 +436,11 @@ namespace
 		wchar_t clock[64], since[64];
 		swprintf(clock, 64, stage == READY ? L"Ready now" : L"Ready around %s", Clock(static_cast<ULONGLONG>(remain * 1000)).c_str());
 		swprintf(since, 64, L"Joining for %llu:%02llu", joining / 60, joining % 60);
-		int etaR = hide.left - S(24), etaL = etaR - S(230);
+		int etaR = hide.left - gapS, etaL = etaR - S(150);
 		Text(dc, FontFor(S(16), FW_BOLD), white, clock, { etaL, sy - S(22), etaR, sy }, DT_RIGHT | DT_SINGLELINE);
 		Text(dc, FontFor(S(12), FW_NORMAL), faint, since, { etaL, sy + S(3), etaR, sy + S(22) }, DT_RIGHT | DT_SINGLELINE);
 
-		int segL = tx + tw + S(24), segR = etaL - S(24), gap = S(8);
+		int segL = tx + tw + gapS, segR = etaL - gapS, gap = S(8);
 		int segW = (segR - segL - gap * (STAGES - 1)) / STAGES;
 		if (segW > S(20))
 		{
@@ -628,6 +638,21 @@ namespace
 		// tries again.
 		bool webOn = SUCCEEDED(com) && loading_webview::Start(v.hwnd, PageUrl(), WebProfileDir());
 		bool webShown = false;
+
+		// The page's scale from last time, so the fallback matches it from the
+		// first frame (WebView2 only reports it once its controller is up).
+		std::wstring scaleFile;
+		{
+			std::lock_guard<std::mutex> lock(g.m);
+			scaleFile = g.dataDir + L"\\css_scale.txt";
+		}
+		if (FILE* f = _wfopen(scaleFile.c_str(), L"r"))
+		{
+			double cached = 0;
+			if (std::fscanf(f, "%lf", &cached) == 1 && cached >= 0.5 && cached <= 4)
+				g_cssScale = cached;
+			std::fclose(f);
+		}
 		ULONGLONG lastPost = 0;
 
 		RECT last = {};
@@ -700,6 +725,16 @@ namespace
 
 			if (webOn)
 			{
+				double scale = loading_webview::RasterScale();
+				if (scale >= 0.5 && scale <= 4 && std::fabs(scale - g_cssScale) > 0.001)
+				{
+					g_cssScale = scale;
+					if (FILE* f = _wfopen(scaleFile.c_str(), L"w"))
+					{
+						std::fprintf(f, "%.3f\n", scale);
+						std::fclose(f);
+					}
+				}
 				if (!webShown && loading_webview::Ready())
 				{
 					webShown = true;
