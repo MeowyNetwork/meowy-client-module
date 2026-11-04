@@ -73,7 +73,25 @@ the game closes while the pack is starting, the next start skips it once by itse
     connection is confirmed to be ours; for any other server it doesn't appear, or closes.
   - Only when the game is windowed or borderless. It stays until the game runs smoothly after you
     spawn. `meowy_loadingscreen 0` turns it off.
-- Its only network traffic is that page and its data, from meowynetwork.com, through WebView2. It
+- **Honest server list.** Some servers fake their player count to climb Garry's Mod's server list: a
+  rewritten query reply, bots hidden from the bot count, or idle accounts made only to sit there.
+  The pack checks the counts in the in-game server list (Find Multiplayer Game):
+  - It reads each populated server's player list twice, 45 seconds apart, the same query the
+    browser makes when you click a server. A count far above the list, players whose time doesn't
+    grow, or the same player joined at the same moment on two servers mark the server
+    `[FAKE - N real]`; it then shows and ranks by N. A server that won't give its list shows
+    `[LIST HIDDEN]`, with its count untouched.
+  - It also downloads Meowy Network's own verdicts (`meowynetwork.com/api/pack/servers`), from a
+    crawler that adds Steam's own count and the count's history.
+  - **What it sends:** once per server you join that isn't ours, about 90 seconds in, it runs the
+    game's `status` command and sends meowynetwork.com the server's address, its advertised count,
+    the number of bots `status` lists, and the SteamIDs it lists. The backend looks the accounts up
+    on Steam (age, level, games owned, public profiles only) and keeps only the server's tally,
+    e.g. "38 of 86 look made to boost"; the SteamIDs are never stored or logged. A server is only
+    marked from these reports when players from two different addresses report it.
+  - `meowy_honest_serverlist 0` turns the whole check off; `meowy_serverlist_reports 0` keeps the
+    checks but stops the reports. Our own servers are never checked.
+- Its only other network traffic is the loading page and its data, from meowynetwork.com, through WebView2. It
   writes only in `%LOCALAPPDATA%\MeowyClientPack` (`boot.lock` for a moment at start-up; for the
   loading screen `join_times.txt`, how long each stage of your last join took, `last_join.txt`,
   what that join went through, and `css_scale.txt`; and WebView2's profile). Nothing goes in

@@ -23,10 +23,11 @@ add_library(meowy SHARED
 	src/discord_ipc.cpp
 	src/loading_screen.cpp
 	src/loading_webview.cpp
-	src/connect_watch.cpp)
+	src/connect_watch.cpp
+	src/server_rep.cpp)
 target_include_directories(meowy PRIVATE ${gmod_module_base_SOURCE_DIR}/include)
 if(WIN32)
-	target_link_libraries(meowy PRIVATE msimg32 shlwapi)   # GradientFill and file streams, for the loading screen
+	target_link_libraries(meowy PRIVATE msimg32 shlwapi winhttp ws2_32)   # GradientFill and file streams for the loading screen; HTTPS for the server list
 
 	# Microsoft's WebView2 SDK (headers and the static loader, so there's no
 	# extra DLL to ship), pinned by hash: the loading screen's web page.

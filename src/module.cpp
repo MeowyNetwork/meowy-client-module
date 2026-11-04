@@ -53,6 +53,7 @@
 #include "connect_watch.h"
 #include "loading_screen.h"
 #include "server_gate.h"
+#include "server_rep.h"
 
 #include <cstdio>
 #include <string>
@@ -543,6 +544,420 @@ namespace
 		return 0;
 	}
 
+	// --- Honest server list (server_rep.h) -------------------------------------
+
+	int ServerRepFetch(lua_State*)
+	{
+		server_rep::FetchList();
+		return 0;
+	}
+
+	// The verdicts JSON when a fetch has finished since the last call, else nil.
+	int ServerRepTake(lua_State* L)
+	{
+		std::string json = server_rep::TakeList();
+		if (json.empty())
+			L->luabase->PushNil();
+		else
+			L->luabase->PushString(json.c_str(), (unsigned int)json.size());
+		return 1;
+	}
+
+	int ServerRepReport(lua_State* L)
+	{
+		if (L->luabase->IsType(1, Type::String))
+			server_rep::SendReport(L->luabase->GetString(1));
+		return 0;
+	}
+
+	int QueryPlayers(lua_State* L)
+	{
+		if (L->luabase->IsType(1, Type::String))
+			server_rep::QueryPlayers(L->luabase->GetString(1));
+		return 0;
+	}
+
+	// JSON array of finished player-list queries, or nil.
+	int TakePlayers(lua_State* L)
+	{
+		std::string json = server_rep::TakePlayers();
+		if (json.empty())
+			L->luabase->PushNil();
+		else
+			L->luabase->PushString(json.c_str(), (unsigned int)json.size());
+		return 1;
+	}
+
+	int IsOurServer(lua_State* L)
+	{
+		L->luabase->PushBool(L->luabase->IsType(1, Type::String) && server_gate::IsOurAddress(L->luabase->GetString(1)));
+		return 1;
+	}
+
+	// "ip:port" of the server the game is really connected to, when it's
+	// someone else's (not ours, not singleplayer); else nil.
+	int OtherServerAddress(lua_State* L)
+	{
+		std::string address;
+		if (server_gate::Check(&address) == server_gate::Result::OtherServer && !address.empty()
+			&& address.find("loopback") == std::string::npos && !server_gate::IsOurAddress(address))
+			L->luabase->PushString(address.c_str());
+		else
+			L->luabase->PushNil();
+		return 1;
+	}
+
+	int StatusCaptureBegin(lua_State*)
+	{
+		server_rep::CaptureBegin();
+		return 0;
+	}
+
+	int StatusCaptureEnd(lua_State* L)
+	{
+		std::string text = server_rep::CaptureEnd();
+		L->luabase->PushString(text.c_str(), (unsigned int)text.size());
+		return 1;
+	}
+
+	// Runs in the menu state. Honest server list: counts in the server browser
+	// checked before they're believed. GMod's browser shows players minus bots
+	// and ranks servers by it, so a server that reports clients that aren't
+	// there (a rewritten query reply, hidden bots, idle boost accounts) jumps
+	// the list. This wraps serverlist.Query: each listed server's player list
+	// is sampled twice GAP seconds apart and compared with its advertised count,
+	// the backend's verdicts (crawler + other players' reports) are applied, and
+	// a flagged server shows its real count with a tag and is ranked by it.
+	// The rules match the backend's serverRep/score.js; keep them in step.
+	// While the player is on someone else's server, the game's own `status`
+	// list (SteamIDs, bots) is reported once per server so the backend can
+	// spot boost accounts; meowy_serverlist_reports 0 turns that off.
+	const char* const kServerListLua = R"lua(
+local meowy = meowy
+local enabled = CreateConVar("meowy_honest_serverlist", "1", FCVAR_ARCHIVE,
+	"Meowy Client Pack: check player counts in the server list (0 = off)")
+local reports = CreateConVar("meowy_serverlist_reports", "1", FCVAR_ARCHIVE,
+	"Meowy Client Pack: tell Meowy Network who was really on other servers you join, to catch fake counts (0 = off)")
+
+local MIN_PLAYERS, GAP, MIN_FAKE, MIN_SHARE, DUPE_TOLERANCE = 10, 45, 4, 0.15, 15
+local MAX_CHECKS, PARALLEL, LIST_TIMEOUT, RECHECK = 60, 4, 6, 600
+
+local rep = {}       -- address -> verdict from the backend
+local mine = {}      -- address -> verdict from this PC's checks (.at = SysTime)
+local seen = {}      -- address -> { players, bots, type }
+local tagged = {}    -- type .. address -> true once the browser shows a tag
+local samples = {}   -- address -> { at = SysTime, list = { {name, time} } }
+local repAt = -1e9
+
+-- The menu state has no timer library: a small one, run from Think.
+local later = {}
+local function after(seconds, fn) later[#later + 1] = { at = SysTime() + seconds, fn = fn } end
+hook.Add("Think", "MeowyClientPack.ServerListTimers", function()
+	if #later == 0 then return end
+	local now, due = SysTime(), {}
+	for i = #later, 1, -1 do
+		if later[i].at <= now then due[#due + 1] = later[i].fn table.remove(later, i) end
+	end
+	for _, fn in ipairs(due) do fn() end
+end)
+
+local function verdictOf(address)
+	local r = rep[address]
+	if r and r.source == "players" then return r end
+	local m = mine[address]
+	if m and m.verdict ~= "ok" then return m end
+	return r
+end
+
+local function tagFor(v)
+	if v.verdict == "fake" then return "[FAKE - " .. tostring(v.real) .. " real] " end
+	if v.verdict == "unverified" then
+		-- A hidden list is a fact, not an accusation: big servers block the query against floods.
+		local why = istable(v.reasons) and tostring(v.reasons[1] or "") or ""
+		return why:find("hidden", 1, true) and "[LIST HIDDEN] " or "[UNVERIFIED] "
+	end
+end
+
+local MARK_JS = [[
+if (!window.MeowyMark) window.MeowyMark = function (addr, real, tag) {
+	for (var t in ServerTypes) { var g = ServerTypes[t].gamemodes;
+	for (var k in g) { var gm = g[k];
+	for (var i = 0; i < gm.servers.length; i++) { var s = gm.servers[i];
+		if (s.address != addr || s.meowyTag) continue;
+		s.meowyTag = tag; s.name = tag + s.name;
+		if (real >= 0 && real < s.players) {
+			var d = s.players - real; s.players = real;
+			gm.num_players -= d; if (!s.isAnon) gm.sort_players -= d; gm.order = gm.sort_players;
+			s.recommended = CalculateRank(s);
+		}
+	} } }
+	UpdateDigest(RootScope, 50);
+};
+]]
+
+-- Shows a verdict that arrived after the server was already listed.
+local function mark(address)
+	local s, v = seen[address], verdictOf(address)
+	if not s or not v or not pnlMainMenu or tagged[s.type .. address] then return end
+	local tag = tagFor(v)
+	if not tag then return end
+	tagged[s.type .. address] = true
+	pnlMainMenu:Call(MARK_JS .. string.format("MeowyMark('%s', %d, '%s');",
+		address:JavascriptSafe(), v.verdict == "fake" and (v.real or -1) or -1, tag:JavascriptSafe()))
+end
+
+local function fetchRep()
+	if SysTime() - repAt < 300 then return end
+	repAt = SysTime()
+	meowy.ServerRepFetch()
+end
+
+local function usable(name) return isstring(name) and #(name:match("^%s*(.-)%s*$")) >= 3 end
+
+-- The rules of serverRep/score.js, for one server with one or two samples.
+local function judge(address, listA, listB, gap)
+	local s = seen[address]
+	local reported = s.players - s.bots
+	if not listA or (#listA == 0 and reported > 0) then
+		return { verdict = "unverified", reasons = { "player list hidden" } }
+	end
+	local suspicious = {}
+	if listB and gap > 0 then
+		local countA, countB, timeB = {}, {}, {}
+		for _, e in ipairs(listA) do countA[e.name] = (countA[e.name] or 0) + 1 end
+		for _, e in ipairs(listB) do countB[e.name] = (countB[e.name] or 0) + 1 timeB[e.name] = e.time end
+		for _, e in ipairs(listA) do
+			if usable(e.name) and countA[e.name] == 1 and countB[e.name] == 1 then
+				local grown = timeB[e.name] - e.time
+				if grown >= 0 and grown < gap * 0.5 then suspicious[e.name] = true end
+			end
+		end
+	end
+	-- The same name, joined at the same moment, on another server we sampled.
+	for _, e in ipairs(listA) do
+		if usable(e.name) and not suspicious[e.name] then
+			local joined = samples[address].at - e.time
+			for other, o in pairs(samples) do
+				if other ~= address then
+					for _, f in ipairs(o.list) do
+						if f.name == e.name and math.abs((o.at - f.time) - joined) <= DUPE_TOLERANCE then suspicious[e.name] = true break end
+					end
+				end
+				if suspicious[e.name] then break end
+			end
+		end
+	end
+	local n = 0
+	for _ in pairs(suspicious) do n = n + 1 end
+	local real = math.min(reported, math.max(0, #listA - n))
+	local fake = reported - real
+	local reasons = { "lists " .. #listA .. " of " .. reported }
+	if declared[address] and declared[address] > #listA then
+		reasons[#reasons + 1] = "reply says " .. declared[address] .. ", sends " .. #listA
+	end
+	if fake >= MIN_FAKE and fake >= reported * MIN_SHARE then
+		return { verdict = "fake", real = real, reasons = reasons }
+	end
+	return { verdict = "ok", real = reported }
+end
+
+local function toList(tbl)
+	local out = {}
+	for _, p in pairs(istable(tbl) and tbl or {}) do
+		if istable(p) then out[#out + 1] = { name = tostring(p.name or ""), time = tonumber(p.time) or 0, score = tonumber(p.score) or 0 } end
+	end
+	return out
+end
+
+-- Check queue: sample A, then B GAP seconds later, then judge.
+local queue, running, pending = {}, 0, {}
+
+-- Player lists come from the pack's own query (server_rep.cpp), not
+-- serverlist.PlayerList, which shows nothing for a reply that doesn't add up.
+local waiting = {} -- address -> { done, deadline }
+local declared = {} -- address -> the count the last reply's header claimed
+
+local function sample(address, done)
+	running = running + 1
+	waiting[address] = { done = done, deadline = SysTime() + LIST_TIMEOUT }
+	meowy.QueryPlayers(address)
+end
+
+-- The side panel's list for a clicked server, from the same query; GMod's own
+-- call is the fallback when ours gets no answer.
+local panelWanted = {}
+local stockGetPlayerList = GetPlayerList
+if isfunction(stockGetPlayerList) then
+	GetPlayerList = function(serverip, ...)
+		if enabled:GetBool() and isstring(serverip) then
+			panelWanted[serverip] = true
+			meowy.QueryPlayers(serverip)
+			return
+		end
+		return stockGetPlayerList(serverip, ...)
+	end
+end
+
+local function deliver(address, list)
+	local w = waiting[address]
+	if not w then return end
+	waiting[address] = nil
+	running = running - 1
+	w.done(list)
+end
+
+local function startChecks(type)
+	local now = SysTime()
+	local list = {}
+	for address, s in pairs(seen) do
+		if s.type == type and s.players - s.bots >= MIN_PLAYERS and not meowy.IsOurServer(address)
+			and not pending[address] and not (mine[address] and now - mine[address].at < RECHECK) then
+			list[#list + 1] = address
+		end
+	end
+	table.sort(list, function(a, b) return seen[a].players > seen[b].players end)
+	for i = 1, math.min(#list, MAX_CHECKS) do queue[#queue + 1] = list[i] pending[list[i]] = true end
+end
+
+hook.Add("Think", "MeowyClientPack.ServerList", function()
+	local json = meowy.ServerRepTake()
+	if json then
+		local data = util.JSONToTable(json)
+		if istable(data) and istable(data.servers) then
+			rep = data.servers
+			for address in pairs(seen) do mark(address) end
+		end
+	end
+	local results = meowy.TakePlayers()
+	if results then
+		for _, r in ipairs(util.JSONToTable(results) or {}) do
+			if istable(r) and isstring(r.address) then
+				if r.ok then declared[r.address] = tonumber(r.declared) end
+				if panelWanted[r.address] and not r.ok then
+					panelWanted[r.address] = nil
+					stockGetPlayerList(r.address)
+				elseif panelWanted[r.address] and pnlMainMenu then
+					panelWanted[r.address] = nil
+					local rows = {}
+					for _, p in ipairs(toList(r.players)) do rows[#rows + 1] = { name = p.name, score = tonumber(p.score) or 0, time = p.time } end
+					pnlMainMenu:Call("SetPlayerList( '" .. r.address:JavascriptSafe() .. "', " .. util.TableToJSON(rows) .. ")")
+				end
+				deliver(r.address, r.ok and toList(r.players) or nil)
+			end
+		end
+	end
+	for address, w in pairs(waiting) do
+		if SysTime() > w.deadline then deliver(address, nil) end
+	end
+	while running < PARALLEL and #queue > 0 do
+		local address = table.remove(queue, 1)
+		sample(address, function(listA)
+			local atA = SysTime()
+			if listA then samples[address] = { at = atA, list = listA } end
+			if not listA or #listA == 0 then
+				pending[address] = nil
+				mine[address] = judge(address, listA, nil, 0)
+				mine[address].at = SysTime()
+				mark(address)
+				return
+			end
+			after(GAP, function()
+				sample(address, function(listB)
+					pending[address] = nil
+					mine[address] = judge(address, listA, listB, SysTime() - atA)
+					mine[address].at = SysTime()
+					mark(address)
+				end)
+			end)
+		end)
+	end
+end)
+
+local stockQuery = serverlist.Query
+serverlist.Query = function(data)
+	if enabled:GetBool() and istable(data) and isfunction(data.Callback) then
+		local type, callback, finished = data.Type, data.Callback, data.Finished
+		for key in pairs(tagged) do if key:sub(1, #tostring(type)) == tostring(type) then tagged[key] = nil end end
+		data.Callback = function(ping, name, desc, map, players, maxplayers, botplayers, pass, lastplayed, address, ...)
+			seen[address] = { players = players or 0, bots = botplayers or 0, type = tostring(type) }
+			local v = verdictOf(address)
+			local tag = v and not meowy.IsOurServer(address) and tagFor(v)
+			if tag then
+				tagged[tostring(type) .. address] = true
+				name = tag .. tostring(name)
+				-- The browser shows players minus bots: count the fakes as bots.
+				local fake = v.verdict == "fake" and v.real and math.max(0, (players - botplayers) - v.real) or 0
+				botplayers, maxplayers = botplayers + fake, maxplayers + fake
+			end
+			return callback(ping, name, desc, map, players, maxplayers, botplayers, pass, lastplayed, address, ...)
+		end
+		data.Finished = function(...)
+			if finished then finished(...) end
+			startChecks(tostring(type))
+		end
+		fetchRep()
+	end
+	return stockQuery(data)
+end
+
+-- SteamID ("STEAM_0:1:23" or "[U:1:47]") to SteamID64, in decimal strings:
+-- the 64-bit numbers don't fit a Lua double.
+local function addToDecimal(base, n)
+	local digits, carry, out = base:reverse(), n, {}
+	for i = 1, #digits do
+		local d = tonumber(digits:sub(i, i)) + carry % 10
+		carry = math.floor(carry / 10) + math.floor(d / 10)
+		out[i] = tostring(d % 10)
+	end
+	while carry > 0 do out[#out + 1] = tostring(carry % 10) carry = math.floor(carry / 10) end
+	return table.concat(out):reverse()
+end
+
+local function toSteamID64(id)
+	local x, y = id:match("^STEAM_%d:(%d):(%d+)$")
+	if x then return addToDecimal("76561197960265728", tonumber(y) * 2 + tonumber(x)) end
+	local u = id:match("^%[U:1:(%d+)%]$")
+	if u then return addToDecimal("76561197960265728", tonumber(u)) end
+end
+
+-- One report per server per game session, a while after joining.
+local reported, joinedAt, nextLook = {}, {}, 0
+hook.Add("Think", "MeowyClientPack.ServerReport", function()
+	if SysTime() < nextLook then return end
+	nextLook = SysTime() + 5
+	if not enabled:GetBool() or not reports:GetBool() or not IsInGame() or IsInLoading() then return end
+	local address = meowy.OtherServerAddress()
+	if not address or reported[address] then return end
+	joinedAt[address] = joinedAt[address] or SysTime()
+	if SysTime() - joinedAt[address] < 90 then return end
+	reported[address] = true
+
+	meowy.StatusCaptureBegin()
+	RunConsoleCommand("status")
+	after(2, function()
+		local text = meowy.StatusCaptureEnd()
+		local ids, bots, seenIds = {}, 0, {}
+		for line in string.gmatch(text, "[^\n]+") do
+			local uid = line:match('^#%s*%d+%s+".*"%s+(%S+)')
+			if uid == "BOT" then
+				bots = bots + 1
+			elseif uid then
+				local id64 = toSteamID64(uid)
+				if id64 and not seenIds[id64] and #ids < 128 then seenIds[id64] = true ids[#ids + 1] = id64 end
+			end
+		end
+		if #ids + bots < MIN_PLAYERS then return end
+		serverlist.PingServer(address, function(ping, name, desc, map, players, maxplayers, botplayers)
+			if not players then return end
+			meowy.ServerRepReport(util.TableToJSON({
+				address = address, advertised = players, advertisedBots = botplayers or 0,
+				statusBots = bots, steamids = ids,
+			}))
+		end)
+	end)
+end)
+)lua";
+
 	// Runs in the menu state. The loading panel is active from the moment a
 	// connect starts (IsInLoading); once the engine's connection is to one of
 	// our servers, our screen takes over. It only gets fed while the game's
@@ -665,20 +1080,33 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	SetFunction(LUA, "LoadingInGame", LoadingInGame);
 	SetFunction(LUA, "LoadingEnd", LoadingEnd);
 	SetFunction(LUA, "LoadingPrewarm", LoadingPrewarm);
+	SetFunction(LUA, "ServerRepFetch", ServerRepFetch);
+	SetFunction(LUA, "ServerRepTake", ServerRepTake);
+	SetFunction(LUA, "ServerRepReport", ServerRepReport);
+	SetFunction(LUA, "QueryPlayers", QueryPlayers);
+	SetFunction(LUA, "TakePlayers", TakePlayers);
+	SetFunction(LUA, "IsOurServer", IsOurServer);
+	SetFunction(LUA, "OtherServerAddress", OtherServerAddress);
+	SetFunction(LUA, "StatusCaptureBegin", StatusCaptureBegin);
+	SetFunction(LUA, "StatusCaptureEnd", StatusCaptureEnd);
 	LUA->SetField(-2, "meowy");
 
 	connect_watch::Start();
 
-	LUA->GetField(-1, "RunString");
-	if (LUA->IsType(-1, Type::Function))
+	for (const auto& chunk : { std::make_pair(kMenuLua, "meowy_client_pack/menu"),
+		std::make_pair(kServerListLua, "meowy_client_pack/serverlist") })
 	{
-		LUA->PushString(kMenuLua);
-		LUA->PushString("meowy_client_pack/menu");
-		LUA->Call(2, 0);
-	}
-	else
-	{
-		LUA->Pop();
+		LUA->GetField(-1, "RunString");
+		if (LUA->IsType(-1, Type::Function))
+		{
+			LUA->PushString(chunk.first);
+			LUA->PushString(chunk.second);
+			LUA->Call(2, 0);
+		}
+		else
+		{
+			LUA->Pop();
+		}
 	}
 
 	LUA->GetField(-1, "print");
