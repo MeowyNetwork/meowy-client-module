@@ -40,7 +40,7 @@ variables:
     description: 'The same value as SERVER_REP_OBSERVER_TOKEN in the website backend''s .env.'
     env_variable: SERVER_REP_OBSERVER_TOKEN
     default_value: ''
-    user_viewable: false
+    user_viewable: true
     user_editable: true
     rules:
       - nullable
@@ -52,7 +52,7 @@ variables:
     description: 'Password for the browser view of the virtual display (for the one-time Steam login). Empty turns the view off.'
     env_variable: VNC_PASSWORD
     default_value: ''
-    user_viewable: false
+    user_viewable: true
     user_editable: true
     rules:
       - nullable
