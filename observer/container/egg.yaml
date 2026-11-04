@@ -43,7 +43,7 @@ variables:
     user_viewable: false
     user_editable: true
     rules:
-      - required
+      - nullable
       - string
       - 'min:24'
     sort: 1

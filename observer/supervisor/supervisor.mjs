@@ -65,8 +65,12 @@ async function visit(job) {
 }
 
 async function main() {
-  if (!TOKEN) throw new Error('SERVER_REP_OBSERVER_TOKEN is not set');
   await fs.mkdir(DIR, { recursive: true });
+  // No token yet (set "Observer token" in the panel): say so and wait, don't crash-loop.
+  while (!TOKEN) {
+    log('waiting_for_token', { note: 'set the Observer token variable and restart' });
+    await sleep(10 * 60 * 1000);
+  }
   log('ready', { dir: DIR, api: API });
   for (;;) {
     try {
