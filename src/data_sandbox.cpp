@@ -120,6 +120,19 @@ namespace
 		return k.empty() ? L"unknown" : k;
 	}
 
+	// The sandbox for a connection whose address isn't "a.b.c.d:port". Fixed
+	// names (none of them a dotted address, "menu" or "before-sandbox"): all
+	// Steam P2P hosts share one, everything else another.
+	std::wstring KindKey(const std::string& address)
+	{
+		std::string lower;
+		for (char c : address.substr(0, 16))
+			lower += (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
+		if (lower.rfind("p2p:", 0) == 0 || lower.rfind("steamid:", 0) == 0 || lower.rfind("[", 0) == 0 || lower.rfind("steam_", 0) == 0)
+			return L"p2p";
+		return L"other";
+	}
+
 	std::wstring ReadActive()
 	{
 		std::wstring path = VaultDir() + L"\\active";
@@ -261,11 +274,14 @@ namespace data_sandbox
 
 	void Enter(const std::string& address)
 	{
-		// Only a real "a.b.c.d:port" names a sandbox: the address comes from
-		// console text, and a key like "." or ".." would be the vault itself.
-		if (!IsIpPort(address))
+		if (address.empty())
 			return;
-		std::wstring key = KeyFor(address);
+		// Only a real "a.b.c.d:port" names its own sandbox: the address can come
+		// from console text, and a key like "." or ".." would be the vault itself.
+		// Anything else (a Steam P2P join, an address the engine writes some other
+		// way) still never sees the menu's files: it gets one fixed sandbox per
+		// kind, a constant name never made from the address.
+		std::wstring key = IsIpPort(address) ? KeyFor(address) : KindKey(address);
 		std::wstring a = Active();
 		if (a == key)
 			return;

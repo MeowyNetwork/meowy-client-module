@@ -75,7 +75,8 @@ set_target_properties(meowy PROPERTIES
 # Start-up stub: GMod's menu state only loads gmsv_ modules, so this small
 # DLL is what lua/includes/menu.lua requires; it loads gmcl_meowy (src/boot).
 if(WIN32)
-	add_library(meowy_boot SHARED src/boot/boot.cpp)
+	# data_sandbox too: the stub puts garrysmod/data right even when the pack doesn't start.
+	add_library(meowy_boot SHARED src/boot/boot.cpp src/data_sandbox.cpp)
 	target_include_directories(meowy_boot PRIVATE ${gmod_module_base_SOURCE_DIR}/include)
 	if(MSVC)
 		set_property(TARGET meowy_boot PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")

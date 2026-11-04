@@ -467,6 +467,34 @@ namespace
 
 	const wchar_t* const kPageUrl = L"https://meowynetwork.com/pack-loading.html";
 
+	// "http://localhost:<port>" or "http://127.0.0.1:<port>", then the end or a
+	// path. The whole host part must be exactly that: a prefix check would let
+	// "http://localhost:1@evil.example/" (userinfo, then another host) through.
+	// Printable ASCII only, and no backslash (browsers read it as a slash).
+	bool IsLocalDevUrl(const std::wstring& url)
+	{
+		const std::wstring scheme = L"http://";
+		if (url.compare(0, scheme.size(), scheme) != 0)
+			return false;
+		for (wchar_t c : url)
+			if (c <= L' ' || c > L'~' || c == L'\\')
+				return false;
+		const size_t end = url.find_first_of(L"/?#", scheme.size());
+		if (end != std::wstring::npos && url[end] != L'/')
+			return false;
+		const std::wstring authority = url.substr(scheme.size(), end == std::wstring::npos ? std::wstring::npos : end - scheme.size());
+		const size_t colon = authority.find(L':');
+		if (colon == std::wstring::npos)
+			return false;
+		const std::wstring host = authority.substr(0, colon), port = authority.substr(colon + 1);
+		if (host != L"localhost" && host != L"127.0.0.1")
+			return false;
+		if (port.empty() || port.size() > 5 || port.find_first_not_of(L"0123456789") != std::wstring::npos)
+			return false;
+		const long n = std::wcstol(port.c_str(), nullptr, 10);
+		return n >= 1 && n <= 65535;
+	}
+
 	// The page, or for developing it a local dev server given at launch with
 	// -meowy_loading_url http://localhost:5173/pack-loading.html (only
 	// localhost addresses are accepted there).
@@ -480,9 +508,7 @@ namespace
 		std::wstring url;
 		while (*at && *at != L' ' && *at != L'"')
 			url += *at++;
-		if (url.rfind(L"http://localhost:", 0) == 0 || url.rfind(L"http://127.0.0.1:", 0) == 0)
-			return url;
-		return kPageUrl;
+		return IsLocalDevUrl(url) ? url : kPageUrl;
 	}
 
 	// WebView2's profile (cache, cookies of our site only): %LOCALAPPDATA%\MeowyClientPack\WebView2.

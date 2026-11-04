@@ -47,6 +47,9 @@ namespace
 	bool g_dirty = false;              // g_activity not yet sent on this connection
 	std::string g_lastError;           // raw payload of Discord's last error or close frame
 
+	constexpr uint32_t kMaxFrame = 64 * 1024;
+	constexpr ULONGLONG kReadWaitMs = 2000;
+
 	class Pipe
 	{
 	public:
@@ -57,7 +60,10 @@ namespace
 			for (int i = 0; i < 10; ++i)
 			{
 				std::wstring name = L"\\\\.\\pipe\\discord-ipc-" + std::to_wstring(i);
-				m_handle = CreateFileW(name.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+				// Identification only: whatever owns the pipe (Discord, or something
+				// squatting its name) can't act as this user through it.
+				m_handle = CreateFileW(name.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
+					SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION, nullptr);
 				if (m_handle != INVALID_HANDLE_VALUE)
 					return true;
 			}
@@ -99,6 +105,10 @@ namespace
 			uint32_t header[2];
 			if (!ReadAll(header, 8))
 				return false;
+			// Discord's frames are a few KB. A length past the cap is a broken or
+			// hostile pipe: drop the connection rather than allocate it.
+			if (header[1] > kMaxFrame)
+				return false;
 			op = header[0];
 			payload.assign(header[1], '\0');
 			if (header[1] > 0 && !ReadAll(&payload[0], header[1]))
@@ -121,13 +131,27 @@ namespace
 			return true;
 		}
 
+		// Reads only what the pipe already holds, waiting up to kReadWaitMs for
+		// the rest of a frame: a frame that announces more than it sends must not
+		// block this thread (Shutdown joins it as the player leaves a server).
 		bool ReadAll(void* out, DWORD size)
 		{
 			char* p = static_cast<char*>(out);
+			const ULONGLONG deadline = GetTickCount64() + kReadWaitMs;
 			while (size > 0)
 			{
+				DWORD avail = 0;
+				if (!PeekNamedPipe(m_handle, nullptr, 0, nullptr, &avail, nullptr))
+					return false;
+				if (avail == 0)
+				{
+					if (GetTickCount64() > deadline)
+						return false;
+					Sleep(5);
+					continue;
+				}
 				DWORD got = 0;
-				if (!ReadFile(m_handle, p, size, &got, nullptr) || got == 0)
+				if (!ReadFile(m_handle, p, avail < size ? avail : size, &got, nullptr) || got == 0)
 					return false;
 				p += got;
 				size -= got;

@@ -16,8 +16,8 @@
 	  player with none of these for the whole visit is "quiet"; quiet with a
 	  low ping that never moved (hosted next to the server) is "idle".
 
-	The counts (never names or positions) go to data/ldr/result.json,
-	which the observer's supervisor sends to Meowy Network. The server's own
+	The counts (never names or positions) go to the observer's module, in
+	memory, and from there to the supervisor, which sends them to Meowy Network. The server's own
 	client Lua shares this state, so the natives are captured first.
 
 	It runs the whole visit by itself from the moment loading ends: the menu
@@ -28,7 +28,8 @@
 
 -- The module hands this chunk one argument: a C function to report through, so
 -- progress and results stay in the module's memory and never touch data/ (any
--- server's Lua can read data/). Without it (the module's fallback path), a file.
+-- server's Lua can read and write data/). There is no file fallback: the menu
+-- only believes this function.
 local report = ...
 
 local SETTLE = 60 -- seconds after loading before sampling (spawn, the server's intro screens)
@@ -44,14 +45,12 @@ local FLAT_PING_DRIFT = 1 -- ms, over the whole visit
 local PAYDAY_SHARE = 0.5 -- this many players' money changing in one tick is a payday
 
 local player_GetAll, IsValid, LocalPlayer = player.GetAll, IsValid, LocalPlayer
-local file_Write, file_CreateDir, util_TableToJSON = file.Write, file.CreateDir, util.TableToJSON
+local util_TableToJSON = util.TableToJSON
 local timer_Create, timer_Remove, CurTime, math_abs, pcall = timer.Create, timer.Remove, CurTime, math.abs, pcall
 local hook_Add, hook_Remove, timer_Simple = hook.Add, hook.Remove, timer.Simple
 local activateMenu = gui and gui.ActivateGameUI
 local function out(json)
 	if report then return report(json) end
-	file_CreateDir("ldr")
-	file_Write("ldr/result.json", json)
 end
 local id = "meowy_observer_" .. tostring(math.random(1e6))
 
@@ -145,7 +144,7 @@ end
 
 local tickBody
 local failed = false
--- Every tick reports progress (or the error that stopped it) in result.json, so
+-- Every tick reports progress (or the error that stopped it), so
 -- a visit that never finishes says how far it got and why.
 local function tick()
 	if failed then return end
