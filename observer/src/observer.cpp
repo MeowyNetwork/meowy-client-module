@@ -531,6 +531,17 @@ namespace
 		float nx, ny, nz, eyeYaw, simTime;
 	};
 
+	// What the last read saw, for the log when it finds no players.
+	std::string g_nativeInfo = "no read yet";
+
+	const char* ClassName(const void* cls)
+	{
+		if (!Plausible(cls))
+			return nullptr;
+		const char* name = reinterpret_cast<const char* const*>(cls)[2];
+		return PlausibleText(name) ? name : nullptr;
+	}
+
 	// Reads the players; false with a reason when anything doesn't check out.
 	bool ReadNativePlayers(std::vector<NativePlayer>& out, std::string& why)
 	{
@@ -542,6 +553,14 @@ namespace
 		int highest = VCall<int>(list, 6);
 		if (highest < 1 || highest > 8192)
 			return why = "entity list answered nonsense (highest index " + std::to_string(highest) + ")", false;
+		// The player class is our own player's: no name to guess (GMod builds
+		// differ). By name only when the local player can't be read.
+		const void* playerCls = nullptr;
+		if (localIndex >= 1 && localIndex <= highest)
+			if (void* net = VCall<void*>(list, 0, localIndex); net && Plausible(net))
+				playerCls = VCall<const void*>(net, 2);
+		const char* playerName = ClassName(playerCls);
+		std::string seenNames;
 		int checked = 0;
 		for (int i = 1; i <= highest && i <= 256; ++i)
 		{
@@ -562,10 +581,12 @@ namespace
 				return why = "entity vtable layout not as expected", false;
 			++checked;
 			const void* cls = VCall<const void*>(net, 2);
-			if (!Plausible(cls))
+			const char* name = ClassName(cls);
+			if (i <= 4 && seenNames.size() < 120)
+				seenNames += std::string(seenNames.empty() ? "" : ", ") + std::to_string(i) + "=" + (name ? name : "?");
+			if (!name)
 				continue;
-			const char* name = reinterpret_cast<const char* const*>(cls)[2];
-			if (!Plausible(name) || std::strcmp(name, "CGMOD_Player") != 0)
+			if (playerName ? cls != playerCls : std::strcmp(name, "CGMOD_Player") != 0)
 				continue;
 			const float* origin = VCall<const float*>(ent, kEntAbsOrigin);
 			const float* angles = VCall<const float*>(ent, kEntAbsAngles);
@@ -583,6 +604,8 @@ namespace
 		}
 		if (checked == 0)
 			return why = "no entities to check", false;
+		g_nativeInfo = "local player " + std::to_string(localIndex) + ", player class " + (playerName ? playerName : "unknown (by name)") +
+			", " + std::to_string(out.size()) + " players of " + std::to_string(checked) + " entities; first: " + seenNames;
 		return true;
 	}
 
@@ -620,6 +643,13 @@ namespace
 			if (std::isfinite(p.eyeYaw)) { LUA->PushNumber(p.eyeYaw); LUA->SetField(-2, "eyeYaw"); }
 			LUA->SetTable(-3);
 		}
+		return 1;
+	}
+
+	// observer.NativeInfo() -> what the last read saw (local player, player class, entities)
+	LUA_FUNCTION(NativeInfo)
+	{
+		LUA->PushString(g_nativeInfo.c_str());
 		return 1;
 	}
 
@@ -708,6 +738,8 @@ GMOD_MODULE_OPEN()
 	LUA->SetField(-2, "NativePlayers");
 	LUA->PushCFunction(NativeSimTime);
 	LUA->SetField(-2, "NativeSimTime");
+	LUA->PushCFunction(NativeInfo);
+	LUA->SetField(-2, "NativeInfo");
 	LUA->PushCFunction(NativeState);
 	LUA->SetField(-2, "NativeState");
 	LUA->PushCFunction(SetNativeState);

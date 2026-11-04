@@ -114,11 +114,16 @@ local function checkNative(check)
 			end
 		end
 	end
+	note("native check: read " .. observer.NativeInfo())
+	if #players == 0 then
+		observer.SetNativeState("unknown")
+		return note("native check: no players read natively, next time")
+	end
 	note(string.format("native check: %d read natively, %d in view to Lua; positions matched vtable %d, fields %d; yaw matched abs %d, eye %d of %d; fields %s; e.g. %s",
 		#players, compared, vtable, fields, absYaw, eyeYaw, yaws, observer.NativeSimTime(), tostring(sample)))
 	if compared < 2 or yaws < 2 then
 		observer.SetNativeState("unknown")
-		return note("native check: too few visible players (" .. compared .. "), next time")
+		return note("native check: too few to compare (" .. compared .. " in view, " .. yaws .. " with a yaw), next time")
 	end
 	local pos = vtable >= compared * 0.9 and "vtable" or fields >= compared * 0.9 and "fields" or nil
 	local yaw = absYaw >= yaws * 0.9 and "absyaw" or eyeYaw >= yaws * 0.9 and "eyeyaw" or nil
