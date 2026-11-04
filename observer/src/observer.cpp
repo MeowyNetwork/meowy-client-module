@@ -45,13 +45,15 @@ namespace
 	using PCallFn = int (*)(lua_State*, int, int, int);
 	using ToLStringFn = const char* (*)(lua_State*, int, size_t*);
 	using SetTopFn = void (*)(lua_State*, int);
+	using PushCClosureFn = void (*)(lua_State*, int (*)(lua_State*), int);
 	struct LuaApi
 	{
 		LoadBufferFn loadbuffer = nullptr;
 		PCallFn pcall = nullptr;
 		ToLStringFn tolstring = nullptr;
 		SetTopFn settop = nullptr;
-		bool ok() const { return loadbuffer && pcall && tolstring && settop; }
+		PushCClosureFn pushcclosure = nullptr;
+		bool ok() const { return loadbuffer && pcall && tolstring && settop && pushcclosure; }
 	};
 	LuaApi g_api;
 	// ILuaShared's vtable: the destructor takes one slot with MSVC and two with
@@ -88,6 +90,7 @@ namespace
 		g_api.pcall = reinterpret_cast<PCallFn>(sym("lua_pcall"));
 		g_api.tolstring = reinterpret_cast<ToLStringFn>(sym("lua_tolstring"));
 		g_api.settop = reinterpret_cast<SetTopFn>(sym("lua_settop"));
+		g_api.pushcclosure = reinterpret_cast<PushCClosureFn>(sym("lua_pushcclosure"));
 		if (factory)
 			shared = factory("LUASHARED003", nullptr);
 		return shared;
@@ -144,6 +147,28 @@ namespace
 		return out;
 	}
 
+	// What the sampler last reported, through ClientReport: kept here in the
+	// module, never in a file or anywhere in the server's Lua state.
+	std::string g_clientResult;
+	int ClientReport(lua_State* L)
+	{
+		size_t n = 0;
+		const char* s = g_api.tolstring ? g_api.tolstring(L, 1, &n) : nullptr;
+		if (s && n < 64 * 1024)
+			g_clientResult.assign(s, n);
+		return 0;
+	}
+
+	// observer.TakeClientResult() -> the sampler's latest report (JSON), or nil
+	LUA_FUNCTION(TakeClientResult)
+	{
+		if (g_clientResult.empty())
+			LUA->PushNil();
+		else
+			LUA->PushString(g_clientResult.c_str(), static_cast<unsigned int>(g_clientResult.size()));
+		return 1;
+	}
+
 	// The client state's lua_State, handed over by calling this C function in it.
 	lua_State* g_grabbed = nullptr;
 	int Grab(lua_State* L)
@@ -196,7 +221,12 @@ namespace
 			if (L)
 			{
 				std::string err;
-				if (g_api.loadbuffer(L, code, len, "=ldr") != 0 || g_api.pcall(L, 0, 0, 0) != 0)
+				g_clientResult.clear();
+				bool loaded = g_api.loadbuffer(L, code, len, "=ldr") == 0;
+				// The chunk gets one argument: a C function it reports through (ClientReport).
+				if (loaded)
+					g_api.pushcclosure(L, ClientReport, 0);
+				if (!loaded || g_api.pcall(L, 1, 0, 0) != 0)
 				{
 					const char* e = g_api.tolstring(L, -1, nullptr);
 					err = e ? e : "unknown error";
@@ -507,6 +537,8 @@ GMOD_MODULE_OPEN()
 	}
 	LUA->PushSpecial(SPECIAL_GLOB);
 	LUA->CreateTable();
+	LUA->PushCFunction(TakeClientResult);
+	LUA->SetField(-2, "TakeClientResult");
 	LUA->PushCFunction(RunClient);
 	LUA->SetField(-2, "RunClient");
 	LUA->PushCFunction(ReadJob);

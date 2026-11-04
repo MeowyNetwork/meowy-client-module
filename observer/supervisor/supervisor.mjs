@@ -42,7 +42,6 @@ const GAME_ARGS = [
 const CONSOLE_LOG =
   process.env.MEOWY_OBSERVER_CONSOLE_LOG ||
   path.join(process.env.HOME || '.', '.steam/steam/steamapps/common/GarrysMod/garrysmod/console.log');
-const SAMPLER_RESULT = path.join(path.dirname(CONSOLE_LOG), 'data/ldr/result.json');
 
 // The observer's module is in the game's folders only while the game starts:
 // the loader goes into lua/bin and its require line into menu.lua just before a
@@ -361,7 +360,7 @@ function lastLines(text, n = 5) {
 
 // Why the game closed by itself: a fatal line in its output (which goes to
 // Steam's service log, not console.log), or a crash dump written since `since`.
-async function whyClosed(since) {
+async function whyClosed(since, obsLogFrom = 0) {
   const out = await run('journalctl', ['-u', 'observer-desktop', '--since', `@${Math.floor(since / 1000)}`, '-n', '2000', '-o', 'cat', '--no-pager']);
   const fatal = (out || '').match(/^.*(FATAL|Out of memory|Segmentation fault|Aborted|core dumped|Assertion).*$/im);
   let dumps = 0;
@@ -373,10 +372,13 @@ async function whyClosed(since) {
   if (fatal) return `the game crashed: ${fatal[0].replace(/^\[[^\]]*\]\s*/, '').trim().slice(0, 150)}`;
   if (dumps) return 'the game crashed (crash dump written)';
   // A clean exit once the sampler was in the server's game: its anticheat, most
-  // likely (the backend then sends status-only visits there).
-  try {
-    if ((await fs.stat(SAMPLER_RESULT)).mtimeMs >= since) return 'the game closed during sampling (the server\'s anticheat?)';
-  } catch {}
+  // likely (the backend then sends status-only visits there). The sampler
+  // reports into the module's memory, so the menu's own log says whether it had
+  // started: "sampler started" since this visit began.
+  const logBuf = await fs.readFile(path.join(DIR, 'observer.log')).catch(() => Buffer.alloc(0));
+  if (logBuf.subarray(obsLogFrom).toString('utf8').includes('sampler started')) {
+    return "the game closed during sampling (the server's anticheat?)";
+  }
   return 'the game closed (no crash reported)';
 }
 
@@ -395,7 +397,7 @@ async function failed(job, error, consoleFrom = null) {
   const extra = consoleFrom === null ? {} : { console: lastLines((await consoleSince(consoleFrom)).text) };
   log('visit_failed', { address: job.address, error, ...extra });
   try {
-    await api('POST', '/failed', { id: job.id, address: job.address, error });
+    if (!job.local) await api('POST', '/failed', { id: job.id, address: job.address, error });
   } catch (err) {
     log('error', { err: err.message });
   }
@@ -421,6 +423,7 @@ async function visit(job) {
   // in the game folder: start each visit with it empty.
   await fs.truncate(CONSOLE_LOG, 0).catch(() => {});
   const visitConsole = await consoleSize();
+  const obsLogFrom = (await fs.stat(path.join(DIR, 'observer.log')).catch(() => ({ size: 0 }))).size;
   let consoleAt = visitConsole;
   const started = Date.now();
   await fs.writeFile(path.join(DIR, 'job.json'), JSON.stringify(job));
@@ -457,7 +460,7 @@ async function visit(job) {
       }
       if (kicked) return failed(job, `kicked: ${kicked[1].trim()}`.slice(0, 200), visitConsole);
       // The game closed mid-visit: say whether it crashed, and why.
-      if (MANAGE_GAME && ++checks % 5 === 0 && (await gameGone())) return failed(job, await whyClosed(started), visitConsole);
+      if (MANAGE_GAME && ++checks % 5 === 0 && (await gameGone())) return failed(job, await whyClosed(started, obsLogFrom), visitConsole);
       continue;
     }
     await fs.rm(path.join(DIR, 'done.json'), { force: true });
@@ -471,7 +474,7 @@ async function visit(job) {
       if (n && [n.observed, n.still, n.visible].every(Number.isInteger) && n.still <= n.observed) {
         Object.assign(result, { observed: n.observed, still: n.still, visible: n.visible });
       }
-      await api('POST', '/result', result);
+      if (!job.local) await api('POST', '/result', result);
       log('visit_done', result);
       return;
     }
@@ -479,11 +482,30 @@ async function visit(job) {
     for (const k of ['players', 'observed', 'still', 'samples', 'visible', 'selfAlive', 'judged', 'active', 'quiet', 'flat', 'idle']) {
       if (Number.isInteger(done[k])) result[k] = done[k];
     }
-    await api('POST', '/result', result);
+    if (!job.local) await api('POST', '/result', result);
     log('visit_done', result);
     return;
   }
   return failed(job, `no result after ${VISIT_TIMEOUT_MS / 60000} min`, visitConsole);
+}
+
+// observer-queue --local <ip:port> writes local-job.json: a visit the backend
+// doesn't know about (for testing, e.g. on one of our own servers). Its result
+// is logged, never sent.
+async function takeLocalJob() {
+  const file = path.join(DIR, 'local-job.json');
+  let job;
+  try {
+    job = JSON.parse(await fs.readFile(file, 'utf8'));
+  } catch {
+    return null;
+  } finally {
+    await fs.rm(file, { force: true });
+  }
+  if (!job || typeof job.address !== 'string' || !/^\d{1,3}(\.\d{1,3}){3}:\d{1,5}$/.test(job.address)) return null;
+  const id = Array.from({ length: 16 }, () => '0123456789abcdef'[Math.floor(Math.random() * 16)]).join('');
+  log('local_visit', { address: job.address });
+  return { id, address: job.address, local: true, ...(job.mode === 'status' ? { mode: 'status' } : {}) };
 }
 
 async function main() {
@@ -504,7 +526,9 @@ async function main() {
     // A round: visit while the backend has suspects, then close the game.
     try {
       for (;;) {
-        const job = await api('GET', '/next');
+        // A local test visit first (observer-queue --local): not asked of the
+        // backend, and its result only logged.
+        const job = (await takeLocalJob()) || (await api('GET', '/next'));
         if (!job || !job.id || !job.address) break;
         await visit(job);
       }

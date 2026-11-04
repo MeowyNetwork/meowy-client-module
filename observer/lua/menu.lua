@@ -41,7 +41,13 @@ end
 
 -- (Only the load screen says whether we're loading: the status text stays set
 -- after a refused connect, so it's for the log only.)
-local function loading() return IsInLoading() end
+local function loading()
+	-- IsInLoading comes from GMod's own menu scripts (menu/loading.lua). When the
+	-- main menu fails to load ("Menu failed to load") it can be missing: then the
+	-- status text, while not in game, is the best there is.
+	if isfunction(IsInLoading) then return IsInLoading() end
+	return loadStatus() ~= nil and not IsInGame()
+end
 
 -- A failure, with where the join got to.
 local function why(err)
@@ -56,7 +62,7 @@ local function done(result)
 	result.address = job.address
 	observer.WriteDone(util.TableToJSON(result))
 	note("done: " .. util.TableToJSON(result))
-	if IsInGame() or IsInLoading() then RunConsoleCommand("disconnect") end
+	if IsInGame() or loading() then RunConsoleCommand("disconnect") end
 	job, phase = nil, "idle"
 end
 
@@ -215,7 +221,7 @@ step = function(now)
 		local text = observer.ReadJob()
 		if text and text ~= lastJobText then
 			note("new job while " .. phase .. ", dropping " .. job.address)
-			if IsInGame() or IsInLoading() then RunConsoleCommand("disconnect") end
+			if IsInGame() or loading() then RunConsoleCommand("disconnect") end
 			job, phase = nil, "idle"
 		end
 	end
@@ -261,7 +267,7 @@ step = function(now)
 
 	elseif phase == "sampling" then
 		-- The result first: the sampler brings the menu back once it's written.
-		local r = util.JSONToTable(file.Read("ldr/result.json", "DATA") or "")
+		local r = util.JSONToTable(observer.TakeClientResult() or file.Read("ldr/result.json", "DATA") or "")
 		if istable(r) and r.still ~= nil then
 			local ok, err = pcall(checkNative, r.check)
 			if not ok then note("native check error: " .. tostring(err)) end

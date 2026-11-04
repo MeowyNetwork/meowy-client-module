@@ -26,6 +26,11 @@
 	the result and disconnects.
 ]]
 
+-- The module hands this chunk one argument: a C function to report through, so
+-- progress and results stay in the module's memory and never touch data/ (any
+-- server's Lua can read data/). Without it (the module's fallback path), a file.
+local report = ...
+
 local SETTLE = 60 -- seconds after loading before sampling (spawn, the server's intro screens)
 local TICK = 5 -- seconds between ticks (ping and the rest)
 local TICKS = 120 -- 10 minutes
@@ -43,6 +48,11 @@ local file_Write, file_CreateDir, util_TableToJSON = file.Write, file.CreateDir,
 local timer_Create, timer_Remove, CurTime, math_abs, pcall = timer.Create, timer.Remove, CurTime, math.abs, pcall
 local hook_Add, hook_Remove, timer_Simple = hook.Add, hook.Remove, timer.Simple
 local activateMenu = gui and gui.ActivateGameUI
+local function out(json)
+	if report then return report(json) end
+	file_CreateDir("ldr")
+	file_Write("ldr/result.json", json)
+end
 local id = "meowy_observer_" .. tostring(math.random(1e6))
 
 -- player entity -> { ticks, pingMin, pingMax, seen = {{pos, yaw, pitch}}, active, frags, deaths, job, money }
@@ -128,8 +138,7 @@ local function finish()
 			r.check[#r.check + 1] = { index = ply:EntIndex(), x = pos.x, y = pos.y, z = pos.z, dormant = ply:IsDormant(), localPlayer = ply == me }
 		end
 	end
-	file_CreateDir("ldr")
-	file_Write("ldr/result.json", util_TableToJSON(r))
+		out(util_TableToJSON(r))
 	-- Wake the menu state: it reads the result and disconnects.
 	if activateMenu then pcall(activateMenu) end
 end
@@ -146,10 +155,10 @@ local function tick()
 		timer_Remove(id)
 		hook_Remove("OnPlayerChat", id)
 		hook_Remove("PlayerStartVoice", id)
-		file_Write("ldr/result.json", util_TableToJSON({ error = tostring(err), ticks = ticks }))
+		out(util_TableToJSON({ error = tostring(err), ticks = ticks }))
 		if activateMenu then pcall(activateMenu) end
 	elseif ticks < TICKS then
-		file_Write("ldr/result.json", util_TableToJSON({ started = true, ticks = ticks, of = TICKS }))
+		out(util_TableToJSON({ started = true, ticks = ticks, of = TICKS }))
 	end
 end
 
@@ -188,12 +197,11 @@ tickBody = function()
 	if ticks >= TICKS then finish() end
 end
 
-file_CreateDir("ldr")
-file_Write("ldr/result.json", util_TableToJSON({ loaded = CurTime() }))
+out(util_TableToJSON({ loaded = CurTime() }))
 timer_Simple(SETTLE, function()
 	hook_Add("OnPlayerChat", id, function(ply) heard(ply) end)
 	hook_Add("PlayerStartVoice", id, function(ply) heard(ply) end)
-	file_Write("ldr/result.json", util_TableToJSON({ started = true, ticks = 0, of = TICKS }))
+	out(util_TableToJSON({ started = true, ticks = 0, of = TICKS }))
 	tick()
 	timer_Create(id, TICK, TICKS - 1, tick)
 end)
