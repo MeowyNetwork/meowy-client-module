@@ -57,6 +57,11 @@ const LOADER_SRC = process.env.MEOWY_OBSERVER_LOADERS || '/opt/observer';
 const LOADERS = ['gmsv_ldr_linux64.dll', 'gmsv_ldr_linux.dll'];
 const REQUIRE_LINE = 'pcall(require, "ldr")';
 
+export async function emptyData() {
+  const data = path.join(GARRYSMOD, 'data');
+  for (const e of await fs.readdir(data).catch(() => [])) await fs.rm(path.join(data, e), { recursive: true, force: true });
+}
+
 export async function armLoader() {
   await fs.mkdir(LUA_BIN, { recursive: true });
   for (const f of LOADERS) await fs.copyFile(path.join(LOADER_SRC, f), path.join(LUA_BIN, f)).catch(() => {});
@@ -422,6 +427,10 @@ async function visit(job) {
   // players' names and SteamIDs), and any server's client Lua can read files
   // in the game folder: start each visit with it empty.
   await fs.truncate(CONSOLE_LOG, 0).catch(() => {});
+  // The same for garrysmod/data: earlier servers' addons leave their folders
+  // there, and earlier builds left the sampler's own. The observer keeps
+  // nothing in it between visits, so each visit starts with it empty.
+  await emptyData();
   const visitConsole = await consoleSize();
   const obsLogFrom = (await fs.stat(path.join(DIR, 'observer.log')).catch(() => ({ size: 0 }))).size;
   let consoleAt = visitConsole;
