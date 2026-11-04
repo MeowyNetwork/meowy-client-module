@@ -1,0 +1,2 @@
+*.sh text eol=lf
+observer/container/* text eol=lf
