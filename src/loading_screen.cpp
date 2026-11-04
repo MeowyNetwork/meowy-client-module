@@ -2,6 +2,7 @@
 #include "loading_screen.h"
 
 #ifdef _WIN32
+#define NOMINMAX   // std::min / std::max below
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <objbase.h>
@@ -9,11 +10,13 @@
 #include "loading_webview.h"
 #undef small   // rpcndr.h (via objbase.h) defines it; it's a font name below
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <cwchar>
+#include <cwctype>
 #include <initializer_list>
 #include <mutex>
 #include <string>
@@ -256,6 +259,26 @@ namespace
 		return buf;
 	}
 
+	// Fonts by pixel size and weight, made once per window height.
+	struct FontKey
+	{
+		int px, weight;
+	};
+	HFONT FontFor(int px, int weight)
+	{
+		static std::vector<std::pair<FontKey, HFONT>> cache;
+		for (auto& f : cache)
+			if (f.first.px == px && f.first.weight == weight)
+				return f.second;
+		HFONT f = CreateFontW(-px, 0, 0, 0, weight, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+			CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+		cache.push_back({ { px, weight }, f });
+		return f;
+	}
+
+	// The same layout and colours as the web page's Home page (Website
+	// pack-loading.css), so the switch to the page when it's ready is barely
+	// visible: top bar, server name, the three game cards, and the join strip.
 	void Draw(HDC dc, int w, int h)
 	{
 		ULONGLONG now = GetTickCount64();
@@ -276,98 +299,156 @@ namespace
 			map = g.map;
 			status = g.status;
 		}
-		MakeFonts(h);
 		SetBkMode(dc, TRANSPARENT);
+		// Page sizes are for 1600x900; scale with the window.
+		const double k = std::max(0.6, std::min(w / 1600.0, h / 900.0));
+		auto S = [&](double px) { return static_cast<int>(px * k + 0.5); };
 
-		// Background: a dark violet gradient.
+		const COLORREF white = RGB(255, 255, 255), dim = RGB(190, 188, 196), faint = RGB(128, 126, 134),
+			rose = RGB(225, 29, 72), rose2 = RGB(251, 113, 133), glass = RGB(22, 21, 27), glass2 = RGB(30, 28, 36),
+			line = RGB(40, 39, 46), track = RGB(44, 43, 50), done = RGB(205, 204, 210), ready = RGB(34, 197, 94);
+
+		// Background: near black with a faint rose tint at the top.
 		TRIVERTEX vert[2] = {
-			{ 0, 0, 0x1000, 0x1200, 0x2400, 0xFF00 },
-			{ w, h, 0x2400, 0x1400, 0x3400, 0xFF00 },
+			{ 0, 0, 0x1C00, 0x0F00, 0x1400, 0xFF00 },
+			{ w, h, 0x0A00, 0x0A00, 0x0C00, 0xFF00 },
 		};
 		GRADIENT_RECT gr = { 0, 1 };
 		GradientFill(dc, vert, 2, &gr, 1, GRADIENT_FILL_RECT_V);
 
-		const COLORREF white = RGB(245, 242, 255), dim = RGB(170, 160, 200), accent = RGB(190, 140, 255),
-			track = RGB(52, 42, 78), pink = RGB(255, 150, 205);
-		const int pad = w / 16;
+		const int pad = std::max(20, std::min(56, static_cast<int>(w * 0.032)));
+		const int topH = S(68), stripH = S(84);
 
-		Text(dc, v.small, accent, L"MEOWY NETWORK  ·  CLIENT PACK", { pad, h * 10 / 100, w - pad, h * 14 / 100 }, DT_LEFT | DT_SINGLELINE);
-		Text(dc, v.title, white, server, { pad, h * 14 / 100, w - pad, h * 26 / 100 }, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
-		if (!map.empty())
-			Text(dc, v.sub, dim, L"Joining " + map, { pad, h * 26 / 100, w - pad, h * 31 / 100 }, DT_LEFT | DT_SINGLELINE);
+		// ─── Top bar: brand and the page buttons (the page makes them work) ───
+		int cy = topH / 2;
+		Fill(dc, { pad, cy - S(13), pad + S(26), cy + S(13) }, rose, S(10));
+		Text(dc, FontFor(S(15), FW_BOLD), white, L"MEOWY NETWORK", { pad + S(40), 0, pad + S(300), topH }, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+		int navX = pad + S(300);
+		Fill(dc, { navX, cy - S(22), navX + S(260), cy + S(22) }, RGB(24, 23, 28), S(44));
+		const wchar_t* tabs[] = { L"Home", L"Play", L"City" };
+		for (int i = 0; i < 3; ++i)
+		{
+			RECT t = { navX + S(4) + i * S(84), cy - S(18), navX + S(4) + i * S(84) + S(84), cy + S(18) };
+			if (i == 0)
+				Fill(dc, t, rose, S(36));
+			Text(dc, FontFor(S(15), FW_SEMIBOLD), i == 0 ? white : dim, tabs[i], t, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+		}
 
-		// Progress through the current stage, eased and held below 95% until
-		// the next stage really starts.
+		// ─── Hero (left) ───────────────────────────────────────────────────────
+		int pageTop = topH, pageBottom = h - stripH;
+		int colGap = std::max(20, static_cast<int>(w * 0.04));
+		int leftW = (w - 2 * pad - colGap) * 11 / 21;
+		int heroY = pageTop + (pageBottom - pageTop) / 2 - S(150);
+		std::wstring eyebrow = L"JOINING " + (map.empty() ? std::wstring(L"DOWNTOWN") : map);
+		for (auto& c : eyebrow)
+			c = static_cast<wchar_t>(towupper(c));
+		Text(dc, FontFor(S(13), FW_BOLD), rose2, eyebrow, { pad, heroY, pad + leftW, heroY + S(20) }, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
+		RECT title = { pad, heroY + S(26), pad + leftW, heroY + S(26) + S(280) };   // three lines of the title
+		Text(dc, FontFor(S(64), FW_HEAVY), white, server, title, DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS);
+
+		// ─── Game cards (right) ────────────────────────────────────────────────
+		int rx = pad + leftW + colGap, rw = w - pad - rx;
+		int cardsTop = pageTop + S(24);
+		Text(dc, FontFor(S(15), FW_BOLD), faint, L"SOMETHING TO DO WHILE YOU WAIT", { rx, cardsTop, rx + rw, cardsTop + S(24) }, DT_LEFT | DT_SINGLELINE);
+		const wchar_t* names[] = { L"Where in Downtown?", L"Rooftop run", L"The city cat" };
+		const wchar_t* blurbs[] = {
+			L"A photo from somewhere in the city. Find it on the map.",
+			L"Leap across the real rooftops of Downtown. You arrive when the game is ready.",
+			L"Pet the cat. Head, cheeks, nose, belly or tail: she reacts to all of them.",
+		};
+		int cardH = S(150), cardGap = S(18), y0 = cardsTop + S(34);
+		for (int i = 0; i < 3; ++i)
+		{
+			int y = y0 + i * (cardH + cardGap);
+			if (y + cardH > pageBottom - S(10))
+				break;
+			Fill(dc, { rx, y, rx + rw, y + cardH }, glass, S(16));
+			RECT art = { rx + S(18), y + S(18), rx + S(18) + S(196), y + cardH - S(18) };
+			Fill(dc, art, glass2, S(12));
+			Fill(dc, { art.left, art.bottom - S(4), art.right, art.bottom }, i == 1 ? rose : glass2, 0);
+			RECT text = { art.right + S(26), y + S(32), rx + rw - S(20), y + cardH - S(14) };
+			Text(dc, FontFor(S(22), FW_BOLD), white, names[i], { text.left, text.top, text.right, text.top + S(30) }, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
+			Text(dc, FontFor(S(17), FW_NORMAL), dim, blurbs[i], { text.left, text.top + S(36), text.right, text.bottom }, DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS);
+		}
+
+		// ─── Join strip (bottom) ───────────────────────────────────────────────
+		RECT strip = { 0, pageBottom, w, h };
+		Fill(dc, strip, RGB(10, 10, 13), 0);
+		Fill(dc, { 0, pageBottom, w, pageBottom + 1 }, line, 0);
+		int sy = pageBottom + stripH / 2;
+
+		// Spinner: a rose arc going round a faint ring.
+		int sr = S(15), sx = pad + sr;
+		HPEN ringPen = CreatePen(PS_SOLID, S(3), RGB(40, 40, 44));
+		HPEN arcPen = CreatePen(PS_SOLID, S(3), stage == READY ? ready : rose);
+		HGDIOBJ oldPen = SelectObject(dc, ringPen);
+		HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
+		Ellipse(dc, sx - sr, sy - sr, sx + sr, sy + sr);
+		SelectObject(dc, arcPen);
+		double a0 = (now % 900) / 900.0 * 6.2831853;
+		Arc(dc, sx - sr, sy - sr, sx + sr, sy + sr, sx + static_cast<int>(sr * std::cos(a0)), sy - static_cast<int>(sr * std::sin(a0)),
+			sx + static_cast<int>(sr * std::cos(a0 + 1.6)), sy - static_cast<int>(sr * std::sin(a0 + 1.6)));
+		SelectObject(dc, oldPen);
+		SelectObject(dc, oldBrush);
+		DeleteObject(ringPen);
+		DeleteObject(arcPen);
+
 		double elapsed = starts[stage] ? (now - starts[stage]) / 1000.0 : (now - begin) / 1000.0;
 		double frac = expected[stage] > 0 ? elapsed / expected[stage] : 1;
 		double shown = 0.95 * (1 - std::exp(-2.2 * frac));
-
-		// Stage line with a spinner in front of it.
-		int lineY = h * 62 / 100;
-		int r = h / 60, cx = pad + r * 2, cy = lineY + h / 50;
-		for (int i = 0; i < 12; ++i)
-		{
-			double a = i * 3.14159265 / 6;
-			int k = static_cast<int>((now / 80 + 12 - i) % 12);
-			int lum = 255 - k * 16;
-			HBRUSH b = CreateSolidBrush(RGB(lum * 190 / 255, lum * 140 / 255, lum));
-			HGDIOBJ oldB = SelectObject(dc, b);
-			HGDIOBJ oldP = SelectObject(dc, GetStockObject(NULL_PEN));
-			int x = cx + static_cast<int>(std::cos(a) * r * 1.6), y = cy + static_cast<int>(std::sin(a) * r * 1.6);
-			int d = r / 3 + 1;
-			Ellipse(dc, x - d, y - d, x + d, y + d);
-			SelectObject(dc, oldP);
-			SelectObject(dc, oldB);
-			DeleteObject(b);
-		}
-		Text(dc, v.sub, white, kStageLines[stage], { pad + r * 5, lineY, w - pad, lineY + h / 22 }, DT_LEFT | DT_SINGLELINE);
 		std::wstring detail = status;
 		if (stage == SCRIPTS)
-			detail = L"Garry's Mod may say \"Not Responding\" for a while here. It's working; this screen keeps going.";
+			detail = L"Garry’s Mod may say “Not Responding” here. It’s working.";
 		else if (elapsed > 3 * expected[stage] && elapsed > 60)
 			detail = L"This is taking longer than usual.";
-		Text(dc, v.body, dim, detail, { pad + r * 5, lineY + h / 22, w - pad, lineY + h * 9 / 100 }, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
+		int tx = sx + sr + S(18), tw = std::max(S(220), std::min(S(380), static_cast<int>(w * 0.22)));
+		Text(dc, FontFor(S(17), FW_BOLD), white, stage == READY ? L"You’re in! Spawning…" : kStageLines[stage],
+			{ tx, sy - S(22), tx + tw, sy }, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
+		Text(dc, FontFor(S(13), FW_NORMAL), dim, detail, { tx, sy + S(2), tx + tw, sy + S(22) }, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
 
-		// Remaining time: what's left of this stage plus the stages after it.
+		// Buttons on the right, then the clock, then the segments between.
+		int bh = S(44);
+		RECT cancel = { w - pad - S(132), sy - bh / 2, w - pad, sy + bh / 2 };
+		RECT hide = { cancel.left - S(16) - S(170), sy - bh / 2, cancel.left - S(16), sy + bh / 2 };
+		v.cancelBtn = cancel;
+		v.hideBtn = hide;
+		Fill(dc, cancel, rose, S(12));
+		Fill(dc, hide, RGB(26, 26, 31), S(12));
+		Text(dc, FontFor(S(15), FW_SEMIBOLD), white, L"Cancel", cancel, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+		Text(dc, FontFor(S(15), FW_SEMIBOLD), dim, L"Game's screen", hide, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
 		double remain = expected[stage] - elapsed;
 		if (remain < 2)
 			remain = 2;
 		for (int i = stage + 1; i < STAGES; ++i)
 			remain += expected[i];
-		wchar_t eta[96];
 		ULONGLONG joining = (now - begin) / 1000;
-		swprintf(eta, 96, L"Ready around %s   ·   joining for %llu:%02llu", Clock(static_cast<ULONGLONG>(remain * 1000)).c_str(),
-			joining / 60, joining % 60);
-		Text(dc, v.body, dim, eta, { pad, lineY, w - pad, lineY + h / 22 }, DT_RIGHT | DT_SINGLELINE);
+		wchar_t clock[64], since[64];
+		swprintf(clock, 64, stage == READY ? L"Ready now" : L"Ready around %s", Clock(static_cast<ULONGLONG>(remain * 1000)).c_str());
+		swprintf(since, 64, L"Joining for %llu:%02llu", joining / 60, joining % 60);
+		int etaR = hide.left - S(24), etaL = etaR - S(230);
+		Text(dc, FontFor(S(16), FW_BOLD), white, clock, { etaL, sy - S(22), etaR, sy }, DT_RIGHT | DT_SINGLELINE);
+		Text(dc, FontFor(S(12), FW_NORMAL), faint, since, { etaL, sy + S(3), etaR, sy + S(22) }, DT_RIGHT | DT_SINGLELINE);
 
-		// Five segments.
-		int segY = h * 74 / 100, segH = h / 90 + 2, gap = w / 120;
-		int segW = (w - 2 * pad - gap * (STAGES - 1)) / STAGES;
-		for (int i = 0; i < STAGES; ++i)
+		int segL = tx + tw + S(24), segR = etaL - S(24), gap = S(8);
+		int segW = (segR - segL - gap * (STAGES - 1)) / STAGES;
+		if (segW > S(20))
 		{
-			RECT s = { pad + i * (segW + gap), segY, pad + i * (segW + gap) + segW, segY + segH };
-			Fill(dc, s, track, segH);
-			double f = i < stage ? 1 : i == stage ? shown : 0;
-			if (f > 0)
+			for (int i = 0; i < STAGES; ++i)
 			{
-				RECT full = s;
-				full.right = s.left + static_cast<int>(segW * f);
-				Fill(dc, full, i == stage ? pink : accent, segH);
+				RECT s = { segL + i * (segW + gap), sy - S(10), segL + i * (segW + gap) + segW, sy - S(3) };
+				Fill(dc, s, track, S(7));
+				double f = i < stage ? 1 : i == stage ? shown : 0;
+				if (f > 0)
+				{
+					RECT full = s;
+					full.right = s.left + std::max(static_cast<int>(segW * f), S(7));
+					Fill(dc, full, stage == READY ? ready : i == stage ? rose : done, S(7));
+				}
+				Text(dc, FontFor(S(12), FW_NORMAL), i <= stage ? white : faint, kStageNames[i], { s.left, sy + S(2), s.right, sy + S(20) },
+					DT_LEFT | DT_SINGLELINE);
 			}
-			Text(dc, v.small, i <= stage ? white : dim, kStageNames[i], { s.left, segY + segH + h / 120, s.right, segY + segH + h / 25 },
-				DT_LEFT | DT_SINGLELINE);
 		}
-
-		// Buttons, bottom right.
-		int bh = h / 18, bw = w / 9, by = h - pad / 2 - bh;
-		v.cancelBtn = { w - pad - bw, by, w - pad, by + bh };
-		v.hideBtn = { w - pad - bw * 2 - gap * 2, by, w - pad - bw - gap * 2, by + bh };
-		Fill(dc, v.cancelBtn, RGB(70, 50, 100), bh / 3);
-		Fill(dc, v.hideBtn, RGB(45, 36, 66), bh / 3);
-		Text(dc, v.body, white, L"Cancel", v.cancelBtn, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-		Text(dc, v.body, dim, L"Game's screen", v.hideBtn, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-		Text(dc, v.small, dim, L"Shown by the Meowy Client Pack, only when you join Meowy Network.",
-			{ pad, by, v.hideBtn.left - gap, by + bh }, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 	}
 
 	bool Inside(const RECT& r, int x, int y) { return x >= r.left && x < r.right && y >= r.top && y < r.bottom; }
