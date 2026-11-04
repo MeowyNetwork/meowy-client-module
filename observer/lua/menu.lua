@@ -26,6 +26,23 @@ local JOIN_TIMEOUT, SAMPLE_TIMEOUT = 40 * 60, 15 * 60
 
 local job, phase, since, lastJobText = nil, "idle", 0, nil
 local stage = nil -- the last loading status seen this visit ("Retrieving Lua files...", a download...)
+-- The loading status when the visit began: it stays set after the last
+-- connect, so a status equal to it isn't news from this join.
+local startStage = nil
+
+-- A loading status that says the server turned us away. After a kick or ban
+-- while joining, the load screen stays up showing it (IsInLoading stays true),
+-- so the "back on the menu" check below never sees us leave. This text is the
+-- engine's own: the server's Lua can't set it.
+local function refusedStatus(s)
+	local l = string.lower(s)
+	if string.find(l, "by user", 1, true) then return false end -- our own disconnect
+	return string.find(l, "^disconnect") ~= nil
+		or string.find(l, "^connection failed") ~= nil
+		or string.find(l, "^couldn't connect") ~= nil
+		or string.find(l, "^server is full") ~= nil
+		or string.find(l, "rejected", 1, true) ~= nil
+end
 
 -- To observer.log only: the game's console is logged to console.log, which a
 -- server's Lua can read.
@@ -52,7 +69,8 @@ end
 
 -- A failure, with where the join got to.
 local function why(err)
-	return stage and (err .. " (last stage: " .. string.sub(stage, 1, 120) .. ")") or err
+	-- (On one line: a kick reason comes with blank lines around it.)
+	return stage and (err .. " (last stage: " .. string.sub(string.gsub(stage, "%s+", " "), 1, 120) .. ")") or err
 end
 
 local function done(result)
@@ -370,7 +388,7 @@ step = function(now)
 			note("job rejected: " .. string.sub(text, 1, 120) .. " (parsed: " .. type(j) .. ")")
 			return
 		end
-		job, phase, since, stage = j, "joining", now, nil
+		job, phase, since, stage, startStage = j, "joining", now, nil, loadStatus()
 		hookLoadPanel()
 		note("visiting " .. j.address .. " (JoinServer " .. tostring(isfunction(JoinServer)) .. ")")
 		-- Of a server's downloads (Workshop included), only maps by default; "all"
@@ -386,6 +404,12 @@ step = function(now)
 			-- Each new stage in the observer's log: where a slow or failed join got to.
 			stage = s
 			note("stage: " .. string.sub(s, 1, 120))
+			-- Turned away (banned, full, rejected): the visit is over now, not at
+			-- the join timeout. The same words as below, which the backend reads
+			-- as a refusal.
+			if s ~= startStage and refusedStatus(s) then
+				return done({ error = why("back on the menu while joining (refused or kicked)") })
+			end
 		end
 		if IsInGame() and not loading() then
 			-- Only if the load screen hook didn't fire (we woke up in game).
