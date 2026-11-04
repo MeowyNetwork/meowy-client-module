@@ -300,7 +300,9 @@ local function loaded(how)
 	if job.mode == "status" then
 		RunConsoleCommand("gameui_activate")
 		note("in game (" .. how .. "), status only: " .. STATUS_RUNS .. " status runs, " .. STATUS_EVERY .. " s apart")
-		phase, since, statusRuns, nextStatus = "status", SysTime(), 0, SysTime() + 5
+		-- Let the spawn settle first (spawn teleports, intro screens), as the
+		-- sampler does: positions from the first seconds aren't where people stand.
+		phase, since, statusRuns, nextStatus = "status", SysTime(), 0, SysTime() + (job.quick and 10 or 30)
 		nativeReset()
 		return
 	end
