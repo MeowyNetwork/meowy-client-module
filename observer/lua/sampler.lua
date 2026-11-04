@@ -135,7 +135,7 @@ local function finish()
 	for _, ply in ipairs(player_GetAll()) do
 		if IsValid(ply) and #r.check < 128 then
 			local pos = ply:GetPos()
-			r.check[#r.check + 1] = { index = ply:EntIndex(), x = pos.x, y = pos.y, z = pos.z, dormant = ply:IsDormant(), localPlayer = ply == me }
+			r.check[#r.check + 1] = { index = ply:EntIndex(), x = pos.x, y = pos.y, z = pos.z, yaw = ply:EyeAngles().y, dormant = ply:IsDormant(), localPlayer = ply == me }
 		end
 	end
 		out(util_TableToJSON(r))

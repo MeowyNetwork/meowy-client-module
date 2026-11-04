@@ -445,7 +445,6 @@ namespace
 		bool inMainList;
 	};
 	constexpr int kDptDataTable = 6;
-	constexpr int kEntBaseEntity = kDtorSlots + 6; // IClientUnknown::GetBaseEntity
 
 	// The offset of a field in the entity, or -1; base classes first, as the
 	// tables list them.
@@ -470,9 +469,18 @@ namespace
 		return -1;
 	}
 
-	int g_simOffset = -1;      // m_flSimulationTime in a player entity, once found and checked
-	int g_simAttempts = 0;
-	std::string g_simWhy = "not looked up yet";
+	// Offsets in a player entity, found once from its class's receive tables
+	// (-1: not found). Nothing here is trusted on its own: the calibration
+	// against the Lua sampler decides which position source matches.
+	struct Fields
+	{
+		int origin = -1;  // m_vecOrigin: the position the server sent
+		int sim = -1;     // m_flSimulationTime
+		int eyeYaw = -1;  // m_angEyeAngles[1]
+		bool looked = false;
+	};
+	Fields g_fields;
+	std::string g_fieldsWhy = "not looked up yet";
 
 	template <typename T>
 	T Field(const void* ent, int offset)
@@ -482,31 +490,35 @@ namespace
 		return v;
 	}
 
-	// Finds the simulation time's offset from a player's class, and checks the
-	// lookup on a field we can verify: m_vecOrigin, found the same way, must
-	// hold the position GetAbsOrigin gives.
-	void ResolveSimTime(const void* cls, void* ent, const float* origin)
+	int FindField(const RecvTable* table, const char* name)
 	{
-		if (g_simOffset >= 0 || g_simAttempts >= 5)
+		int at = FindProp(table, name, 0, 0);
+		return at > 0 && at < 0x10000 && at % 4 == 0 ? at : -1;
+	}
+
+	void ResolveFields(const void* cls)
+	{
+		if (g_fields.looked)
 			return;
-		++g_simAttempts;
-		if (VCall<void*>(ent, kEntBaseEntity) != ent)
-			return void(g_simWhy = "entity isn't its own base entity");
+		g_fields.looked = true;
 		const RecvTable* table = reinterpret_cast<const RecvTable* const*>(cls)[3];
-		int originAt = FindProp(table, "m_vecOrigin", 0, 0);
-		int simAt = FindProp(table, "m_flSimulationTime", 0, 0);
-		if (originAt <= 0 || simAt <= 0)
-			return void(g_simWhy = "fields not found in the receive tables");
-		if (originAt > 0x10000 || simAt > 0x10000 || originAt % 4 || simAt % 4)
-			return void(g_simWhy = "implausible field offsets");
-		for (int k = 0; k < 3; ++k)
-			if (std::fabs(Field<float>(ent, originAt + 4 * k) - origin[k]) > 1.0f)
-				return void(g_simWhy = "m_vecOrigin doesn't match the entity's position");
-		float sim = Field<float>(ent, simAt);
-		if (!std::isfinite(sim) || sim <= 0 || sim > 1e7f)
-			return void(g_simWhy = "simulation time out of range");
-		g_simOffset = simAt;
-		g_simWhy = "ok";
+		if (!Plausible(table))
+			return void(g_fieldsWhy = "no receive table");
+		g_fields.origin = FindField(table, "m_vecOrigin");
+		g_fields.sim = FindField(table, "m_flSimulationTime");
+		g_fields.eyeYaw = FindField(table, "m_angEyeAngles[1]");
+		char buf[160];
+		std::snprintf(buf, sizeof buf, "%s (origin %d, simulation time %d, eye yaw %d)",
+			g_fields.sim > 0 ? "ok" : "simulation time not found", g_fields.origin, g_fields.sim, g_fields.eyeYaw);
+		g_fieldsWhy = buf;
+	}
+
+	float FieldOrNan(const void* ent, int offset)
+	{
+		if (offset < 0)
+			return NAN;
+		float v = Field<float>(ent, offset);
+		return std::isfinite(v) ? v : NAN;
 	}
 
 	struct NativePlayer
@@ -514,7 +526,9 @@ namespace
 		int index;
 		float x, y, z, yaw;
 		bool dormant, local;
-		float simTime; // NAN when unknown
+		// From the receive tables (NAN when not found): the networked origin,
+		// eye yaw and simulation time.
+		float nx, ny, nz, eyeYaw, simTime;
 	};
 
 	// Reads the players; false with a reason when anything doesn't check out.
@@ -558,18 +572,11 @@ namespace
 			if (!Plausible(origin) || !Plausible(angles))
 				return why = "implausible origin/angles", false;
 			bool dormant = VCall<bool>(net, 8);
-			// Checked on the local player (never dormant, no parent): its networked
-			// origin is its position.
-			if (i == localIndex && !dormant)
-				ResolveSimTime(cls, ent, origin);
-			float sim = NAN;
-			if (g_simOffset >= 0)
-			{
-				sim = Field<float>(ent, g_simOffset);
-				if (!std::isfinite(sim))
-					sim = NAN;
-			}
-			NativePlayer p{ i, origin[0], origin[1], origin[2], angles[1], dormant, i == localIndex, sim };
+			ResolveFields(cls);
+			const int o = g_fields.origin;
+			NativePlayer p{ i, origin[0], origin[1], origin[2], angles[1], dormant, i == localIndex,
+				FieldOrNan(ent, o), FieldOrNan(ent, o < 0 ? -1 : o + 4), FieldOrNan(ent, o < 0 ? -1 : o + 8),
+				FieldOrNan(ent, g_fields.eyeYaw), FieldOrNan(ent, g_fields.sim) };
 			if (!(std::fabs(p.x) < 65536 && std::fabs(p.y) < 65536 && std::fabs(p.z) < 65536))
 				return why = "positions out of the map's range", false;
 			out.push_back(p);
@@ -579,7 +586,7 @@ namespace
 		return true;
 	}
 
-	// observer.NativePlayers() -> { {index, x, y, z, yaw, dormant, localPlayer, simTime?}, ... } or nil, reason
+	// observer.NativePlayers() -> { {index, x, y, z, yaw, dormant, localPlayer, nx?, ny?, nz?, eyeYaw?, simTime?}, ... } or nil, reason
 	LUA_FUNCTION(NativePlayers)
 	{
 		std::vector<NativePlayer> players;
@@ -604,25 +611,34 @@ namespace
 			LUA->PushBool(p.dormant); LUA->SetField(-2, "dormant");
 			LUA->PushBool(p.local); LUA->SetField(-2, "localPlayer");
 			if (std::isfinite(p.simTime)) { LUA->PushNumber(p.simTime); LUA->SetField(-2, "simTime"); }
+			if (std::isfinite(p.nx) && std::isfinite(p.ny) && std::isfinite(p.nz))
+			{
+				LUA->PushNumber(p.nx); LUA->SetField(-2, "nx");
+				LUA->PushNumber(p.ny); LUA->SetField(-2, "ny");
+				LUA->PushNumber(p.nz); LUA->SetField(-2, "nz");
+			}
+			if (std::isfinite(p.eyeYaw)) { LUA->PushNumber(p.eyeYaw); LUA->SetField(-2, "eyeYaw"); }
 			LUA->SetTable(-3);
 		}
 		return 1;
 	}
 
-	// observer.NativeSimTime() -> "ok" once players' simulation times are read, else why not
+	// observer.NativeSimTime() -> "ok ..." once players' simulation times are read, else why not
 	LUA_FUNCTION(NativeSimTime)
 	{
-		LUA->PushString(g_simWhy.c_str());
+		LUA->PushString(g_fieldsWhy.c_str());
 		return 1;
 	}
 
 	// Whether native reads are trusted: "ok" only after they matched the Lua
-	// sampler on a normal visit; "pending" while that check runs (a crash then
-	// turns it into "bad" on the next start); "bad" for good.
+	// sampler on a normal visit ("ok vtable" or "ok fields": which position
+	// source matched); "pending" while that check runs (a crash then turns it
+	// into "bad" on the next start); "bad" for good. Kept per layout version, so
+	// a build that reads differently checks again.
 	std::string NativeStatePath()
 	{
 		std::string dir = Dir();
-		return dir.empty() ? std::string() : dir + "/native-state";
+		return dir.empty() ? std::string() : dir + "/native-state-2";
 	}
 
 	LUA_FUNCTION(NativeState)

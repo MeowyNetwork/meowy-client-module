@@ -70,11 +70,20 @@ end
 -- server's Lua), for status-only visits. It's trusted only after matching what
 -- the Lua sampler saw at the end of a normal visit; a crash during that check
 -- marks it bad for good (the module does that on the next start).
-local function nativeUsable() return observer.NativeState() == "ok" end
+-- "ok <position source> <yaw source>" once checked: vtable (GetAbsOrigin /
+-- GetAbsAngles) or fields (m_vecOrigin / m_angEyeAngles[1], the networked values).
+local function nativeUsable() return observer.NativeState():sub(1, 3) == "ok " end
+
+local function yawDiff(a, b)
+	local d = math.abs(a - b) % 360
+	return d > 180 and 360 - d or d
+end
+
+local function fmt(x, y, z) return string.format("(%d %d %d)", x, y, z) end
 
 local function checkNative(check)
 	local state = observer.NativeState()
-	if state == "ok" or state:sub(1, 3) == "bad" or not istable(check) then return end
+	if state:sub(1, 2) == "ok" or state:sub(1, 3) == "bad" or not istable(check) then return end
 	observer.SetNativeState("pending")
 	local players, why = observer.NativePlayers()
 	if not players then
@@ -83,27 +92,53 @@ local function checkNative(check)
 	end
 	local byIndex = {}
 	for _, p in ipairs(players) do byIndex[p.index] = p end
-	local compared, matched = 0, 0
+	-- Players can move a little between the two reads.
+	local compared, vtable, fields, yaws, absYaw, eyeYaw, sample = 0, 0, 0, 0, 0, 0, nil
 	for _, c in ipairs(check) do
 		if not c.dormant then
 			compared = compared + 1
 			local p = byIndex[c.index]
-			local d = p and math.sqrt((p.x - c.x) ^ 2 + (p.y - c.y) ^ 2 + (p.z - c.z) ^ 2)
-			-- Players can move a little between the two reads.
-			if p and not p.dormant and d < 300 and (p.localPlayer == true) == (c.localPlayer == true) then matched = matched + 1 end
+			if p and not p.dormant then
+				if math.sqrt((p.x - c.x) ^ 2 + (p.y - c.y) ^ 2 + (p.z - c.z) ^ 2) < 300 then vtable = vtable + 1 end
+				if p.nx and math.sqrt((p.nx - c.x) ^ 2 + (p.ny - c.y) ^ 2 + (p.nz - c.z) ^ 2) < 300 then fields = fields + 1 end
+				if c.yaw then
+					yaws = yaws + 1
+					if yawDiff(p.yaw, c.yaw) < 20 then absYaw = absYaw + 1 end
+					if p.eyeYaw and yawDiff(p.eyeYaw, c.yaw) < 20 then eyeYaw = eyeYaw + 1 end
+				end
+			end
+			if not sample and not c.localPlayer then
+				sample = string.format("#%d Lua %s yaw %s; vtable %s yaw %s; fields %s yaw %s", c.index, fmt(c.x, c.y, c.z), tostring(c.yaw and math.floor(c.yaw)),
+					p and fmt(p.x, p.y, p.z) or "missing", p and tostring(math.floor(p.yaw)) or "-",
+					p and p.nx and fmt(p.nx, p.ny, p.nz) or "none", p and p.eyeYaw and tostring(math.floor(p.eyeYaw)) or "none")
+			end
 		end
 	end
-	if compared < 2 then
+	note(string.format("native check: %d read natively, %d in view to Lua; positions matched vtable %d, fields %d; yaw matched abs %d, eye %d of %d; fields %s; e.g. %s",
+		#players, compared, vtable, fields, absYaw, eyeYaw, yaws, observer.NativeSimTime(), tostring(sample)))
+	if compared < 2 or yaws < 2 then
 		observer.SetNativeState("unknown")
 		return note("native check: too few visible players (" .. compared .. "), next time")
 	end
-	if matched >= compared * 0.9 then
-		observer.SetNativeState("ok")
-		note("native check: ok (" .. matched .. " of " .. compared .. " visible players matched)")
+	local pos = vtable >= compared * 0.9 and "vtable" or fields >= compared * 0.9 and "fields" or nil
+	local yaw = absYaw >= yaws * 0.9 and "absyaw" or eyeYaw >= yaws * 0.9 and "eyeyaw" or nil
+	if pos and yaw then
+		observer.SetNativeState("ok " .. pos .. " " .. yaw)
+		note("native check: ok (" .. pos .. " positions, " .. yaw .. ")")
 	else
-		observer.SetNativeState("bad: matched " .. matched .. " of " .. compared)
-		note("native check: failed (" .. matched .. " of " .. compared .. " matched)")
+		observer.SetNativeState(string.format("bad: positions vtable %d / fields %d, yaw abs %d / eye %d, of %d", vtable, fields, absYaw, eyeYaw, compared))
+		note("native check: failed")
 	end
+end
+
+-- A player's position and yaw from the source the check chose, or nil.
+local function nativeRead(p)
+	local state = observer.NativeState()
+	local x, y, z = p.x, p.y, p.z
+	if state:find(" fields", 1, true) then x, y, z = p.nx, p.ny, p.nz end
+	local yaw = state:find(" eyeyaw", 1, true) and p.eyeYaw or p.yaw
+	if not x or not yaw then return nil end
+	return { x = x, y = y, z = z, yaw = yaw }
 end
 
 -- Native position samples during a status-only visit, per player index:
@@ -136,7 +171,10 @@ local function nativeSample()
 		if p.localPlayer then
 			-- We never move on purpose; if we did (killed, moved by the server),
 			-- players leaving our view no longer means they moved.
-			if not selfFirst then selfFirst = p elseif apart(p, selfFirst) > 64 then selfMoved = true end
+			local me = nativeRead(p)
+			if me then
+				if not selfFirst then selfFirst = me elseif apart(me, selfFirst) > 64 then selfMoved = true end
+			end
 		else
 			local t = nativeTracks[p.index]
 			if not t then t = { n = 0, seen = {}, toggles = 0 } nativeTracks[p.index] = t end
@@ -154,7 +192,8 @@ local function nativeSample()
 				else
 					fresh = true
 				end
-				if fresh then t.seen[#t.seen + 1] = { x = p.x, y = p.y, z = p.z, yaw = p.yaw } end
+				local at = fresh and nativeRead(p)
+				if at then t.seen[#t.seen + 1] = at end
 			end
 			if p.simTime ~= nil then t.lastSim = p.simTime end
 			if t.lastVis ~= nil and t.lastVis ~= vis then t.toggles = t.toggles + 1 end
@@ -190,7 +229,7 @@ local function nativeCounts()
 	end
 	-- Proof the reads were fresh, or no "moved" (and so no AFK share): every
 	-- read had a simulation time, and hardly any stood still.
-	local sim = observer.NativeSimTime()
+	local sim = observer.NativeSimTime():match("^%S+")
 	local staleShare = visibleReads > 0 and staleReads / visibleReads or 1
 	r.check = { sim = sim, visibleReads = visibleReads, staleReads = staleReads, unprovenReads = unprovenReads, selfMoved = selfMoved }
 	note(string.format("native positions: %d players, %d seen, %d observed, %d still, %d moved; simulation time %s, %d of %d reads stale, %d without one%s",
