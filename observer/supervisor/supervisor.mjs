@@ -561,10 +561,12 @@ async function visit(job) {
       const n = done.native;
       if (n && [n.observed, n.still, n.visible].every(Number.isInteger) && n.still <= n.observed) {
         Object.assign(result, { observed: n.observed, still: n.still, visible: n.visible });
+        // Only when every read was proven fresh (the menu leaves it out otherwise).
+        if (Number.isInteger(n.moved) && n.moved + n.still <= n.visible) result.moved = n.moved;
       }
       Object.assign(result, a2sFields(a2s, joinBefore));
       if (!job.local) await api('POST', '/result', result);
-      log('visit_done', result);
+      log('visit_done', { ...result, ...(n && n.check ? { nativeCheck: n.check } : {}) });
       return;
     }
     const result = { id: job.id, address: job.address };

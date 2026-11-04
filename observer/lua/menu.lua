@@ -106,8 +106,26 @@ local function checkNative(check)
 	end
 end
 
--- Native position samples during a status-only visit: index -> { n, seen = {{x,y,z,yaw}} }.
+-- Native position samples during a status-only visit, per player index:
+-- { n = reads present, seen = {{x,y,z,yaw}} from fresh reads, toggles = times it
+-- went in or out of view, lastVis, lastSim }.
+--
+-- A read is fresh when the player is in view (not dormant) and its simulation
+-- time moved on since the last read: the server sent us something new about
+-- them. In view with the same simulation time is stale (not "standing still")
+-- and its position isn't used. Dormant players (out of view, or withheld by
+-- the server) give no position at all.
 local nativeTracks, nativeReads, nativeWhy = {}, 0, nil
+local visibleReads, staleReads, unprovenReads = 0, 0, 0
+local selfFirst, selfMoved = nil, false
+
+local function nativeReset()
+	nativeTracks, nativeReads, nativeWhy = {}, 0, nil
+	visibleReads, staleReads, unprovenReads = 0, 0, 0
+	selfFirst, selfMoved = nil, false
+end
+
+local function apart(a, b) return math.sqrt((a.x - b.x) ^ 2 + (a.y - b.y) ^ 2 + (a.z - b.z) ^ 2) end
 
 local function nativeSample()
 	if not nativeUsable() then return end
@@ -115,31 +133,71 @@ local function nativeSample()
 	if not players then nativeWhy = why return end
 	nativeReads = nativeReads + 1
 	for _, p in ipairs(players) do
-		if not p.localPlayer then
+		if p.localPlayer then
+			-- We never move on purpose; if we did (killed, moved by the server),
+			-- players leaving our view no longer means they moved.
+			if not selfFirst then selfFirst = p elseif apart(p, selfFirst) > 64 then selfMoved = true end
+		else
 			local t = nativeTracks[p.index]
-			if not t then t = { n = 0, seen = {} } nativeTracks[p.index] = t end
+			if not t then t = { n = 0, seen = {}, toggles = 0 } nativeTracks[p.index] = t end
 			t.n = t.n + 1
-			if not p.dormant then t.seen[#t.seen + 1] = { x = p.x, y = p.y, z = p.z, yaw = p.yaw } end
+			local vis = not p.dormant
+			if vis then
+				visibleReads = visibleReads + 1
+				local fresh
+				if p.simTime == nil then
+					unprovenReads = unprovenReads + 1
+					fresh = true -- positions still count for stillness; the AFK share needs proof
+				elseif t.lastSim ~= nil and p.simTime == t.lastSim then
+					staleReads = staleReads + 1
+					fresh = false
+				else
+					fresh = true
+				end
+				if fresh then t.seen[#t.seen + 1] = { x = p.x, y = p.y, z = p.z, yaw = p.yaw } end
+			end
+			if p.simTime ~= nil then t.lastSim = p.simTime end
+			if t.lastVis ~= nil and t.lastVis ~= vis then t.toggles = t.toggles + 1 end
+			t.lastVis = vis
 		end
 	end
 end
 
+-- A few stale reads are dropped one by one (a player the server stopped
+-- updating, a burst of loss); this many means the connection stalled.
+local MOVE_UNITS, TURN_DEGREES, STALE_MAX = 32, 5, 0.3
+
 local function nativeCounts()
 	if nativeReads < 10 then return nil end
-	local r = { players = 0, visible = 0, observed = 0, still = 0 }
+	local r = { players = 0, visible = 0, observed = 0, still = 0, moved = 0 }
 	for _, t in pairs(nativeTracks) do
 		r.players = r.players + 1
 		if #t.seen > 0 then r.visible = r.visible + 1 end
+		local f, dist, turned = t.seen[1], 0, 0
+		for _, s in ipairs(t.seen) do
+			dist = math.max(dist, apart(s, f))
+			local a = math.abs(s.yaw - f.yaw) % 360
+			turned = math.max(turned, a > 180 and 360 - a or a)
+		end
+		local movedInView = #t.seen >= 2 and (dist >= MOVE_UNITS or turned >= TURN_DEGREES)
+		-- Went out of view (or came into it) while we stood still: they moved.
+		local crossed = not selfMoved and t.toggles > 0 and #t.seen >= 1
 		if #t.seen >= nativeReads * 0.8 and #t.seen >= 2 then
 			r.observed = r.observed + 1
-			local f, dist, turned = t.seen[1], 0, 0
-			for _, s in ipairs(t.seen) do
-				dist = math.max(dist, math.sqrt((s.x - f.x) ^ 2 + (s.y - f.y) ^ 2 + (s.z - f.z) ^ 2))
-				local a = math.abs(s.yaw - f.yaw) % 360
-				turned = math.max(turned, a > 180 and 360 - a or a)
-			end
-			if dist < 32 and turned < 5 then r.still = r.still + 1 end
+			if not movedInView and t.toggles == 0 then r.still = r.still + 1 end
 		end
+		if movedInView or crossed then r.moved = r.moved + 1 end
+	end
+	-- Proof the reads were fresh, or no "moved" (and so no AFK share): every
+	-- read had a simulation time, and hardly any stood still.
+	local sim = observer.NativeSimTime()
+	local staleShare = visibleReads > 0 and staleReads / visibleReads or 1
+	r.check = { sim = sim, visibleReads = visibleReads, staleReads = staleReads, unprovenReads = unprovenReads, selfMoved = selfMoved }
+	note(string.format("native positions: %d players, %d seen, %d observed, %d still, %d moved; simulation time %s, %d of %d reads stale, %d without one%s",
+		r.players, r.visible, r.observed, r.still, r.moved, sim, staleReads, visibleReads, unprovenReads, selfMoved and ", we moved" or ""))
+	if sim ~= "ok" or unprovenReads > 0 or staleShare > STALE_MAX then
+		note("native positions: not proven fresh, no AFK share from this visit")
+		r.moved = nil
 	end
 	return r
 end
@@ -175,7 +233,7 @@ local function loaded(how)
 		RunConsoleCommand("gameui_activate")
 		note("in game (" .. how .. "), status only: " .. STATUS_RUNS .. " status runs, " .. STATUS_EVERY .. " s apart")
 		phase, since, statusRuns, nextStatus = "status", SysTime(), 0, SysTime() + 5
-		nativeTracks, nativeReads, nativeWhy = {}, 0, nil
+		nativeReset()
 		return
 	end
 	file.Delete("ldr/result.json")

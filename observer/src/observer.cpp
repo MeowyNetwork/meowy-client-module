@@ -389,11 +389,132 @@ namespace
 		return v > 0x10000 && (v % sizeof(void*)) == 0;
 	}
 
+	// Text pointers need no alignment.
+	bool PlausibleText(const char* p)
+	{
+		if (reinterpret_cast<uintptr_t>(p) <= 0x10000)
+			return false;
+		for (int i = 0; i < 128; ++i)
+		{
+			if (p[i] == 0)
+				return i > 0;
+			if (p[i] < 0x20 || p[i] > 0x7e)
+				return false;
+		}
+		return false;
+	}
+
+	// --- networked fields, from the client's receive tables ----------------------
+	//
+	// Each player's simulation time is the engine's proof that the server is
+	// still sending us that player: it advances every time the server simulates
+	// them (every tick, for a connected client or a bot, moving or not). A
+	// non-dormant player whose simulation time stood still between two reads
+	// 30 s apart sent us nothing new: its position is stale, not "standing still".
+	//
+	// Layouts (Source SDK 2013 dt_recv.h / client_class.h):
+	//   ClientClass: create fn, create-event fn, network name, recv table, next, id
+	//   RecvTable: props, prop count, decoder, name, initialized, in main list
+	//   RecvProp: below; a DPT_DataTable prop nests a base class's table at its offset
+	struct RecvTable;
+	struct RecvProp
+	{
+		const char* name;
+		int type;
+		int flags;
+		int stringBufferSize;
+		bool insideArray;
+		const void* extraData;
+		RecvProp* arrayProp;
+		void* arrayLengthProxy;
+		void* proxyFn;
+		void* dataTableProxyFn;
+		RecvTable* dataTable;
+		int offset;
+		int elementStride;
+		int elements;
+		const char* parentArrayPropName;
+	};
+	struct RecvTable
+	{
+		RecvProp* props;
+		int nProps;
+		void* decoder;
+		const char* netTableName;
+		bool initialized;
+		bool inMainList;
+	};
+	constexpr int kDptDataTable = 6;
+	constexpr int kEntBaseEntity = kDtorSlots + 6; // IClientUnknown::GetBaseEntity
+
+	// The offset of a field in the entity, or -1; base classes first, as the
+	// tables list them.
+	int FindProp(const RecvTable* t, const char* want, int base, int depth)
+	{
+		if (!Plausible(t) || depth > 16 || t->nProps < 0 || t->nProps > 4096 || !Plausible(t->props))
+			return -1;
+		for (int i = 0; i < t->nProps; ++i)
+		{
+			const RecvProp& p = t->props[i];
+			if (!PlausibleText(p.name))
+				return -1;
+			if (std::strcmp(p.name, want) == 0)
+				return base + p.offset;
+			if (p.type == kDptDataTable && p.dataTable)
+			{
+				int r = FindProp(p.dataTable, want, base + p.offset, depth + 1);
+				if (r >= 0)
+					return r;
+			}
+		}
+		return -1;
+	}
+
+	int g_simOffset = -1;      // m_flSimulationTime in a player entity, once found and checked
+	int g_simAttempts = 0;
+	std::string g_simWhy = "not looked up yet";
+
+	template <typename T>
+	T Field(const void* ent, int offset)
+	{
+		T v;
+		std::memcpy(&v, reinterpret_cast<const char*>(ent) + offset, sizeof v);
+		return v;
+	}
+
+	// Finds the simulation time's offset from a player's class, and checks the
+	// lookup on a field we can verify: m_vecOrigin, found the same way, must
+	// hold the position GetAbsOrigin gives.
+	void ResolveSimTime(const void* cls, void* ent, const float* origin)
+	{
+		if (g_simOffset >= 0 || g_simAttempts >= 5)
+			return;
+		++g_simAttempts;
+		if (VCall<void*>(ent, kEntBaseEntity) != ent)
+			return void(g_simWhy = "entity isn't its own base entity");
+		const RecvTable* table = reinterpret_cast<const RecvTable* const*>(cls)[3];
+		int originAt = FindProp(table, "m_vecOrigin", 0, 0);
+		int simAt = FindProp(table, "m_flSimulationTime", 0, 0);
+		if (originAt <= 0 || simAt <= 0)
+			return void(g_simWhy = "fields not found in the receive tables");
+		if (originAt > 0x10000 || simAt > 0x10000 || originAt % 4 || simAt % 4)
+			return void(g_simWhy = "implausible field offsets");
+		for (int k = 0; k < 3; ++k)
+			if (std::fabs(Field<float>(ent, originAt + 4 * k) - origin[k]) > 1.0f)
+				return void(g_simWhy = "m_vecOrigin doesn't match the entity's position");
+		float sim = Field<float>(ent, simAt);
+		if (!std::isfinite(sim) || sim <= 0 || sim > 1e7f)
+			return void(g_simWhy = "simulation time out of range");
+		g_simOffset = simAt;
+		g_simWhy = "ok";
+	}
+
 	struct NativePlayer
 	{
 		int index;
 		float x, y, z, yaw;
 		bool dormant, local;
+		float simTime; // NAN when unknown
 	};
 
 	// Reads the players; false with a reason when anything doesn't check out.
@@ -436,7 +557,19 @@ namespace
 			const float* angles = VCall<const float*>(ent, kEntAbsAngles);
 			if (!Plausible(origin) || !Plausible(angles))
 				return why = "implausible origin/angles", false;
-			NativePlayer p{ i, origin[0], origin[1], origin[2], angles[1], VCall<bool>(net, 8), i == localIndex };
+			bool dormant = VCall<bool>(net, 8);
+			// Checked on the local player (never dormant, no parent): its networked
+			// origin is its position.
+			if (i == localIndex && !dormant)
+				ResolveSimTime(cls, ent, origin);
+			float sim = NAN;
+			if (g_simOffset >= 0)
+			{
+				sim = Field<float>(ent, g_simOffset);
+				if (!std::isfinite(sim))
+					sim = NAN;
+			}
+			NativePlayer p{ i, origin[0], origin[1], origin[2], angles[1], dormant, i == localIndex, sim };
 			if (!(std::fabs(p.x) < 65536 && std::fabs(p.y) < 65536 && std::fabs(p.z) < 65536))
 				return why = "positions out of the map's range", false;
 			out.push_back(p);
@@ -446,7 +579,7 @@ namespace
 		return true;
 	}
 
-	// observer.NativePlayers() -> { {index, x, y, z, yaw, dormant, localPlayer}, ... } or nil, reason
+	// observer.NativePlayers() -> { {index, x, y, z, yaw, dormant, localPlayer, simTime?}, ... } or nil, reason
 	LUA_FUNCTION(NativePlayers)
 	{
 		std::vector<NativePlayer> players;
@@ -470,8 +603,16 @@ namespace
 			LUA->PushNumber(p.yaw); LUA->SetField(-2, "yaw");
 			LUA->PushBool(p.dormant); LUA->SetField(-2, "dormant");
 			LUA->PushBool(p.local); LUA->SetField(-2, "localPlayer");
+			if (std::isfinite(p.simTime)) { LUA->PushNumber(p.simTime); LUA->SetField(-2, "simTime"); }
 			LUA->SetTable(-3);
 		}
+		return 1;
+	}
+
+	// observer.NativeSimTime() -> "ok" once players' simulation times are read, else why not
+	LUA_FUNCTION(NativeSimTime)
+	{
+		LUA->PushString(g_simWhy.c_str());
 		return 1;
 	}
 
@@ -549,6 +690,8 @@ GMOD_MODULE_OPEN()
 	LUA->SetField(-2, "Note");
 	LUA->PushCFunction(NativePlayers);
 	LUA->SetField(-2, "NativePlayers");
+	LUA->PushCFunction(NativeSimTime);
+	LUA->SetField(-2, "NativeSimTime");
 	LUA->PushCFunction(NativeState);
 	LUA->SetField(-2, "NativeState");
 	LUA->PushCFunction(SetNativeState);
