@@ -74,9 +74,11 @@ the game closes while the pack is starting, the next start skips it once by itse
   - Only when the game is windowed or borderless. It stays until the game runs smoothly after you
     spawn. `meowy_loadingscreen 0` turns it off.
 - Its only network traffic is that page and its data, from meowynetwork.com, through WebView2. It
-  writes only in `garrysmod/data/meowy/` (`boot.lock` for a moment at start-up; for the loading
-  screen `join_times.txt`, how long each stage of your last join took, and `last_join.txt`, what
-  that join went through) and WebView2's profile in `%LOCALAPPDATA%\MeowyClientPack`.
+  writes only in `%LOCALAPPDATA%\MeowyClientPack` (`boot.lock` for a moment at start-up; for the
+  loading screen `join_times.txt`, how long each stage of your last join took, `last_join.txt`,
+  what that join went through, and `css_scale.txt`; and WebView2's profile). Nothing goes in
+  `garrysmod/data`, which any server's Lua can read, so other servers can't tell you have the pack.
+  Before 1.4.1 these files were in `garrysmod/data/meowy/`; the pack moves them on first start.
 - It only works on Meowy Network servers. The DLL asks the game itself which server it's connected to
   and compares that with the addresses built into it, so another server can't use it or read anything
   from it, even by faking its name or address in Lua. In singleplayer, the main menu or on any other

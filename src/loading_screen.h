@@ -19,7 +19,7 @@
 
 namespace loading_screen
 {
-	// `dataDir` is garrysmod\data\meowy (for the last join's stage times);
+	// `dataDir` is %LOCALAPPDATA%\MeowyClientPack (for the last join's stage times);
 	// `panelOpenMs` is how long GMod's own loading panel was up before this (logged).
 	void Begin(const std::wstring& dataDir, double panelOpenMs = -1);
 	// At game start: load the screen's web page now, hidden, so a join can show
@@ -37,7 +37,7 @@ namespace loading_screen
 	void End();
 	// The Cancel button was clicked; the menu Lua disconnects when it can.
 	bool CancelRequested();
-	// Adds a line to this join's log (data/meowy/last_join.txt).
+	// Adds a line to this join's log (last_join.txt in the pack data folder).
 	void Note(const char* what, const std::string& detail);
 	bool Active();
 }

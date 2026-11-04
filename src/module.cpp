@@ -39,9 +39,10 @@
 //
 // The module only talks to Discord's local IPC pipe, reads the game's own
 // crashes/ folder and asks Windows for the CPU/GPU/RAM description. It makes
-// no network connections. It writes only in garrysmod/data/meowy: the
-// start-up stub's boot.lock, and the loading screen's join_times.txt and
-// last_join.txt (loading_screen.h). The one change it can make to
+// no network connections. It writes only in %LOCALAPPDATA%\MeowyClientPack
+// (not garrysmod/data, which servers' Lua can read): the start-up stub's
+// boot.lock, the loading screen's join_times.txt, last_join.txt and
+// css_scale.txt (loading_screen.h), and WebView2's profile. The one change it can make to
 // the game is SkipMaterialReload, in memory only, and only when Lua asks.
 
 #include "GarrysMod/Lua/Interface.h"
@@ -407,17 +408,46 @@ namespace
 	// --- Loading screen (loading_screen.h) ----------------------------------
 
 #ifdef _WIN32
-	// garrysmod\data\meowy, from this DLL's own path (garrysmod\lua\bin).
-	std::wstring DataDir()
+	// garrysmod\data\meowy, from this DLL's own path (garrysmod\lua\bin): where
+	// the pack kept its files before 1.4.1.
+	std::wstring LegacyDataDir()
 	{
 		HMODULE self = nullptr;
 		GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-			reinterpret_cast<LPCWSTR>(&DataDir), &self);
+			reinterpret_cast<LPCWSTR>(&LegacyDataDir), &self);
 		wchar_t path[MAX_PATH];
 		DWORD n = GetModuleFileNameW(self, path, MAX_PATH);
 		std::wstring s(path, n < MAX_PATH ? n : 0);
 		size_t slash = s.find_last_of(L"\\/");
 		return slash == std::wstring::npos ? L"" : s.substr(0, slash + 1) + L"..\\..\\data\\meowy";
+	}
+
+	// %LOCALAPPDATA%\MeowyClientPack. Not garrysmod\data, which every server's
+	// Lua can read (file.Read): a file there would tell any server that this
+	// player has the pack. The first call moves the join times over from the
+	// old folder and removes the old files.
+	std::wstring DataDir()
+	{
+		static std::wstring dir;
+		if (!dir.empty())
+			return dir;
+
+		wchar_t base[MAX_PATH];
+		DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", base, MAX_PATH);
+		if (n == 0 || n >= MAX_PATH)
+			return LegacyDataDir();
+		dir = std::wstring(base) + L"\\MeowyClientPack";
+		CreateDirectoryW(dir.c_str(), nullptr);
+
+		const std::wstring old = LegacyDataDir();
+		if (!old.empty())
+		{
+			MoveFileW((old + L"\\join_times.txt").c_str(), (dir + L"\\join_times.txt").c_str());
+			for (const wchar_t* name : { L"join_times.txt", L"last_join.txt", L"css_scale.txt", L"boot.lock" })
+				DeleteFileW((old + L"\\" + name).c_str());
+			RemoveDirectoryW(old.c_str()); // only if nothing else is left in it
+		}
+		return dir;
 	}
 #endif
 

@@ -10,7 +10,7 @@
 //
 // Safe mode: hold Shift while the game starts, or add -meowy_safe to the
 // launch options, and nothing is loaded. If the game died while the module
-// was loading last time (data/meowy/boot.lock was left behind), this launch
+// was loading last time (%LOCALAPPDATA%\MeowyClientPack\boot.lock was left behind), this launch
 // skips it once.
 
 #include "GarrysMod/Lua/Interface.h"
@@ -58,6 +58,20 @@ namespace
 		return slash == std::wstring::npos ? L"" : s.substr(0, slash + 1);
 	}
 
+	// %LOCALAPPDATA%\MeowyClientPack, created if missing; empty if there's no LOCALAPPDATA.
+	// Not garrysmod\data, which every server's Lua can read: a file there would tell
+	// any server that this player has the pack.
+	std::wstring PackDataDir()
+	{
+		wchar_t base[MAX_PATH];
+		DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", base, MAX_PATH);
+		if (n == 0 || n >= MAX_PATH)
+			return L"";
+		std::wstring dir = std::wstring(base) + L"\\MeowyClientPack";
+		CreateDirectoryW(dir.c_str(), nullptr);
+		return dir;
+	}
+
 	bool SafeModeRequested()
 	{
 		if (GetAsyncKeyState(VK_SHIFT) & 0x8000)
@@ -77,11 +91,13 @@ GMOD_MODULE_OPEN()
 	const std::wstring bin = OwnFolder();
 	if (bin.empty())
 		return 0;
-	// lua\bin\ -> garrysmod\data\meowy\boot.lock
-	const std::wstring dataDir = bin + L"..\\..\\data\\meowy";
-	const std::wstring lock = dataDir + L"\\boot.lock";
+	// Before 1.4.1 the lock was in garrysmod\data\meowy.
+	DeleteFileW((bin + L"..\\..\\data\\meowy\\boot.lock").c_str());
 
-	if (GetFileAttributesW(lock.c_str()) != INVALID_FILE_ATTRIBUTES)
+	const std::wstring dataDir = PackDataDir();
+	const std::wstring lock = dataDir.empty() ? L"" : dataDir + L"\\boot.lock";
+
+	if (!lock.empty() && GetFileAttributesW(lock.c_str()) != INVALID_FILE_ATTRIBUTES)
 	{
 		DeleteFileW(lock.c_str());
 		Print(LUA, "[Meowy Client Pack] the game closed while the pack was starting last time; "
@@ -89,11 +105,12 @@ GMOD_MODULE_OPEN()
 		return 0;
 	}
 
-	CreateDirectoryW((bin + L"..\\..\\data").c_str(), nullptr);
-	CreateDirectoryW(dataDir.c_str(), nullptr);
-	HANDLE h = CreateFileW(lock.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-	if (h != INVALID_HANDLE_VALUE)
-		CloseHandle(h);
+	if (!lock.empty())
+	{
+		HANDLE h = CreateFileW(lock.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+		if (h != INVALID_HANDLE_VALUE)
+			CloseHandle(h);
+	}
 
 #ifdef _WIN64
 	const std::wstring module = bin + L"gmcl_meowy_win64.dll";

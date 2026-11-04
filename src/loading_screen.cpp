@@ -34,7 +34,7 @@ namespace
 		L"Almost there",
 	};
 	// Seconds per stage on a warm join (2026-11-03 profiles), until this PC
-	// has its own times in data/meowy/join_times.txt.
+	// has its own times in %LOCALAPPDATA%\MeowyClientPack\join_times.txt.
 	const double kDefaultSecs[STAGES] = { 6, 4, 22, 30, 4 };
 	// Fade-in is short: while it runs, GMod's own loading page shows through.
 	constexpr ULONGLONG kFadeInMs = 60, kFadeOutMs = 600, kQuickFadeMs = 150;
@@ -74,7 +74,7 @@ namespace
 		double expected[STAGES] = {};
 		std::wstring server = L"Meowy Network", map, status, steamid;
 		std::wstring dataDir;
-		FILE* log = nullptr;            // data/meowy/last_join.txt: what this join went through
+		FILE* log = nullptr;            // last_join.txt in the pack data folder: what this join went through
 	};
 	State g;
 	std::atomic<bool> g_cancel{ false };
@@ -547,8 +547,8 @@ namespace
 		return j;
 	}
 
-	// Development aid: with data/meowy/screenshot_debug present, the screen
-	// saves what it draws to data/meowy/shots/ every few seconds (it's a
+	// Development aid: with screenshot_debug present in the pack data folder, the screen
+	// saves what it draws to its shots subfolder every few seconds (it's a
 	// separate window, so the game's own screenshots don't include it).
 	void SaveBmp(HDC mem, HBITMAP bmp, int w, int h, const std::wstring& path)
 	{

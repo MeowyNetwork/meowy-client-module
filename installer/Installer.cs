@@ -5,8 +5,9 @@
 // works on either Steam branch) and the start-up stubs gmsv_meowy_boot_win32/
 // win64.dll. With "Start with the game" on (the default) it also adds one
 // marked line to garrysmod/lua/includes/menu.lua that loads the stub when the
-// game starts. Uninstall removes exactly those files, that line and
-// data/meowy. It needs no admin rights when the Steam folder is writable,
+// game starts. Uninstall removes exactly those files, that line and the
+// pack's data folder (%LOCALAPPDATA%\MeowyClientPack, and garrysmod/data/meowy
+// from before 1.4.1). It needs no admin rights when the Steam folder is writable,
 // which is Steam's default.
 //
 // Built with the .NET Framework 4.x compiler that ships with Windows
@@ -199,12 +200,20 @@ namespace MeowyInstaller
 			File.Replace(temp, file, null);
 		}
 
-		// data/meowy: the stub's start-up lock file.
+		// The pack's files: %LOCALAPPDATA%\MeowyClientPack (boot.lock, join times,
+		// WebView2's profile), and garrysmod\data\meowy where they were before 1.4.1.
 		public static void RemoveData(string garrysmod)
 		{
-			string dir = Path.Combine(garrysmod, @"data\meowy");
-			if (Directory.Exists(dir))
-				Directory.Delete(dir, true);
+			string old = Path.Combine(garrysmod, @"data\meowy");
+			if (Directory.Exists(old))
+				Directory.Delete(old, true);
+			string local = Environment.GetEnvironmentVariable("LOCALAPPDATA");
+			if (!string.IsNullOrEmpty(local))
+			{
+				string dir = Path.Combine(local, "MeowyClientPack");
+				if (Directory.Exists(dir))
+					Directory.Delete(dir, true);
+			}
 		}
 
 		public static void ExtractTo(string module, string path)
