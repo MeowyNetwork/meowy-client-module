@@ -20,6 +20,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { execFile, spawn } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
+import dgram from 'node:dgram';
 
 const DIR = process.env.MEOWY_OBSERVER_DIR || path.join(process.env.HOME || '.', '.meowy-observer');
 const API = (process.env.MEOWY_OBSERVER_API || 'https://meowynetwork.com').replace(/\/+$/, '');
@@ -354,6 +355,54 @@ export function statusResult(runs) {
   return { mode: 'status', players, judged, flat, samples: runs.length };
 }
 
+// --- the server's own A2S answer ---------------------------------------------
+// A2S_INFO, as any server browser asks it: players, bots, max. Read just
+// before joining (the join probe) and while the observer is in, so the backend
+// compares what the server lists with who `status` shows connected.
+export function a2sInfo(address, timeoutMs = 3000) {
+  const [host, portText] = address.split(':');
+  const port = Number(portText);
+  const query = Buffer.concat([Buffer.from([0xff, 0xff, 0xff, 0xff, 0x54]), Buffer.from('Source Engine Query\0', 'latin1')]);
+  return new Promise((resolve) => {
+    const sock = dgram.createSocket('udp4');
+    const done = (v) => {
+      clearTimeout(timer);
+      sock.close();
+      resolve(v);
+    };
+    const timer = setTimeout(() => done(null), timeoutMs);
+    sock.on('error', () => done(null));
+    sock.on('message', (msg) => {
+      if (msg.length >= 9 && msg.readInt32LE(0) === -1 && msg[4] === 0x41) {
+        sock.send(Buffer.concat([query, msg.subarray(5, 9)]), port, host); // challenge
+        return;
+      }
+      done(parseInfo(msg));
+    });
+    sock.send(query, port, host);
+  });
+}
+
+export function parseInfo(msg) {
+  if (msg.length < 6 || msg.readInt32LE(0) !== -1 || msg[4] !== 0x49) return null;
+  let at = 6; // header, protocol
+  for (let i = 0; i < 4; i++) {
+    // name, map, folder, game
+    const end = msg.indexOf(0, at);
+    if (end < 0) return null;
+    at = end + 1;
+  }
+  at += 2; // app id
+  if (at + 3 > msg.length) return null;
+  return { players: msg[at], max: msg[at + 1], bots: msg[at + 2] };
+}
+
+const median = (xs) => {
+  if (!xs.length) return undefined;
+  const s = [...xs].sort((a, b) => a - b);
+  return s[Math.floor(s.length / 2)];
+};
+
 // The last few meaningful console lines (no shader dumps), for a failure's log line.
 function lastLines(text, n = 5) {
   return text
@@ -419,6 +468,21 @@ async function fullDownloads() {
   }
 }
 
+// The A2S fields of a result: the median answer while we were in, and the
+// count before and right after we joined (a real list rises by one: us).
+export function a2sFields(samples, joinBefore) {
+  const out = {};
+  if (samples.length >= 3) {
+    out.a2sPlayers = median(samples.map((s) => s.players));
+    out.a2sBots = Math.min(median(samples.map((s) => s.bots)), out.a2sPlayers);
+  }
+  if (Number.isInteger(joinBefore) && samples.length) {
+    out.joinBefore = joinBefore;
+    out.joinAfter = samples[0].players;
+  }
+  return out;
+}
+
 async function visit(job) {
   const full = await fullDownloads();
   if (full.has(job.address)) job = { ...job, filter: 'all' };
@@ -437,11 +501,26 @@ async function visit(job) {
   const started = Date.now();
   await fs.writeFile(path.join(DIR, 'job.json'), JSON.stringify(job));
   log('visit', { address: job.address });
+  // The server's own A2S count just before we join, and its answers while we're
+  // in: the list it shows everyone, set against the roster we see in game.
+  const joinBefore = (await a2sInfo(job.address))?.players;
+  const a2s = []; // { players, bots } every ~30 s once in game
+  let inGame = false;
+  let lastA2s = 0;
   // The module reads job.json when it loads, so the game starts after it's written.
   if (MANAGE_GAME && !(await startGame())) return failed(job, 'the game did not start (Steam never launched it)');
   let checks = 0;
   while (Date.now() - started < VISIT_TIMEOUT_MS) {
     await sleep(2000);
+    if (!inGame) {
+      const buf = await fs.readFile(path.join(DIR, 'observer.log')).catch(() => Buffer.alloc(0));
+      inGame = buf.length > obsLogFrom && /\bin game \(/.test(buf.subarray(obsLogFrom).toString('utf8'));
+    }
+    if (inGame && Date.now() - lastA2s >= 30000) {
+      lastA2s = Date.now();
+      const info = await a2sInfo(job.address);
+      if (info) a2s.push(info);
+    }
     const done = await readDone();
     if (!done || done.id !== job.id) {
       // Kicked or refused: the console says so (and why) right away.
@@ -483,6 +562,7 @@ async function visit(job) {
       if (n && [n.observed, n.still, n.visible].every(Number.isInteger) && n.still <= n.observed) {
         Object.assign(result, { observed: n.observed, still: n.still, visible: n.visible });
       }
+      Object.assign(result, a2sFields(a2s, joinBefore));
       if (!job.local) await api('POST', '/result', result);
       log('visit_done', result);
       return;
@@ -514,7 +594,8 @@ async function takeLocalJob() {
   if (!job || typeof job.address !== 'string' || !/^\d{1,3}(\.\d{1,3}){3}:\d{1,5}$/.test(job.address)) return null;
   const id = Array.from({ length: 16 }, () => '0123456789abcdef'[Math.floor(Math.random() * 16)]).join('');
   log('local_visit', { address: job.address });
-  return { id, address: job.address, local: true, ...(job.mode === 'status' ? { mode: 'status' } : {}) };
+  // Status-only unless asked for the Lua sampler by hand, as the backend does.
+  return { id, address: job.address, local: true, mode: job.mode === 'lua' ? 'lua' : 'status' };
 }
 
 async function main() {

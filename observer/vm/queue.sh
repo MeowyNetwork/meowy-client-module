@@ -2,9 +2,10 @@
 # Ask for an observer visit by hand: the server goes to the front of the
 # backend's queue and the observer picks it up within a minute.
 #
-#   observer-queue 194.69.160.57:27050                  a normal visit
-#   observer-queue 194.69.160.57:27050 status           status only: no code in its game
-#   observer-queue --local 138.201.62.52:27015 [status] a test visit the backend never hears
+#   observer-queue 194.69.160.57:27050                  a normal visit (status only:
+#                                                       no code in its game)
+#   observer-queue 194.69.160.57:27050 lua              with the Lua sampler in its game
+#   observer-queue --local 138.201.62.52:27015 [lua]    a test visit the backend never hears
 #                                                       of (any server, ours included);
 #                                                       its result is only logged
 set -eu
@@ -15,8 +16,8 @@ if [ "${1:-}" = "--local" ]; then
 fi
 ADDR="${1:-}"
 MODE="${2:-}"
-if ! [[ "$ADDR" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}:[0-9]{1,5}$ ]] || ! [[ -z "$MODE" || "$MODE" == status ]]; then
-	echo "usage: observer-queue [--local] <ip:port> [status]" >&2
+if ! [[ "$ADDR" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}:[0-9]{1,5}$ ]] || ! [[ -z "$MODE" || "$MODE" == status || "$MODE" == lua ]]; then
+	echo "usage: observer-queue [--local] <ip:port> [status|lua]" >&2
 	exit 2
 fi
 BODY="{\"address\":\"$ADDR\"${MODE:+,\"mode\":\"$MODE\"}}"

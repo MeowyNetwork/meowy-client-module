@@ -679,6 +679,7 @@ local MIN_PLAYERS, GAP, MIN_FAKE, MIN_SHARE, DUPE_TOLERANCE = 10, 45, 5, 0.2, 15
 local MAX_CHECKS, PARALLEL, LIST_TIMEOUT, RECHECK = 60, 4, 6, 600
 
 local rep = {}       -- address -> verdict from the backend
+local afk = {}       -- address -> { share, judged, minutes }: the observer saw most of them idle
 local mine = {}      -- address -> verdict from this PC's checks (.at = SysTime)
 local seen = {}      -- address -> { players, bots, type }
 local tagged = {}    -- type .. address -> true once the browser shows a tag
@@ -716,6 +717,25 @@ local function tagFor(v)
 	end
 end
 
+-- Separate from the verdicts: plenty of honest DarkRP servers are mostly AFK,
+-- and players may want to know. Only from a visit that judged 10+ players.
+local AFK_MIN_SHARE, AFK_MIN_JUDGED = 0.5, 10
+local function afkTag(address)
+	local a = afk[address]
+	local share, judged = istable(a) and tonumber(a.share), istable(a) and tonumber(a.judged)
+	if not share or not judged or share < AFK_MIN_SHARE or share > 1 or judged < AFK_MIN_JUDGED then return "" end
+	return string.format("[~%d%% AFK] ", math.floor(share * 20 + 0.5) * 5)
+end
+
+-- The tag a listed server gets (verdict first, then the AFK share), or nil.
+local function tagOf(address)
+	if meowy.IsOurServer(address) then return nil end
+	local v = verdictOf(address)
+	local tag = (v and tagFor(v) or "") .. afkTag(address)
+	if tag == "" then return nil end
+	return tag, v
+end
+
 local MARK_JS = [[
 if (!window.MeowyMark) window.MeowyMark = function (addr, real, tag) {
 	for (var t in ServerTypes) { var g = ServerTypes[t].gamemodes;
@@ -735,13 +755,13 @@ if (!window.MeowyMark) window.MeowyMark = function (addr, real, tag) {
 
 -- Shows a verdict that arrived after the server was already listed.
 local function mark(address)
-	local s, v = seen[address], verdictOf(address)
-	if not s or not v or not pnlMainMenu or tagged[s.type .. address] then return end
-	local tag = tagFor(v)
+	local s = seen[address]
+	if not s or not pnlMainMenu or tagged[s.type .. address] then return end
+	local tag, v = tagOf(address)
 	if not tag then return end
 	tagged[s.type .. address] = true
 	pnlMainMenu:Call(MARK_JS .. string.format("MeowyMark('%s', %d, '%s');",
-		address:JavascriptSafe(), v.verdict == "fake" and (v.real or -1) or -1, tag:JavascriptSafe()))
+		address:JavascriptSafe(), v and v.verdict == "fake" and (v.real or -1) or -1, tag:JavascriptSafe()))
 end
 
 local function fetchRep()
@@ -867,6 +887,7 @@ hook.Add("Think", "MeowyClientPack.ServerList", function()
 		local data = util.JSONToTable(json)
 		if istable(data) and istable(data.servers) then
 			rep = data.servers
+			afk = istable(data.afk) and data.afk or {}
 			for address in pairs(seen) do mark(address) end
 		end
 	end
@@ -922,13 +943,12 @@ serverlist.Query = function(data)
 		for key in pairs(tagged) do if key:sub(1, #tostring(type)) == tostring(type) then tagged[key] = nil end end
 		data.Callback = function(ping, name, desc, map, players, maxplayers, botplayers, pass, lastplayed, address, ...)
 			seen[address] = { players = players or 0, bots = botplayers or 0, type = tostring(type) }
-			local v = verdictOf(address)
-			local tag = v and not meowy.IsOurServer(address) and tagFor(v)
+			local tag, v = tagOf(address)
 			if tag then
 				tagged[tostring(type) .. address] = true
 				name = tag .. tostring(name)
 				-- The browser shows players minus bots: count the fakes as bots.
-				local fake = v.verdict == "fake" and v.real and math.max(0, (players - botplayers) - v.real) or 0
+				local fake = v and v.verdict == "fake" and v.real and math.max(0, (players - botplayers) - v.real) or 0
 				botplayers, maxplayers = botplayers + fake, maxplayers + fake
 			end
 			return callback(ping, name, desc, map, players, maxplayers, botplayers, pass, lastplayed, address, ...)
