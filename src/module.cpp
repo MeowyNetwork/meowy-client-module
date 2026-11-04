@@ -639,7 +639,7 @@ local enabled = CreateConVar("meowy_honest_serverlist", "1", FCVAR_ARCHIVE,
 local reports = CreateConVar("meowy_serverlist_reports", "1", FCVAR_ARCHIVE,
 	"Meowy Client Pack: tell Meowy Network who was really on other servers you join, to catch fake counts (0 = off)")
 
-local MIN_PLAYERS, GAP, MIN_FAKE, MIN_SHARE, DUPE_TOLERANCE = 10, 45, 4, 0.15, 15
+local MIN_PLAYERS, GAP, MIN_FAKE, MIN_SHARE, DUPE_TOLERANCE = 10, 45, 5, 0.2, 15
 local MAX_CHECKS, PARALLEL, LIST_TIMEOUT, RECHECK = 60, 4, 6, 600
 
 local rep = {}       -- address -> verdict from the backend
@@ -661,11 +661,13 @@ hook.Add("Think", "MeowyClientPack.ServerListTimers", function()
 	for _, fn in ipairs(due) do fn() end
 end)
 
+-- Players' reports (who was really connected) beat everything; then this PC's
+-- own fresh check; the crawler's verdict only for servers not checked here.
 local function verdictOf(address)
 	local r = rep[address]
 	if r and r.source == "players" then return r end
 	local m = mine[address]
-	if m and m.verdict ~= "ok" then return m end
+	if m and SysTime() - m.at < RECHECK then return m.verdict ~= "ok" and m or nil end
 	return r
 end
 
@@ -733,6 +735,10 @@ local function judge(address, listA, listB, gap)
 			end
 		end
 	end
+	-- Nearly everyone frozen is a cached reply, not fakes (serverRep/score.js).
+	local frozen = 0
+	for _ in pairs(suspicious) do frozen = frozen + 1 end
+	if #listA > 0 and frozen >= #listA * 0.8 then suspicious = {} end
 	-- The same name, joined at the same moment, on another server we sampled.
 	for _, e in ipairs(listA) do
 		if usable(e.name) and not suspicious[e.name] then
