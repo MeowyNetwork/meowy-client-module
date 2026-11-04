@@ -360,26 +360,32 @@ export function statusResult(runs) {
 // before joining (the join probe) and while the observer is in, so the backend
 // compares what the server lists with who `status` shows connected.
 export function a2sInfo(address, timeoutMs = 3000) {
-  const [host, portText] = address.split(':');
-  const port = Number(portText);
+  const m = typeof address === 'string' && address.match(/^(\d{1,3}(?:\.\d{1,3}){3}):(\d{1,5})$/);
+  const port = m ? Number(m[2]) : 0;
+  if (!m || port < 1 || port > 65535) return Promise.resolve(null);
+  const host = m[1];
   const query = Buffer.concat([Buffer.from([0xff, 0xff, 0xff, 0xff, 0x54]), Buffer.from('Source Engine Query\0', 'latin1')]);
   return new Promise((resolve) => {
     const sock = dgram.createSocket('udp4');
+    let settled = false;
     const done = (v) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
       sock.close();
       resolve(v);
     };
     const timer = setTimeout(() => done(null), timeoutMs);
     sock.on('error', () => done(null));
-    sock.on('message', (msg) => {
+    sock.on('message', (msg, rinfo) => {
+      if (rinfo.address !== host || rinfo.port !== port) return; // only the server's own answer
       if (msg.length >= 9 && msg.readInt32LE(0) === -1 && msg[4] === 0x41) {
-        sock.send(Buffer.concat([query, msg.subarray(5, 9)]), port, host); // challenge
+        sock.send(Buffer.concat([query, msg.subarray(5, 9)]), port, host, (err) => err && done(null)); // challenge
         return;
       }
       done(parseInfo(msg));
     });
-    sock.send(query, port, host);
+    sock.send(query, port, host, (err) => err && done(null));
   });
 }
 
@@ -510,6 +516,31 @@ async function visit(job) {
   // The module reads job.json when it loads, so the game starts after it's written.
   if (MANAGE_GAME && !(await startGame())) return failed(job, 'the game did not start (Steam never launched it)');
   let checks = 0;
+  // A kick or refusal line seen in the console: believed only once the menu
+  // says the game really left (any player's chat, or the server's own prints,
+  // can contain the same words).
+  let leftWhy = null;
+  const leave = async (why) => {
+    // An engine error while loading (a missing map...) is our side failing, not
+    // the server turning us away: the backend mustn't take it as a refusal.
+    if (/Host_?Error|Host Error|Missing map/i.test(why)) {
+      await failed(job, `failed to load: ${why.replace(/^Disconnected:\s*/i, '').trim()}`.slice(0, 200), visitConsole);
+      // The map was filtered out: once, try again with every download allowed.
+      if (/Missing map/i.test(why) && job.filter !== 'all') {
+        const full = await fullDownloads();
+        full.add(job.address);
+        await fs.writeFile(FULL_DOWNLOADS, JSON.stringify([...full]));
+        log('full_downloads', { address: job.address });
+        try {
+          await api('POST', '/queue', { address: job.address, ...(job.mode ? { mode: job.mode } : {}) });
+        } catch (err) {
+          log('error', { err: err.message });
+        }
+      }
+      return;
+    }
+    return failed(job, `kicked: ${why.trim()}`.slice(0, 200), visitConsole);
+  };
   while (Date.now() - started < VISIT_TIMEOUT_MS) {
     await sleep(2000);
     if (!inGame) {
@@ -523,36 +554,18 @@ async function visit(job) {
     }
     const done = await readDone();
     if (!done || done.id !== job.id) {
-      // Kicked or refused: the console says so (and why) right away.
+      // Kicked or refused: the console says why; the menu says when we're out.
       const { text, next } = await consoleSince(consoleAt);
       consoleAt = next;
       // (Not our own "disconnect" when a visit ends: that's "Disconnect by user".)
       const kicked = [...text.matchAll(DISCONNECT)].find((m) => !/by user/i.test(m[1]));
-      // An engine error while loading (a missing map...) is our side failing, not
-      // the server turning us away: the backend mustn't take it as a refusal.
-      if (kicked && /Host_?Error|Host Error|Missing map/i.test(kicked[1])) {
-        await failed(job, `failed to load: ${kicked[1].replace(/^Disconnected:\s*/i, '').trim()}`.slice(0, 200), visitConsole);
-        // The map was filtered out: once, try again with every download allowed.
-        if (/Missing map/i.test(kicked[1]) && job.filter !== 'all') {
-          const full = await fullDownloads();
-          full.add(job.address);
-          await fs.writeFile(FULL_DOWNLOADS, JSON.stringify([...full]));
-          log('full_downloads', { address: job.address });
-          try {
-            await api('POST', '/queue', { address: job.address, ...(job.mode ? { mode: job.mode } : {}) });
-          } catch (err) {
-            log('error', { err: err.message });
-          }
-        }
-        return;
-      }
-      if (kicked) return failed(job, `kicked: ${kicked[1].trim()}`.slice(0, 200), visitConsole);
+      if (kicked && !leftWhy) leftWhy = kicked[1];
       // The game closed mid-visit: say whether it crashed, and why.
       if (MANAGE_GAME && ++checks % 5 === 0 && (await gameGone())) return failed(job, await whyClosed(started, obsLogFrom), visitConsole);
       continue;
     }
     await fs.rm(path.join(DIR, 'done.json'), { force: true });
-    if (done.error) return failed(job, String(done.error).slice(0, 200), visitConsole);
+    if (done.error) return leftWhy ? leave(leftWhy) : failed(job, String(done.error).slice(0, 200), visitConsole);
     if (done.statusOnly) {
       const runs = statusRuns((await consoleSince(visitConsole)).text);
       if (runs.length < 10) return failed(job, `status only: ${runs.length} of ${done.runs} status tables found in the console`, visitConsole);

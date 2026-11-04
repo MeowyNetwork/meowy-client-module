@@ -34,17 +34,15 @@ sed -i '/meowy_observer/d; /^pcall(require, "ldr")$/d' "$MENU"
 # (11.5 GB seen with full textures under software rendering).
 AUTOEXEC="$GMOD/garrysmod/cfg/autoexec.cfg"
 mkdir -p "$(dirname "$AUTOEXEC")"
-touch "$AUTOEXEC"
-sed -i '/-- meowy observer --/,/-- meowy observer end --/d' "$AUTOEXEC"
-cat >> "$AUTOEXEC" <<'EOF'
-// -- meowy observer --
+# This game is the observer's alone, so the file is written whole, with
+# nothing in it naming the observer: any server's Lua can read cfg/.
+cat > "$AUTOEXEC" <<'EOF'
 con_logfile console.log
 mat_picmip 2
 r_rootlod 2
 cl_downloadfilter mapsonly
 fps_max 15
 mat_queue_mode 0
-// -- meowy observer end --
 EOF
 
 exec node /opt/observer/supervisor.mjs

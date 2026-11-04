@@ -4,6 +4,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
+#include <cstdio>
 #include <cwchar>
 #include <string>
 #include <vector>
@@ -100,6 +101,17 @@ namespace
 	}
 
 	// "1.2.3.4:27015" -> "1.2.3.4_27015"; anything odd becomes '_'.
+	// "a.b.c.d:port", numbers in range.
+	bool IsIpPort(const std::string& address)
+	{
+		unsigned a, b, c, d, port;
+		char tail;
+		if (address.size() > 21 || sscanf_s(address.c_str(), "%3u.%3u.%3u.%3u:%5u%c", &a, &b, &c, &d, &port, &tail, 1) != 5)
+			return false;
+		return a <= 255 && b <= 255 && c <= 255 && d <= 255 && port >= 1 && port <= 65535 &&
+			address.find_first_not_of("0123456789.:") == std::string::npos;
+	}
+
 	std::wstring KeyFor(const std::string& address)
 	{
 		std::wstring k;
@@ -164,28 +176,46 @@ namespace
 		}
 	}
 
-	// Everything in `from` into `to` (created if missing).
-	void MoveAll(const std::wstring& from, const std::wstring& to)
+	// Everything in `from` into `to` (created if missing). True when `from`
+	// ended up empty (a file in use stays behind).
+	bool MoveAll(const std::wstring& from, const std::wstring& to)
 	{
 		CreateDirectoryW(to.c_str(), nullptr);
 		for (const std::wstring& e : Entries(from))
 			MoveTree(from + L"\\" + e, to + L"\\" + e);
+		return Entries(from).empty();
 	}
 
-	// data/ now holds `current`'s files; make it hold `next`'s.
-	void Switch(const std::wstring& current, const std::wstring& next)
+	// The marker while a switch runs: "switching:<from>><to>:<phase>", phase 1
+	// moving data/ out to <from>, phase 2 moving <to> in. Recover() reads it.
+	std::wstring Marker(const std::wstring& from, const std::wstring& to, int phase)
+	{
+		return L"switching:" + from + L">" + to + L":" + std::to_wstring(phase);
+	}
+
+	// data/ now holds `current`'s files; make it hold `next`'s. Returns the
+	// owner data/ holds afterwards: `next`, or still `current` when data/
+	// couldn't be emptied (then nothing of `next` is shown alongside it).
+	std::wstring Switch(const std::wstring& current, const std::wstring& next)
 	{
 		const std::wstring data = DataDir(), vault = VaultDir();
 		if (data.empty() || vault.empty())
-			return;
+			return current;
 		// Before the first switch ever, data/ is everything from before the
 		// sandbox: kept apart in "before-sandbox", never shown to a server.
 		const std::wstring from = current.empty() ? L"before-sandbox" : current;
-		WriteActive(L"switching:" + next);
-		MoveAll(data, vault + L"\\" + from);
+		WriteActive(Marker(from, next, 1));
+		if (!MoveAll(data, vault + L"\\" + from))
+		{
+			// Something in data/ is in use: it stays, and data/ stays `current`'s.
+			WriteActive(current);
+			return current;
+		}
+		WriteActive(Marker(from, next, 2));
 		MoveAll(vault + L"\\" + next, data);
 		RemoveDirectoryW((vault + L"\\" + next).c_str());
 		WriteActive(next);
+		return next;
 	}
 
 	std::wstring g_active; // cached; the file is the truth across restarts
@@ -209,31 +239,37 @@ namespace data_sandbox
 		std::wstring a = Active();
 		if (a.rfind(L"switching:", 0) == 0)
 		{
-			// Went down mid-switch: data/ may be a mix. Put what's there with the
-			// target it was switching to, then go back to the menu's.
-			std::wstring target = a.substr(10);
+			// Went down mid-switch: data/ holds files of the owner whose phase it
+			// was (moving out: <from>'s; moving in: <to>'s). File them there, then
+			// go back to the menu's.
+			std::wstring rest = a.substr(10), owner;
+			size_t arrow = rest.find(L'>'), colon = rest.rfind(L':');
+			if (arrow != std::wstring::npos && colon != std::wstring::npos && colon > arrow)
+				owner = rest.substr(colon + 1) == L"1" ? rest.substr(0, arrow) : rest.substr(arrow + 1, colon - arrow - 1);
+			else
+				owner = rest; // the old marker, "switching:<to>"
 			const std::wstring data = DataDir(), vault = VaultDir();
-			if (!data.empty() && !vault.empty())
-				MoveAll(data, vault + L"\\" + target);
-			a = target;
+			if (!data.empty() && !vault.empty() && !owner.empty())
+				MoveAll(data, vault + L"\\" + owner);
+			a = owner;
+			WriteActive(a);
 		}
+		g_active = a;
 		if (!a.empty() && a != kMenu)
-		{
-			Switch(a, kMenu);
-			g_active = kMenu;
-		}
+			g_active = Switch(a, kMenu);
 	}
 
 	void Enter(const std::string& address)
 	{
-		if (address.empty())
+		// Only a real "a.b.c.d:port" names a sandbox: the address comes from
+		// console text, and a key like "." or ".." would be the vault itself.
+		if (!IsIpPort(address))
 			return;
 		std::wstring key = KeyFor(address);
 		std::wstring a = Active();
 		if (a == key)
 			return;
-		Switch(a, key);
-		g_active = key;
+		g_active = Switch(a, key);
 	}
 
 	void Leave()
@@ -241,8 +277,7 @@ namespace data_sandbox
 		std::wstring a = Active();
 		if (a == kMenu)
 			return;
-		Switch(a, kMenu);
-		g_active = kMenu;
+		g_active = Switch(a, kMenu);
 	}
 
 	std::string Describe()

@@ -571,11 +571,13 @@ namespace
 		return 0;
 	}
 
+	// meowy.QueryPlayers(address) -> true if asked, false if not (too many in
+	// flight, or not a public address): then no answer is coming.
 	int QueryPlayers(lua_State* L)
 	{
-		if (L->luabase->IsType(1, Type::String))
-			server_rep::QueryPlayers(L->luabase->GetString(1));
-		return 0;
+		bool asked = L->luabase->IsType(1, Type::String) && server_rep::QueryPlayers(L->luabase->GetString(1));
+		L->luabase->PushBool(asked);
+		return 1;
 	}
 
 	// JSON array of finished player-list queries, or nil.
@@ -676,7 +678,7 @@ local reports = CreateConVar("meowy_serverlist_reports", "1", FCVAR_ARCHIVE,
 	"Meowy Client Pack: tell Meowy Network who was really on other servers you join, to catch fake counts (0 = off)")
 
 local MIN_PLAYERS, GAP, MIN_FAKE, MIN_SHARE, DUPE_TOLERANCE = 10, 45, 5, 0.2, 15
-local MAX_CHECKS, PARALLEL, LIST_TIMEOUT, RECHECK = 60, 4, 6, 600
+local MAX_CHECKS, PARALLEL, LIST_TIMEOUT, RECHECK = 60, 4, 10, 600 -- the query itself gives up within ~8 s
 
 local rep = {}       -- address -> verdict from the backend
 local afk = {}       -- address -> { share, judged, minutes }: the observer saw most of them idle
@@ -684,6 +686,8 @@ local mine = {}      -- address -> verdict from this PC's checks (.at = SysTime)
 local seen = {}      -- address -> { players, bots, type }
 local tagged = {}    -- type .. address -> true once the browser shows a tag
 local samples = {}   -- address -> { at = SysTime, list = { {name, time} } }
+local waiting = {}   -- address -> { done, deadline }: player lists asked for
+local declared = {}  -- address -> the count the last reply's header claimed
 local repAt = -1e9
 
 -- The menu state has no timer library: a small one, run from Think.
@@ -836,14 +840,7 @@ local queue, running, pending = {}, 0, {}
 
 -- Player lists come from the pack's own query (server_rep.cpp), not
 -- serverlist.PlayerList, which shows nothing for a reply that doesn't add up.
-local waiting = {} -- address -> { done, deadline }
-local declared = {} -- address -> the count the last reply's header claimed
-
-local function sample(address, done)
-	running = running + 1
-	waiting[address] = { done = done, deadline = SysTime() + LIST_TIMEOUT }
-	meowy.QueryPlayers(address)
-end
+-- (waiting and declared are declared above judge(), which reads declared.)
 
 -- The side panel's list for a clicked server, from the same query; GMod's own
 -- call is the fallback when ours gets no answer.
@@ -852,9 +849,10 @@ local stockGetPlayerList = GetPlayerList
 if isfunction(stockGetPlayerList) then
 	GetPlayerList = function(serverip, ...)
 		if enabled:GetBool() and isstring(serverip) then
-			panelWanted[serverip] = true
-			meowy.QueryPlayers(serverip)
-			return
+			if meowy.QueryPlayers(serverip) then
+				panelWanted[serverip] = true
+				return
+			end
 		end
 		return stockGetPlayerList(serverip, ...)
 	end
@@ -865,7 +863,18 @@ local function deliver(address, list)
 	if not w then return end
 	waiting[address] = nil
 	running = running - 1
-	w.done(list)
+	-- One bad result mustn't stop the rest of the batch (they'd all time out).
+	local ok, err = pcall(w.done, list)
+	if not ok then ErrorNoHalt("[Meowy Client Pack] server list check: " .. tostring(err) .. "\n") end
+end
+
+-- A list is delivered as a table (the reply's entries), nil (the server
+-- answered with no list: hidden) or false (no answer at all, or not asked:
+-- says nothing, so no verdict).
+local function sample(address, done)
+	running = running + 1
+	waiting[address] = { done = done, deadline = SysTime() + LIST_TIMEOUT }
+	if not meowy.QueryPlayers(address) then deliver(address, false) end
 end
 
 local function startChecks(type)
@@ -905,17 +914,21 @@ hook.Add("Think", "MeowyClientPack.ServerList", function()
 					for _, p in ipairs(toList(r.players)) do rows[#rows + 1] = { name = p.name, score = tonumber(p.score) or 0, time = p.time } end
 					pnlMainMenu:Call("SetPlayerList( '" .. r.address:JavascriptSafe() .. "', " .. util.TableToJSON(rows) .. ")")
 				end
-				deliver(r.address, r.ok and toList(r.players) or nil)
+				local list = false
+				if r.ok then list = toList(r.players) elseif r.answered then list = nil end
+				deliver(r.address, list)
 			end
 		end
 	end
 	for address, w in pairs(waiting) do
-		if SysTime() > w.deadline then deliver(address, nil) end
+		if SysTime() > w.deadline then deliver(address, false) end
 	end
 	while running < PARALLEL and #queue > 0 do
 		local address = table.remove(queue, 1)
 		sample(address, function(listA)
 			local atA = SysTime()
+			-- No answer: no verdict from here (the backend's, if any, stands).
+			if listA == false then pending[address] = nil return end
 			if listA then samples[address] = { at = atA, list = listA } end
 			if not listA or #listA == 0 then
 				pending[address] = nil
@@ -927,6 +940,7 @@ hook.Add("Think", "MeowyClientPack.ServerList", function()
 			after(GAP, function()
 				sample(address, function(listB)
 					pending[address] = nil
+					if listB == false then listB = nil end -- no second answer: judge on the first alone
 					mine[address] = judge(address, listA, listB, SysTime() - atA)
 					mine[address].at = SysTime()
 					mark(address)

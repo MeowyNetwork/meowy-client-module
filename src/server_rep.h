@@ -26,9 +26,11 @@ namespace server_rep
 	// GMod's own serverlist.PlayerList hands back nothing when a reply doesn't
 	// add up (e.g. a header saying 86 players over 85 entries), which some
 	// servers use to hide their list; this reads what is really there.
-	void QueryPlayers(const std::string& address);
+	// False when not asked (too many in flight, or not a public address).
+	bool QueryPlayers(const std::string& address);
 	// Finished queries since the last call, as a JSON array:
 	// [{"address":..,"ok":bool,"declared":n,"players":[{"name":..,"score":n,"time":s}]}]
+	// (ok false: "answered" says whether the server replied at all)
 	std::string TakePlayers();
 
 	// Console capture for `status`: Begin clears and starts, End returns what

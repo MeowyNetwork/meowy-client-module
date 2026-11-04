@@ -28,7 +28,9 @@ local JOIN_TIMEOUT, SAMPLE_TIMEOUT = 40 * 60, 15 * 60
 local job, phase, since, lastJobText = nil, "idle", 0, nil
 local stage = nil -- the last loading status seen this visit ("Retrieving Lua files...", a download...)
 
-local function note(msg) observer.Note(os.date("%H:%M:%S ") .. msg) print("[meowy observer] " .. msg) end
+-- To observer.log only: the game's console is logged to console.log, which a
+-- server's Lua can read.
+local function note(msg) observer.Note(os.date("%H:%M:%S ") .. msg) end
 
 -- What the loading screen shows; nil when not loading.
 local function loadStatus()

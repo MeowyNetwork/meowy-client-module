@@ -73,6 +73,22 @@ int wmain(int argc, wchar_t** argv)
 	Check(Exists(data + L"\\menu_file.txt") && !Exists(data + L"\\a_file.txt"), "recover: menu's files back, A's away");
 	Check(Exists(vault + L"\\1.2.3.4_27015\\a_file.txt"), "recover: A's file kept");
 
+	// Keys come from console text: anything but a real ip:port is refused.
+	for (const char* bad : { ".", "..", "evil", "1.2.3.4", "1.2.3.4:27015/..", "999.1.1.1:27015" })
+		data_sandbox::Enter(bad);
+	Check(Exists(data + L"\\menu_file.txt") && Exists(vault + L"\\1.2.3.4_27015\\a_file.txt") && Exists(vault + L"\\5.6.7.8_27015\\b_file.txt"),
+		"bad keys: nothing moved");
+
+	// A file in use in data/ can't be moved out: the switch stops there, so
+	// none of the next server's files are shown next to it.
+	Touch(data + L"\\locked.txt");
+	HANDLE locked = CreateFileW((data + L"\\locked.txt").c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+	data_sandbox::Enter("5.6.7.8:27015");
+	Check(!Exists(data + L"\\b_file.txt"), "file in use: B's files not shown");
+	CloseHandle(locked);
+	data_sandbox::Enter("5.6.7.8:27015");
+	Check(Exists(data + L"\\b_file.txt") && !Exists(data + L"\\locked.txt"), "file in use: once free, B's files in, the menu's out");
+
 	std::printf("%s\n", g_failed ? "FAILED" : "all passed");
 	return g_failed ? 1 : 0;
 }

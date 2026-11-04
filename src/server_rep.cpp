@@ -136,14 +136,19 @@ namespace
 		out += '"';
 	}
 
-	// One reply, split packets joined. Empty on timeout or nonsense.
+	// One reply, split packets joined. Empty on timeout or nonsense. The socket
+	// is connected, so only the server's own datagrams arrive; a server feeding
+	// split packets forever is still cut off by the deadline and the packet cap.
 	std::string Receive(SOCKET s)
 	{
 		char buf[2048];
 		std::string parts[32];
-		int total = 0, have = 0;
+		int total = 0, have = 0, packets = 0;
+		const ULONGLONG deadline = GetTickCount64() + 2500;
 		for (;;)
 		{
+			if (GetTickCount64() > deadline || ++packets > 64)
+				return "";
 			int n = recv(s, buf, sizeof(buf), 0);
 			if (n < 5)
 				return "";
@@ -177,27 +182,43 @@ namespace
 		sockaddr_in to;
 		SOCKET s = INVALID_SOCKET;
 		std::string reply;
+		bool answered = false;
 		if (ParsePublicAddress(address, to) && (s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) != INVALID_SOCKET)
 		{
-			DWORD timeout = 2500;
+			DWORD timeout = 1500;
 			setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
-			char req[9] = { '\xff', '\xff', '\xff', '\xff', 'U', '\xff', '\xff', '\xff', '\xff' };
-			for (int attempt = 0; attempt < 3; ++attempt)
+			// Connected: datagrams from anyone but the server are dropped.
+			if (connect(s, (sockaddr*)&to, sizeof(to)) == 0)
 			{
-				sendto(s, req, sizeof(req), 0, (sockaddr*)&to, sizeof(to));
-				reply = Receive(s);
-				if (reply.size() >= 9 && reply[4] == 'A')
+				char req[9] = { '\xff', '\xff', '\xff', '\xff', 'U', '\xff', '\xff', '\xff', '\xff' };
+				// Up to two challenge rounds and one resend after a lost packet.
+				int challenges = 0, resends = 0;
+				while (challenges + resends < 4)
 				{
-					memcpy(req + 5, reply.data() + 5, 4); // the challenge, then ask again
-					reply.clear();
-					continue;
+					send(s, req, sizeof(req), 0);
+					reply = Receive(s);
+					if (reply.empty())
+					{
+						if (++resends > 1)
+							break;
+						continue;
+					}
+					answered = true;
+					if (reply.size() >= 9 && reply[4] == 'A' && ++challenges <= 2)
+					{
+						memcpy(req + 5, reply.data() + 5, 4); // the challenge, then ask again
+						reply.clear();
+						continue;
+					}
+					break;
 				}
-				break;
 			}
 			closesocket(s);
 		}
+		// "answered": the server replied but gave no list (hidden), as opposed
+		// to no answer at all (which says nothing about the server).
 		if (reply.size() < 6 || reply[4] != 'D')
-			return json + ",\"ok\":false}";
+			return json + ",\"ok\":false,\"answered\":" + (answered ? "true" : "false") + "}";
 
 		json += ",\"ok\":true,\"declared\":" + std::to_string((unsigned char)reply[5]) + ",\"players\":[";
 		size_t i = 6;
@@ -226,10 +247,11 @@ namespace
 
 namespace server_rep
 {
-	void QueryPlayers(const std::string& address)
+	bool QueryPlayers(const std::string& address)
 	{
-		if (g_queries.load() >= kMaxQueries)
-			return;
+		sockaddr_in to;
+		if (g_queries.load() >= kMaxQueries || !ParsePublicAddress(address, to))
+			return false;
 		++g_queries;
 		std::thread([address] {
 			static std::once_flag wsa;
@@ -243,6 +265,7 @@ namespace server_rep
 			}
 			--g_queries;
 		}).detach();
+		return true;
 	}
 
 	std::string TakePlayers()
@@ -281,8 +304,14 @@ namespace server_rep
 
 	void SendReport(const std::string& json)
 	{
-		if (json.empty() || json.size() > 16 * 1024)
+		if (json.empty())
 			return;
+		// The biggest servers (two runs of 128 rows) fit; past that, say so.
+		if (json.size() > 64 * 1024)
+		{
+			Log("report dropped: " + std::to_string(json.size()) + " bytes");
+			return;
+		}
 		std::thread([json] {
 			DWORD status = 0;
 			Request(L"POST", kReportPath, json, &status);
