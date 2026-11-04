@@ -38,6 +38,7 @@ touch "$AUTOEXEC"
 sed -i '/-- meowy observer --/,/-- meowy observer end --/d' "$AUTOEXEC"
 cat >> "$AUTOEXEC" <<'EOF'
 // -- meowy observer --
+con_logfile console.log
 mat_picmip 2
 r_rootlod 2
 cl_downloadfilter mapsonly
