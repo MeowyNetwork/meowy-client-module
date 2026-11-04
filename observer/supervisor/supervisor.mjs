@@ -11,6 +11,16 @@
  *                               to start the game yourself (as on Windows)
  *   MEOWY_OBSERVER_CONFIRM      set 0 to stop clicking through Steam's "another
  *                               session is playing" prompt when launching
+ *   MEOWY_OBSERVER_GAME_USER    on the VM: the user Steam and GMod run as. Then
+ *                               everything done to the game (start, quit, the
+ *                               loader, emptying its folders) runs as that user,
+ *                               through sudo and MEOWY_OBSERVER_GAME_CTL
+ *                               (/opt/observer/game-ctl), with none of this
+ *                               process's environment. The supervisor itself only
+ *                               reads the console log and the job folder.
+ *
+ * The same file runs on the game's side as `supervisor.mjs --game <command>`
+ * (what game-ctl starts): arm, disarm, reset or start.
  *
  * One visit at a time. A visit the game doesn't finish in VISIT_TIMEOUT is
  * dropped (the backend gives it up too).
@@ -25,8 +35,12 @@ import dgram from 'node:dgram';
 const DIR = process.env.MEOWY_OBSERVER_DIR || path.join(process.env.HOME || '.', '.meowy-observer');
 const API = (process.env.MEOWY_OBSERVER_API || 'https://meowynetwork.com').replace(/\/+$/, '');
 const TOKEN = process.env.SERVER_REP_OBSERVER_TOKEN || '';
+// Kept in memory only: no program started from here inherits it.
+delete process.env.SERVER_REP_OBSERVER_TOKEN;
 const MANAGE_GAME = process.platform === 'linux' && process.env.MEOWY_OBSERVER_MANAGE_GAME !== '0';
 const CONFIRM = MANAGE_GAME && process.env.MEOWY_OBSERVER_CONFIRM !== '0';
+const GAME_USER = (MANAGE_GAME && process.env.MEOWY_OBSERVER_GAME_USER) || '';
+const GAME_CTL = process.env.MEOWY_OBSERVER_GAME_CTL || '/opt/observer/game-ctl';
 const POLL_MS = 60 * 1000;
 const VISIT_TIMEOUT_MS = 55 * 60 * 1000; // a first visit can download GBs of Workshop content
 const LAUNCH_TIMEOUT_MS = 3 * 60 * 1000;
@@ -63,6 +77,12 @@ export async function emptyData() {
   for (const e of await fs.readdir(data).catch(() => [])) await fs.rm(path.join(data, e), { recursive: true, force: true });
 }
 
+// Before each visit: the console log emptied, and garrysmod/data (see visit()).
+export async function resetGameFiles() {
+  await fs.truncate(CONSOLE_LOG, 0).catch(() => {});
+  await emptyData();
+}
+
 export async function armLoader() {
   await fs.mkdir(LUA_BIN, { recursive: true });
   for (const f of LOADERS) await fs.copyFile(path.join(LOADER_SRC, f), path.join(LUA_BIN, f)).catch(() => {});
@@ -90,13 +110,13 @@ async function disarmOnceLoaded(logFrom, ms = 120000) {
     // non-ASCII text (kick reasons in other languages).
     const buf = await fs.readFile(logPath).catch(() => Buffer.alloc(0));
     if (buf.length > logFrom && buf.subarray(logFrom).toString('utf8').includes('module loaded')) {
-      await disarmLoader();
+      await disarm();
       log('loader_removed');
       return true;
     }
     await sleep(1000);
   }
-  await disarmLoader();
+  await disarm();
   log('loader_removed', { note: "the module didn't report loading" });
   return false;
 }
@@ -109,6 +129,62 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = (msg, extra = {}) => console.log(JSON.stringify({ ts: new Date().toISOString(), msg, ...extra }));
 const run = (cmd, args) =>
   new Promise((resolve) => execFile(cmd, args, { timeout: 10000 }, (err, stdout) => resolve(err ? null : String(stdout))));
+
+// A game-ctl command, run as the game user. sudo starts it with a fresh
+// environment, and sudo itself gets only PATH from here. Its output goes to
+// this log; true if it succeeded.
+function asGame(args, timeout = 60000) {
+  return new Promise((resolve) =>
+    execFile(
+      'sudo',
+      ['-n', '-u', GAME_USER, '--', GAME_CTL, ...args],
+      { timeout, maxBuffer: 1 << 20, env: { PATH: process.env.PATH || '/usr/sbin:/usr/bin:/sbin:/bin' } },
+      (err, stdout, stderr) => {
+        const out = `${stdout || ''}${stderr || ''}`.trim();
+        if (out) console.log(out.slice(-8192));
+        if (err) log('error', { err: `game-ctl ${args[0]}: ${err.killed ? 'timed out' : (err.code ?? err.message)}` });
+        resolve(!err);
+      },
+    ),
+  );
+}
+
+// What's done to the game's own folders: as the game user when there is one.
+const arm = () => (GAME_USER ? asGame(['arm']) : armLoader());
+const disarm = () => (GAME_USER ? asGame(['disarm']) : disarmLoader());
+const resetGame = () => (GAME_USER ? asGame(['reset'], 5 * 60 * 1000) : resetGameFiles());
+
+// Opens a file the game user can create or replace (in the job folder or the
+// game's), as { fh, size }, or null when it's missing or not as expected. It
+// must be a regular file (not followed through a link) and, with a game user,
+// owned as expected:
+// - 'game': the game's own files must not be root's or ours, so a link or
+//   file the game put there can't make this process read something only it
+//   can (the token);
+// - 'ours': the admin's local-job.json must be ours or root's, so the game
+//   can't queue a visit itself.
+async function readChecked(file, owner) {
+  let fh;
+  try {
+    fh = await fs.open(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+    const st = await fh.stat();
+    let ok = st.isFile();
+    if (ok && GAME_USER) {
+      const mine = st.uid === 0 || st.uid === process.getuid();
+      ok = owner === 'game' ? !mine : mine;
+    }
+    if (ok) return { fh, size: st.size };
+  } catch {}
+  await fh?.close();
+  return null;
+}
+
+// A file of ours in the job folder, where the game can write too: removed and
+// created anew, so it can't be a link or a file the game left in its place.
+async function writeOwn(file, text) {
+  await fs.rm(file, { force: true });
+  await fs.writeFile(file, text, { flag: 'wx' });
+}
 
 async function api(method, route, body) {
   const res = await fetch(`${API}/api/pack/observer${route}`, {
@@ -140,7 +216,7 @@ const alive = (pid) => {
 async function gameRunning() {
   if (gamePid && alive(gamePid)) return true;
   gamePid = 0;
-  const out = await run('pgrep', ['-x', GAME_PROCESS]);
+  const out = await run('pgrep', [...(GAME_USER ? ['-u', GAME_USER] : []), '-x', GAME_PROCESS]);
   if (out === null) return false;
   gamePid = Number(out.trim().split(/\s+/)[0]) || 0;
   return gamePid > 0;
@@ -214,22 +290,37 @@ async function promptAt() {
 const LAUNCHES = 3; // Steam sometimes ignores a launch just after it starts up
 const RELAUNCH_MS = 45 * 1000;
 
-function launch() {
+// Hands the launch to the Steam that's running. Through game-ctl
+// (MEOWY_OBSERVER_NEED_STEAM=1) only to one that's already up: a Steam started
+// from here would run outside observer-desktop and its memory limits.
+async function launch() {
+  if (process.env.MEOWY_OBSERVER_NEED_STEAM === '1' && (await run('pgrep', ['-u', String(process.getuid()), '-x', 'steam'])) === null) {
+    log('steam_not_running', { note: 'observer-desktop starts it again; asking later' });
+    return;
+  }
   const steam = spawn('steam', GAME_ARGS, { detached: true, stdio: 'ignore' });
   steam.on('error', (err) => log('error', { err: `steam: ${err.message}` }));
   steam.unref();
 }
 
-// Start GMod and wait for it: click through Steam's prompt when it's shown, and
-// ask again when nothing at all happened.
+// Start GMod and wait for it. With a game user, the launch and the clicks on
+// Steam's prompt (which read the screen) happen on the game's side, so this
+// process never talks to the display the game owns.
 async function startGame() {
   if (await gameRunning()) return true;
   log('game_start');
   const logFrom = (await fs.stat(path.join(DIR, 'observer.log')).catch(() => ({ size: 0 }))).size;
-  await armLoader();
+  await arm();
   // In parallel with the launch below: gone again as soon as the module is in.
   disarmOnceLoaded(logFrom).catch((err) => log('error', { err: `loader: ${err.message}` }));
-  launch();
+  if (GAME_USER) return (await asGame(['start'], LAUNCH_TIMEOUT_MS + 60000)) && gameRunning();
+  return launchAndConfirm();
+}
+
+// Launch, click through Steam's prompt when it's shown, and ask again when
+// nothing at all happened.
+export async function launchAndConfirm() {
+  await launch();
   const started = Date.now();
   let clicks = 0;
   let launches = 1;
@@ -251,39 +342,40 @@ async function startGame() {
       launches++;
       lastLaunch = Date.now();
       log('game_start_again', { launches, button: p.button, dialog: p.dialog });
-      launch();
+      await launch();
     }
   }
   log('game_start_failed', { clicks, launches });
   return false;
 }
 
+const signalGame = (sig) => (GAME_USER ? asGame([sig === 'KILL' ? 'kill' : 'quit']) : run('pkill', [`-${sig}`, '-x', GAME_PROCESS]));
+
 async function quitGame() {
   if (!(await gameRunning())) return;
-  await run('pkill', ['-TERM', '-x', GAME_PROCESS]);
+  await signalGame('TERM');
   for (let i = 0; i < 15 && (await gameRunning()); i++) await sleep(2000);
-  if (await gameRunning()) await run('pkill', ['-KILL', '-x', GAME_PROCESS]);
-  await disarmLoader();
+  if (await gameRunning()) await signalGame('KILL');
+  await disarm();
   log('game_quit');
 }
 
 // --- visits ------------------------------------------------------------------
 
 // The console log from a byte offset on (the offset goes back to 0 if the file
-// was replaced by something shorter).
+// was replaced by something shorter). It's in the game's folder, so it's read
+// only as the game's own file (readChecked).
 async function consoleSize() {
-  try {
-    return (await fs.stat(CONSOLE_LOG)).size;
-  } catch {
-    return 0;
-  }
+  const f = await readChecked(CONSOLE_LOG, 'game');
+  await f?.fh.close();
+  return f ? f.size : 0;
 }
 
 async function consoleSince(offset) {
-  let fh;
+  const f = await readChecked(CONSOLE_LOG, 'game');
+  if (!f) return { text: '', next: offset };
+  const { fh, size } = f;
   try {
-    fh = await fs.open(CONSOLE_LOG, 'r');
-    const { size } = await fh.stat();
     const from = size < offset ? 0 : offset;
     const length = Math.min(size - from, 1 << 20);
     const buf = Buffer.alloc(length);
@@ -496,16 +588,15 @@ async function visit(job) {
   // The console log holds earlier visits' `status` tables (other servers'
   // players' names and SteamIDs), and any server's client Lua can read files
   // in the game folder: start each visit with it empty.
-  await fs.truncate(CONSOLE_LOG, 0).catch(() => {});
   // The same for garrysmod/data: earlier servers' addons leave their folders
   // there, and earlier builds left the sampler's own. The observer keeps
   // nothing in it between visits, so each visit starts with it empty.
-  await emptyData();
+  await resetGame();
   const visitConsole = await consoleSize();
   const obsLogFrom = (await fs.stat(path.join(DIR, 'observer.log')).catch(() => ({ size: 0 }))).size;
   let consoleAt = visitConsole;
   const started = Date.now();
-  await fs.writeFile(path.join(DIR, 'job.json'), JSON.stringify(job));
+  await writeOwn(path.join(DIR, 'job.json'), JSON.stringify(job));
   log('visit', { address: job.address });
   // The server's own A2S count just before we join, and its answers while we're
   // in: the list it shows everyone, set against the roster we see in game.
@@ -529,7 +620,7 @@ async function visit(job) {
       if (/Missing map/i.test(why) && job.filter !== 'all') {
         const full = await fullDownloads();
         full.add(job.address);
-        await fs.writeFile(FULL_DOWNLOADS, JSON.stringify([...full]));
+        await writeOwn(FULL_DOWNLOADS, JSON.stringify([...full]));
         log('full_downloads', { address: job.address });
         try {
           await api('POST', '/queue', { address: job.address, ...(job.mode ? { mode: job.mode } : {}) });
@@ -598,12 +689,14 @@ async function visit(job) {
 // is logged, never sent.
 async function takeLocalJob() {
   const file = path.join(DIR, 'local-job.json');
+  const f = await readChecked(file, 'ours');
   let job;
   try {
-    job = JSON.parse(await fs.readFile(file, 'utf8'));
+    job = f ? JSON.parse(await f.fh.readFile('utf8')) : null;
   } catch {
     return null;
   } finally {
+    await f?.fh.close();
     await fs.rm(file, { force: true });
   }
   if (!job || typeof job.address !== 'string' || !/^\d{1,3}(\.\d{1,3}){3}:\d{1,5}$/.test(job.address)) return null;
@@ -622,10 +715,16 @@ async function main() {
     log('waiting_for_token', { note: 'set the Observer token variable and restart' });
     await sleep(10 * 60 * 1000);
   }
-  log('ready', { dir: DIR, api: API, manageGame: MANAGE_GAME, confirm: CONFIRM });
+  log('ready', { dir: DIR, api: API, manageGame: MANAGE_GAME, confirm: CONFIRM, gameUser: GAME_USER || undefined });
+  if (GAME_USER) {
+    // The console log is read from here: the game's folders must let this user in.
+    await fs.access(GARRYSMOD, fs.constants.R_OK | fs.constants.X_OK).catch((err) =>
+      log('error', { err: `can't read the game's folder ${GARRYSMOD} (${err.code}): status-only visits will fail` }),
+    );
+  }
   if (MANAGE_GAME) {
     await quitGame(); // start from a closed game, like after every round
-    await disarmLoader(); // and with nothing of the observer in the game's folders
+    await disarm(); // and with nothing of the observer in the game's folders
   }
   for (;;) {
     // A round: visit while the backend has suspects, then close the game.
@@ -645,10 +744,21 @@ async function main() {
   }
 }
 
+// The game's side (game-ctl, as the game user): one command, then exit.
+const GAME_COMMANDS = { arm: armLoader, disarm: disarmLoader, reset: resetGameFiles, start: launchAndConfirm };
+
 // Run when started directly (not when a test imports the parsers).
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main().catch((err) => {
-    log('fatal', { err: err.message });
-    process.exit(1);
-  });
+  const game = process.argv[2] === '--game';
+  const command = game ? Object.hasOwn(GAME_COMMANDS, process.argv[3] || '') && GAME_COMMANDS[process.argv[3]] : main;
+  if (!command) {
+    log('fatal', { err: `unknown game command: ${process.argv[3]}` });
+    process.exit(2);
+  }
+  command()
+    .then((ok) => game && process.exit(ok === false ? 1 : 0))
+    .catch((err) => {
+      log('fatal', { err: err.message });
+      process.exit(1);
+    });
 }

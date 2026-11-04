@@ -9,7 +9,15 @@
 #                                                       of (any server, ours included);
 #                                                       its result is only logged
 #   observer-queue --local --quick <ip:port> [lua]      the same, 2 minutes instead of 10
+#
+# Run it as the VM's admin (obsadmin) or root. It switches itself to obsvisor
+# through sudo: the one user that can read the token, and whose local jobs the
+# supervisor takes. (The game user can't: it has no sudo.)
 set -eu
+if [ "$(id -un)" != obsvisor ]; then
+	exec sudo -u obsvisor -- "$0" "$@"
+fi
+cd /
 LOCAL=""
 QUICK=""
 if [ "${1:-}" = "--local" ]; then
@@ -28,8 +36,10 @@ if ! [[ "$ADDR" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}:[0-9]{1,5}$ ]] || ! [[ -z "$MODE
 fi
 BODY="{\"address\":\"$ADDR\"${MODE:+,\"mode\":\"$MODE\"}${QUICK:+,\"quick\":true}}"
 if [ -n "$LOCAL" ]; then
-	DIR="${MEOWY_OBSERVER_DIR:-$HOME/.meowy-observer}"
-	printf '%s\n' "$BODY" > "$DIR/local-job.json"
+	DIR="${MEOWY_OBSERVER_DIR:-/var/lib/meowy-observer}"
+	# Made anew (the game can write in this folder too): not a file it left there.
+	rm -f "$DIR/local-job.json"
+	(set -o noclobber; printf '%s\n' "$BODY" > "$DIR/local-job.json")
 	echo "queued locally: $BODY (the observer takes it within a minute)"
 	exit 0
 fi
