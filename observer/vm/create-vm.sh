@@ -14,7 +14,7 @@ NAME=meowy-observer
 IMG=/var/lib/libvirt/images
 
 apt-get update
-apt-get install -y --no-install-recommends qemu-kvm libvirt-daemon-system virtinst cloud-image-utils genisoimage
+apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils libvirt-daemon-system virtinst cloud-image-utils genisoimage dnsmasq-base
 systemctl enable --now libvirtd
 virsh net-autostart default >/dev/null 2>&1 || true
 virsh net-start default >/dev/null 2>&1 || true
@@ -48,7 +48,7 @@ cloud-localds "$NAME-seed.iso" /tmp/user-data
 
 virt-install --name "$NAME" --memory 6144 --vcpus 4 \
   --disk "$IMG/$NAME.qcow2",format=qcow2 --disk "$IMG/$NAME-seed.iso",device=cdrom \
-  --os-variant ubuntu24.04 --network network=default --graphics none \
+  --osinfo detect=on,require=off --network network=default --graphics none \
   --import --noautoconsole --autostart
 
 echo "VM started. Its address (give it a minute):"
