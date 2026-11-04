@@ -615,8 +615,13 @@ namespace
 		server_gate::Result r = server_gate::Check(&address);
 		if ((r != server_gate::Result::Allowed && r != server_gate::Result::OtherServer) || address.empty())
 			address = connect_watch::LastAddress();
-		if (!address.empty() && address.find("loopback") == std::string::npos)
-			data_sandbox::Enter(address);
+		if (address.empty())
+			return 0;
+		// Singleplayer, or hosting a game here: the player's own game, the menu's files.
+		if (address.find("loopback") != std::string::npos || address.rfind("localhost", 0) == 0)
+			data_sandbox::Leave();
+		else
+			data_sandbox::Enter(address);   // a P2P host or odd address gets a fixed sandbox of its own
 		return 0;
 	}
 
@@ -776,6 +781,21 @@ end
 
 local function usable(name) return isstring(name) and #(name:match("^%s*(.-)%s*$")) >= 3 end
 
+-- name -> the moments (SysTime) players of that name joined, for one sample.
+-- At most MAX_SAME per name: a list of one name repeated can't make a long one.
+local MAX_SAME = 8
+local function joinedIndex(list, at)
+	local index = {}
+	for _, f in ipairs(list) do
+		if usable(f.name) then
+			local times = index[f.name]
+			if not times then times = {} index[f.name] = times end
+			if #times < MAX_SAME then times[#times + 1] = at - f.time end
+		end
+	end
+	return index
+end
+
 -- The rules of serverRep/score.js, for one server with one or two samples.
 local function judge(address, listA, listB, gap)
 	local s = seen[address]
@@ -800,16 +820,19 @@ local function judge(address, listA, listB, gap)
 	for _ in pairs(suspicious) do frozen = frozen + 1 end
 	if #listA > 0 and frozen >= #listA * 0.8 then suspicious = {} end
 	-- The same name, joined at the same moment, on another server we sampled.
+	-- Through each sample's name index (joinedIndex), so the work grows with
+	-- the names and servers, not with names times every other server's names.
 	for _, e in ipairs(listA) do
 		if usable(e.name) and not suspicious[e.name] then
 			local joined = samples[address].at - e.time
 			for other, o in pairs(samples) do
-				if other ~= address then
-					for _, f in ipairs(o.list) do
-						if f.name == e.name and math.abs((o.at - f.time) - joined) <= DUPE_TOLERANCE then suspicious[e.name] = true break end
+				local times = other ~= address and o.joined[e.name]
+				if times then
+					for _, t in ipairs(times) do
+						if math.abs(t - joined) <= DUPE_TOLERANCE then suspicious[e.name] = true break end
 					end
+					if suspicious[e.name] then break end
 				end
-				if suspicious[e.name] then break end
 			end
 		end
 	end
@@ -827,10 +850,13 @@ local function judge(address, listA, listB, gap)
 	return { verdict = "ok", real = reported }
 end
 
+-- (The module already stops at 255 entries and 64-byte names; so does this.)
+local MAX_LIST = 255
 local function toList(tbl)
 	local out = {}
 	for _, p in pairs(istable(tbl) and tbl or {}) do
-		if istable(p) then out[#out + 1] = { name = tostring(p.name or ""), time = tonumber(p.time) or 0, score = tonumber(p.score) or 0 } end
+		if #out >= MAX_LIST then break end
+		if istable(p) then out[#out + 1] = { name = string.sub(tostring(p.name or ""), 1, 64), time = tonumber(p.time) or 0, score = tonumber(p.score) or 0 } end
 	end
 	return out
 end
@@ -929,7 +955,7 @@ hook.Add("Think", "MeowyClientPack.ServerList", function()
 			local atA = SysTime()
 			-- No answer: no verdict from here (the backend's, if any, stands).
 			if listA == false then pending[address] = nil return end
-			if listA then samples[address] = { at = atA, list = listA } end
+			if listA then samples[address] = { at = atA, list = listA, joined = joinedIndex(listA, atA) } end
 			if not listA or #listA == 0 then
 				pending[address] = nil
 				mine[address] = judge(address, listA, nil, 0)

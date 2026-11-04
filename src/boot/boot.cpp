@@ -12,8 +12,15 @@
 // launch options, and nothing is loaded. If the game died while the module
 // was loading last time (%LOCALAPPDATA%\MeowyClientPack\boot.lock was left behind), this launch
 // skips it once.
+//
+// The per-server data/ (data_sandbox.h) is put right by the stub itself, before
+// any of that is decided: a crash while on a server leaves that server's files
+// in data/, and a start without the pack (safe mode, the skip after a crash)
+// would otherwise show them to every server joined that session and file what
+// they write under that first server. It's file moves only, nothing in the game.
 
 #include "GarrysMod/Lua/Interface.h"
+#include "../data_sandbox.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -72,6 +79,28 @@ namespace
 		return dir;
 	}
 
+	// data_sandbox::Recover(), guarded by a lock of its own: if the game went
+	// down during this very recovery last time, it's skipped this once (safe
+	// mode must always get the game to start).
+	void RecoverDataSandbox(ILuaBase* LUA, const std::wstring& dataDir)
+	{
+		if (dataDir.empty())
+			return;
+		const std::wstring lock = dataDir + L"\\recover.lock";
+		if (GetFileAttributesW(lock.c_str()) != INVALID_FILE_ATTRIBUTES)
+		{
+			DeleteFileW(lock.c_str());
+			Print(LUA, "[Meowy Client Pack] the game closed while garrysmod/data was being put back last time; "
+				"skipping that this once");
+			return;
+		}
+		HANDLE h = CreateFileW(lock.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+		if (h != INVALID_HANDLE_VALUE)
+			CloseHandle(h);
+		data_sandbox::Recover();
+		DeleteFileW(lock.c_str());
+	}
+
 	bool SafeModeRequested()
 	{
 		if (GetAsyncKeyState(VK_SHIFT) & 0x8000)
@@ -82,6 +111,9 @@ namespace
 
 GMOD_MODULE_OPEN()
 {
+	const std::wstring dataDir = PackDataDir();
+	RecoverDataSandbox(LUA, dataDir);
+
 	if (SafeModeRequested())
 	{
 		Print(LUA, "[Meowy Client Pack] safe mode: not loaded at start-up");
@@ -94,7 +126,6 @@ GMOD_MODULE_OPEN()
 	// Before 1.4.1 the lock was in garrysmod\data\meowy.
 	DeleteFileW((bin + L"..\\..\\data\\meowy\\boot.lock").c_str());
 
-	const std::wstring dataDir = PackDataDir();
 	const std::wstring lock = dataDir.empty() ? L"" : dataDir + L"\\boot.lock";
 
 	if (!lock.empty() && GetFileAttributesW(lock.c_str()) != INVALID_FILE_ATTRIBUTES)

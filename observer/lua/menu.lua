@@ -6,9 +6,8 @@
 	  done.json { id, address, players, observed, still, samples, ... } or { id, error }
 
 	A visit: connect; the moment loading ends, start the sampler in the
-	client state (it settles, samples for 10 minutes and writes
-	data/ldr/result.json); read its counts, disconnect, write
-	done.json.
+	client state (it settles, samples for 10 minutes and reports to the
+	module, in memory); read its counts, disconnect, write done.json.
 
 	The menu state only ticks while the game menu is on screen (main menu,
 	loading screen, console), not while the game itself is in front. So the
@@ -57,8 +56,8 @@ local function why(err)
 end
 
 local function done(result)
-	-- The sampler's file is readable by any server's client Lua: don't leave one
-	-- server's numbers (or the position check) for the next server to find.
+	-- Older samplers wrote a file any server's client Lua can read: don't
+	-- leave one lying around. (Results are never read from it.)
 	file.Delete("ldr/result.json")
 	result.id = job.id
 	result.address = job.address
@@ -70,8 +69,10 @@ end
 
 -- The module can read player positions natively (from the engine, not the
 -- server's Lua), for status-only visits. It's trusted only after matching what
--- the Lua sampler saw at the end of a normal visit; a crash during that check
--- marks it bad for good (the module does that on the next start).
+-- the Lua sampler saw at the end of a normal visit; a failed check, or a crash
+-- during it (the module notes that on the next start), marks it bad. A bad
+-- state lasts 7 days, then it's checked again (a visited server can cause
+-- either, so it mustn't turn the native reads off for good).
 -- "ok <position source> <yaw source>" once checked: vtable (GetAbsOrigin /
 -- GetAbsAngles) or fields (m_vecOrigin / m_angEyeAngles[1], the networked values).
 local function nativeUsable() return observer.NativeState():sub(1, 3) == "ok " end
@@ -401,7 +402,9 @@ step = function(now)
 
 	elseif phase == "sampling" then
 		-- The result first: the sampler brings the menu back once it's written.
-		local r = util.JSONToTable(observer.TakeClientResult() or file.Read("ldr/result.json", "DATA") or "")
+		-- Only the module's memory (the sampler's report function): never
+		-- data/ldr/result.json, which the server's own client Lua can write.
+		local r = util.JSONToTable(observer.TakeClientResult() or "")
 		if istable(r) and r.still ~= nil then
 			local ok, err = pcall(checkNative, r.check)
 			if not ok then note("native check error: " .. tostring(err)) end
@@ -414,7 +417,7 @@ step = function(now)
 		if istable(r) and r.error then return done({ error = "sampler failed after " .. tostring(r.ticks) .. " ticks: " .. string.sub(tostring(r.error), 1, 150) }) end
 		if not IsInGame() then return done({ error = "left during the visit (disconnected before the sampler finished)" }) end
 		if now - since > SAMPLE_TIMEOUT then
-			local progress = not istable(r) and "no result file"
+			local progress = not istable(r) and "no report from the sampler"
 				or r.loaded and "never started sampling (the 60 s wait didn't end)"
 				or r.ticks and ("stopped at tick " .. tostring(r.ticks) .. " of " .. tostring(r.of))
 				or "unknown state"

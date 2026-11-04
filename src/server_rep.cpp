@@ -18,6 +18,12 @@ namespace
 	const wchar_t* const kReportPath = L"/api/pack/servers/report";
 	constexpr size_t kMaxBody = 512 * 1024;
 	constexpr size_t kMaxCapture = 64 * 1024;
+	// A2S_PLAYER: the header's count is one byte, so no honest reply lists more
+	// than 255, and no Steam name is longer than 64 bytes. A hostile reply can
+	// hold ~7,000 entries and names of any length, and the server list's checks
+	// (and the side panel) would do work in proportion.
+	constexpr int kMaxPlayers = 255;
+	constexpr size_t kMaxName = 64;
 
 	std::mutex g_listMutex;
 	std::string g_list;
@@ -222,23 +228,36 @@ namespace
 
 		json += ",\"ok\":true,\"declared\":" + std::to_string((unsigned char)reply[5]) + ",\"players\":[";
 		size_t i = 6;
-		bool first = true;
+		int entries = 0;
 		while (i < reply.size())
 		{
 			++i; // index
 			size_t end = reply.find('\0', i);
 			if (end == std::string::npos || end + 9 > reply.size())
 				break;
+			if (entries >= kMaxPlayers)
+				return json + "],\"truncated\":true}";
 			int32_t score;
 			float time;
 			memcpy(&score, reply.data() + end + 1, 4);
 			memcpy(&time, reply.data() + end + 5, 4);
-			if (!first)
+			// Seconds connected. Converting NaN, an infinity or anything past an
+			// int is undefined behaviour: 0 instead (as for anything negative).
+			if (!(time >= 0.0f && time < 1.0e9f))
+				time = 0.0f;
+			// Names cut to kMaxName bytes, at a UTF-8 character boundary.
+			size_t nameLen = end - i;
+			if (nameLen > kMaxName)
+			{
+				nameLen = kMaxName;
+				while (nameLen > 0 && ((unsigned char)reply[i + nameLen] & 0xC0) == 0x80)
+					--nameLen;
+			}
+			if (entries++ > 0)
 				json += ',';
-			first = false;
 			json += "{\"name\":";
-			JsonEscape(json, reply.data() + i, end - i);
-			json += ",\"score\":" + std::to_string(score) + ",\"time\":" + std::to_string((int)time) + "}";
+			JsonEscape(json, reply.data() + i, nameLen);
+			json += ",\"score\":" + std::to_string(score) + ",\"time\":" + std::to_string(static_cast<int>(time)) + "}";
 			i = end + 9;
 		}
 		return json + "]}";

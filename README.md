@@ -21,9 +21,17 @@ from this repository by its CI (`gh attestation verify MeowyClientPack.exe --rep
 start with the game, also add this line at the end of `garrysmod/lua/includes/menu.lua`:
 `pcall(require, "meowy_boot") -- meowy-client-pack v1`
 
-**Uninstall:** run the installer and click **Uninstall**, or delete the four `gmcl_meowy_*` and
-`gmsv_meowy_boot_*` files from that folder and the `meowy-client-pack` line from
-`lua/includes/menu.lua`.
+**Uninstall:** run the installer and click **Uninstall** (or `MeowyClientPack.exe --uninstall`). It
+first puts back the `garrysmod/data` files the pack kept apart (see *A separate `garrysmod/data` for
+every server* below): your own files, from before the pack and from the main menu, go back into
+`garrysmod/data`, never overwriting anything there (on a name clash both are kept, and the one coming
+back gets a suffix such as `name.before-pack.txt`). Each server's own files go to
+`Documents\Meowy Client Pack backup\<server>`, not into `data/`, where every server could read them.
+Then it removes the pack's files, its start-up line and `%LOCALAPPDATA%\MeowyClientPack`; a vault
+that couldn't be emptied is left in place and named. Uninstalling by hand (deleting the four
+`gmcl_meowy_*` and `gmsv_meowy_boot_*` files from that folder and the `meowy-client-pack` line from
+`lua/includes/menu.lua`) leaves the vault where it is: copy `vault\before-sandbox` and `vault\menu`
+back into `garrysmod/data` yourself.
 
 **Start with the game** (on by default in the installer): the installer adds that one line to
 `lua/includes/menu.lua`, so the pack is loaded at the main menu instead of only once a server's
@@ -96,7 +104,7 @@ the game closes while the pack is starting, the next start skips it once by itse
     checks but stops the reports. Our own servers are never checked. What each report did (counts and
     the HTTP result, never SteamIDs) goes to `%LOCALAPPDATA%\MeowyClientPack\serverlist.log`.
 - Its only other network traffic is the loading page and its data, from meowynetwork.com, through WebView2. It
-  writes only in `%LOCALAPPDATA%\MeowyClientPack` (`boot.lock` for a moment at start-up; for the
+  writes only in `%LOCALAPPDATA%\MeowyClientPack` (`boot.lock` and `recover.lock` for a moment at start-up; for the
   loading screen `join_times.txt`, how long each stage of your last join took, `last_join.txt`,
   what that join went through, and `css_scale.txt`; and WebView2's profile). Nothing goes in
   `garrysmod/data`, which any server's Lua can read, so other servers can't tell you have the pack.
@@ -107,9 +115,16 @@ the game closes while the pack is starting, the next start skips it once by itse
   every other server's, and the main menu's, wait in `%LOCALAPPDATA%\MeowyClientPack\vault\<server>`.
   If the game is on another drive, they wait in `steamapps\MeowyClientPackVault`. Both are out of
   reach of every file path GMod gives Lua. Switching is a rename, so it's instant. The first time,
-  your existing `data/` goes to `vault\before-sandbox`, kept but never shown to a server; copy
-  anything back from there by hand. After a crash, the next start puts everything back where it
-  belongs. `meowy_data_sandbox 0` turns it off (one `data/` for all servers again).
+  your existing `data/` goes to `vault\before-sandbox`, kept but never shown to a server; uninstalling
+  puts it back (or copy anything back from there by hand). A connection that isn't a plain
+  `a.b.c.d:port` (a Steam P2P game, say) gets a shared sandbox of its own (`vault\p2p`, `vault\other`),
+  never the main menu's files; singleplayer and hosting a game yourself use the main menu's. After a
+  crash, the next start puts everything back where it belongs, even when the pack itself is skipped
+  (safe mode, or the skip after a crash at start-up): the start-up stub does that part on its own.
+  The sandbox itself only runs while the pack is started with the game, though: in a session where
+  it isn't (safe mode, the skip after a crash, or after a Steam "Verify integrity of game files"
+  removed the start-up line), every server sees the same `data/`. `meowy_data_sandbox 0`
+  turns it off (one `data/` for all servers again).
 - It only works on Meowy Network servers. The DLL asks the game itself which server it's connected to
   and compares that with the addresses built into it, so another server can't use it or read anything
   from it, even by faking its name or address in Lua. In singleplayer, the main menu or on any other

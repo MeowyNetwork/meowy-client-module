@@ -24,8 +24,12 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <string>
 #include <vector>
+
+#include <sys/stat.h>
+#include <sys/types.h>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -212,54 +216,49 @@ namespace
 			LUA->PushString("the Lua state found is not the game's client state");
 			return 2;
 		}
-		if (g_api.ok())
+		// Only through the C API: the sampler reports through ClientReport, into
+		// this module's memory. (The state's own RunString, which a server can
+		// stub, would leave it reporting nowhere the menu trusts.)
+		if (!g_api.ok())
 		{
-			g_grabbed = nullptr;
-			client->PushCFunction(Grab);
-			client->Call(0, 0);
-			lua_State* L = g_grabbed;
-			if (L)
-			{
-				std::string err;
-				g_clientResult.clear();
-				bool loaded = g_api.loadbuffer(L, code, len, "=ldr") == 0;
-				// The chunk gets one argument: a C function it reports through (ClientReport).
-				if (loaded)
-					g_api.pushcclosure(L, ClientReport, 0);
-				if (!loaded || g_api.pcall(L, 1, 0, 0) != 0)
-				{
-					const char* e = g_api.tolstring(L, -1, nullptr);
-					err = e ? e : "unknown error";
-					g_api.settop(L, -2);
-					LUA->PushBool(false);
-					LUA->PushString(err.c_str());
-					return 2;
-				}
-				LUA->PushBool(true);
-				return 1;
-			}
-		}
-		// Without the C API: the state's own RunString (a server can stub this).
-		client->PushSpecial(SPECIAL_GLOB);
-		client->GetField(-1, "RunString");
-		if (!client->IsType(-1, Type::Function))
-		{
-			client->Pop(2);
 			LUA->PushBool(false);
-			LUA->PushString("RunString is missing in the client state");
+			LUA->PushString("the Lua C API wasn't found in lua_shared");
 			return 2;
 		}
-		client->PushString(code);
-		client->PushString("ldr");
-		if (client->PCall(2, 0, 0) != 0)
+		// Protected: the server's Lua shares this state and can make any call in
+		// it raise (a debug hook, say). Unprotected, that error would unwind
+		// through the menu state's C frames.
+		g_grabbed = nullptr;
+		client->PushCFunction(Grab);
+		if (client->PCall(0, 0, 0) != 0)
 		{
 			std::string err = client->IsType(-1, Type::String) ? client->GetString(-1) : "unknown error";
-			client->Pop(2);
+			client->Pop(1);
+			LUA->PushBool(false);
+			LUA->PushString(("couldn't reach the client state: " + err.substr(0, 200)).c_str());
+			return 2;
+		}
+		lua_State* L = g_grabbed;
+		if (!L)
+		{
+			LUA->PushBool(false);
+			LUA->PushString("couldn't reach the client state");
+			return 2;
+		}
+		g_clientResult.clear();
+		bool loaded = g_api.loadbuffer(L, code, len, "=ldr") == 0;
+		// The chunk gets one argument: a C function it reports through (ClientReport).
+		if (loaded)
+			g_api.pushcclosure(L, ClientReport, 0);
+		if (!loaded || g_api.pcall(L, 1, 0, 0) != 0)
+		{
+			const char* e = g_api.tolstring(L, -1, nullptr);
+			std::string err = e ? e : "unknown error";
+			g_api.settop(L, -2);
 			LUA->PushBool(false);
 			LUA->PushString(err.c_str());
 			return 2;
 		}
-		client->Pop(1);
 		LUA->PushBool(true);
 		return 1;
 	}
@@ -680,12 +679,26 @@ namespace
 	// Whether native reads are trusted: "ok" only after they matched the Lua
 	// sampler on a normal visit ("ok vtable" or "ok fields": which position
 	// source matched); "pending" while that check runs (a crash then turns it
-	// into "bad" on the next start); "bad" for good. Kept per layout version, so
-	// a build that reads differently checks again.
+	// into "bad" on the next start); "bad" until kBadRetrySeconds after it was
+	// written, then "unknown" again, so the next normal visit checks anew (a
+	// visited server can cause a bad state: crash the game during the check, or
+	// feed the check, so it mustn't turn native reads off for good). Kept per
+	// layout version, so a build that reads differently checks again.
+	constexpr long long kBadRetrySeconds = 7LL * 24 * 3600;
+
 	std::string NativeStatePath()
 	{
 		std::string dir = Dir();
 		return dir.empty() ? std::string() : dir + "/native-state-3";
+	}
+
+	// Seconds since `path` was last written, or -1 if that can't be told.
+	long long AgeSeconds(const std::string& path)
+	{
+		struct stat st;
+		if (stat(path.c_str(), &st) != 0)
+			return -1;
+		return static_cast<long long>(std::time(nullptr)) - static_cast<long long>(st.st_mtime);
 	}
 
 	LUA_FUNCTION(NativeState)
@@ -694,6 +707,8 @@ namespace
 		std::string s = path.empty() ? std::string() : ReadFile(path);
 		while (!s.empty() && (s.back() == '\n' || s.back() == '\r'))
 			s.pop_back();
+		if (s.rfind("bad", 0) == 0 && AgeSeconds(path) > kBadRetrySeconds)
+			s.clear();   // expired: check again
 		LUA->PushString(s.empty() ? "unknown" : s.c_str());
 		return 1;
 	}

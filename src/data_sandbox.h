@@ -20,6 +20,8 @@ namespace data_sandbox
 	// files back in the vault and the menu's in data/.
 	void Recover();
 	// Make data/ belong to `address` ("1.2.3.4:27015"); no-op if it already does.
+	// Any other non-empty address (a Steam P2P host, something odd) gets a fixed
+	// sandbox per kind ("p2p", "other"), never the menu's files.
 	void Enter(const std::string& address);
 	// Back to the menu's files.
 	void Leave();

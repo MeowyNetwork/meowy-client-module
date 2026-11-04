@@ -18,6 +18,7 @@ namespace crashes
 #pragma comment(lib, "dbghelp.lib")
 
 #include <cstdio>
+#include <cwchar>
 #include <fstream>
 #include <regex>
 
@@ -65,10 +66,90 @@ namespace
 		return out;
 	}
 
-	// Where the game crashed, from the minidump it wrote beside the report: the
-	// exception record says at which address, the module list in which module.
+	// What ParseFault finds in a dump: plain data, so the parser needs no C++
+	// objects and can run under structured exception handling.
+	struct RawFault
+	{
+		bool found = false;
+		ULONG32 code = 0;
+		ULONG64 offset = 0;
+		wchar_t module[MAX_PATH] = {};   // the module's file name only, or empty
+	};
+
+	// Is the stream [p, p + size) inside the mapped file?
+	bool InView(const void* view, ULONG64 bytes, const void* p, ULONG64 size)
+	{
+		const char* base = static_cast<const char*>(view);
+		const char* at = static_cast<const char*>(p);
+		if (at < base)
+			return false;
+		const ULONG64 offset = static_cast<ULONG64>(at - base);
+		return offset <= bytes && size <= bytes - offset;
+	}
+
+	// The exception record says at which address, the module list in which
+	// module. Every stream and offset is checked against the file's size, and
+	// a dump cut short mid-write (or otherwise broken) is "no fault", never a
+	// crash: a read outside the view is caught.
+	bool ParseFault(const void* view, ULONG64 bytes, RawFault& out)
+	{
+		__try
+		{
+			PMINIDUMP_DIRECTORY dir = nullptr;
+			void* stream = nullptr;
+			ULONG size = 0;
+			if (!MiniDumpReadDumpStream(const_cast<void*>(view), ExceptionStream, &dir, &stream, &size) || !stream
+				|| size < sizeof(MINIDUMP_EXCEPTION_STREAM) || !InView(view, bytes, stream, size))
+				return false;
+			const auto* ex = static_cast<const MINIDUMP_EXCEPTION_STREAM*>(stream);
+			const ULONG64 addr = ex->ExceptionRecord.ExceptionAddress;
+			out.code = ex->ExceptionRecord.ExceptionCode;
+			out.offset = addr;     // stays the raw address when no module holds it
+			out.found = true;
+
+			void* modStream = nullptr;
+			ULONG modSize = 0;
+			if (!MiniDumpReadDumpStream(const_cast<void*>(view), ModuleListStream, &dir, &modStream, &modSize) || !modStream
+				|| modSize < FIELD_OFFSET(MINIDUMP_MODULE_LIST, Modules) || !InView(view, bytes, modStream, modSize))
+				return true;
+			const auto* list = static_cast<const MINIDUMP_MODULE_LIST*>(modStream);
+			// The count comes from the file: only as many modules as the stream holds.
+			const ULONG64 room = (modSize - FIELD_OFFSET(MINIDUMP_MODULE_LIST, Modules)) / sizeof(MINIDUMP_MODULE);
+			const ULONG64 count = list->NumberOfModules < room ? list->NumberOfModules : room;
+			for (ULONG64 i = 0; i < count; ++i)
+			{
+				const MINIDUMP_MODULE& m = list->Modules[i];
+				if (addr < m.BaseOfImage || addr - m.BaseOfImage >= m.SizeOfImage)
+					continue;
+				// The name lives at an offset inside the file; never read past its end.
+				if (static_cast<ULONG64>(m.ModuleNameRva) + sizeof(ULONG32) > bytes)
+					break;
+				const auto* name = reinterpret_cast<const MINIDUMP_STRING*>(static_cast<const char*>(view) + m.ModuleNameRva);
+				if (static_cast<ULONG64>(m.ModuleNameRva) + sizeof(ULONG32) + name->Length > bytes)
+					break;
+				const size_t len = name->Length / sizeof(wchar_t);
+				size_t from = 0;
+				for (size_t c = 0; c < len; ++c)
+					if (name->Buffer[c] == L'\\' || name->Buffer[c] == L'/')
+						from = c + 1;
+				size_t n = 0;
+				for (size_t c = from; c < len && n + 1 < MAX_PATH; ++c)
+					out.module[n++] = name->Buffer[c];
+				out.module[n] = L'\0';
+				out.offset = addr - m.BaseOfImage;
+				break;
+			}
+			return true;
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			return false;
+		}
+	}
+
+	// Where the game crashed, from the minidump it wrote beside the report.
 	// Only the module's file name is kept, never its path. Read-only, through a
-	// mapped view of the file, with every offset checked against its size.
+	// mapped view of the file.
 	void ReadFault(const std::wstring& dmpPath, crashes::Report& r)
 	{
 		HANDLE file = CreateFileW(dmpPath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
@@ -80,40 +161,12 @@ namespace
 		HANDLE mapping = bytes > 0 ? CreateFileMappingW(file, nullptr, PAGE_READONLY, 0, 0, nullptr) : nullptr;
 		void* view = mapping ? MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, 0) : nullptr;
 
-		PMINIDUMP_DIRECTORY dir = nullptr;
-		void* stream = nullptr;
-		ULONG size = 0;
-		if (view && MiniDumpReadDumpStream(view, ExceptionStream, &dir, &stream, &size) && stream)
+		RawFault raw;
+		if (view && ParseFault(view, bytes, raw) && raw.found)
 		{
-			const auto* ex = static_cast<const MINIDUMP_EXCEPTION_STREAM*>(stream);
-			ULONG64 addr = ex->ExceptionRecord.ExceptionAddress;
-			r.faultCode = ex->ExceptionRecord.ExceptionCode;
-			r.faultOffset = addr;     // stays the raw address when no module holds it
-
-			void* modStream = nullptr;
-			if (MiniDumpReadDumpStream(view, ModuleListStream, &dir, &modStream, &size) && modStream)
-			{
-				const auto* list = static_cast<const MINIDUMP_MODULE_LIST*>(modStream);
-				for (ULONG i = 0; i < list->NumberOfModules; ++i)
-				{
-					const MINIDUMP_MODULE& m = list->Modules[i];
-					if (addr < m.BaseOfImage || addr >= m.BaseOfImage + m.SizeOfImage)
-						continue;
-					// The name lives at an offset inside the file; never read past its end.
-					if (static_cast<ULONG64>(m.ModuleNameRva) + sizeof(ULONG32) > bytes)
-						break;
-					const auto* name = reinterpret_cast<const MINIDUMP_STRING*>(static_cast<const char*>(view) + m.ModuleNameRva);
-					if (static_cast<ULONG64>(m.ModuleNameRva) + sizeof(ULONG32) + name->Length > bytes)
-						break;
-					std::wstring full(name->Buffer, name->Length / sizeof(wchar_t));
-					size_t slash = full.find_last_of(L"\\/");
-					size_t from = slash == std::wstring::npos ? 0 : slash + 1;
-					r.faultModule = Narrow(full.c_str() + from, full.size() - from);
-					r.faultOffset = addr - m.BaseOfImage;
-					break;
-				}
-			}
-
+			r.faultCode = raw.code;
+			r.faultOffset = raw.offset;
+			r.faultModule = Narrow(raw.module, std::wcslen(raw.module));
 			char text[96];
 			snprintf(text, sizeof(text), "%s+0x%llx (0x%08lX)",
 				r.faultModule.empty() ? "no module" : r.faultModule.c_str(),

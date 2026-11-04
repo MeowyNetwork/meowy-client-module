@@ -5,9 +5,11 @@
 // works on either Steam branch) and the start-up stubs gmsv_meowy_boot_win32/
 // win64.dll. With "Start with the game" on (the default) it also adds one
 // marked line to garrysmod/lua/includes/menu.lua that loads the stub when the
-// game starts. Uninstall removes exactly those files, that line and the
-// pack's data folder (%LOCALAPPDATA%\MeowyClientPack, and garrysmod/data/meowy
-// from before 1.4.1). It needs no admin rights when the Steam folder is writable,
+// game starts. Uninstall first puts back the garrysmod/data files the pack kept
+// apart (the player's own into garrysmod/data, each server's into a backup
+// folder in Documents; see RestoreSandboxData), then removes exactly those
+// files, that line and the pack's data folder (%LOCALAPPDATA%\MeowyClientPack,
+// and garrysmod/data/meowy from before 1.4.1). It needs no admin rights when the Steam folder is writable,
 // which is Steam's default.
 //
 // Built with the .NET Framework 4.x compiler that ships with Windows
@@ -79,6 +81,9 @@ namespace MeowyInstaller
 			}
 			try
 			{
+				// Uninstall: the player's files first, while the pack is still whole.
+				if (!install)
+					Console.WriteLine(Describe(RemoveData(garrysmod)));
 				string bin = Path.Combine(garrysmod, @"lua\bin");
 				Directory.CreateDirectory(bin);
 				foreach (string module in Modules)
@@ -94,8 +99,6 @@ namespace MeowyInstaller
 					AddStartupHook(garrysmod);
 				else
 					RemoveStartupHook(garrysmod);
-				if (!install)
-					RemoveData(garrysmod);
 				Console.WriteLine("start with the game: " + (StartupHookPresent(garrysmod) ? "on" : "off"));
 				return 0;
 			}
@@ -202,8 +205,11 @@ namespace MeowyInstaller
 
 		// The pack's files: %LOCALAPPDATA%\MeowyClientPack (boot.lock, join times,
 		// WebView2's profile), and garrysmod\data\meowy where they were before 1.4.1.
-		public static void RemoveData(string garrysmod)
+		// The player's own files the pack kept apart are put back first
+		// (RestoreSandboxData); a vault that couldn't be emptied is never deleted.
+		public static RestoreReport RemoveData(string garrysmod)
 		{
+			RestoreReport report = RestoreSandboxData(garrysmod);
 			string old = Path.Combine(garrysmod, @"data\meowy");
 			if (Directory.Exists(old))
 				Directory.Delete(old, true);
@@ -212,8 +218,309 @@ namespace MeowyInstaller
 			{
 				string dir = Path.Combine(local, "MeowyClientPack");
 				if (Directory.Exists(dir))
-					Directory.Delete(dir, true);
+				{
+					foreach (string sub in Directory.GetDirectories(dir))
+						if (!string.Equals(Path.GetFileName(sub), "vault", StringComparison.OrdinalIgnoreCase))
+							Directory.Delete(sub, true);
+					foreach (string file in Directory.GetFiles(dir))
+						File.Delete(file);
+					if (Directory.GetFileSystemEntries(dir).Length == 0)
+						Directory.Delete(dir, false);
+				}
 			}
+			return report;
+		}
+
+		// --- The player's files the pack kept apart (src/data_sandbox.cpp) ------
+		//
+		// With the pack, garrysmod\data holds only the files of the server being
+		// played, or the main menu's; the rest wait in a vault:
+		// %LOCALAPPDATA%\MeowyClientPack\vault, or steamapps\MeowyClientPackVault
+		// when the game is on another drive. In it: "before-sandbox" (all of data\
+		// from before the pack), "menu" (the main menu's files while on a server),
+		// a folder per server, and "active" (whose files data\ holds right now).
+		//
+		// Uninstall puts the player's own files (before-sandbox and menu) back in
+		// garrysmod\data, never overwriting anything there: on a name clash both
+		// are kept, the one coming back under a suffixed name. Each server's own
+		// files go to a backup folder in Documents, not into data\: any server's
+		// Lua can read all of data\ (and BASE_PATH, the game folder), and those
+		// files are what one server wrote, sometimes about where else you play.
+
+		public class RestoreReport
+		{
+			public int ToData, Renamed, ToBackup, Duplicates;
+			public string BackupDir;
+			public readonly List<string> Vaults = new List<string>();      // vaults found
+			public readonly List<string> KeptVaults = new List<string>();  // vaults that couldn't be emptied
+			public readonly List<string> Left = new List<string>();        // what couldn't be moved
+		}
+
+		[System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+		static extern bool GetVolumePathNameW(string fileName, System.Text.StringBuilder volumePathName, int bufferLength);
+
+		static string VolumeOf(string path)
+		{
+			var sb = new System.Text.StringBuilder(1024);
+			return GetVolumePathNameW(path, sb, sb.Capacity) ? sb.ToString().ToLowerInvariant() : null;
+		}
+
+		public static string BackupDirFor(string garrysmod)
+		{
+			string docs = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+			// No Documents folder: beside the game, outside its folder (steamapps).
+			if (string.IsNullOrEmpty(docs))
+				docs = Path.GetFullPath(Path.Combine(garrysmod, @"..\..\.."));
+			return Path.Combine(docs, "Meowy Client Pack backup");
+		}
+
+		// Both vault locations, the one the pack uses first (data_sandbox.cpp VaultDir).
+		public static RestoreReport RestoreSandboxData(string garrysmod)
+		{
+			string data = Path.Combine(garrysmod, "data");
+			string localBase = Environment.GetEnvironmentVariable("LOCALAPPDATA");
+			string local = string.IsNullOrEmpty(localBase) ? null : Path.Combine(localBase, @"MeowyClientPack\vault");
+			// garrysmod -> GarrysMod -> common -> steamapps
+			string steam = Path.GetFullPath(Path.Combine(garrysmod, @"..\..\..\MeowyClientPackVault"));
+			string dataVolume = VolumeOf(data);
+			bool localCurrent = local != null && dataVolume != null && VolumeOf(localBase) == dataVolume;
+			return RestoreSandboxData(data, local, steam, localCurrent, BackupDirFor(garrysmod));
+		}
+
+		// The same with every folder given (for tests).
+		public static RestoreReport RestoreSandboxData(string data, string localVault, string steamVault, bool localIsCurrent, string backup)
+		{
+			var r = new RestoreReport();
+			r.BackupDir = backup;
+			Directory.CreateDirectory(data);
+			string current = localIsCurrent ? localVault : steamVault;
+			string other = localIsCurrent ? steamVault : localVault;
+			if (current != null)
+				RestoreVault(data, current, true, backup, r);
+			if (other != null && !string.Equals(other, current, StringComparison.OrdinalIgnoreCase))
+				RestoreVault(data, other, false, backup, r);
+			return r;
+		}
+
+		// Whose files data\ holds, from the vault's "active" file (as Recover()
+		// reads it): "switching:<from>><to>:<phase>" mid-switch is <from>'s in
+		// phase 1 (moving out) and <to>'s in phase 2 (moving in).
+		static string OwnerOf(string active)
+		{
+			if (!active.StartsWith("switching:", StringComparison.Ordinal))
+				return active;
+			string rest = active.Substring(10);
+			int arrow = rest.IndexOf('>'), colon = rest.LastIndexOf(':');
+			if (arrow >= 0 && colon > arrow)
+				return rest.Substring(colon + 1) == "1" ? rest.Substring(0, arrow) : rest.Substring(arrow + 1, colon - arrow - 1);
+			return rest; // the old marker, "switching:<to>"
+		}
+
+		static bool IsPlayersOwn(string key)
+		{
+			return key == "" || key == "menu" || key == "before-sandbox";
+		}
+
+		// A key as a single folder name: never a path, never only dots.
+		static string SafeName(string key)
+		{
+			if (key.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 || key.Trim('.', ' ') == "")
+				return "unknown";
+			return key;
+		}
+
+		static void RestoreVault(string data, string vault, bool current, string backup, RestoreReport r)
+		{
+			if (!Directory.Exists(vault))
+				return;
+			r.Vaults.Add(vault);
+			string activeFile = Path.Combine(vault, "active");
+			string owner = File.Exists(activeFile) ? OwnerOf(File.ReadAllText(activeFile).Trim()) : "";
+			// The game went down while on a server: data\ holds that server's
+			// files. They go with the rest of that server's, not to the player.
+			if (current && !IsPlayersOwn(owner))
+				MergeMove(data, Path.Combine(backup, SafeName(owner)), "at-uninstall", false, r);
+
+			// The player's own: the main menu's (the newest), then everything from before the pack.
+			string menu = Path.Combine(vault, "menu"), before = Path.Combine(vault, "before-sandbox");
+			if (Directory.Exists(menu))
+				MergeMove(menu, data, "menu", true, r);
+			if (Directory.Exists(before))
+				MergeMove(before, data, "before-pack", true, r);
+
+			// Each server's own files.
+			foreach (string dir in Directory.GetDirectories(vault))
+			{
+				string name = Path.GetFileName(dir);
+				if (name == "menu" || name == "before-sandbox")
+					continue;
+				MergeMove(dir, Path.Combine(backup, SafeName(name)), "older", false, r);
+			}
+
+			// data\ now holds everything that's the player's, as before the pack:
+			// the marker goes, and the vault too once nothing is left in it. A
+			// vault something is left in is never deleted.
+			if (File.Exists(activeFile))
+				File.Delete(activeFile);
+			RemoveEmpty(vault);
+			if (Directory.Exists(vault))
+				r.KeptVaults.Add(vault);
+			if (r.ToBackup > 0)
+				WriteBackupNote(backup);
+		}
+
+		// Moves everything in `src` into `dst` (created if missing), file by file
+		// (File.Move also works across drives). Nothing in `dst` is overwritten:
+		// an identical file there makes the moved one redundant, a different one
+		// keeps its name and the moved one gets "<name>.<label>[-N].<ext>".
+		static void MergeMove(string src, string dst, string label, bool toData, RestoreReport r)
+		{
+			string[] dirs, files;
+			try
+			{
+				Directory.CreateDirectory(dst);
+				dirs = Directory.GetDirectories(src);
+				files = Directory.GetFiles(src);
+			}
+			catch (Exception)
+			{
+				r.Left.Add(src);
+				return;
+			}
+			foreach (string file in files)
+			{
+				string name = Path.GetFileName(file);
+				string target = Path.Combine(dst, name);
+				try
+				{
+					if (File.Exists(target) || Directory.Exists(target))
+					{
+						if (File.Exists(target) && SameContent(file, target))
+						{
+							File.Delete(file);
+							r.Duplicates++;
+							continue;
+						}
+						target = FreeName(dst, name, label);
+						if (toData)
+							r.Renamed++;
+					}
+					File.Move(file, target);
+					if (toData) r.ToData++; else r.ToBackup++;
+				}
+				catch (Exception)
+				{
+					r.Left.Add(file);
+				}
+			}
+			foreach (string dir in dirs)
+			{
+				// The pack never makes links, and servers can't: leave any alone.
+				if ((File.GetAttributes(dir) & FileAttributes.ReparsePoint) != 0)
+				{
+					r.Left.Add(dir);
+					continue;
+				}
+				string name = Path.GetFileName(dir);
+				string target = Path.Combine(dst, name);
+				if (File.Exists(target))
+					target = FreeName(dst, name, label);
+				MergeMove(dir, target, label, toData, r);
+				RemoveEmpty(dir);
+			}
+		}
+
+		static string FreeName(string dir, string name, string label)
+		{
+			string stem = Path.GetFileNameWithoutExtension(name), ext = Path.GetExtension(name);
+			for (int i = 1; ; i++)
+			{
+				string candidate = Path.Combine(dir, stem + "." + label + (i > 1 ? "-" + i : "") + ext);
+				if (!File.Exists(candidate) && !Directory.Exists(candidate))
+					return candidate;
+			}
+		}
+
+		static bool SameContent(string a, string b)
+		{
+			var fa = new FileInfo(a);
+			var fb = new FileInfo(b);
+			if (fa.Length != fb.Length)
+				return false;
+			using (FileStream sa = fa.OpenRead())
+			using (FileStream sb = fb.OpenRead())
+			{
+				var ba = new byte[65536];
+				var bb = new byte[65536];
+				for (;;)
+				{
+					int na = sa.Read(ba, 0, ba.Length);
+					int nb = sb.Read(bb, 0, bb.Length);
+					if (na != nb)
+						return false;
+					if (na == 0)
+						return true;
+					for (int i = 0; i < na; i++)
+						if (ba[i] != bb[i])
+							return false;
+				}
+			}
+		}
+
+		// Removes `dir` and the empty folders under it; anything with a file in it stays.
+		static void RemoveEmpty(string dir)
+		{
+			try
+			{
+				foreach (string sub in Directory.GetDirectories(dir))
+					if ((File.GetAttributes(sub) & FileAttributes.ReparsePoint) == 0)
+						RemoveEmpty(sub);
+				if (Directory.GetFileSystemEntries(dir).Length == 0)
+					Directory.Delete(dir, false);
+			}
+			catch (Exception)
+			{
+			}
+		}
+
+		static void WriteBackupNote(string backup)
+		{
+			try
+			{
+				File.WriteAllText(Path.Combine(backup, "README.txt"),
+					"Files Garry's Mod servers saved in garrysmod\\data while you played on them, kept by the\r\n" +
+					"Meowy Client Pack in a separate folder per server (named after its address) and moved here\r\n" +
+					"when the pack was uninstalled. Garry's Mod doesn't read this folder. To give a server its\r\n" +
+					"files back, copy that server's folder's contents into garrysmod\\data. Your own files (from\r\n" +
+					"before the pack and from the main menu) were put back in garrysmod\\data.\r\n");
+			}
+			catch (Exception)
+			{
+			}
+		}
+
+		// What the uninstall did with the files, for the window and the console.
+		public static string Describe(RestoreReport r)
+		{
+			if (r.Vaults.Count == 0)
+				return "The pack had no files kept apart, so nothing in garrysmod\\data changed.";
+			var sb = new System.Text.StringBuilder();
+			sb.Append(r.ToData + " of your own file(s) put back in garrysmod\\data");
+			if (r.Renamed > 0)
+				sb.Append(" (" + r.Renamed + " under a new name such as name.before-pack.txt, because a different file " +
+					"with that name was already there)");
+			sb.Append(".");
+			if (r.ToBackup > 0)
+				sb.Append("\r\n" + r.ToBackup + " file(s) that servers saved are in \"" + r.BackupDir + "\", a folder per server.");
+			if (r.Left.Count > 0)
+			{
+				sb.Append("\r\n" + r.Left.Count + " couldn't be moved and are still where they were, for example:");
+				for (int i = 0; i < r.Left.Count && i < 3; i++)
+					sb.Append("\r\n  " + r.Left[i]);
+			}
+			foreach (string v in r.KeptVaults)
+				sb.Append("\r\nKept (not deleted, as it isn't empty): " + v);
+			return sb.ToString();
 		}
 
 		public static void ExtractTo(string module, string path)
@@ -357,17 +664,33 @@ namespace MeowyInstaller
 		{
 			if (!GameClosed())
 				return;
+			string garrysmod = m_path.Text.Trim();
+			var answer = MessageBox.Show(this,
+				"Uninstall removes the pack, its start-up line and its own files.\r\n\r\n" +
+				"Your garrysmod\\data files are put back first. While installed, the pack gave every server its own " +
+				"garrysmod\\data and kept the rest apart:\r\n\r\n" +
+				"- Your own files (everything from before the pack, and the main menu's) go back into garrysmod\\data. " +
+				"Nothing there is overwritten: if a different file already has the name, both are kept, and the one " +
+				"coming back gets a suffix such as name.before-pack.txt.\r\n\r\n" +
+				"- Each server's own files (what that server saved while you played on it) are moved to\r\n\"" +
+				Program.BackupDirFor(garrysmod) + "\", a folder per server, not into garrysmod\\data, where every " +
+				"server's Lua could read them.\r\n\r\n" +
+				"Nothing of yours is deleted. Uninstall now?",
+				Text, MessageBoxButtons.OKCancel, MessageBoxIcon.Question);
+			if (answer != DialogResult.OK)
+				return;
 			try
 			{
+				string files = Program.Describe(Program.RemoveData(garrysmod));
 				foreach (string module in Program.Modules)
 				{
 					string file = Path.Combine(BinDir(), module);
 					if (File.Exists(file))
 						File.Delete(file);
 				}
-				Program.RemoveStartupHook(m_path.Text.Trim());
-				Program.RemoveData(m_path.Text.Trim());
+				Program.RemoveStartupHook(garrysmod);
 				RefreshStatus();
+				MessageBox.Show(this, "Uninstalled.\r\n\r\n" + files, Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
 			}
 			catch (Exception e)
 			{

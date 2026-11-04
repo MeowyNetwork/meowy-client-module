@@ -73,11 +73,25 @@ int wmain(int argc, wchar_t** argv)
 	Check(Exists(data + L"\\menu_file.txt") && !Exists(data + L"\\a_file.txt"), "recover: menu's files back, A's away");
 	Check(Exists(vault + L"\\1.2.3.4_27015\\a_file.txt"), "recover: A's file kept");
 
-	// Keys come from console text: anything but a real ip:port is refused.
-	for (const char* bad : { ".", "..", "evil", "1.2.3.4", "1.2.3.4:27015/..", "999.1.1.1:27015" })
+	// Keys come from console text: anything but a real ip:port never names a
+	// folder; it gets the fixed "other" sandbox, so the menu's files still go.
+	for (const char* bad : { ".", "..", "evil", "1.2.3.4", "1.2.3.4:27015/..", "999.1.1.1:27015", "..\\..\\x:1" })
 		data_sandbox::Enter(bad);
-	Check(Exists(data + L"\\menu_file.txt") && Exists(vault + L"\\1.2.3.4_27015\\a_file.txt") && Exists(vault + L"\\5.6.7.8_27015\\b_file.txt"),
-		"bad keys: nothing moved");
+	Check(!Exists(data + L"\\menu_file.txt") && Exists(vault + L"\\menu\\menu_file.txt"), "odd address: menu's files not shown");
+	Check(Exists(vault + L"\\1.2.3.4_27015\\a_file.txt") && Exists(vault + L"\\5.6.7.8_27015\\b_file.txt"), "odd address: servers' files untouched");
+	Check(!Exists(local + L"\\MeowyClientPack\\x") && !Exists(root + L"\\x"), "odd address: no folder named from it");
+	Touch(data + L"\\other_file.txt");
+
+	// A Steam P2P host: its own fixed sandbox, not the menu's files.
+	data_sandbox::Enter("p2p:76561198000000000");
+	Check(!Exists(data + L"\\other_file.txt") && Exists(vault + L"\\other\\other_file.txt"), "p2p: odd address's file put away");
+	Check(!Exists(data + L"\\menu_file.txt"), "p2p: menu's files not shown");
+	Touch(data + L"\\p2p_file.txt");
+	data_sandbox::Enter("p2p:76561198000000001");
+	Check(Exists(data + L"\\p2p_file.txt"), "p2p: every P2P host shares the one sandbox");
+	data_sandbox::Leave();
+	Check(Exists(data + L"\\menu_file.txt") && !Exists(data + L"\\p2p_file.txt") && Exists(vault + L"\\p2p\\p2p_file.txt"),
+		"p2p: back at the menu, menu's files back");
 
 	// A file in use in data/ can't be moved out: the switch stops there, so
 	// none of the next server's files are shown next to it.
