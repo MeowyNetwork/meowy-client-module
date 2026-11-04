@@ -934,7 +934,50 @@ local function toSteamID64(id)
 	if u then return addToDecimal("76561197960265728", tonumber(u)) end
 end
 
--- One report per server per game session, a while after joining.
+-- One report per server per game session: `status` a while after joining and
+-- again RUN_GAP seconds later, so the backend can see pings that don't move and
+-- clients that never get past connecting (serverRep/reports.js).
+local FIRST_RUN, RUN_GAP = 90, 240
+
+-- "01:22" or "1:02:03" to seconds.
+local function toSeconds(s)
+	if not isstring(s) then return nil end
+	local h, m, sec = s:match("^(%d+):(%d+):(%d+)$")
+	if h then return tonumber(h) * 3600 + tonumber(m) * 60 + tonumber(sec) end
+	m, sec = s:match("^(%d+):(%d+)$")
+	if m then return tonumber(m) * 60 + tonumber(sec) end
+end
+
+-- One `status` run: { bots = n, rows = { { id, ping, loss, state, secs } } }.
+local function runStatus(done)
+	meowy.StatusCaptureBegin()
+	RunConsoleCommand("status")
+	after(2, function()
+		local text = meowy.StatusCaptureEnd()
+		local run, seenIds = { bots = 0, rows = {} }, {}
+		for line in string.gmatch(text, "[^\n]+") do
+			local uid, rest = line:match('^#%s*%d+%s+".*"%s+(%S+)%s*(.-)%s*$')
+			if uid == "BOT" then
+				run.bots = run.bots + 1
+			elseif uid then
+				local id64 = toSteamID64(uid)
+				if id64 and not seenIds[id64] and #run.rows < 128 then
+					seenIds[id64] = true
+					-- "connected ping loss state [adr]"; a client still connecting may lack the first three.
+					local connected, ping, loss, state = rest:match("^(%S+)%s+(%d+)%s+(%d+)%s+(%a+)")
+					if not connected then state = rest:match("(%a+)") end
+					run.rows[#run.rows + 1] = {
+						id = id64, ping = tonumber(ping), loss = tonumber(loss),
+						state = string.lower(state or "unknown"):sub(1, 16), secs = toSeconds(connected),
+					}
+				end
+			end
+		end
+		meowy.ServerRepNote(string.format("status parsed: %d accounts, %d bots", #run.rows, run.bots))
+		done(run)
+	end)
+end
+
 local reported, joinedAt, nextLook = {}, {}, 0
 hook.Add("Think", "MeowyClientPack.ServerReport", function()
 	if SysTime() < nextLook then return end
@@ -943,32 +986,24 @@ hook.Add("Think", "MeowyClientPack.ServerReport", function()
 	local address = meowy.OtherServerAddress()
 	if not address or reported[address] then return end
 	joinedAt[address] = joinedAt[address] or SysTime()
-	if SysTime() - joinedAt[address] < 90 then return end
+	if SysTime() - joinedAt[address] < FIRST_RUN then return end
 	reported[address] = true
 
-	meowy.StatusCaptureBegin()
-	RunConsoleCommand("status")
-	after(2, function()
-		local text = meowy.StatusCaptureEnd()
-		local ids, bots, seenIds = {}, 0, {}
-		for line in string.gmatch(text, "[^\n]+") do
-			local uid = line:match('^#%s*%d+%s+".*"%s+(%S+)')
-			if uid == "BOT" then
-				bots = bots + 1
-			elseif uid then
-				local id64 = toSteamID64(uid)
-				if id64 and not seenIds[id64] and #ids < 128 then seenIds[id64] = true ids[#ids + 1] = id64 end
+	runStatus(function(first)
+		if #first.rows + first.bots < MIN_PLAYERS then return end
+		after(RUN_GAP, function()
+			-- Still on the same server? Otherwise send what the first run saw.
+			local still = meowy.OtherServerAddress() == address
+			local function send(runs)
+				serverlist.PingServer(address, function(ping, name, desc, map, players, maxplayers, botplayers)
+					meowy.ServerRepNote("server answered the ping: " .. tostring(players) .. " players, " .. tostring(botplayers) .. " bots")
+					if not players then return end
+					meowy.ServerRepReport(util.TableToJSON({
+						address = address, advertised = players, advertisedBots = botplayers or 0, runs = runs,
+					}))
+				end)
 			end
-		end
-		meowy.ServerRepNote(string.format("status parsed: %d accounts, %d bots", #ids, bots))
-		if #ids + bots < MIN_PLAYERS then return end
-		serverlist.PingServer(address, function(ping, name, desc, map, players, maxplayers, botplayers)
-			meowy.ServerRepNote("server answered the ping: " .. tostring(players) .. " players, " .. tostring(botplayers) .. " bots")
-			if not players then return end
-			meowy.ServerRepReport(util.TableToJSON({
-				address = address, advertised = players, advertisedBots = botplayers or 0,
-				statusBots = bots, steamids = ids,
-			}))
+			if still then runStatus(function(second) send({ first, second }) end) else send({ first }) end
 		end)
 	end)
 end)
