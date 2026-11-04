@@ -37,4 +37,6 @@ namespace server_rep
 	std::string CaptureEnd();
 	// Called by connect_watch's logging listener for every console message.
 	void Capture(const char* message);
+	// A line in %LOCALAPPDATA%\MeowyClientPack\serverlist.log (no personal data).
+	void Note(const std::string& line);
 }

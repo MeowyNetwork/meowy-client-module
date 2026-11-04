@@ -27,8 +27,28 @@ namespace
 	std::string g_capture;
 	std::atomic<bool> g_capturing{ false };
 
+	// %LOCALAPPDATA%\MeowyClientPack\serverlist.log: what the reports did (counts and
+	// HTTP results only, never SteamIDs), overwritten past 64 KB.
+	void Log(const std::string& line)
+	{
+		wchar_t base[MAX_PATH];
+		DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", base, MAX_PATH);
+		if (n == 0 || n >= MAX_PATH)
+			return;
+		std::wstring path = std::wstring(base) + L"\\MeowyClientPack\\serverlist.log";
+		WIN32_FILE_ATTRIBUTE_DATA info;
+		bool big = GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &info) && info.nFileSizeLow > 64 * 1024;
+		FILE* f = _wfopen(path.c_str(), big ? L"w" : L"a");
+		if (!f)
+			return;
+		SYSTEMTIME t;
+		GetLocalTime(&t);
+		fprintf(f, "%02d:%02d:%02d %s\n", t.wHour, t.wMinute, t.wSecond, line.c_str());
+		fclose(f);
+	}
+
 	// One HTTPS request to kHost. Returns the body for a 200, else "".
-	std::string Request(const wchar_t* method, const wchar_t* path, const std::string& body)
+	std::string Request(const wchar_t* method, const wchar_t* path, const std::string& body, DWORD* statusOut = nullptr)
 	{
 		std::string out;
 		HINTERNET session = WinHttpOpen(L"MeowyClientPack", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
@@ -52,6 +72,8 @@ namespace
 				DWORD status = 0, size = sizeof(status);
 				WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
 					WINHTTP_HEADER_NAME_BY_INDEX, &status, &size, WINHTTP_NO_HEADER_INDEX);
+				if (statusOut)
+					*statusOut = status;
 				if (status == 200)
 				{
 					DWORD avail = 0;
@@ -261,7 +283,11 @@ namespace server_rep
 	{
 		if (json.empty() || json.size() > 16 * 1024)
 			return;
-		std::thread([json] { Request(L"POST", kReportPath, json); }).detach();
+		std::thread([json] {
+			DWORD status = 0;
+			Request(L"POST", kReportPath, json, &status);
+			Log("report sent, " + std::to_string(json.size()) + " bytes, HTTP " + std::to_string(status));
+		}).detach();
 	}
 
 	void CaptureBegin()
@@ -278,6 +304,11 @@ namespace server_rep
 		std::string out;
 		out.swap(g_capture);
 		return out;
+	}
+
+	void Note(const std::string& line)
+	{
+		Log(line);
 	}
 
 	void Capture(const char* message)

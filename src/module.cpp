@@ -613,9 +613,17 @@ namespace
 		return 0;
 	}
 
+	int ServerRepNote(lua_State* L)
+	{
+		if (L->luabase->IsType(1, Type::String))
+			server_rep::Note(L->luabase->GetString(1));
+		return 0;
+	}
+
 	int StatusCaptureEnd(lua_State* L)
 	{
 		std::string text = server_rep::CaptureEnd();
+		server_rep::Note("status captured, " + std::to_string(text.size()) + " bytes");
 		L->luabase->PushString(text.c_str(), (unsigned int)text.size());
 		return 1;
 	}
@@ -952,8 +960,10 @@ hook.Add("Think", "MeowyClientPack.ServerReport", function()
 				if id64 and not seenIds[id64] and #ids < 128 then seenIds[id64] = true ids[#ids + 1] = id64 end
 			end
 		end
+		meowy.ServerRepNote(string.format("status parsed: %d accounts, %d bots", #ids, bots))
 		if #ids + bots < MIN_PLAYERS then return end
 		serverlist.PingServer(address, function(ping, name, desc, map, players, maxplayers, botplayers)
+			meowy.ServerRepNote("server answered the ping: " .. tostring(players) .. " players, " .. tostring(botplayers) .. " bots")
 			if not players then return end
 			meowy.ServerRepReport(util.TableToJSON({
 				address = address, advertised = players, advertisedBots = botplayers or 0,
@@ -1095,6 +1105,7 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	SetFunction(LUA, "OtherServerAddress", OtherServerAddress);
 	SetFunction(LUA, "StatusCaptureBegin", StatusCaptureBegin);
 	SetFunction(LUA, "StatusCaptureEnd", StatusCaptureEnd);
+	SetFunction(LUA, "ServerRepNote", ServerRepNote);
 	LUA->SetField(-2, "meowy");
 
 	connect_watch::Start();

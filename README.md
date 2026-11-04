@@ -90,7 +90,8 @@ the game closes while the pack is starting, the next start skips it once by itse
     e.g. "38 of 86 look made to boost"; the SteamIDs are never stored or logged. A server is only
     marked from these reports when players from two different addresses report it.
   - `meowy_honest_serverlist 0` turns the whole check off; `meowy_serverlist_reports 0` keeps the
-    checks but stops the reports. Our own servers are never checked.
+    checks but stops the reports. Our own servers are never checked. What each report did (counts and
+    the HTTP result, never SteamIDs) goes to `%LOCALAPPDATA%\MeowyClientPack\serverlist.log`.
 - Its only other network traffic is the loading page and its data, from meowynetwork.com, through WebView2. It
   writes only in `%LOCALAPPDATA%\MeowyClientPack` (`boot.lock` for a moment at start-up; for the
   loading screen `join_times.txt`, how long each stage of your last join took, `last_join.txt`,
