@@ -81,8 +81,10 @@ async function disarmOnceLoaded(logFrom, ms = 120000) {
   const logPath = path.join(DIR, 'observer.log');
   const until = Date.now() + ms;
   while (Date.now() < until) {
-    const text = await fs.readFile(logPath, 'utf8').catch(() => '');
-    if (text.length > logFrom && text.slice(logFrom).includes('module loaded')) {
+    // Bytes, not characters: logFrom is a byte size, and the log holds
+    // non-ASCII text (kick reasons in other languages).
+    const buf = await fs.readFile(logPath).catch(() => Buffer.alloc(0));
+    if (buf.length > logFrom && buf.subarray(logFrom).toString('utf8').includes('module loaded')) {
       await disarmLoader();
       log('loader_removed');
       return true;
