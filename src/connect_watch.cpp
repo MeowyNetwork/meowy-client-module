@@ -108,6 +108,11 @@ namespace connect_watch
 			(at ? std::string(g_lastAddress) + " " + std::to_string(GetTickCount64() - at) + " ms ago" : "none");
 	}
 
+	std::string LastAddress()
+	{
+		return g_at ? std::string(g_lastAddress) : std::string();
+	}
+
 	bool HeadingToUs(unsigned withinMs)
 	{
 		ULONGLONG at = g_at;
@@ -128,6 +133,7 @@ namespace connect_watch
 	void Start() {}
 	bool HeadingToUs(unsigned) { return false; }
 	std::string Describe() { return "unsupported"; }
+	std::string LastAddress() { return std::string(); }
 }
 
 #endif

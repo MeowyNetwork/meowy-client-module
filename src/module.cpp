@@ -53,6 +53,7 @@
 #include "connect_watch.h"
 #include "loading_screen.h"
 #include "server_gate.h"
+#include "data_sandbox.h"
 #include "server_rep.h"
 
 #include <cstdio>
@@ -596,6 +597,33 @@ namespace
 
 	// "ip:port" of the server the game is really connected to, when it's
 	// someone else's (not ours, not singleplayer); else nil.
+	// DataSandbox(onServer): data/ belongs to the server being joined or played
+	// (onServer true), or to the menu (false). See data_sandbox.h.
+	int DataSandbox(lua_State* L)
+	{
+		bool onServer = L->luabase->IsType(1, Type::Bool) && L->luabase->GetBool(1);
+		if (!onServer)
+		{
+			data_sandbox::Leave();
+			return 0;
+		}
+		// The real connection's address once there is one; until then the
+		// address the engine printed as the join started.
+		std::string address;
+		server_gate::Result r = server_gate::Check(&address);
+		if ((r != server_gate::Result::Allowed && r != server_gate::Result::OtherServer) || address.empty())
+			address = connect_watch::LastAddress();
+		if (!address.empty() && address.find("loopback") == std::string::npos)
+			data_sandbox::Enter(address);
+		return 0;
+	}
+
+	int DataSandboxDescribe(lua_State* L)
+	{
+		L->luabase->PushString(data_sandbox::Describe().c_str());
+		return 1;
+	}
+
 	int OtherServerAddress(lua_State* L)
 	{
 		std::string address;
@@ -1023,6 +1051,14 @@ local active, sure, lastStatus, details = false, false, nil, nil
 if enabled:GetBool() and system.IsWindowed() then meowy.LoadingPrewarm() end
 local panelSince -- SysTime when GMod's loading panel opened, for how long it showed before ours
 
+-- A separate garrysmod/data for each server (data_sandbox.h): a server's Lua
+-- sees only the files it wrote itself, never other servers' or the menu's.
+local sandbox = CreateConVar("meowy_data_sandbox", "1", FCVAR_ARCHIVE,
+	"Meowy Client Pack: give every server its own garrysmod/data (0 = one data folder for all)")
+hook.Add("Think", "MeowyClientPack.DataSandbox", function()
+	meowy.DataSandbox(sandbox:GetBool() and (IsInLoading() or IsInGame()))
+end)
+
 local stockGameDetails = GameDetails
 if isfunction(stockGameDetails) then
 	GameDetails = function(name, url, map, maxplayers, visible, steamid, ...)
@@ -1141,8 +1177,11 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	SetFunction(LUA, "StatusCaptureBegin", StatusCaptureBegin);
 	SetFunction(LUA, "StatusCaptureEnd", StatusCaptureEnd);
 	SetFunction(LUA, "ServerRepNote", ServerRepNote);
+	SetFunction(LUA, "DataSandbox", DataSandbox);
+	SetFunction(LUA, "DataSandboxDescribe", DataSandboxDescribe);
 	LUA->SetField(-2, "meowy");
 
+	data_sandbox::Recover();
 	connect_watch::Start();
 
 	for (const auto& chunk : { std::make_pair(kMenuLua, "meowy_client_pack/menu"),
