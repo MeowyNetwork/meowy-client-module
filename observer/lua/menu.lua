@@ -174,6 +174,20 @@ local function nativeSample()
 	local players, why = observer.NativePlayers()
 	if not players then nativeWhy = why return end
 	nativeReads = nativeReads + 1
+	-- Quick (test) visits: what each read saw of us and up to 12 others.
+	if job and job.quick then
+		local parts, others = {}, 0
+		for _, p in ipairs(players) do
+			if p.localPlayer then
+				parts[#parts + 1] = string.format("me%d sim %s tick %s", p.index, tostring(p.simTime), tostring(p.tickBase))
+			elseif others < 12 then
+				others = others + 1
+				parts[#parts + 1] = string.format("#%d %s sim %s anim %s pos %s yaw %s", p.index, p.dormant and "D" or "v",
+					tostring(p.simTime), tostring(p.animTime), p.nx and string.format("%d,%d", p.nx, p.ny) or "-", tostring(p.eyeYaw and math.floor(p.eyeYaw)))
+			end
+		end
+		note("read " .. nativeReads .. ": " .. table.concat(parts, "; "))
+	end
 	for _, p in ipairs(players) do
 		if p.localPlayer then
 			-- We never move on purpose; if we did (killed, moved by the server),
