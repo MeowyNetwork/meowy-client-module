@@ -73,12 +73,43 @@ the game closes while the pack is starting, the next start skips it once by itse
     connection is confirmed to be ours; for any other server it doesn't appear, or closes.
   - Only when the game is windowed or borderless. It stays until the game runs smoothly after you
     spawn. `meowy_loadingscreen 0` turns it off.
-- Its only network traffic is that page and its data, from meowynetwork.com, through WebView2. It
+- **Honest server list.** Some servers fake their player count to climb Garry's Mod's server list: a
+  rewritten query reply, bots hidden from the bot count, or idle accounts made only to sit there.
+  The pack checks the counts in the in-game server list (Find Multiplayer Game):
+  - It reads each populated server's player list twice, 45 seconds apart, the same query the
+    browser makes when you click a server. A count far above the list, players whose time doesn't
+    grow, or the same player joined at the same moment on two servers mark the server
+    `[FAKE - N real]`; it then shows and ranks by N. A server that won't give its list shows
+    `[LIST HIDDEN]`, with its count untouched.
+  - It also downloads Meowy Network's own verdicts (`meowynetwork.com/api/pack/servers`), from a
+    crawler that adds Steam's own count and the count's history.
+  - **What it sends:** on a server you join that isn't ours, it runs the game's `status` command
+    twice, about 90 seconds in and four minutes later. It sends meowynetwork.com the server's
+    address, its advertised count, the number of bots `status` lists, and for each other account
+    its SteamID, ping, packet loss, state and connected time. Your own row is left out (if the pack
+    can't tell which row is yours, it sends nothing). The backend turns the SteamIDs into salted
+    hashes as they arrive, never stores or logs them readable, and keeps the hashes 14 days, to spot
+    the same accounts on a server around the clock. It judges behaviour only: hidden bots, flat
+    pings, players stuck connecting, one account on two servers at once. A server is only marked from
+    these reports when players from two different addresses report it.
+  - `meowy_honest_serverlist 0` turns the whole check off; `meowy_serverlist_reports 0` keeps the
+    checks but stops the reports. Our own servers are never checked. What each report did (counts and
+    the HTTP result, never SteamIDs) goes to `%LOCALAPPDATA%\MeowyClientPack\serverlist.log`.
+- Its only other network traffic is the loading page and its data, from meowynetwork.com, through WebView2. It
   writes only in `%LOCALAPPDATA%\MeowyClientPack` (`boot.lock` for a moment at start-up; for the
   loading screen `join_times.txt`, how long each stage of your last join took, `last_join.txt`,
   what that join went through, and `css_scale.txt`; and WebView2's profile). Nothing goes in
   `garrysmod/data`, which any server's Lua can read, so other servers can't tell you have the pack.
   Before 1.4.1 these files were in `garrysmod/data/meowy/`; the pack moves them on first start.
+- **A separate `garrysmod/data` for every server.** Any server's Lua can list and read all of
+  `garrysmod/data`: other servers' files (their names alone say where you've played) and anything else
+  kept there. With the pack started with the game, `data/` holds only the files of the server you're on;
+  every other server's, and the main menu's, wait in `%LOCALAPPDATA%\MeowyClientPack\vault\<server>`.
+  If the game is on another drive, they wait in `steamapps\MeowyClientPackVault`. Both are out of
+  reach of every file path GMod gives Lua. Switching is a rename, so it's instant. The first time,
+  your existing `data/` goes to `vault\before-sandbox`, kept but never shown to a server; copy
+  anything back from there by hand. After a crash, the next start puts everything back where it
+  belongs. `meowy_data_sandbox 0` turns it off (one `data/` for all servers again).
 - It only works on Meowy Network servers. The DLL asks the game itself which server it's connected to
   and compares that with the addresses built into it, so another server can't use it or read anything
   from it, even by faking its name or address in Lua. In singleplayer, the main menu or on any other

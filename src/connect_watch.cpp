@@ -1,4 +1,5 @@
 #include "connect_watch.h"
+#include "server_rep.h"
 
 #include "server_gate.h"
 
@@ -7,6 +8,7 @@
 #include <windows.h>
 
 #include <atomic>
+#include <mutex>
 #include <cstring>
 #include <cwchar>
 #include <string>
@@ -25,22 +27,36 @@ namespace
 	std::atomic<bool> g_ours{ false };
 	std::atomic<unsigned> g_lines{ 0 };
 	bool g_registered = false;
-	char g_lastAddress[72] = "";
+	// Written on the logging thread, read on the main thread.
+	std::mutex g_addressMutex;
+	std::string g_lastAddress;
 	std::atomic<ULONGLONG> g_at{ 0 };
 
 	void Note(const std::string& address)
 	{
 		g_ours = server_gate::IsOurAddress(address);
+		{
+			std::lock_guard<std::mutex> lock(g_addressMutex);
+			g_lastAddress = address;
+		}
 		g_at = GetTickCount64();
-		strncpy_s(g_lastAddress, address.c_str(), _TRUNCATE);
 	}
 
-	// The address after `prefix` in `message`, up to "...", a space or the line end.
+	std::string Last()
+	{
+		std::lock_guard<std::mutex> lock(g_addressMutex);
+		return g_lastAddress;
+	}
+
+	// The address after `prefix` at the start of `message` (the engine's own
+	// line; not chat or a server's print that merely contains it), up to
+	// "...", a space or the line end.
 	bool AddressAfter(const char* message, const char* prefix, std::string& address)
 	{
-		const char* at = std::strstr(message, prefix);
-		if (!at)
+		const size_t len = std::strlen(prefix);
+		if (std::strncmp(message, prefix, len) != 0)
 			return false;
+		const char* at = message;
 		address.clear();
 		for (const char* p = at + std::strlen(prefix); *p && address.size() < 64; ++p)
 		{
@@ -59,6 +75,7 @@ namespace
 		++g_lines;
 		if (!message)
 			return;
+		server_rep::Capture(message);
 		std::string address;
 		if (AddressAfter(message, "Commencing connection retry to ", address) || AddressAfter(message, "Connecting to ", address))
 			Note(address);
@@ -103,7 +120,12 @@ namespace connect_watch
 	{
 		ULONGLONG at = g_at;
 		return std::string(g_registered ? "listening" : "not listening") + ", " + std::to_string(g_lines.load()) + " lines, last connect " +
-			(at ? std::string(g_lastAddress) + " " + std::to_string(GetTickCount64() - at) + " ms ago" : "none");
+			(at ? Last() + " " + std::to_string(GetTickCount64() - at) + " ms ago" : "none");
+	}
+
+	std::string LastAddress()
+	{
+		return g_at ? Last() : std::string();
 	}
 
 	bool HeadingToUs(unsigned withinMs)
@@ -126,6 +148,7 @@ namespace connect_watch
 	void Start() {}
 	bool HeadingToUs(unsigned) { return false; }
 	std::string Describe() { return "unsupported"; }
+	std::string LastAddress() { return std::string(); }
 }
 
 #endif

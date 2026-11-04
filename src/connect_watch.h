@@ -23,4 +23,6 @@ namespace connect_watch
 	// For the join log: whether the listener is registered, lines seen, and the last
 	// "Connecting to" address.
 	std::string Describe();
+	// The last "Connecting to" address ("" if none yet).
+	std::string LastAddress();
 }

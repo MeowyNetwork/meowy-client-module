@@ -1,0 +1,72 @@
+_comment: 'Meowy observer egg: import in the Pelican panel (Eggs > Import).'
+meta:
+  version: PLCN_v3
+  update_url: null
+name: 'Meowy Observer'
+author: catualus@yahoo.com
+description: |-
+  Meowy Network's observer: a real Garry's Mod client (native Linux) under the Steam client on a
+  virtual display. It visits servers Meowy Network's crawler suspects of faking their player count,
+  counts who stood still for 10 minutes, and reports the counts. See
+  meowy-client-module/observer/README.md.
+icon: null
+tags: {  }
+features: {  }
+docker_images:
+  'Meowy Observer (local)': 'meowy/observer:latest'
+file_denylist: {  }
+startup_commands:
+  Default: '/opt/observer/start.sh'
+config:
+  files: {  }
+  startup:
+    done:
+      - '"msg":"ready"'
+  logs: {  }
+  stop: ^C
+scripts:
+  installation:
+    script: |-
+      #!/bin/bash
+      # Nothing to install: the image carries everything, and Steam installs GMod
+      # into /home/container after the one-time login.
+      mkdir -p /mnt/server/observer
+      echo "install complete"
+    container: 'debian:bookworm-slim'
+    entrypoint: bash
+variables:
+  -
+    name: 'Observer token'
+    description: 'The same value as SERVER_REP_OBSERVER_TOKEN in the website backend''s .env.'
+    env_variable: SERVER_REP_OBSERVER_TOKEN
+    default_value: ''
+    user_viewable: true
+    user_editable: true
+    rules:
+      - nullable
+      - string
+      - 'min:24'
+    sort: 1
+  -
+    name: 'Display password'
+    description: 'Password for the browser view of the virtual display (for the one-time Steam login). Empty turns the view off.'
+    env_variable: VNC_PASSWORD
+    default_value: ''
+    user_viewable: true
+    user_editable: true
+    rules:
+      - nullable
+      - string
+      - 'max:64'
+    sort: 2
+  -
+    name: 'Backend'
+    description: 'Where to ask for visits and send counts.'
+    env_variable: MEOWY_OBSERVER_API
+    default_value: 'https://meowynetwork.com'
+    user_viewable: true
+    user_editable: true
+    rules:
+      - required
+      - string
+    sort: 3
