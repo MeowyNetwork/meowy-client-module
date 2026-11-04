@@ -42,13 +42,39 @@ if(WIN32)
 		target_compile_definitions(meowy_observer PRIVATE _CRT_SECURE_NO_WARNINGS)
 	endif()
 else()
-	set(MEOWY_OBSERVER_SUFFIX "linux${ARCH_BITS}")
+	# GMod's names: 32-bit Linux is plain "linux", 64-bit is "linux64".
+	if(ARCH_BITS EQUAL 64)
+		set(MEOWY_OBSERVER_SUFFIX "linux64")
+	else()
+		set(MEOWY_OBSERVER_SUFFIX "linux")
+	endif()
 	target_compile_options(meowy_observer PRIVATE -Wall -O2 -fvisibility=hidden)
 	target_link_libraries(meowy_observer PRIVATE dl)
 endif()
 
-# GMod loads binary modules as gmsv_<name>_<platform>.dll on every OS.
+# The real module: kept outside the game's folders, loaded by the stub below.
+if(WIN32)
+	set(MEOWY_OBSERVER_LIBEXT ".dll")
+else()
+	set(MEOWY_OBSERVER_LIBEXT ".so")
+endif()
 set_target_properties(meowy_observer PROPERTIES
 	PREFIX ""
-	OUTPUT_NAME "gmsv_meowy_observer_${MEOWY_OBSERVER_SUFFIX}"
+	OUTPUT_NAME "meowy_observer_${MEOWY_OBSERVER_SUFFIX}"
+	SUFFIX "${MEOWY_OBSERVER_LIBEXT}")
+
+# The stub in garrysmod/lua/bin (src/loader.cpp). GMod loads binary modules as
+# gmsv_<name>_<platform>.dll on every OS; menu.lua requires "ldr".
+add_library(meowy_observer_loader SHARED src/loader.cpp)
+target_include_directories(meowy_observer_loader PRIVATE ${gmod_module_base_SOURCE_DIR}/include)
+if(MSVC)
+	set_property(TARGET meowy_observer_loader PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+	target_compile_options(meowy_observer_loader PRIVATE /W4 /utf-8)
+elseif(NOT WIN32)
+	target_compile_options(meowy_observer_loader PRIVATE -Wall -O2 -fvisibility=hidden)
+	target_link_libraries(meowy_observer_loader PRIVATE dl)
+endif()
+set_target_properties(meowy_observer_loader PROPERTIES
+	PREFIX ""
+	OUTPUT_NAME "gmsv_ldr_${MEOWY_OBSERVER_SUFFIX}"
 	SUFFIX ".dll")

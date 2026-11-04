@@ -19,9 +19,13 @@
 #include "GarrysMod/Lua/Interface.h"
 #include "observer_lua.h"
 
+#include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <string>
+#include <vector>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -35,6 +39,21 @@ using namespace GarrysMod::Lua;
 namespace
 {
 	using CreateInterfaceFn = void* (*)(const char*, int*);
+	// lua_shared exports the Lua C API; code run through it can't be stopped by a
+	// server's Lua replacing RunString (anticheats do).
+	using LoadBufferFn = int (*)(lua_State*, const char*, size_t, const char*);
+	using PCallFn = int (*)(lua_State*, int, int, int);
+	using ToLStringFn = const char* (*)(lua_State*, int, size_t*);
+	using SetTopFn = void (*)(lua_State*, int);
+	struct LuaApi
+	{
+		LoadBufferFn loadbuffer = nullptr;
+		PCallFn pcall = nullptr;
+		ToLStringFn tolstring = nullptr;
+		SetTopFn settop = nullptr;
+		bool ok() const { return loadbuffer && pcall && tolstring && settop; }
+	};
+	LuaApi g_api;
 	// ILuaShared's vtable: the destructor takes one slot with MSVC and two with
 	// the Itanium ABI (GCC/Clang), then Init, Shutdown, DumpStats,
 	// CreateLuaInterface, CloseLuaInterface, GetLuaInterface.
@@ -53,16 +72,22 @@ namespace
 		CreateInterfaceFn factory = nullptr;
 #ifdef _WIN32
 		HMODULE lib = GetModuleHandleA("lua_shared.dll");
-		if (lib)
-			factory = reinterpret_cast<CreateInterfaceFn>(GetProcAddress(lib, "CreateInterface"));
+		auto sym = [&](const char* n) { return lib ? reinterpret_cast<void*>(GetProcAddress(lib, n)) : nullptr; };
+		factory = reinterpret_cast<CreateInterfaceFn>(sym("CreateInterface"));
 #else
+		void* lib = nullptr;
 		for (const char* name : { "lua_shared_client.so", "lua_shared.so" })
 		{
-			void* lib = dlopen(name, RTLD_LAZY | RTLD_NOLOAD);
+			lib = dlopen(name, RTLD_LAZY | RTLD_NOLOAD);
 			if (lib && (factory = reinterpret_cast<CreateInterfaceFn>(dlsym(lib, "CreateInterface"))))
 				break;
 		}
+		auto sym = [&](const char* n) { return lib ? dlsym(lib, n) : nullptr; };
 #endif
+		g_api.loadbuffer = reinterpret_cast<LoadBufferFn>(sym("luaL_loadbuffer"));
+		g_api.pcall = reinterpret_cast<PCallFn>(sym("lua_pcall"));
+		g_api.tolstring = reinterpret_cast<ToLStringFn>(sym("lua_tolstring"));
+		g_api.settop = reinterpret_cast<SetTopFn>(sym("lua_settop"));
 		if (factory)
 			shared = factory("LUASHARED003", nullptr);
 		return shared;
@@ -119,12 +144,36 @@ namespace
 		return out;
 	}
 
-	// Runs `code` in the client state through its own RunString, protected, so
-	// an error there can't unwind into the menu state.
+	// The client state's lua_State, handed over by calling this C function in it.
+	lua_State* g_grabbed = nullptr;
+	int Grab(lua_State* L)
+	{
+		g_grabbed = L;
+		return 0;
+	}
+
+	// Is this the game's client state? (CLIENT true, not the menu.)
+	bool IsClientState(ILuaBase* s)
+	{
+		s->PushSpecial(SPECIAL_GLOB);
+		s->GetField(-1, "CLIENT");
+		bool client = s->IsType(-1, Type::Bool) && s->GetBool(-1);
+		s->Pop(1);
+		s->GetField(-1, "MENU_DLL");
+		bool menu = !s->IsType(-1, Type::Nil);
+		s->Pop(2);
+		return client && !menu;
+	}
+
+	// Runs `code` in the client state, protected, so an error there can't unwind
+	// into the menu state. Loaded through the Lua C API (lua_shared's exports),
+	// not the state's RunString: a server's Lua can replace that (anticheats
+	// do), and it only prints errors. Compile and run errors come back here.
 	LUA_FUNCTION(RunClient)
 	{
 		LUA->CheckType(1, Type::String);
-		const char* code = LUA->GetString(1);
+		unsigned int len = 0;
+		const char* code = LUA->GetString(1, &len);
 		ILuaBase* client = ClientState();
 		if (!client)
 		{
@@ -132,6 +181,35 @@ namespace
 			LUA->PushString("no client Lua state (not in a game)");
 			return 2;
 		}
+		if (!IsClientState(client))
+		{
+			LUA->PushBool(false);
+			LUA->PushString("the Lua state found is not the game's client state");
+			return 2;
+		}
+		if (g_api.ok())
+		{
+			g_grabbed = nullptr;
+			client->PushCFunction(Grab);
+			client->Call(0, 0);
+			lua_State* L = g_grabbed;
+			if (L)
+			{
+				std::string err;
+				if (g_api.loadbuffer(L, code, len, "=ldr") != 0 || g_api.pcall(L, 0, 0, 0) != 0)
+				{
+					const char* e = g_api.tolstring(L, -1, nullptr);
+					err = e ? e : "unknown error";
+					g_api.settop(L, -2);
+					LUA->PushBool(false);
+					LUA->PushString(err.c_str());
+					return 2;
+				}
+				LUA->PushBool(true);
+				return 1;
+			}
+		}
+		// Without the C API: the state's own RunString (a server can stub this).
 		client->PushSpecial(SPECIAL_GLOB);
 		client->GetField(-1, "RunString");
 		if (!client->IsType(-1, Type::Function))
@@ -142,7 +220,7 @@ namespace
 			return 2;
 		}
 		client->PushString(code);
-		client->PushString("meowy_observer/sampler");
+		client->PushString("ldr");
 		if (client->PCall(2, 0, 0) != 0)
 		{
 			std::string err = client->IsType(-1, Type::String) ? client->GetString(-1) : "unknown error";
@@ -199,10 +277,219 @@ namespace
 		std::rename(tmp.c_str(), (dir + "/done.json").c_str());
 		return 0;
 	}
+
+	// --- player positions straight from the engine ------------------------------
+	//
+	// For servers whose anticheat stops the sampler: the positions the engine
+	// already holds for this client (players in view; the rest are dormant),
+	// read through the client's entity list instead of the server's Lua state.
+	// Every vtable slot used is cross-checked against an independent answer
+	// before anything is trusted, and nothing is read if a check fails.
+	//
+	// Layouts (Source SDK 2013, which GMod's client interfaces follow):
+	//   IClientEntityList (no virtual dtor): GetClientNetworkable 0, GetClientEntity 3,
+	//     GetHighestEntityIndex 6
+	//   entity primary vtable: IHandleEntity (dtor, SetRefEHandle, GetRefEHandle),
+	//     IClientUnknown (GetCollideable, GetClientNetworkable, GetClientRenderable,
+	//     GetIClientEntity, GetBaseEntity, GetClientThinkable), IClientEntity
+	//     (Release, GetAbsOrigin, GetAbsAngles)
+	//   IClientNetworkable (no virtual dtor): GetIClientUnknown 0, GetClientClass 2,
+	//     IsDormant 8, entindex 9
+	//   IVEngineClient: GetLocalPlayer 12
+	//   ClientClass: create fn, create-event fn, then the network name
+#ifdef _MSC_VER
+	constexpr int kDtorSlots = 1;
+#else
+	constexpr int kDtorSlots = 2;
+#endif
+	constexpr int kEntNetworkable = kDtorSlots + 3; // IClientUnknown::GetClientNetworkable
+	constexpr int kEntIClientEntity = kDtorSlots + 5;
+	constexpr int kEntAbsOrigin = kDtorSlots + 9;
+	constexpr int kEntAbsAngles = kDtorSlots + 10;
+
+	template <typename R, typename... A>
+	R VCall(void* self, int index, A... args)
+	{
+		using Fn = R(
+#ifdef _MSC_VER
+			__thiscall
+#endif
+			*)(void*, A...);
+		return reinterpret_cast<Fn>((*reinterpret_cast<void***>(self))[index])(self, args...);
+	}
+
+	// A loaded game library's CreateInterface, by file name (client, engine).
+	void* GameInterface(const char* const* libNames, const char* iface)
+	{
+		for (const char** n = const_cast<const char**>(libNames); *n; ++n)
+		{
+#ifdef _WIN32
+			HMODULE lib = GetModuleHandleA(*n);
+			auto fn = lib ? reinterpret_cast<CreateInterfaceFn>(GetProcAddress(lib, "CreateInterface")) : nullptr;
+#else
+			void* lib = dlopen(*n, RTLD_LAZY | RTLD_NOLOAD);
+			auto fn = lib ? reinterpret_cast<CreateInterfaceFn>(dlsym(lib, "CreateInterface")) : nullptr;
+#endif
+			if (fn)
+				if (void* p = fn(iface, nullptr))
+					return p;
+		}
+		return nullptr;
+	}
+
+	const char* const kClientLibs[] = {
+#ifdef _WIN32
+		"client.dll",
+#else
+		"client.so", "client_client.so",
+#endif
+		nullptr };
+	const char* const kEngineLibs[] = {
+#ifdef _WIN32
+		"engine.dll",
+#else
+		"engine.so", "engine_client.so",
+#endif
+		nullptr };
+
+	// A pointer that can be dereferenced: non-null, aligned, not in the first page.
+	bool Plausible(const void* p)
+	{
+		auto v = reinterpret_cast<uintptr_t>(p);
+		return v > 0x10000 && (v % sizeof(void*)) == 0;
+	}
+
+	struct NativePlayer
+	{
+		int index;
+		float x, y, z, yaw;
+		bool dormant, local;
+	};
+
+	// Reads the players; false with a reason when anything doesn't check out.
+	bool ReadNativePlayers(std::vector<NativePlayer>& out, std::string& why)
+	{
+		void* list = GameInterface(kClientLibs, "VClientEntityList003");
+		if (!list)
+			return why = "no client entity list", false;
+		void* engine = GameInterface(kEngineLibs, "VEngineClient015");
+		int localIndex = engine ? VCall<int>(engine, 12) : -1;
+		int highest = VCall<int>(list, 6);
+		if (highest < 1 || highest > 8192)
+			return why = "entity list answered nonsense (highest index " + std::to_string(highest) + ")", false;
+		int checked = 0;
+		for (int i = 1; i <= highest && i <= 256; ++i)
+		{
+			void* net = VCall<void*>(list, 0, i);
+			if (!net)
+				continue;
+			void* ent = VCall<void*>(list, 3, i);
+			if (!Plausible(net) || !Plausible(ent))
+				return why = "implausible entity pointers", false;
+			// The networkable must point back at the entity and know its own index...
+			if (VCall<void*>(net, 0) != ent)
+				return why = "networkable doesn't point back at its entity", false;
+			if (VCall<int>(net, 9) != i)
+				return why = "networkable has the wrong index", false;
+			// ...and the entity's own vtable must give the same networkable and itself:
+			// that pins the slot numbers below (GetAbsOrigin is just past them).
+			if (VCall<void*>(ent, kEntNetworkable) != net || VCall<void*>(ent, kEntIClientEntity) != ent)
+				return why = "entity vtable layout not as expected", false;
+			++checked;
+			const void* cls = VCall<const void*>(net, 2);
+			if (!Plausible(cls))
+				continue;
+			const char* name = reinterpret_cast<const char* const*>(cls)[2];
+			if (!Plausible(name) || std::strcmp(name, "CGMOD_Player") != 0)
+				continue;
+			const float* origin = VCall<const float*>(ent, kEntAbsOrigin);
+			const float* angles = VCall<const float*>(ent, kEntAbsAngles);
+			if (!Plausible(origin) || !Plausible(angles))
+				return why = "implausible origin/angles", false;
+			NativePlayer p{ i, origin[0], origin[1], origin[2], angles[1], VCall<bool>(net, 8), i == localIndex };
+			if (!(std::fabs(p.x) < 65536 && std::fabs(p.y) < 65536 && std::fabs(p.z) < 65536))
+				return why = "positions out of the map's range", false;
+			out.push_back(p);
+		}
+		if (checked == 0)
+			return why = "no entities to check", false;
+		return true;
+	}
+
+	// observer.NativePlayers() -> { {index, x, y, z, yaw, dormant, localPlayer}, ... } or nil, reason
+	LUA_FUNCTION(NativePlayers)
+	{
+		std::vector<NativePlayer> players;
+		std::string why;
+		if (!ReadNativePlayers(players, why))
+		{
+			LUA->PushNil();
+			LUA->PushString(why.c_str());
+			return 2;
+		}
+		LUA->CreateTable();
+		int n = 0;
+		for (const NativePlayer& p : players)
+		{
+			LUA->PushNumber(++n);
+			LUA->CreateTable();
+			LUA->PushNumber(p.index); LUA->SetField(-2, "index");
+			LUA->PushNumber(p.x); LUA->SetField(-2, "x");
+			LUA->PushNumber(p.y); LUA->SetField(-2, "y");
+			LUA->PushNumber(p.z); LUA->SetField(-2, "z");
+			LUA->PushNumber(p.yaw); LUA->SetField(-2, "yaw");
+			LUA->PushBool(p.dormant); LUA->SetField(-2, "dormant");
+			LUA->PushBool(p.local); LUA->SetField(-2, "localPlayer");
+			LUA->SetTable(-3);
+		}
+		return 1;
+	}
+
+	// Whether native reads are trusted: "ok" only after they matched the Lua
+	// sampler on a normal visit; "pending" while that check runs (a crash then
+	// turns it into "bad" on the next start); "bad" for good.
+	std::string NativeStatePath()
+	{
+		std::string dir = Dir();
+		return dir.empty() ? std::string() : dir + "/native-state";
+	}
+
+	LUA_FUNCTION(NativeState)
+	{
+		std::string path = NativeStatePath();
+		std::string s = path.empty() ? std::string() : ReadFile(path);
+		while (!s.empty() && (s.back() == '\n' || s.back() == '\r'))
+			s.pop_back();
+		LUA->PushString(s.empty() ? "unknown" : s.c_str());
+		return 1;
+	}
+
+	LUA_FUNCTION(SetNativeState)
+	{
+		LUA->CheckType(1, Type::String);
+		std::string path = NativeStatePath();
+		if (FILE* f = path.empty() ? nullptr : std::fopen(path.c_str(), "wb"))
+		{
+			std::fputs(LUA->GetString(1), f);
+			std::fclose(f);
+		}
+		return 0;
+	}
 }
 
 GMOD_MODULE_OPEN()
 {
+	{
+		// A native check that was still running when the game last went down: it crashed.
+		std::string path = NativeStatePath();
+		std::string state = path.empty() ? std::string() : ReadFile(path);
+		if (state.rfind("pending", 0) == 0)
+			if (FILE* f = std::fopen(path.c_str(), "wb"))
+			{
+				std::fputs("bad (the game went down during the check)", f);
+				std::fclose(f);
+			}
+	}
 	{
 		std::string dir = Dir();
 		FILE* f = dir.empty() ? nullptr : std::fopen((dir + "/observer.log").c_str(), "ab");
@@ -228,6 +515,12 @@ GMOD_MODULE_OPEN()
 	LUA->SetField(-2, "WriteDone");
 	LUA->PushCFunction(Note);
 	LUA->SetField(-2, "Note");
+	LUA->PushCFunction(NativePlayers);
+	LUA->SetField(-2, "NativePlayers");
+	LUA->PushCFunction(NativeState);
+	LUA->SetField(-2, "NativeState");
+	LUA->PushCFunction(SetNativeState);
+	LUA->SetField(-2, "SetNativeState");
 	LUA->PushString(kSamplerLua);
 	LUA->SetField(-2, "SAMPLER");
 	LUA->SetField(-2, "observer");

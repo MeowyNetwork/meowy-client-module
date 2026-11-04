@@ -6,6 +6,11 @@
  *   MEOWY_OBSERVER_DIR          shared with the game (outside garrysmod)
  *   MEOWY_OBSERVER_API          default https://meowynetwork.com
  *   SERVER_REP_OBSERVER_TOKEN   the same token the backend has
+ *   MEOWY_OBSERVER_MANAGE_GAME  on Linux (the VM) the supervisor starts GMod for
+ *                               a round of visits and quits it afterwards; set 0
+ *                               to start the game yourself (as on Windows)
+ *   MEOWY_OBSERVER_CONFIRM      set 0 to stop clicking through Steam's "another
+ *                               session is playing" prompt when launching
  *
  * One visit at a time. A visit the game doesn't finish in VISIT_TIMEOUT is
  * dropped (the backend gives it up too).
@@ -13,15 +18,90 @@
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { execFile, spawn } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 
 const DIR = process.env.MEOWY_OBSERVER_DIR || path.join(process.env.HOME || '.', '.meowy-observer');
 const API = (process.env.MEOWY_OBSERVER_API || 'https://meowynetwork.com').replace(/\/+$/, '');
 const TOKEN = process.env.SERVER_REP_OBSERVER_TOKEN || '';
+const MANAGE_GAME = process.platform === 'linux' && process.env.MEOWY_OBSERVER_MANAGE_GAME !== '0';
+const CONFIRM = MANAGE_GAME && process.env.MEOWY_OBSERVER_CONFIRM !== '0';
 const POLL_MS = 60 * 1000;
-const VISIT_TIMEOUT_MS = 25 * 60 * 1000;
+const VISIT_TIMEOUT_MS = 55 * 60 * 1000; // a first visit can download GBs of Workshop content
+const LAUNCH_TIMEOUT_MS = 3 * 60 * 1000;
+// -condebug: the game appends its console to garrysmod/console.log, which is
+// how a visit learns the moment it was kicked, and why.
+// +mat_picmip 2: lowest textures. Nothing here looks at them, and on big
+// servers they're most of the game's memory (6.6 GB seen on one).
+// +cl_downloadfilter mapsonly: of a server's own downloads (models, materials,
+// sounds) take only the map, which joining needs. Lua files always come.
+const GAME_ARGS = [
+  '-applaunch', '4000', '-condebug', '-windowed', '-w', '800', '-h', '600', '-nosound', '-nojoy',
+  '+fps_max', '15', '+mat_queue_mode', '0', '+mat_picmip', '2', '+cl_downloadfilter', 'mapsonly',
+];
+const CONSOLE_LOG =
+  process.env.MEOWY_OBSERVER_CONSOLE_LOG ||
+  path.join(process.env.HOME || '.', '.steam/steam/steamapps/common/GarrysMod/garrysmod/console.log');
+const SAMPLER_RESULT = path.join(path.dirname(CONSOLE_LOG), 'data/ldr/result.json');
+
+// The observer's module is in the game's folders only while the game starts:
+// the loader goes into lua/bin and its require line into menu.lua just before a
+// launch, and both are removed the moment the module has loaded (a loaded
+// library keeps working on Linux once its file is gone). Any server's client
+// Lua can list and read those folders; by the time any server's Lua runs,
+// there's nothing of the observer in them. (Who the observer is, is public:
+// observer/OBSERVER.md.)
+const GARRYSMOD = path.dirname(CONSOLE_LOG);
+const LUA_BIN = path.join(GARRYSMOD, 'lua/bin');
+const MENU_LUA = path.join(GARRYSMOD, 'lua/includes/menu.lua');
+const LOADER_SRC = process.env.MEOWY_OBSERVER_LOADERS || '/opt/observer';
+const LOADERS = ['gmsv_ldr_linux64.dll', 'gmsv_ldr_linux.dll'];
+const REQUIRE_LINE = 'pcall(require, "ldr")';
+
+export async function armLoader() {
+  await fs.mkdir(LUA_BIN, { recursive: true });
+  for (const f of LOADERS) await fs.copyFile(path.join(LOADER_SRC, f), path.join(LUA_BIN, f)).catch(() => {});
+  const menu = await fs.readFile(MENU_LUA, 'utf8').catch(() => null);
+  if (menu !== null && !menu.split('\n').some((l) => l.trim() === REQUIRE_LINE)) {
+    await fs.writeFile(MENU_LUA, `${menu.replace(/\n*$/, '\n')}${REQUIRE_LINE}\n`);
+  }
+}
+
+export async function disarmLoader() {
+  for (const f of LOADERS) await fs.rm(path.join(LUA_BIN, f), { force: true });
+  const menu = await fs.readFile(MENU_LUA, 'utf8').catch(() => null);
+  if (menu !== null && menu.includes(REQUIRE_LINE)) {
+    await fs.writeFile(MENU_LUA, menu.split('\n').filter((l) => l.trim() !== REQUIRE_LINE).join('\n').replace(/\n*$/, '\n'));
+  }
+}
+
+// Wait for this launch's "module loaded" line in observer.log, then take the
+// loader and the require line away again.
+async function disarmOnceLoaded(logFrom, ms = 120000) {
+  const logPath = path.join(DIR, 'observer.log');
+  const until = Date.now() + ms;
+  while (Date.now() < until) {
+    const text = await fs.readFile(logPath, 'utf8').catch(() => '');
+    if (text.length > logFrom && text.slice(logFrom).includes('module loaded')) {
+      await disarmLoader();
+      log('loader_removed');
+      return true;
+    }
+    await sleep(1000);
+  }
+  await disarmLoader();
+  log('loader_removed', { note: "the module didn't report loading" });
+  return false;
+}
+// Lines that end a join or a visit: the server's kick reason, or a failed connect.
+// (A refusal at connect time - S2C_CONNREJECT, e.g. a VPN block - reads "Connection rejected...".)
+const DISCONNECT =
+  /^(Disconnect: .+|Disconnected: .+|Connection rejected.*|.*S2C_CONNREJECT.*|Connection failed.*|Server is full.*|Couldn't connect to server.*|Connection to server timed out.*|.*Rejected.*connection.*|Bad challenge.*|Server uses different class tables.*)$/gim;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = (msg, extra = {}) => console.log(JSON.stringify({ ts: new Date().toISOString(), msg, ...extra }));
+const run = (cmd, args) =>
+  new Promise((resolve) => execFile(cmd, args, { timeout: 10000 }, (err, stdout) => resolve(err ? null : String(stdout))));
 
 async function api(method, route, body) {
   const res = await fetch(`${API}/api/pack/observer${route}`, {
@@ -34,6 +114,270 @@ async function api(method, route, body) {
   return res.json();
 }
 
+// --- the game (Linux VM only) ------------------------------------------------
+
+// The 32-bit game is hl2_linux; the x86-64 branch (needed: 32-bit runs out of
+// address space on big servers) is bin/linux64/gmod.
+const GAME_PROCESS = 'hl2_linux|gmod';
+// The game's process, once found: checked with signal 0, which (unlike pgrep
+// reading /proc) never stalls when the game is deep in memory pressure.
+let gamePid = 0;
+const alive = (pid) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err.code === 'EPERM';
+  }
+};
+async function gameRunning() {
+  if (gamePid && alive(gamePid)) return true;
+  gamePid = 0;
+  const out = await run('pgrep', ['-x', GAME_PROCESS]);
+  if (out === null) return false;
+  gamePid = Number(out.trim().split(/\s+/)[0]) || 0;
+  return gamePid > 0;
+}
+// Closed for sure: not running in three checks a few seconds apart.
+async function gameGone() {
+  for (let i = 0; i < 3; i++) {
+    if (await gameRunning()) return false;
+    if (i < 2) await sleep(3000);
+  }
+  return true;
+}
+
+// Steam's main window: the largest window titled exactly "Steam". (Not
+// --onlyvisible: on the VM's display xdotool counts none of Steam's windows as
+// visible.)
+// The tray icon is titled "Steam" too (48x48), so anything that small is skipped.
+// The prompt has focus when it's up, so the focused window is tried first.
+async function geometry(id) {
+  const g = await run('xdotool', ['getwindowgeometry', '--shell', id]);
+  if (!g) return null;
+  const v = Object.fromEntries(g.trim().split('\n').map((l) => l.split('=')));
+  const w = { id, x: +v.X, y: +v.Y, width: +v.WIDTH, height: +v.HEIGHT };
+  return w.width >= 400 && w.height >= 300 ? w : null;
+}
+
+async function steamWindow() {
+  const active = (await run('xdotool', ['getactivewindow']))?.trim();
+  if (active && (await run('xdotool', ['getwindowname', active]))?.trim() === 'Steam') {
+    const w = await geometry(active);
+    if (w) return w;
+  }
+  let best = null;
+  for (const id of ((await run('xdotool', ['search', '--name', '^Steam$'])) || '').split(/\s+/).filter(Boolean)) {
+    const w = await geometry(id);
+    if (w && (!best || w.width * w.height > best.width * best.height)) best = w;
+  }
+  return best;
+}
+
+// One screen pixel as [r, g, b] (ImageMagick's import), or null.
+async function pixel(x, y) {
+  const out = await run('import', ['-window', 'root', '-crop', `1x1+${x}+${y}`, 'txt:-']);
+  // "srgb(46,124,222)" (8-bit) or "srgb(18%,49%,87%)"; the hex beside it can be 16-bit.
+  const m = out && out.match(/srgb\(([\d.]+)(%?),([\d.]+)%?,([\d.]+)%?\)/i);
+  if (!m) return null;
+  const scale = m[2] === '%' ? 2.55 : 1;
+  return [m[1], m[3], m[4]].map((v) => Math.round(Number(v) * scale));
+}
+
+// "You are logged in on another computer already playing ..." (the account
+// idling elsewhere, e.g. an hour booster) is drawn inside Steam's main window,
+// centred, with Continue just right of and below the centre. Enter doesn't
+// answer it; a click does - but only when it's really there: Continue's blue
+// under the click, and the dialog's dark grey to the left of the buttons.
+// Clicking blind lands on whatever Steam shows (once, a store page).
+async function promptAt() {
+  const w = await steamWindow();
+  // No usable window: Steam at its default size on the 1600x900 display.
+  const cx = w ? w.x + w.width / 2 : 749;
+  const cy = w ? w.y + w.height / 2 : 454;
+  const x = Math.round(cx + 81);
+  const y = Math.round(cy + 63);
+  const button = await pixel(x, y);
+  const dialog = await pixel(Math.round(cx - 250), y);
+  const blue = button && button[2] >= 180 && button[2] - button[0] >= 100 && button[1] >= 90;
+  const dark = dialog && Math.max(...dialog) <= 80;
+  return { x, y, shown: Boolean(blue && dark), button, dialog };
+}
+
+const LAUNCHES = 3; // Steam sometimes ignores a launch just after it starts up
+const RELAUNCH_MS = 45 * 1000;
+
+function launch() {
+  const steam = spawn('steam', GAME_ARGS, { detached: true, stdio: 'ignore' });
+  steam.on('error', (err) => log('error', { err: `steam: ${err.message}` }));
+  steam.unref();
+}
+
+// Start GMod and wait for it: click through Steam's prompt when it's shown, and
+// ask again when nothing at all happened.
+async function startGame() {
+  if (await gameRunning()) return true;
+  log('game_start');
+  const logFrom = (await fs.stat(path.join(DIR, 'observer.log')).catch(() => ({ size: 0 }))).size;
+  await armLoader();
+  // In parallel with the launch below: gone again as soon as the module is in.
+  disarmOnceLoaded(logFrom).catch((err) => log('error', { err: `loader: ${err.message}` }));
+  launch();
+  const started = Date.now();
+  let clicks = 0;
+  let launches = 1;
+  let lastLaunch = started;
+  let lastClick = 0;
+  while (Date.now() - started < LAUNCH_TIMEOUT_MS) {
+    await sleep(3000);
+    if (await gameRunning()) {
+      log('game_running', { seconds: Math.round((Date.now() - started) / 1000), clicks, launches });
+      return true;
+    }
+    const p = CONFIRM ? await promptAt() : { shown: false };
+    if (p.shown && clicks < 4 && Date.now() - lastClick > 8000) {
+      clicks++;
+      lastClick = Date.now();
+      log('confirm_click', { x: p.x, y: p.y });
+      await run('xdotool', ['mousemove', String(p.x), String(p.y), 'click', '1']);
+    } else if (!p.shown && launches < LAUNCHES && Date.now() - lastLaunch > RELAUNCH_MS) {
+      launches++;
+      lastLaunch = Date.now();
+      log('game_start_again', { launches, button: p.button, dialog: p.dialog });
+      launch();
+    }
+  }
+  log('game_start_failed', { clicks, launches });
+  return false;
+}
+
+async function quitGame() {
+  if (!(await gameRunning())) return;
+  await run('pkill', ['-TERM', '-x', GAME_PROCESS]);
+  for (let i = 0; i < 15 && (await gameRunning()); i++) await sleep(2000);
+  if (await gameRunning()) await run('pkill', ['-KILL', '-x', GAME_PROCESS]);
+  await disarmLoader();
+  log('game_quit');
+}
+
+// --- visits ------------------------------------------------------------------
+
+// The console log from a byte offset on (the offset goes back to 0 if the file
+// was replaced by something shorter).
+async function consoleSize() {
+  try {
+    return (await fs.stat(CONSOLE_LOG)).size;
+  } catch {
+    return 0;
+  }
+}
+
+async function consoleSince(offset) {
+  let fh;
+  try {
+    fh = await fs.open(CONSOLE_LOG, 'r');
+    const { size } = await fh.stat();
+    const from = size < offset ? 0 : offset;
+    const length = Math.min(size - from, 1 << 20);
+    const buf = Buffer.alloc(length);
+    if (length > 0) await fh.read(buf, 0, length, from);
+    return { text: buf.toString('utf8'), next: from + length };
+  } catch {
+    return { text: '', next: offset };
+  } finally {
+    await fh?.close();
+  }
+}
+
+// --- status-only visits ------------------------------------------------------
+// The game ran `status` every 30 s; its tables are in the console log. Per
+// account (the ids never leave this function): in how many runs, and its ping
+// range. Same thresholds as the backend's reports.
+const FLAT_PING_MAX = 15;
+const FLAT_PING_DRIFT = 1;
+const PRESENT_SHARE = 0.8;
+
+export function statusRuns(text) {
+  const runs = [];
+  let run = null;
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (/^#\s*userid\s+name/i.test(line)) {
+      run = { bots: 0, rows: new Map() };
+      runs.push(run);
+      continue;
+    }
+    if (!run) continue;
+    const m = line.match(/^#\s*\d+\s+".*"\s+(\S+)\s*(.*?)\s*$/);
+    if (!m) {
+      if (line && !line.startsWith('#')) run = null; // the table ended
+      continue;
+    }
+    if (m[1] === 'BOT') {
+      run.bots++;
+      continue;
+    }
+    // "connected ping loss state [adr]"; a client still connecting lacks the first three.
+    const p = m[2].match(/^(\S+)\s+(\d+)\s+(\d+)\s+([a-z]+)/i);
+    run.rows.set(m[1], p ? Number(p[2]) : null);
+  }
+  return runs.filter((r) => r.rows.size > 0 || r.bots > 0);
+}
+
+export function statusResult(runs) {
+  const seen = new Map(); // id -> { n, min, max }
+  for (const r of runs) {
+    for (const [id, ping] of r.rows) {
+      const s = seen.get(id) || { n: 0, min: Infinity, max: -Infinity };
+      s.n++;
+      if (ping != null) {
+        s.min = Math.min(s.min, ping);
+        s.max = Math.max(s.max, ping);
+      }
+      seen.set(id, s);
+    }
+  }
+  let judged = 0;
+  let flat = 0;
+  for (const s of seen.values()) {
+    if (s.n < runs.length * PRESENT_SHARE) continue;
+    judged++;
+    if (s.max > 0 && s.max <= FLAT_PING_MAX && s.max - s.min <= FLAT_PING_DRIFT) flat++;
+  }
+  const players = runs.reduce((m, r) => Math.max(m, r.rows.size), 0);
+  return { mode: 'status', players, judged, flat, samples: runs.length };
+}
+
+// The last few meaningful console lines (no shader dumps), for a failure's log line.
+function lastLines(text, n = 5) {
+  return text
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l && !/^(r\d|pd\d|pc\[|o[CT]\d|#|\{|\}|IDirect3D|GL_)/.test(l))
+    .slice(-n);
+}
+
+// Why the game closed by itself: a fatal line in its output (which goes to
+// Steam's service log, not console.log), or a crash dump written since `since`.
+async function whyClosed(since) {
+  const out = await run('journalctl', ['-u', 'observer-desktop', '--since', `@${Math.floor(since / 1000)}`, '-n', '2000', '-o', 'cat', '--no-pager']);
+  const fatal = (out || '').match(/^.*(FATAL|Out of memory|Segmentation fault|Aborted|core dumped|Assertion).*$/im);
+  let dumps = 0;
+  try {
+    for (const f of await fs.readdir('/tmp/dumps')) {
+      if ((await fs.stat(path.join('/tmp/dumps', f))).mtimeMs >= since && f.endsWith('.dmp')) dumps++;
+    }
+  } catch {}
+  if (fatal) return `the game crashed: ${fatal[0].replace(/^\[[^\]]*\]\s*/, '').trim().slice(0, 150)}`;
+  if (dumps) return 'the game crashed (crash dump written)';
+  // A clean exit once the sampler was in the server's game: its anticheat, most
+  // likely (the backend then sends status-only visits there).
+  try {
+    if ((await fs.stat(SAMPLER_RESULT)).mtimeMs >= since) return 'the game closed during sampling (the server\'s anticheat?)';
+  } catch {}
+  return 'the game closed (no crash reported)';
+}
+
 async function readDone() {
   try {
     return JSON.parse(await fs.readFile(path.join(DIR, 'done.json'), 'utf8'));
@@ -42,48 +386,138 @@ async function readDone() {
   }
 }
 
+// A visit that couldn't be finished: say so, and tell the backend so it frees
+// the server now instead of holding it until its own timeout.
+async function failed(job, error, consoleFrom = null) {
+  await fs.rm(path.join(DIR, 'job.json'), { force: true });
+  const extra = consoleFrom === null ? {} : { console: lastLines((await consoleSince(consoleFrom)).text) };
+  log('visit_failed', { address: job.address, error, ...extra });
+  try {
+    await api('POST', '/failed', { id: job.id, address: job.address, error });
+  } catch (err) {
+    log('error', { err: err.message });
+  }
+}
+
+// Servers whose map only comes inside a Workshop addon the "mapsonly" download
+// filter skips: they're joined with every download allowed.
+const FULL_DOWNLOADS = path.join(DIR, 'full-downloads.json');
+async function fullDownloads() {
+  try {
+    return new Set(JSON.parse(await fs.readFile(FULL_DOWNLOADS, 'utf8')));
+  } catch {
+    return new Set();
+  }
+}
+
 async function visit(job) {
+  const full = await fullDownloads();
+  if (full.has(job.address)) job = { ...job, filter: 'all' };
   await fs.rm(path.join(DIR, 'done.json'), { force: true });
+  // The console log holds earlier visits' `status` tables (other servers'
+  // players' names and SteamIDs), and any server's client Lua can read files
+  // in the game folder: start each visit with it empty.
+  await fs.truncate(CONSOLE_LOG, 0).catch(() => {});
+  const visitConsole = await consoleSize();
+  let consoleAt = visitConsole;
+  const started = Date.now();
   await fs.writeFile(path.join(DIR, 'job.json'), JSON.stringify(job));
   log('visit', { address: job.address });
-  const started = Date.now();
+  // The module reads job.json when it loads, so the game starts after it's written.
+  if (MANAGE_GAME && !(await startGame())) return failed(job, 'the game did not start (Steam never launched it)');
+  let checks = 0;
   while (Date.now() - started < VISIT_TIMEOUT_MS) {
-    await sleep(10000);
+    await sleep(2000);
     const done = await readDone();
-    if (!done || done.id !== job.id) continue;
+    if (!done || done.id !== job.id) {
+      // Kicked or refused: the console says so (and why) right away.
+      const { text, next } = await consoleSince(consoleAt);
+      consoleAt = next;
+      // (Not our own "disconnect" when a visit ends: that's "Disconnect by user".)
+      const kicked = [...text.matchAll(DISCONNECT)].find((m) => !/by user/i.test(m[1]));
+      // An engine error while loading (a missing map...) is our side failing, not
+      // the server turning us away: the backend mustn't take it as a refusal.
+      if (kicked && /Host_?Error|Host Error|Missing map/i.test(kicked[1])) {
+        await failed(job, `failed to load: ${kicked[1].replace(/^Disconnected:\s*/i, '').trim()}`.slice(0, 200), visitConsole);
+        // The map was filtered out: once, try again with every download allowed.
+        if (/Missing map/i.test(kicked[1]) && job.filter !== 'all') {
+          const full = await fullDownloads();
+          full.add(job.address);
+          await fs.writeFile(FULL_DOWNLOADS, JSON.stringify([...full]));
+          log('full_downloads', { address: job.address });
+          try {
+            await api('POST', '/queue', { address: job.address, ...(job.mode ? { mode: job.mode } : {}) });
+          } catch (err) {
+            log('error', { err: err.message });
+          }
+        }
+        return;
+      }
+      if (kicked) return failed(job, `kicked: ${kicked[1].trim()}`.slice(0, 200), visitConsole);
+      // The game closed mid-visit: say whether it crashed, and why.
+      if (MANAGE_GAME && ++checks % 5 === 0 && (await gameGone())) return failed(job, await whyClosed(started), visitConsole);
+      continue;
+    }
     await fs.rm(path.join(DIR, 'done.json'), { force: true });
-    if (done.error) {
-      log('visit_failed', { address: job.address, error: String(done.error).slice(0, 200) });
+    if (done.error) return failed(job, String(done.error).slice(0, 200), visitConsole);
+    if (done.statusOnly) {
+      const runs = statusRuns((await consoleSince(visitConsole)).text);
+      if (runs.length < 10) return failed(job, `status only: ${runs.length} of ${done.runs} status tables found in the console`, visitConsole);
+      const result = { id: job.id, address: job.address, ...statusResult(runs) };
+      // Positions read natively (once the module's reads passed their check).
+      const n = done.native;
+      if (n && [n.observed, n.still, n.visible].every(Number.isInteger) && n.still <= n.observed) {
+        Object.assign(result, { observed: n.observed, still: n.still, visible: n.visible });
+      }
+      await api('POST', '/result', result);
+      log('visit_done', result);
       return;
     }
-    const result = { id: job.id, address: job.address, players: done.players, observed: done.observed, still: done.still, samples: done.samples };
+    const result = { id: job.id, address: job.address };
+    for (const k of ['players', 'observed', 'still', 'samples', 'visible', 'selfAlive', 'judged', 'active', 'quiet', 'flat', 'idle']) {
+      if (Number.isInteger(done[k])) result[k] = done[k];
+    }
     await api('POST', '/result', result);
     log('visit_done', result);
     return;
   }
-  log('visit_timeout', { address: job.address });
+  return failed(job, `no result after ${VISIT_TIMEOUT_MS / 60000} min`, visitConsole);
 }
 
 async function main() {
   await fs.mkdir(DIR, { recursive: true });
+  // A job left by an earlier run would send the game somewhere nobody waits on.
+  await fs.rm(path.join(DIR, 'job.json'), { force: true });
   // No token yet (set "Observer token" in the panel): say so and wait, don't crash-loop.
   while (!TOKEN) {
     log('waiting_for_token', { note: 'set the Observer token variable and restart' });
     await sleep(10 * 60 * 1000);
   }
-  log('ready', { dir: DIR, api: API });
+  log('ready', { dir: DIR, api: API, manageGame: MANAGE_GAME, confirm: CONFIRM });
+  if (MANAGE_GAME) {
+    await quitGame(); // start from a closed game, like after every round
+    await disarmLoader(); // and with nothing of the observer in the game's folders
+  }
   for (;;) {
+    // A round: visit while the backend has suspects, then close the game.
     try {
-      const job = await api('GET', '/next');
-      if (job && job.id && job.address) await visit(job);
+      for (;;) {
+        const job = await api('GET', '/next');
+        if (!job || !job.id || !job.address) break;
+        await visit(job);
+      }
     } catch (err) {
       log('error', { err: err.message });
     }
+    if (MANAGE_GAME) await quitGame();
     await sleep(POLL_MS);
   }
 }
 
-main().catch((err) => {
-  log('fatal', { err: err.message });
-  process.exit(1);
-});
+// Run when started directly (not when a test imports the parsers).
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((err) => {
+    log('fatal', { err: err.message });
+    process.exit(1);
+  });
+}

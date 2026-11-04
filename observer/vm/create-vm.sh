@@ -1,6 +1,6 @@
 #!/bin/bash
 # Run ON THE VPS HOST as root, once: creates the observer VM (Ubuntu 24.04,
-# 4 vCPU, 6 GB RAM, 60 GB disk) on libvirt's private NAT network. Nothing in
+# 4 vCPU, 16 GB RAM, 60 GB disk) on libvirt's private NAT network. Nothing in
 # the VM is reachable from the internet; you reach its display through an SSH
 # tunnel (see README.md).
 #
@@ -46,7 +46,7 @@ runcmd:
 EOF
 cloud-localds "$NAME-seed.iso" /tmp/user-data
 
-virt-install --name "$NAME" --memory 6144 --vcpus 4 \
+virt-install --name "$NAME" --memory 16384 --vcpus 4 \
   --disk "$IMG/$NAME.qcow2",format=qcow2 --disk "$IMG/$NAME-seed.iso",device=cdrom \
   --osinfo detect=on,require=off --network network=default --graphics none \
   --import --noautoconsole --autostart

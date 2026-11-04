@@ -12,7 +12,7 @@ The observer files are already on the VPS at `/opt/stacks/claude-staging/meowy-o
 sudo bash /opt/stacks/claude-staging/meowy-observer/vm/create-vm.sh
 ```
 
-It installs KVM/libvirt, creates `meowy-observer` (Ubuntu 24.04, 4 vCPU, 6 GB RAM, 60 GB disk) on
+It installs KVM/libvirt, creates `meowy-observer` (Ubuntu 24.04, 4 vCPU, 16 GB RAM, 60 GB disk) on
 libvirt's private NAT network, and at first boot the VM installs everything itself
 (`vm/setup.sh`, about 5-10 minutes). It prints the VM's address (usually `192.168.122.x`). The
 VM's `observer` user accepts the same SSH keys as the host's root.
@@ -27,10 +27,11 @@ sudo systemctl restart observer
 
 ## 3. Log in to Steam once (from your PC)
 
-The VM's display is only reachable through an SSH tunnel, never from the internet:
+The VM's display listens only inside the VM (127.0.0.1:6080), so the tunnel goes through both
+hops: your PC to the VPS, then the VPS to the VM (using the key that can log in to the VM):
 
 ```bash
-ssh -L 6080:<vm address>:6080 <you>@138.201.62.52
+ssh -t -L 6080:localhost:6080 <you>@138.201.62.52 ssh -i ~/.ssh/meowy_observer -L 6080:localhost:6080 observer@<vm address>
 ```
 
 Then open http://localhost:6080/vnc.html, Connect, log in with the observer account (Steam
