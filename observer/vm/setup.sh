@@ -216,6 +216,11 @@ Group=$GAME
 UMask=0027
 Environment=DISPLAY=:99
 Environment=MEOWY_OBSERVER_DIR=$SHARED
+# The 64-bit GMod runs inside Steam's container (Steam Linux Runtime), which
+# shares the home folder but not /var/lib: without this the game can't see the
+# job folder (the ~/.meowy-observer link points at nothing in there) and the
+# module never starts.
+Environment=PRESSURE_VESSEL_FILESYSTEMS_RW=$SHARED
 ExecStartPre=/bin/bash -c 'Xvfb :99 -screen 0 1600x900x24 -nolisten tcp & sleep 2; openbox & x11vnc -display :99 -forever -shared -localhost -rfbport 5900 -nopw -quiet & websockify --web /usr/share/novnc 127.0.0.1:6080 localhost:5900 >/dev/null 2>&1 &'
 ExecStart=/usr/local/bin/steam -no-browser
 # Steam and the game (with their browsers) can outgrow the VM; past this the
