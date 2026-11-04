@@ -1016,14 +1016,17 @@ local function runStatus(done)
 	RunConsoleCommand("status")
 	after(2, function()
 		local text = meowy.StatusCaptureEnd()
-		local run, seenIds = { bots = 0, rows = {} }, {}
+		local run, seenIds, sawSelf = { bots = 0, rows = {} }, {}, false
 		for line in string.gmatch(text, "[^\n]+") do
 			local uid, rest = line:match('^#%s*%d+%s+".*"%s+(%S+)%s*(.-)%s*$')
 			if uid == "BOT" then
 				run.bots = run.bots + 1
 			elseif uid then
 				local id64 = toSteamID64(uid)
-				if id64 and not seenIds[id64] and #run.rows < 128 then
+				-- Our own row stays out: the report says nothing about who sent it.
+				if id64 and id64 == meowy.SelfSteamID64 then
+					sawSelf = true
+				elseif id64 and not seenIds[id64] and #run.rows < 128 then
 					seenIds[id64] = true
 					-- "connected ping loss state [adr]"; a client still connecting may lack the first three.
 					local connected, ping, loss, state = rest:match("^(%S+)%s+(%d+)%s+(%d+)%s+(%a+)")
@@ -1036,7 +1039,7 @@ local function runStatus(done)
 			end
 		end
 		meowy.ServerRepNote(string.format("status parsed: %d accounts, %d bots", #run.rows, run.bots))
-		done(run)
+		done(run, sawSelf)
 	end)
 end
 
@@ -1051,8 +1054,11 @@ hook.Add("Think", "MeowyClientPack.ServerReport", function()
 	if SysTime() - joinedAt[address] < FIRST_RUN then return end
 	reported[address] = true
 
-	runStatus(function(first)
-		if #first.rows + first.bots < MIN_PLAYERS then return end
+	runStatus(function(first, sawSelf)
+		-- Without our own row found (our SteamID unknown), nothing is sent: it
+		-- could be among the rows.
+		if not sawSelf then return meowy.ServerRepNote("report skipped: own row not identified") end
+		if #first.rows + 1 + first.bots < MIN_PLAYERS then return end
 		after(RUN_GAP, function()
 			-- Still on the same server? Otherwise send what the first run saw.
 			local still = meowy.OtherServerAddress() == address
@@ -1097,6 +1103,8 @@ local stockGameDetails = GameDetails
 if isfunction(stockGameDetails) then
 	GameDetails = function(name, url, map, maxplayers, visible, steamid, ...)
 		details = { tostring(name or ""), tostring(map or ""), tostring(steamid or "") }
+		-- Our own SteamID64, so the server-list reports can leave our row out.
+		if details[3]:match("^7656119%d+$") then meowy.SelfSteamID64 = details[3] end
 		if active and sure then meowy.LoadingDetails(details[1], details[2], details[3]) end
 		return stockGameDetails(name, url, map, maxplayers, visible, steamid, ...)
 	end

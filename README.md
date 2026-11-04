@@ -85,8 +85,9 @@ the game closes while the pack is starting, the next start skips it once by itse
     crawler that adds Steam's own count and the count's history.
   - **What it sends:** on a server you join that isn't ours, it runs the game's `status` command
     twice, about 90 seconds in and four minutes later. It sends meowynetwork.com the server's
-    address, its advertised count, the number of bots `status` lists, and for each account its
-    SteamID, ping, packet loss, state and connected time. The backend turns the SteamIDs into salted
+    address, its advertised count, the number of bots `status` lists, and for each other account
+    its SteamID, ping, packet loss, state and connected time. Your own row is left out (if the pack
+    can't tell which row is yours, it sends nothing). The backend turns the SteamIDs into salted
     hashes as they arrive, never stores or logs them readable, and keeps the hashes 14 days, to spot
     the same accounts on a server around the clock. It judges behaviour only: hidden bots, flat
     pings, players stuck connecting, one account on two servers at once. A server is only marked from
