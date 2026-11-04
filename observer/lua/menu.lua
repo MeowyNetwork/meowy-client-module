@@ -251,6 +251,14 @@ end
 -- ticking, and `status` runs every STATUS_EVERY seconds; its tables land in the
 -- console log, which the supervisor reads (pings of every player).
 local STATUS_EVERY, STATUS_RUNS = 30, 20
+-- Quick visits (local tests only, observer-queue --local --quick): 2 minutes
+-- instead of 10, same counting.
+local QUICK_STATUS_EVERY = 6
+local QUICK_SAMPLER = {
+	["local SETTLE = 60"] = "local SETTLE = 10",
+	["local TICKS = 120"] = "local TICKS = 24",
+	["local POSITION_EVERY = 6"] = "local POSITION_EVERY = 2",
+}
 local statusRuns, nextStatus = 0, 0
 
 local function statusTick(now)
@@ -273,6 +281,7 @@ local function loaded(how)
 	-- The load screen also closes on a kick or a failed connect: that's the
 	-- joining phase's business (and the supervisor's, from the console).
 	if not IsInGame() then return note("load screen closed, not in game") end
+	STATUS_EVERY = job.quick and QUICK_STATUS_EVERY or 30
 	if job.mode == "status" then
 		RunConsoleCommand("gameui_activate")
 		note("in game (" .. how .. "), status only: " .. STATUS_RUNS .. " status runs, " .. STATUS_EVERY .. " s apart")
@@ -281,7 +290,11 @@ local function loaded(how)
 		return
 	end
 	file.Delete("ldr/result.json")
-	local ok, err = observer.RunClient(observer.SAMPLER)
+	local code = observer.SAMPLER
+	if job.quick then
+		for from, to in pairs(QUICK_SAMPLER) do code = code:gsub(from:gsub("%p", "%%%0"), to, 1) end
+	end
+	local ok, err = observer.RunClient(code)
 	if not ok then return done({ error = "sampler: " .. tostring(err) }) end
 	note("in game (" .. how .. "), sampler started")
 	phase, since = "sampling", SysTime()

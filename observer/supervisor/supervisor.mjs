@@ -597,7 +597,7 @@ async function takeLocalJob() {
   const id = Array.from({ length: 16 }, () => '0123456789abcdef'[Math.floor(Math.random() * 16)]).join('');
   log('local_visit', { address: job.address });
   // Status-only unless asked for the Lua sampler by hand, as the backend does.
-  return { id, address: job.address, local: true, mode: job.mode === 'lua' ? 'lua' : 'status' };
+  return { id, address: job.address, local: true, mode: job.mode === 'lua' ? 'lua' : 'status', ...(job.quick === true ? { quick: true } : {}) };
 }
 
 async function main() {
