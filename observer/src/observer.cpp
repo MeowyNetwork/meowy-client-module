@@ -413,11 +413,9 @@ namespace
 
 	// --- networked fields, from the client's receive tables ----------------------
 	//
-	// Each player's simulation time is the engine's proof that the server is
-	// still sending us that player: it advances every time the server simulates
-	// them (every tick, for a connected client or a bot, moving or not). A
-	// non-dormant player whose simulation time stood still between two reads
-	// 30 s apart sent us nothing new: its position is stale, not "standing still".
+	// Our own player's tick base is the proof the server's updates still reach
+	// us: it advances with every one. (Players' m_flSimulationTime reads 0 on
+	// GMod's client, so it can't serve.)
 	//
 	// Layouts (Source SDK 2013 dt_recv.h / client_class.h):
 	//   ClientClass: create fn, create-event fn, network name, recv table, next, id
@@ -453,24 +451,6 @@ namespace
 	};
 	constexpr int kDptDataTable = 6;
 
-	// Every offset a field name appears at (a derived class can send its own
-	// copy), for the log.
-	void FindAllProps(const RecvTable* t, const char* want, int base, int depth, std::string& out)
-	{
-		if (!Plausible(t) || depth > 16 || t->nProps < 0 || t->nProps > 4096 || !Plausible(t->props))
-			return;
-		for (int i = 0; i < t->nProps; ++i)
-		{
-			const RecvProp& p = t->props[i];
-			if (!PlausibleText(p.name))
-				return;
-			if (std::strcmp(p.name, want) == 0)
-				out += (out.empty() ? "" : "/") + std::to_string(base + p.offset) + "@" + (PlausibleText(t->netTableName) ? t->netTableName : "?");
-			if (p.type == kDptDataTable && p.dataTable)
-				FindAllProps(p.dataTable, want, base + p.offset, depth + 1, out);
-		}
-	}
-
 	// The offset of a field in the entity, or -1; base classes first, as the
 	// tables list them.
 	int FindProp(const RecvTable* t, const char* want, int base, int depth)
@@ -500,10 +480,8 @@ namespace
 	struct Fields
 	{
 		int origin = -1;  // m_vecOrigin: the position the server sent
-		int sim = -1;     // m_flSimulationTime
 		int eyeYaw = -1;  // m_angEyeAngles[1]
 		int tickBase = -1; // m_nTickBase: our own player's, advances with every update we get
-		int animTime = -1; // m_flAnimTime
 		bool looked = false;
 	};
 	Fields g_fields;
@@ -532,16 +510,12 @@ namespace
 		if (!Plausible(table))
 			return void(g_fieldsWhy = "no receive table");
 		g_fields.origin = FindField(table, "m_vecOrigin");
-		g_fields.sim = FindField(table, "m_flSimulationTime");
 		g_fields.eyeYaw = FindField(table, "m_angEyeAngles[1]");
 		g_fields.tickBase = FindField(table, "m_nTickBase");
-		g_fields.animTime = FindField(table, "m_flAnimTime");
-		std::string sims;
-		FindAllProps(table, "m_flSimulationTime", 0, 0, sims);
+
 		char buf[320];
-		std::snprintf(buf, sizeof buf, "%s (origin %d, simulation time %d [%s], eye yaw %d, tick base %d, anim time %d)",
-			g_fields.sim > 0 ? "ok" : "simulation time not found", g_fields.origin, g_fields.sim, sims.substr(0, 60).c_str(),
-			g_fields.eyeYaw, g_fields.tickBase, g_fields.animTime);
+		std::snprintf(buf, sizeof buf, "%s (origin %d, eye yaw %d, tick base %d)",
+			g_fields.tickBase > 0 ? "ok" : "tick base not found", g_fields.origin, g_fields.eyeYaw, g_fields.tickBase);
 		g_fieldsWhy = buf;
 	}
 
@@ -560,9 +534,8 @@ namespace
 		bool dormant, local;
 		// From the receive tables (NAN when not found): the networked origin,
 		// eye yaw and simulation time.
-		float nx, ny, nz, eyeYaw, simTime;
-		float animTime;
-		int tickBase; // -1 when unknown
+		float nx, ny, nz, eyeYaw;
+		int tickBase; // -1 when unknown (only our own player's advances)
 	};
 
 	// What the last read saw, for the log when it finds no players.
@@ -636,8 +609,7 @@ namespace
 				return why = "implausible origin/angles, and no networked origin", false;
 			NativePlayer p{ i, vx, vy, vz, vyaw, dormant, i == localIndex,
 				FieldOrNan(ent, o), FieldOrNan(ent, o < 0 ? -1 : o + 4), FieldOrNan(ent, o < 0 ? -1 : o + 8),
-				FieldOrNan(ent, g_fields.eyeYaw), FieldOrNan(ent, g_fields.sim), FieldOrNan(ent, g_fields.animTime),
-				g_fields.tickBase >= 0 ? Field<int>(ent, g_fields.tickBase) : -1 };
+				FieldOrNan(ent, g_fields.eyeYaw), i == localIndex && g_fields.tickBase >= 0 ? Field<int>(ent, g_fields.tickBase) : -1 };
 			if (std::isfinite(p.x) && !(std::fabs(p.x) < 65536 && std::fabs(p.y) < 65536 && std::fabs(p.z) < 65536))
 				p.x = p.y = p.z = p.yaw = NAN; // not a position: this source is out
 			if (std::isfinite(p.nx) && !(std::fabs(p.nx) < 65536 && std::fabs(p.ny) < 65536 && std::fabs(p.nz) < 65536))
@@ -651,7 +623,7 @@ namespace
 		return true;
 	}
 
-	// observer.NativePlayers() -> { {index, x, y, z, yaw, dormant, localPlayer, nx?, ny?, nz?, eyeYaw?, simTime?}, ... } or nil, reason
+	// observer.NativePlayers() -> { {index, x, y, z, yaw, dormant, localPlayer, nx?, ny?, nz?, eyeYaw?, tickBase? (ours)}, ... } or nil, reason
 	LUA_FUNCTION(NativePlayers)
 	{
 		std::vector<NativePlayer> players;
@@ -678,7 +650,6 @@ namespace
 			}
 			LUA->PushBool(p.dormant); LUA->SetField(-2, "dormant");
 			LUA->PushBool(p.local); LUA->SetField(-2, "localPlayer");
-			if (std::isfinite(p.simTime)) { LUA->PushNumber(p.simTime); LUA->SetField(-2, "simTime"); }
 			if (std::isfinite(p.nx) && std::isfinite(p.ny) && std::isfinite(p.nz))
 			{
 				LUA->PushNumber(p.nx); LUA->SetField(-2, "nx");
@@ -686,7 +657,6 @@ namespace
 				LUA->PushNumber(p.nz); LUA->SetField(-2, "nz");
 			}
 			if (std::isfinite(p.eyeYaw)) { LUA->PushNumber(p.eyeYaw); LUA->SetField(-2, "eyeYaw"); }
-			if (std::isfinite(p.animTime)) { LUA->PushNumber(p.animTime); LUA->SetField(-2, "animTime"); }
 			if (p.tickBase >= 0) { LUA->PushNumber(p.tickBase); LUA->SetField(-2, "tickBase"); }
 			LUA->SetTable(-3);
 		}
@@ -700,7 +670,7 @@ namespace
 		return 1;
 	}
 
-	// observer.NativeSimTime() -> "ok ..." once players' simulation times are read, else why not
+	// observer.NativeSimTime() -> the networked fields found ("ok ..." with our tick base), else why not
 	LUA_FUNCTION(NativeSimTime)
 	{
 		LUA->PushString(g_fieldsWhy.c_str());

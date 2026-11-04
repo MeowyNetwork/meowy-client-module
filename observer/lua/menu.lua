@@ -150,21 +150,22 @@ end
 
 -- Native position samples during a status-only visit, per player index:
 -- { n = reads present, seen = {{x,y,z,yaw}} from fresh reads, toggles = times it
--- went in or out of view, lastVis, lastSim }.
+-- went in or out of view, lastVis }.
 --
--- A read is fresh when the player is in view (not dormant) and its simulation
--- time moved on since the last read: the server sent us something new about
--- them. In view with the same simulation time is stale (not "standing still")
--- and its position isn't used. Dormant players (out of view, or withheld by
--- the server) give no position at all.
+-- A read is fresh when our own player's tick base moved on since the last
+-- one: the server's updates are reaching us. Then a player in view (not
+-- dormant) is in the current update, so what we hold for them is current and
+-- an unchanged position means they didn't move. A read where our tick base
+-- stood still is stale (the connection stalled): nothing in it is used.
+-- Dormant players (out of view, or withheld by the server) give no position.
 local nativeTracks, nativeReads, nativeWhy = {}, 0, nil
 local visibleReads, staleReads, unprovenReads = 0, 0, 0
-local selfFirst, selfMoved = nil, false
+local selfFirst, selfMoved, lastTick = nil, false, nil
 
 local function nativeReset()
 	nativeTracks, nativeReads, nativeWhy = {}, 0, nil
 	visibleReads, staleReads, unprovenReads = 0, 0, 0
-	selfFirst, selfMoved = nil, false
+	selfFirst, selfMoved, lastTick = nil, false, nil
 end
 
 local function apart(a, b) return math.sqrt((a.x - b.x) ^ 2 + (a.y - b.y) ^ 2 + (a.z - b.z) ^ 2) end
@@ -174,16 +175,21 @@ local function nativeSample()
 	local players, why = observer.NativePlayers()
 	if not players then nativeWhy = why return end
 	nativeReads = nativeReads + 1
+	local myTick
+	for _, p in ipairs(players) do if p.localPlayer then myTick = p.tickBase end end
+	local fresh -- nil: can't tell (no tick base)
+	if myTick ~= nil then
+		fresh = lastTick == nil or myTick > lastTick
+		lastTick = myTick
+	end
 	-- Quick (test) visits: what each read saw of us and up to 12 others.
 	if job and job.quick then
-		local parts, others = {}, 0
+		local parts, others = { "tick " .. tostring(myTick) .. (fresh == false and " STALE" or "") }, 0
 		for _, p in ipairs(players) do
-			if p.localPlayer then
-				parts[#parts + 1] = string.format("me%d sim %s tick %s", p.index, tostring(p.simTime), tostring(p.tickBase))
-			elseif others < 12 then
+			if not p.localPlayer and others < 12 then
 				others = others + 1
-				parts[#parts + 1] = string.format("#%d %s sim %s anim %s pos %s yaw %s", p.index, p.dormant and "D" or "v",
-					tostring(p.simTime), tostring(p.animTime), p.nx and string.format("%d,%d", p.nx, p.ny) or "-", tostring(p.eyeYaw and math.floor(p.eyeYaw)))
+				parts[#parts + 1] = string.format("#%d %s %s %s", p.index, p.dormant and "D" or "v",
+					p.nx and string.format("%d,%d", p.nx, p.ny) or "-", tostring(p.eyeYaw and math.floor(p.eyeYaw)))
 			end
 		end
 		note("read " .. nativeReads .. ": " .. table.concat(parts, "; "))
@@ -203,22 +209,15 @@ local function nativeSample()
 			local vis = not p.dormant
 			if vis then
 				visibleReads = visibleReads + 1
-				local fresh
-				if p.simTime == nil then
-					unprovenReads = unprovenReads + 1
-					fresh = true -- positions still count for stillness; the AFK share needs proof
-				elseif t.lastSim ~= nil and p.simTime == t.lastSim then
-					staleReads = staleReads + 1
-					fresh = false
-				else
-					fresh = true
-				end
-				local at = fresh and nativeRead(p)
-				if at then t.seen[#t.seen + 1] = at end
+				if fresh == nil then unprovenReads = unprovenReads + 1 elseif not fresh then staleReads = staleReads + 1 end
 			end
-			if p.simTime ~= nil then t.lastSim = p.simTime end
-			if t.lastVis ~= nil and t.lastVis ~= vis then t.toggles = t.toggles + 1 end
-			t.lastVis = vis
+			if fresh ~= false then
+				local at = vis and nativeRead(p)
+				if at then t.seen[#t.seen + 1] = at end
+				-- (A stale read's dormancy is stale too.)
+				if t.lastVis ~= nil and t.lastVis ~= vis then t.toggles = t.toggles + 1 end
+				t.lastVis = vis
+			end
 		end
 	end
 end
@@ -249,13 +248,13 @@ local function nativeCounts()
 		if movedInView or crossed then r.moved = r.moved + 1 end
 	end
 	-- Proof the reads were fresh, or no "moved" (and so no AFK share): every
-	-- read had a simulation time, and hardly any stood still.
-	local sim = observer.NativeSimTime():match("^%S+")
+	-- read had our tick base, and hardly any found it standing still.
+	local sim = unprovenReads == 0 and "ok" or "no tick base"
 	local staleShare = visibleReads > 0 and staleReads / visibleReads or 1
 	r.check = { sim = sim, visibleReads = visibleReads, staleReads = staleReads, unprovenReads = unprovenReads, selfMoved = selfMoved }
-	note(string.format("native positions: %d players, %d seen, %d observed, %d still, %d moved; simulation time %s, %d of %d reads stale, %d without one%s",
+	note(string.format("native positions: %d players, %d seen, %d observed, %d still, %d moved; freshness %s, %d of %d reads stale, %d unproven%s",
 		r.players, r.visible, r.observed, r.still, r.moved, sim, staleReads, visibleReads, unprovenReads, selfMoved and ", we moved" or ""))
-	if sim ~= "ok" or unprovenReads > 0 or staleShare > STALE_MAX then
+	if unprovenReads > 0 or staleShare > STALE_MAX then
 		note("native positions: not proven fresh, no AFK share from this visit")
 		r.moved = nil
 	end
