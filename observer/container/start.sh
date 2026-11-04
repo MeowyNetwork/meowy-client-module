@@ -36,7 +36,7 @@ until [ -d "$GMOD/garrysmod/lua" ]; do sleep 30; done
 
 # The observer module and its line in menu.lua (the menu state loads gmsv_ modules).
 mkdir -p "$GMOD/garrysmod/lua/bin"
-cp -f /opt/observer/gmsv_meowy_observer_linux64.dll "$GMOD/garrysmod/lua/bin/"
+cp -f /opt/observer/gmsv_meowy_observer_linux64.dll /opt/observer/gmsv_meowy_observer_linux32.dll "$GMOD/garrysmod/lua/bin/"
 MENU="$GMOD/garrysmod/lua/includes/menu.lua"
 grep -q 'meowy_observer' "$MENU" || echo 'pcall(require, "meowy_observer") -- meowy observer' >> "$MENU"
 

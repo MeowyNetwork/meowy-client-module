@@ -29,7 +29,7 @@ target_include_directories(meowy_observer PRIVATE
 	${gmod_module_base_SOURCE_DIR}/include
 	${CMAKE_CURRENT_BINARY_DIR}/generated)
 
-if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+if(CMAKE_SIZEOF_VOID_P EQUAL 8 AND NOT CMAKE_CXX_FLAGS MATCHES "-m32")
 	set(ARCH_BITS 64)
 else()
 	set(ARCH_BITS 32)
