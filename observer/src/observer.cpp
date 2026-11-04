@@ -389,6 +389,13 @@ namespace
 		return v > 0x10000 && (v % sizeof(void*)) == 0;
 	}
 
+	// Floats inside an entity are 4-byte aligned, not pointer-aligned.
+	bool PlausibleFloats(const float* p)
+	{
+		auto v = reinterpret_cast<uintptr_t>(p);
+		return v > 0x10000 && (v % alignof(float)) == 0;
+	}
+
 	// Text pointers need no alignment.
 	bool PlausibleText(const char* p)
 	{
@@ -588,18 +595,25 @@ namespace
 				continue;
 			if (playerName ? cls != playerCls : std::strcmp(name, "CGMOD_Player") != 0)
 				continue;
-			const float* origin = VCall<const float*>(ent, kEntAbsOrigin);
-			const float* angles = VCall<const float*>(ent, kEntAbsAngles);
-			if (!Plausible(origin) || !Plausible(angles))
-				return why = "implausible origin/angles", false;
 			bool dormant = VCall<bool>(net, 8);
 			ResolveFields(cls);
 			const int o = g_fields.origin;
-			NativePlayer p{ i, origin[0], origin[1], origin[2], angles[1], dormant, i == localIndex,
+			// The vtable's GetAbsOrigin / GetAbsAngles too (the check picks the
+			// source that matches); left out when they answer nonsense.
+			float vx = NAN, vy = NAN, vz = NAN, vyaw = NAN;
+			const float* origin = VCall<const float*>(ent, kEntAbsOrigin);
+			const float* angles = VCall<const float*>(ent, kEntAbsAngles);
+			if (PlausibleFloats(origin) && PlausibleFloats(angles))
+				vx = origin[0], vy = origin[1], vz = origin[2], vyaw = angles[1];
+			else if (o < 0)
+				return why = "implausible origin/angles, and no networked origin", false;
+			NativePlayer p{ i, vx, vy, vz, vyaw, dormant, i == localIndex,
 				FieldOrNan(ent, o), FieldOrNan(ent, o < 0 ? -1 : o + 4), FieldOrNan(ent, o < 0 ? -1 : o + 8),
 				FieldOrNan(ent, g_fields.eyeYaw), FieldOrNan(ent, g_fields.sim) };
-			if (!(std::fabs(p.x) < 65536 && std::fabs(p.y) < 65536 && std::fabs(p.z) < 65536))
-				return why = "positions out of the map's range", false;
+			if (std::isfinite(p.x) && !(std::fabs(p.x) < 65536 && std::fabs(p.y) < 65536 && std::fabs(p.z) < 65536))
+				p.x = p.y = p.z = p.yaw = NAN; // not a position: this source is out
+			if (std::isfinite(p.nx) && !(std::fabs(p.nx) < 65536 && std::fabs(p.ny) < 65536 && std::fabs(p.nz) < 65536))
+				p.nx = p.ny = p.nz = NAN;
 			out.push_back(p);
 		}
 		if (checked == 0)
@@ -627,10 +641,13 @@ namespace
 			LUA->PushNumber(++n);
 			LUA->CreateTable();
 			LUA->PushNumber(p.index); LUA->SetField(-2, "index");
-			LUA->PushNumber(p.x); LUA->SetField(-2, "x");
-			LUA->PushNumber(p.y); LUA->SetField(-2, "y");
-			LUA->PushNumber(p.z); LUA->SetField(-2, "z");
-			LUA->PushNumber(p.yaw); LUA->SetField(-2, "yaw");
+			if (std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z) && std::isfinite(p.yaw))
+			{
+				LUA->PushNumber(p.x); LUA->SetField(-2, "x");
+				LUA->PushNumber(p.y); LUA->SetField(-2, "y");
+				LUA->PushNumber(p.z); LUA->SetField(-2, "z");
+				LUA->PushNumber(p.yaw); LUA->SetField(-2, "yaw");
+			}
 			LUA->PushBool(p.dormant); LUA->SetField(-2, "dormant");
 			LUA->PushBool(p.local); LUA->SetField(-2, "localPlayer");
 			if (std::isfinite(p.simTime)) { LUA->PushNumber(p.simTime); LUA->SetField(-2, "simTime"); }
@@ -668,7 +685,7 @@ namespace
 	std::string NativeStatePath()
 	{
 		std::string dir = Dir();
-		return dir.empty() ? std::string() : dir + "/native-state-2";
+		return dir.empty() ? std::string() : dir + "/native-state-3";
 	}
 
 	LUA_FUNCTION(NativeState)

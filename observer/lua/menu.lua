@@ -87,8 +87,10 @@ local function checkNative(check)
 	observer.SetNativeState("pending")
 	local players, why = observer.NativePlayers()
 	if not players then
-		observer.SetNativeState("bad: " .. tostring(why))
-		return note("native check: refused (" .. tostring(why) .. ")")
+		-- The module refused to read (a layout check failed): nothing was trusted,
+		-- so try again next time rather than give up for good.
+		observer.SetNativeState("unknown")
+		return note("native check: refused (" .. tostring(why) .. "), next time")
 	end
 	local byIndex = {}
 	for _, p in ipairs(players) do byIndex[p.index] = p end
@@ -99,17 +101,17 @@ local function checkNative(check)
 			compared = compared + 1
 			local p = byIndex[c.index]
 			if p and not p.dormant then
-				if math.sqrt((p.x - c.x) ^ 2 + (p.y - c.y) ^ 2 + (p.z - c.z) ^ 2) < 300 then vtable = vtable + 1 end
+				if p.x and math.sqrt((p.x - c.x) ^ 2 + (p.y - c.y) ^ 2 + (p.z - c.z) ^ 2) < 300 then vtable = vtable + 1 end
 				if p.nx and math.sqrt((p.nx - c.x) ^ 2 + (p.ny - c.y) ^ 2 + (p.nz - c.z) ^ 2) < 300 then fields = fields + 1 end
 				if c.yaw then
 					yaws = yaws + 1
-					if yawDiff(p.yaw, c.yaw) < 20 then absYaw = absYaw + 1 end
+					if p.yaw and yawDiff(p.yaw, c.yaw) < 20 then absYaw = absYaw + 1 end
 					if p.eyeYaw and yawDiff(p.eyeYaw, c.yaw) < 20 then eyeYaw = eyeYaw + 1 end
 				end
 			end
 			if not sample and not c.localPlayer then
 				sample = string.format("#%d Lua %s yaw %s; vtable %s yaw %s; fields %s yaw %s", c.index, fmt(c.x, c.y, c.z), tostring(c.yaw and math.floor(c.yaw)),
-					p and fmt(p.x, p.y, p.z) or "missing", p and tostring(math.floor(p.yaw)) or "-",
+					p and (p.x and fmt(p.x, p.y, p.z) or "none") or "missing", p and p.yaw and tostring(math.floor(p.yaw)) or "-",
 					p and p.nx and fmt(p.nx, p.ny, p.nz) or "none", p and p.eyeYaw and tostring(math.floor(p.eyeYaw)) or "none")
 			end
 		end
