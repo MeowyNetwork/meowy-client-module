@@ -1,4 +1,5 @@
-// uninstall_smoke: the installer's RestoreSandboxData against throwaway folders.
+// uninstall_smoke: the installer's RestoreSandboxData against throwaway folders,
+// and its Start-menu shortcut for notifications (in a scratch folder).
 // Build (the .NET Framework compiler that ships with Windows):
 //   csc /main:UninstallSmoke /out:<tmp>\uninstall_smoke.exe /r:System.Windows.Forms.dll /r:System.Drawing.dll
 //       installer\Installer.cs tests\uninstall_smoke.cs
@@ -29,6 +30,7 @@ static class UninstallSmoke
 		return File.Exists(path) ? File.ReadAllText(path) : null;
 	}
 
+	[STAThread]
 	static int Main(string[] args)
 	{
 		if (args.Length < 1)
@@ -138,6 +140,40 @@ static class UninstallSmoke
 			string s = Path.Combine(root, "none");
 			Program.RestoreReport r = Program.RestoreSandboxData(Path.Combine(s, "data"), Path.Combine(s, "local"), Path.Combine(s, "steam"), true, Path.Combine(s, "backup"));
 			Check(r.Vaults.Count == 0 && !Directory.Exists(Path.Combine(s, "backup")), "none: nothing to do, no backup folder made");
+		}
+
+		// 7. The Start-menu shortcut for notifications, in a scratch "Start menu"
+		//    (never the real one): made with the AUMID, repaired, removed.
+		{
+			string s = Path.Combine(root, "shortcut");
+			string garrysmod = Path.Combine(s, "garrysmod");
+			Put(Path.Combine(garrysmod, @"lua\bin\gmcl_meowy_win64.dll"), "not really a dll");
+			string lnk = Path.Combine(s, @"Start Menu\Programs\" + Program.ShortcutFileName);
+			Check(Program.ShortcutFileName == "Meowy Client Pack.lnk", "shortcut: named \"Meowy Client Pack\" (the name the module looks for)");
+			Check(Program.ShortcutAppId(lnk) == null, "shortcut: none before install");
+
+			Program.CreateShortcut(lnk, garrysmod);
+			Check(File.Exists(lnk), "shortcut: install makes it (and its folder)");
+			Check(Program.ShortcutAppId(lnk) == "MeowyNetwork.ClientPack", "shortcut: carries System.AppUserModel.ID = MeowyNetwork.ClientPack");
+			string target = Program.ShortcutTarget(lnk);
+			Check(target.EndsWith("explorer.exe steam://rungameid/4000", StringComparison.OrdinalIgnoreCase),
+				"shortcut: starts Garry's Mod through Steam (" + target + ")");
+
+			// Reinstall over a damaged one: a file that isn't a shortcut at all.
+			File.WriteAllText(lnk, "damaged");
+			Check(Program.ShortcutAppId(lnk) == null, "shortcut: a damaged one reads as missing");
+			Program.CreateShortcut(lnk, garrysmod);
+			Check(Program.ShortcutAppId(lnk) == "MeowyNetwork.ClientPack", "shortcut: reinstall repairs it");
+			Program.CreateShortcut(lnk, garrysmod);
+			Check(Program.ShortcutAppId(lnk) == "MeowyNetwork.ClientPack" && Directory.GetFiles(Path.GetDirectoryName(lnk)).Length == 1,
+				"shortcut: installing again leaves exactly one");
+
+			Program.RemoveShortcut(lnk);
+			Check(!File.Exists(lnk), "shortcut: uninstall removes it");
+			Program.RemoveShortcut(lnk);
+			Check(!File.Exists(lnk), "shortcut: uninstall without one is fine");
+			Check(Program.StartMenuShortcut().EndsWith(@"\Programs\Meowy Client Pack.lnk", StringComparison.OrdinalIgnoreCase),
+				"shortcut: the real one goes in the player's own Start menu (" + Program.StartMenuShortcut() + ")");
 		}
 
 		Console.WriteLine(failed > 0 ? "FAILED" : "all passed");

@@ -106,7 +106,8 @@ the game closes while the pack is starting, the next start skips it once by itse
 - Its only other network traffic is the loading page and its data, from meowynetwork.com, through WebView2. It
   writes only in `%LOCALAPPDATA%\MeowyClientPack` (`boot.lock` and `recover.lock` for a moment at start-up; for the
   loading screen `join_times.txt`, how long each stage of your last join took, `last_join.txt`,
-  what that join went through, and `css_scale.txt`; and WebView2's profile). Nothing goes in
+  what that join went through, and `css_scale.txt`; for notifications `notify.txt`, your on/off
+  switch, and `notify_icon.png`; and WebView2's profile). Nothing goes in
   `garrysmod/data`, which any server's Lua can read, so other servers can't tell you have the pack.
   Before 1.4.1 these files were in `garrysmod/data/meowy/`; the pack moves them on first start.
 - **A separate `garrysmod/data` for every server.** Any server's Lua can list and read all of
@@ -125,6 +126,20 @@ the game closes while the pack is starting, the next start skips it once by itse
   it isn't (safe mode, the skip after a crash, or after a Steam "Verify integrity of game files"
   removed the start-up line), every server sees the same `data/`. `meowy_data_sandbox 0`
   turns it off (one `data/` for all servers again).
+- **Windows notifications while you're alt-tabbed** (1.5+). When something happens to you in the city
+  and the game isn't the window in front, Windows shows a notification ("Your printer is under
+  attack.", "Staff replied to your ticket."), the game's taskbar button gets a small badge and flashes
+  until you're back, and clicking the notification brings the game to the front.
+  - The words are the pack's own, built into it for each kind of event. The server only says which
+    kind; nothing it sends is shown, so a notification never has names, amounts or links in it (they
+    can appear on your lock screen).
+  - At most one of each kind every 10 seconds and 20 an hour. Windows' Do Not Disturb and its
+    per-app notification settings apply as to any other app.
+  - The installer adds **Meowy Client Pack** to your Start menu (it starts Garry's Mod through
+    Steam): Windows only shows notifications from an app it has a Start-menu entry for. Without it
+    (say, a manual install) they show as a tray balloon instead. Uninstalling removes it.
+  - Only while you're on a Meowy Network server. The server's settings menu can turn them off for you
+    (`meowy.SetNotifyEnabled(false)`, kept in `notify.txt`).
 - It only works on Meowy Network servers. The DLL asks the game itself which server it's connected to
   and compares that with the addresses built into it, so another server can't use it or read anything
   from it, even by faking its name or address in Lua. In singleplayer, the main menu or on any other
@@ -150,6 +165,10 @@ end
 -- meowy.SkipMaterialReload() -> true | false, reason   (call from a client autorun file)
 -- meowy.RestoreMaterialReload(), meowy.MaterialReloadState() -> "patched" | "not patched" | "unsupported"
 -- meowy.ServerAllowed() -> true | false, reason   (1.2.1+; every call above needs it to be true)
+-- meowy.Notify(kind) -> true | false, reason   (1.5+; only while the game isn't in front, e.g.
+--   if not system.HasFocus() then pcall(meowy.Notify, "printer_attacked") end. Reasons: "only works on
+--   Meowy Network servers", "unknown kind", "disabled", "focused", "rate limited". Kinds: src/notify.cpp)
+-- meowy.SetNotifyEnabled(bool) -> true | false, reason;  meowy.NotifyEnabled() -> bool | nil, reason
 ```
 Identical updates are dropped, and updates are sent at most once every 4 s (Discord's rate limit).
 
@@ -161,4 +180,5 @@ cmake -S . -B build32 -A Win32 && cmake --build build32 --config Release
 installer/build.ps1 -Win32 build32/Release/gmcl_meowy_win32.dll -Win64 build64/Release/gmcl_meowy_win64.dll
 ```
 `-DMEOWY_BUILD_TESTS=ON` adds `ipc_smoke`, which checks the Discord connection without the game:
-`ipc_smoke <discord application id> [seconds]`.
+`ipc_smoke <discord application id> [seconds]`. It also adds `notify_smoke <scratch folder>` (the
+notification rules) and `notify_manual` (a real notification on this PC; see `tests/NOTIFY_MANUAL.md`).

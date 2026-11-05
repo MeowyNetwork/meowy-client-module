@@ -25,10 +25,16 @@ add_library(meowy SHARED
 	src/loading_webview.cpp
 	src/connect_watch.cpp
 	src/server_rep.cpp
-	src/data_sandbox.cpp)
+	src/data_sandbox.cpp
+	src/notify.cpp
+	src/notify_toast.cpp)
 target_include_directories(meowy PRIVATE ${gmod_module_base_SOURCE_DIR}/include)
 if(WIN32)
 	target_link_libraries(meowy PRIVATE msimg32 shlwapi winhttp ws2_32)   # GradientFill and file streams for the loading screen; HTTPS for the server list
+	# Notifications: WinRT toasts (RoGetActivationFactory, HSTRINGs) and the
+	# bundled icons (src/meowy.rc).
+	target_sources(meowy PRIVATE src/meowy.rc)
+	target_link_libraries(meowy PRIVATE runtimeobject)
 
 	# Microsoft's WebView2 SDK (headers and the static loader, so there's no
 	# extra DLL to ship), pinned by hash: the loading screen's web page.
@@ -109,5 +115,18 @@ if(MEOWY_BUILD_TESTS)
 	add_executable(sandbox_smoke tests/sandbox_smoke.cpp src/data_sandbox.cpp)
 	if(MSVC)
 		set_property(TARGET sandbox_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+	endif()
+	# meowy.Notify's rules (kinds, gate, switch, focus, rate limit), no game or Windows UI:
+	#   notify_smoke <empty scratch folder>
+	add_executable(notify_smoke tests/notify_smoke.cpp src/notify.cpp)
+	# A real toast / balloon / taskbar badge on this PC, by hand (tests/NOTIFY_MANUAL.md):
+	#   notify_manual [kind]
+	add_executable(notify_manual tests/notify_manual.cpp src/notify.cpp src/notify_toast.cpp src/meowy.rc)
+	target_link_libraries(notify_manual PRIVATE runtimeobject)
+	if(MSVC)
+		set_property(TARGET notify_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+		set_property(TARGET notify_manual PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+		target_compile_options(notify_smoke PRIVATE /W4 /utf-8)
+		target_compile_options(notify_manual PRIVATE /W4 /utf-8)
 	endif()
 endif()

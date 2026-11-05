@@ -1,0 +1,7 @@
+// Icons bundled in gmcl_meowy for the notifications (notify_toast.cpp).
+// Drawn by assets/make_icon.ps1. The icon is the DLL's first, so the
+// installer's Start-menu shortcut uses it as "gmcl_meowy_win64.dll,0".
+#include "resource.h"
+
+IDI_MEOWY ICON "../assets/meowy.ico"
+IDR_NOTIFY_PNG RCDATA "../assets/notify.png"

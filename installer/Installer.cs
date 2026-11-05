@@ -10,7 +10,9 @@
 // folder in Documents; see RestoreSandboxData), then removes exactly those
 // files, that line and the pack's data folder (%LOCALAPPDATA%\MeowyClientPack,
 // and garrysmod/data/meowy from before 1.4.1). It needs no admin rights when the Steam folder is writable,
-// which is Steam's default.
+// which is Steam's default. Install also makes a "Meowy Client Pack" shortcut in
+// the player's Start menu carrying the AppUserModelID the module's Windows
+// notifications use (Windows needs one; see CreateShortcut); uninstall removes it.
 //
 // Built with the .NET Framework 4.x compiler that ships with Windows
 // (C# 5), so there is nothing to install to build or run it. See build.ps1.
@@ -100,6 +102,7 @@ namespace MeowyInstaller
 				else
 					RemoveStartupHook(garrysmod);
 				Console.WriteLine("start with the game: " + (StartupHookPresent(garrysmod) ? "on" : "off"));
+				Console.WriteLine(install ? InstallShortcut(garrysmod) : UninstallShortcut());
 				return 0;
 			}
 			catch (Exception e)
@@ -529,6 +532,231 @@ namespace MeowyInstaller
 			using (FileStream dst = File.Create(path))
 				src.CopyTo(dst);
 		}
+
+		// --- Start-menu shortcut for notifications (src/notify_toast.h) ---------
+		//
+		// Windows only shows toasts from a program that isn't a Store app under an
+		// AppUserModelID that a Start-menu shortcut carries. The module shows its
+		// notifications as "MeowyNetwork.ClientPack", so the installer makes
+		// "Meowy Client Pack" in the player's own Start menu (no admin rights)
+		// with that ID; it starts Garry's Mod through Steam. Install makes it
+		// again every time (which also repairs a broken one), uninstall removes
+		// it. Without it the module falls back to a tray balloon.
+
+		public const string AppUserModelId = "MeowyNetwork.ClientPack";   // = notify.h kAppId
+		public const string ShortcutFileName = "Meowy Client Pack.lnk";   // = notify.h kShortcutName
+		const string ShortcutLaunch = "steam://rungameid/4000";
+
+		public static string StartMenuShortcut()
+		{
+			return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Programs), ShortcutFileName);
+		}
+
+		// Creates (or replaces) the shortcut at `lnk`. Its icon is the module's
+		// own (gmcl_meowy_win64.dll, icon 0) when that file is in `garrysmod`.
+		public static void CreateShortcut(string lnk, string garrysmod)
+		{
+			string dir = Path.GetDirectoryName(lnk);
+			if (!string.IsNullOrEmpty(dir))
+				Directory.CreateDirectory(dir);
+			if (File.Exists(lnk))
+				File.Delete(lnk);
+
+			var link = (Shell.IShellLinkW)new Shell.CShellLink();
+			try
+			{
+				string explorer = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "explorer.exe");
+				link.SetPath(explorer);
+				link.SetArguments(ShortcutLaunch);
+				link.SetDescription("Garry's Mod with the Meowy Client Pack (shows Meowy Network's notifications)");
+				string icon = string.IsNullOrEmpty(garrysmod) ? null : Path.Combine(garrysmod, @"lua\bin\gmcl_meowy_win64.dll");
+				if (icon != null && File.Exists(icon))
+					link.SetIconLocation(icon, 0);
+
+				var store = (Shell.IPropertyStore)link;
+				Shell.PropertyKey key = Shell.AppUserModelIdKey;
+				var value = new Shell.PropVariant();
+				value.vt = Shell.VT_LPWSTR;
+				value.p = System.Runtime.InteropServices.Marshal.StringToCoTaskMemUni(AppUserModelId);
+				try
+				{
+					System.Runtime.InteropServices.Marshal.ThrowExceptionForHR(store.SetValue(ref key, ref value));
+					System.Runtime.InteropServices.Marshal.ThrowExceptionForHR(store.Commit());
+				}
+				finally
+				{
+					Shell.PropVariantClear(ref value);
+				}
+				((System.Runtime.InteropServices.ComTypes.IPersistFile)link).Save(lnk, true);
+			}
+			finally
+			{
+				System.Runtime.InteropServices.Marshal.ReleaseComObject(link);
+			}
+		}
+
+		// The AppUserModelID the shortcut at `lnk` carries, or null (no file, not
+		// a shortcut, or no ID).
+		public static string ShortcutAppId(string lnk)
+		{
+			if (!File.Exists(lnk))
+				return null;
+			var link = (Shell.IShellLinkW)new Shell.CShellLink();
+			try
+			{
+				((System.Runtime.InteropServices.ComTypes.IPersistFile)link).Load(lnk, 0);
+				var store = (Shell.IPropertyStore)link;
+				Shell.PropertyKey key = Shell.AppUserModelIdKey;
+				Shell.PropVariant value;
+				if (store.GetValue(ref key, out value) != 0)
+					return null;
+				try
+				{
+					return value.vt == Shell.VT_LPWSTR ? System.Runtime.InteropServices.Marshal.PtrToStringUni(value.p) : null;
+				}
+				finally
+				{
+					Shell.PropVariantClear(ref value);
+				}
+			}
+			catch (Exception)
+			{
+				return null;
+			}
+			finally
+			{
+				System.Runtime.InteropServices.Marshal.ReleaseComObject(link);
+			}
+		}
+
+		// What the shortcut at `lnk` starts (path and arguments), for tests.
+		public static string ShortcutTarget(string lnk)
+		{
+			var link = (Shell.IShellLinkW)new Shell.CShellLink();
+			try
+			{
+				((System.Runtime.InteropServices.ComTypes.IPersistFile)link).Load(lnk, 0);
+				var path = new System.Text.StringBuilder(1024);
+				var args = new System.Text.StringBuilder(1024);
+				link.GetPath(path, path.Capacity, IntPtr.Zero, 0);
+				link.GetArguments(args, args.Capacity);
+				return path + " " + args;
+			}
+			finally
+			{
+				System.Runtime.InteropServices.Marshal.ReleaseComObject(link);
+			}
+		}
+
+		public static void RemoveShortcut(string lnk)
+		{
+			if (File.Exists(lnk))
+				File.Delete(lnk);
+		}
+
+		// Install's part: never fails the install, says what happened.
+		public static string InstallShortcut(string garrysmod)
+		{
+			try
+			{
+				string lnk = StartMenuShortcut();
+				CreateShortcut(lnk, garrysmod);
+				return "notifications: Start-menu shortcut " + lnk;
+			}
+			catch (Exception e)
+			{
+				return "notifications: couldn't make the Start-menu shortcut (" + e.Message + "); they'll show as tray balloons";
+			}
+		}
+
+		public static string UninstallShortcut()
+		{
+			try
+			{
+				string lnk = StartMenuShortcut();
+				RemoveShortcut(lnk);
+				return "removed " + lnk;
+			}
+			catch (Exception e)
+			{
+				return "couldn't remove the Start-menu shortcut: " + e.Message;
+			}
+		}
+	}
+
+	// The shell's COM interfaces for the shortcut (no extra references needed).
+	static class Shell
+	{
+		public const ushort VT_LPWSTR = 31;
+
+		// System.AppUserModel.ID
+		public static readonly PropertyKey AppUserModelIdKey = new PropertyKey
+		{
+			fmtid = new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"),
+			pid = 5,
+		};
+
+		[System.Runtime.InteropServices.ComImport]
+		[System.Runtime.InteropServices.Guid("00021401-0000-0000-C000-000000000046")]
+		public class CShellLink
+		{
+		}
+
+		[System.Runtime.InteropServices.ComImport]
+		[System.Runtime.InteropServices.InterfaceType(System.Runtime.InteropServices.ComInterfaceType.InterfaceIsIUnknown)]
+		[System.Runtime.InteropServices.Guid("000214F9-0000-0000-C000-000000000046")]
+		public interface IShellLinkW
+		{
+			void GetPath([System.Runtime.InteropServices.Out, System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPWStr)] System.Text.StringBuilder pszFile, int cch, IntPtr pfd, uint fFlags);
+			void GetIDList(out IntPtr ppidl);
+			void SetIDList(IntPtr pidl);
+			void GetDescription([System.Runtime.InteropServices.Out, System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPWStr)] System.Text.StringBuilder pszName, int cch);
+			void SetDescription([System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPWStr)] string pszName);
+			void GetWorkingDirectory([System.Runtime.InteropServices.Out, System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPWStr)] System.Text.StringBuilder pszDir, int cch);
+			void SetWorkingDirectory([System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPWStr)] string pszDir);
+			void GetArguments([System.Runtime.InteropServices.Out, System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPWStr)] System.Text.StringBuilder pszArgs, int cch);
+			void SetArguments([System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPWStr)] string pszArgs);
+			void GetHotkey(out short pwHotkey);
+			void SetHotkey(short wHotkey);
+			void GetShowCmd(out int piShowCmd);
+			void SetShowCmd(int iShowCmd);
+			void GetIconLocation([System.Runtime.InteropServices.Out, System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPWStr)] System.Text.StringBuilder pszIconPath, int cch, out int piIcon);
+			void SetIconLocation([System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPWStr)] string pszIconPath, int iIcon);
+			void SetRelativePath([System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPWStr)] string pszPathRel, uint dwReserved);
+			void Resolve(IntPtr hwnd, uint fFlags);
+			void SetPath([System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPWStr)] string pszFile);
+		}
+
+		[System.Runtime.InteropServices.ComImport]
+		[System.Runtime.InteropServices.InterfaceType(System.Runtime.InteropServices.ComInterfaceType.InterfaceIsIUnknown)]
+		[System.Runtime.InteropServices.Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99")]
+		public interface IPropertyStore
+		{
+			[System.Runtime.InteropServices.PreserveSig] int GetCount(out uint cProps);
+			[System.Runtime.InteropServices.PreserveSig] int GetAt(uint iProp, out PropertyKey pkey);
+			[System.Runtime.InteropServices.PreserveSig] int GetValue(ref PropertyKey key, out PropVariant pv);
+			[System.Runtime.InteropServices.PreserveSig] int SetValue(ref PropertyKey key, ref PropVariant pv);
+			[System.Runtime.InteropServices.PreserveSig] int Commit();
+		}
+
+		[System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential, Pack = 4)]
+		public struct PropertyKey
+		{
+			public Guid fmtid;
+			public uint pid;
+		}
+
+		// PROPVARIANT, only as far as a string goes (24 bytes: big enough for x64's).
+		[System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Explicit)]
+		public struct PropVariant
+		{
+			[System.Runtime.InteropServices.FieldOffset(0)] public ushort vt;
+			[System.Runtime.InteropServices.FieldOffset(8)] public IntPtr p;
+			[System.Runtime.InteropServices.FieldOffset(16)] public long pad;
+		}
+
+		[System.Runtime.InteropServices.DllImport("ole32.dll")]
+		public static extern int PropVariantClear(ref PropVariant pv);
 	}
 
 	class MainForm : Form
@@ -550,7 +778,8 @@ namespace MeowyInstaller
 
 			var intro = new Label
 			{
-				Text = "For Meowy Network: faster joins, our own loading screen with games, and Discord status.\n" +
+				Text = "For Meowy Network: faster joins, our own loading screen with games, Discord status, and " +
+					"Windows notifications while you're alt-tabbed.\n" +
 					"It only works on Meowy Network servers. Source code: " + Program.SourceUrl,
 				Location = new Point(12, 12),
 				Size = new Size(496, 52),
@@ -650,6 +879,7 @@ namespace MeowyInstaller
 					Program.AddStartupHook(m_path.Text.Trim());
 				else
 					Program.RemoveStartupHook(m_path.Text.Trim());
+				Program.InstallShortcut(m_path.Text.Trim());   // never fails the install (balloons without it)
 				RefreshStatus();
 				MessageBox.Show(this, "Installed. Join Meowy Network and your Discord status will show where you are.", Text,
 					MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -689,6 +919,7 @@ namespace MeowyInstaller
 						File.Delete(file);
 				}
 				Program.RemoveStartupHook(garrysmod);
+				Program.UninstallShortcut();
 				RefreshStatus();
 				MessageBox.Show(this, "Uninstalled.\r\n\r\n" + files, Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
 			}
