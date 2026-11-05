@@ -23,6 +23,18 @@
 //   meowy.ServerAllowed()             true | false, reason (1.2.1+)
 //   meowy.LoadingDone()               the player has spawned and the game runs
 //                                     smoothly: fade out our loading screen (1.4+)
+//   meowy.Notify(kind)                true | false, reason (1.5+): a Windows
+//                                     notification while the game isn't in front.
+//                                     `kind` is one of notify.cpp's fixed list; the
+//                                     text shown is the pack's own for that kind
+//                                     (anything else passed is ignored). Reasons:
+//                                     "only works on Meowy Network servers",
+//                                     "unknown kind", "disabled", "focused",
+//                                     "rate limited". See notify.h, notify_toast.h
+//   meowy.SetNotifyEnabled(bool)      true | false, reason: the player's switch for
+//                                     all of them (on unless turned off; kept in
+//                                     %LOCALAPPDATA%\MeowyClientPack\notify.txt)
+//   meowy.NotifyEnabled()             true | false, or nil, reason
 //
 // Since 1.2.1 everything except VERSION, DiscordState, DiscordClear,
 // RestoreMaterialReload and MaterialReloadState only
@@ -42,7 +54,8 @@
 // no network connections. It writes only in %LOCALAPPDATA%\MeowyClientPack
 // (not garrysmod/data, which servers' Lua can read): the start-up stub's
 // boot.lock, the loading screen's join_times.txt, last_join.txt and
-// css_scale.txt (loading_screen.h), and WebView2's profile. The one change it can make to
+// css_scale.txt (loading_screen.h), notify.txt and notify_icon.png (the
+// notifications' switch and the toast's logo), and WebView2's profile. The one change it can make to
 // the game is SkipMaterialReload, in memory only, and only when Lua asks.
 
 #include "GarrysMod/Lua/Interface.h"
@@ -55,6 +68,8 @@
 #include "server_gate.h"
 #include "data_sandbox.h"
 #include "server_rep.h"
+#include "notify.h"
+#include "notify_toast.h"
 
 #include <cstdio>
 #include <string>
@@ -452,6 +467,122 @@ namespace
 		return dir;
 	}
 #endif
+
+	// --- Notifications (notify.h, notify_toast.h) -------------------------------
+
+	notify::RateLimiter g_notifyLimiter;
+	int g_notifyEnabled = -1;   // -1: not read from notify.txt yet
+
+#ifdef _WIN32
+	std::wstring NotifySettingsFile()
+	{
+		return DataDir() + L"\\notify.txt";
+	}
+#endif
+
+	bool NotifyEnabledSetting()
+	{
+#ifdef _WIN32
+		if (g_notifyEnabled < 0)
+			g_notifyEnabled = notify::LoadEnabled(NotifySettingsFile()) ? 1 : 0;
+		return g_notifyEnabled == 1;
+#else
+		return false;
+#endif
+	}
+
+	// meowy.Notify(kind) -> true | false, reason. Only the kind is read; the
+	// words shown are the pack's. Never blocks: the worker thread shows it.
+	int Notify(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		const char* kind = nullptr;
+		unsigned int len = 0;
+		if (LUA->IsType(1, Type::String))
+			kind = LUA->GetString(1, &len);
+
+		const char* reason = nullptr;
+		try
+		{
+			notify::Inputs in;
+			in.ourServer = server_gate::Check() == server_gate::Result::Allowed;
+			// The rest only matters (and is only worked out) for our server.
+			if (in.ourServer)
+			{
+				in.enabled = NotifyEnabledSetting();
+				in.focused = notify_toast::GameFocused();
+#ifdef _WIN32
+				in.nowMs = GetTickCount64();
+#endif
+			}
+			int index = -1;
+			notify::Refusal r = notify::Decide(kind, len, in, g_notifyLimiter, &index);
+			if (r != notify::Refusal::None)
+				reason = notify::Describe(r);
+			else if (!notify_toast::Post(index))
+				reason = "couldn't start the notification thread";
+		}
+		catch (...)
+		{
+			reason = "internal error";
+		}
+
+		LUA->PushBool(reason == nullptr);
+		if (!reason)
+			return 1;
+		LUA->PushString(reason);
+		return 2;
+	}
+
+	// meowy.SetNotifyEnabled(on) -> true | false, reason
+	int SetNotifyEnabled(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		int results = 0;
+		if (Refuse(LUA, results))
+			return results;
+		bool on = LUA->GetBool(1);   // anything but false/nil is "on"
+		bool saved = false;
+		try
+		{
+#ifdef _WIN32
+			g_notifyEnabled = on ? 1 : 0;
+			saved = notify::SaveEnabled(NotifySettingsFile(), on);
+#endif
+		}
+		catch (...)
+		{
+			saved = false;
+		}
+		LUA->PushBool(saved);
+		if (saved)
+			return 1;
+		LUA->PushString("couldn't save the setting");
+		return 2;
+	}
+
+	// meowy.NotifyEnabled() -> true | false, or nil, reason
+	int NotifyEnabled(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		server_gate::Result gate = server_gate::Check();
+		if (gate != server_gate::Result::Allowed)
+		{
+			LUA->PushNil();
+			LUA->PushString(server_gate::Describe(gate));
+			return 2;
+		}
+		bool on = false;
+		try
+		{
+			on = NotifyEnabledSetting();
+		}
+		catch (...)
+		{
+		}
+		LUA->PushBool(on);
+		return 1;
+	}
 
 	// Menu: is the join that's loading one to our server? Same check as everything else.
 	int LoadingTarget(lua_State* L)
@@ -1197,9 +1328,16 @@ GMOD_MODULE_OPEN()
 	SetFunction(LUA, "MaterialReloadState", MaterialReloadState);
 	SetFunction(LUA, "ServerAllowed", ServerAllowed);
 	SetFunction(LUA, "LoadingDone", LoadingDone);
+	SetFunction(LUA, "Notify", Notify);
+	SetFunction(LUA, "SetNotifyEnabled", SetNotifyEnabled);
+	SetFunction(LUA, "NotifyEnabled", NotifyEnabled);
 
 	LUA->SetField(-2, "meowy");
 	LUA->Pop();
+
+#ifdef _WIN32
+	notify_toast::Configure(DataDir());
+#endif
 
 	// Client Lua starting is the start of the join's longest stage, and the
 	// menu can't report it: the game's main thread is busy until it's over.
@@ -1288,5 +1426,8 @@ GMOD_MODULE_CLOSE()
 {
 	(void)LUA;
 	discord::Shutdown();
+	// The client realm closes as the player leaves the server: no more
+	// notifications, and the badge and the toasts' click handlers go.
+	notify_toast::Shutdown();
 	return 0;
 }
