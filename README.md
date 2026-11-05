@@ -138,8 +138,9 @@ the game closes while the pack is starting, the next start skips it once by itse
   - The installer adds **Meowy Client Pack** to your Start menu (it starts Garry's Mod through
     Steam): Windows only shows notifications from an app it has a Start-menu entry for. Without it
     (say, a manual install) they show as a tray balloon instead. Uninstalling removes it.
-  - Only while you're on a Meowy Network server. The server's settings menu can turn them off for you
-    (`meowy.SetNotifyEnabled(false)`, kept in `notify.txt`).
+  - Only while you're on a Meowy Network server. Our server can switch them off for you
+    (`meowy.SetNotifyEnabled(false)`, kept in `notify.txt`); a switch for it in the game's settings
+    comes later.
 - It only works on Meowy Network servers. The DLL asks the game itself which server it's connected to
   and compares that with the addresses built into it, so another server can't use it or read anything
   from it, even by faking its name or address in Lua. In singleplayer, the main menu or on any other
