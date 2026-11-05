@@ -13,7 +13,8 @@
 #   arm|disarm  the loader and menu.lua's require line in, or out again
 #   reset       before a visit: empty console.log and garrysmod/data
 #   start       launch GMod through the running Steam, click through its prompt
-#   quit|kill   SIGTERM or SIGKILL to the game
+#   quit|kill   SIGTERM or SIGKILL to the game (kill: and Steam's launch wrapper)
+#   restart-steam  end the game and Steam; observer-desktop starts Steam again
 set -eu
 umask 0027
 ME=$(id -un)
@@ -25,6 +26,7 @@ SHARED=/var/lib/meowy-observer
 # ~/.steam/debian-installation, Valve's in ~/.local/share/Steam).
 GMOD="$HOME/.steam/steam/steamapps/common/GarrysMod"
 GAME_PROCESS='hl2_linux|gmod'
+LAUNCH_WRAPPER='SteamLaunch AppId=4000( |$)'
 
 # The game's side of supervisor.mjs, in an environment made here.
 game_side() {
@@ -87,9 +89,24 @@ quit)
 	;;
 kill)
 	pkill -KILL -u "$(id -u)" -x "$GAME_PROCESS" || true
+	# Steam's launch wrapper for the game (reaper SteamLaunch AppId=4000): while
+	# it lives on, Steam counts the game as running and ignores new launches.
+	pkill -KILL -u "$(id -u)" -f "$LAUNCH_WRAPPER" || true
+	;;
+restart-steam)
+	# Steam stopped taking launches: end the game, its launch wrapper and Steam.
+	# observer-desktop (Restart=always) starts the display and Steam again.
+	pkill -KILL -u "$(id -u)" -x "$GAME_PROCESS" || true
+	pkill -KILL -u "$(id -u)" -f "$LAUNCH_WRAPPER" || true
+	pkill -TERM -u "$(id -u)" -x steam || true
+	for _ in 1 2 3 4 5; do
+		pgrep -u "$(id -u)" -x steam >/dev/null || exit 0
+		sleep 2
+	done
+	pkill -KILL -u "$(id -u)" -x steam || true
 	;;
 *)
-	echo "usage: game-ctl installed|prepare|arm|disarm|reset|start|quit|kill" >&2
+	echo "usage: game-ctl installed|prepare|arm|disarm|reset|start|quit|kill|restart-steam" >&2
 	exit 2
 	;;
 esac

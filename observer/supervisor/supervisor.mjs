@@ -308,6 +308,8 @@ async function launch() {
 // process never talks to the display the game owns.
 async function startGame() {
   if (await gameRunning()) return true;
+  // A launch wrapper left by a game that died makes Steam ignore this launch.
+  if (GAME_USER) await asGame(['kill']);
   log('game_start');
   const logFrom = (await fs.stat(path.join(DIR, 'observer.log')).catch(() => ({ size: 0 }))).size;
   await arm();
@@ -359,6 +361,68 @@ async function quitGame() {
   await disarm();
   log('game_quit');
 }
+
+// --- a Steam that stopped launching -----------------------------------------
+// Seen 2026-11-05: after a visit ended with the game closing on its own, every
+// launch for the rest of the day went unanswered ("Steam never launched it"),
+// each costing a suspect's visit. Steam can keep the game marked as running
+// (its launch wrapper, reaper, outliving the game) or sit behind a dialog
+// nobody sees; either way only a fresh Steam takes launches again. So: an
+// unanswered launch restarts Steam (game-ctl restart-steam ends it, and
+// observer-desktop, Restart=always, brings it and the display back) and tries
+// once more. Launches that fail even then, LAUNCH_PAUSE_AFTER visits in a row,
+// pause the visits so the queue isn't emptied into failures (Steam logged out,
+// say: that needs a person, and launch_paused in this log says so).
+const LAUNCH_PAUSE_AFTER = 3;
+const LAUNCH_PAUSE_MS = 20 * 60 * 1000;
+const STEAM_BACK_MS = 4 * 60 * 1000;
+const STEAM_SETTLE_MS = 45 * 1000; // its login and update check, before it takes a launch
+let launchFailures = 0;
+
+const steamRunning = async () => (await run('pgrep', [...(GAME_USER ? ['-u', GAME_USER] : []), '-x', 'steam'])) !== null;
+
+export async function restartSteam({ ctl = () => asGame(['restart-steam']), up = steamRunning, wait = sleep, now = Date.now } = {}) {
+  const started = now();
+  await ctl();
+  gamePid = 0;
+  // observer-desktop restarts 20 s after Steam's exit, display first.
+  await wait(25000);
+  let back = false;
+  while (now() - started < STEAM_BACK_MS) {
+    if (await up()) {
+      back = true;
+      break;
+    }
+    await wait(5000);
+  }
+  if (back) await wait(STEAM_SETTLE_MS);
+  log('steam_restarted', { back, seconds: Math.round((now() - started) / 1000) });
+  return back;
+}
+
+// startGame, and when the launch goes unanswered, a fresh Steam and one more try.
+export async function startGameOrRecover({ start = startGame, restart = restartSteam } = {}) {
+  if (await start()) {
+    launchFailures = 0;
+    return true;
+  }
+  // Without a game user there's no observer-desktop to bring Steam back.
+  if (GAME_USER || restart !== restartSteam) {
+    log('steam_restart', { note: 'a launch went unanswered' });
+    if ((await restart()) && (await start())) {
+      launchFailures = 0;
+      log('steam_restart_ok');
+      return true;
+    }
+  }
+  launchFailures++;
+  return false;
+}
+
+export const launchFailuresInARow = () => launchFailures;
+export const resetLaunchFailures = () => {
+  launchFailures = 0;
+};
 
 // --- visits ------------------------------------------------------------------
 
@@ -605,7 +669,9 @@ async function visit(job) {
   let inGame = false;
   let lastA2s = 0;
   // The module reads job.json when it loads, so the game starts after it's written.
-  if (MANAGE_GAME && !(await startGame())) return failed(job, 'the game did not start (Steam never launched it)');
+  if (MANAGE_GAME && !(await startGameOrRecover())) {
+    return failed(job, 'the game did not start (Steam never launched it, not even after a Steam restart)');
+  }
   let checks = 0;
   // A kick or refusal line seen in the console: believed only once the menu
   // says the game really left (any player's chat, or the server's own prints,
@@ -730,6 +796,14 @@ async function main() {
     // A round: visit while the backend has suspects, then close the game.
     try {
       for (;;) {
+        // Steam won't launch the game even fresh: take no visits for a while
+        // rather than fail every suspect in the queue.
+        if (launchFailures >= LAUNCH_PAUSE_AFTER) {
+          log('launch_paused', { failures: launchFailures, minutes: LAUNCH_PAUSE_MS / 60000, note: 'check Steam in the browser view (logged out? a dialog?)' });
+          await sleep(LAUNCH_PAUSE_MS);
+          launchFailures = 0;
+          break;
+        }
         // A local test visit first (observer-queue --local): not asked of the
         // backend, and its result only logged.
         const job = (await takeLocalJob()) || (await api('GET', '/next'));
