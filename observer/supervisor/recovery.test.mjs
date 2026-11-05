@@ -2,17 +2,51 @@
 // A Steam that stopped taking launches: restarted once, then visits pause.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { restartSteam, startGameOrRecover, launchFailuresInARow, resetLaunchFailures } from './supervisor.mjs';
+import { restartSteam, startGameOrRecover, launchFailuresInARow, resetLaunchFailures, keepDiskFree } from './supervisor.mjs';
 
-const quiet = (fn) => async (...a) => {
-  const orig = console.log;
-  console.log = () => {};
-  try {
-    return await fn(...a);
-  } finally {
-    console.log = orig;
-  }
-};
+const GiB = 1024 ** 3;
+
+test('enough free space: nothing is pruned', quiet(async () => {
+  let pruned = 0;
+  let quit = 0;
+  const ok = await keepDiskFree({ free: async () => 30 * GiB, prune: async () => pruned++, quit: async () => quit++ });
+  assert.equal(ok, true);
+  assert.equal(pruned, 0);
+  assert.equal(quit, 0);
+}));
+
+test('a nearly full disk: the game is closed, the cache pruned, visits go on', quiet(async () => {
+  const frees = [3 * GiB, 40 * GiB];
+  const order = [];
+  const ok = await keepDiskFree({ free: async () => frees.shift(), prune: async () => order.push('prune'), quit: async () => order.push('quit') });
+  assert.equal(ok, true);
+  assert.deepEqual(order, ['quit', 'prune']);
+}));
+
+test('still full after pruning: no visit', quiet(async () => {
+  const frees = [1 * GiB, 2 * GiB];
+  const ok = await keepDiskFree({ free: async () => frees.shift(), prune: async () => {}, quit: async () => {} });
+  assert.equal(ok, false);
+}));
+
+test('free space unknown: visits are not blocked', quiet(async () => {
+  let pruned = 0;
+  const ok = await keepDiskFree({ free: async () => null, prune: async () => pruned++, quit: async () => {} });
+  assert.equal(ok, true);
+  assert.equal(pruned, 0);
+}));
+
+function quiet(fn) {
+  return async (...a) => {
+    const orig = console.log;
+    console.log = () => {};
+    try {
+      return await fn(...a);
+    } finally {
+      console.log = orig;
+    }
+  };
+}
 
 test('a launch that works needs no restart', quiet(async () => {
   resetLaunchFailures();

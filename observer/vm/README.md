@@ -97,6 +97,28 @@ observer-queue --local 138.201.62.52:27015    # a test visit the backend never h
 The game user can't queue visits: it has no sudo, and the supervisor ignores a `local-job.json`
 that isn't its own.
 
+## The disk
+
+Every server the observer visits leaves its Workshop addons and downloads behind. On 2026-11-05
+they had filled the 58 GB disk (30 GB of Workshop content alone). From then on every launch died
+at once: the game's runtime couldn't unpack ("No space left on device" in
+`journalctl -u observer-desktop`).
+
+Before each visit, the supervisor now checks free space. Below 12 GB it logs `disk_low`, closes
+the game and runs `game-ctl prune`, which stops Steam and removes:
+- `workshop/content/4000` and the Workshop records;
+- `garrysmod/cache` and `garrysmod/download`;
+- the shader cache;
+- the runtime's leftover temp folders.
+
+Steam then restarts, and the supervisor logs `disk_pruned` with the new free space. It's all
+cache: a server's addons come again on its next visit. If less than 5 GB is still free after
+pruning, it logs `disk_full_paused` and takes no visits for 20 minutes.
+
+```bash
+df -h /
+```
+
 ## When Steam stops launching the game
 
 Steam can stop taking launches: the game's launch wrapper (`reaper SteamLaunch AppId=4000`)
