@@ -1,3 +1,5 @@
+**New in 1.5.2:** the pack's loading screen now shows on every join. Before, it only appeared the first time you joined after starting Garry's Mod; reconnecting or joining another server showed the game's default loading screen instead.
+
 **New in 1.5.1:** Steam Timeline markers. If you use Steam's game recording, being arrested or released, losing a printer, finishing a contract and becoming wanted on Meowy Network now get a marker on the recording's timeline, so you can jump straight to those moments; joining one of our servers shows as loading, then playing. The markers' titles are the pack's own, at most one of each kind every 30 seconds. It uses the Steam that Garry's Mod already runs and only works on Meowy Network servers.
 
 **New in 1.5:** three things.
