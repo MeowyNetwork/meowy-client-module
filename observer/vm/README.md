@@ -97,6 +97,24 @@ observer-queue --local 138.201.62.52:27015    # a test visit the backend never h
 The game user can't queue visits: it has no sudo, and the supervisor ignores a `local-job.json`
 that isn't its own.
 
+## When Steam stops launching the game
+
+Steam can stop taking launches: the game's launch wrapper (`reaper SteamLaunch AppId=4000`)
+outlives a game that died, so Steam counts it as still running, or a dialog sits in front.
+Before each launch the supervisor clears a leftover wrapper. If a launch still goes unanswered
+for three minutes, it restarts Steam (`game-ctl restart-steam`; `observer-desktop` brings the
+display and Steam back), waits for it, and launches once more. These steps appear in the log as
+`steam_restart`, `steam_restarted` and `steam_restart_ok`.
+
+If launches fail even after a restart on three visits in a row, the supervisor logs
+`launch_paused` and takes no visits for 20 minutes, so the queue isn't emptied into failures.
+That usually needs a person: open the browser view (section 3) and check whether Steam is logged
+out or showing a dialog.
+
+```bash
+journalctl -u observer --since -2h -o cat | grep -E 'game_start|steam_|launch_paused|visit_failed'
+```
+
 ## Moving a VM from before the split (one `observer` user with sudo)
 
 The Steam install and Garry's Mod stay where they are, in `~observer`, so nothing is
