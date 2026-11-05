@@ -35,6 +35,14 @@
 //                                     all of them (on unless turned off; kept in
 //                                     %LOCALAPPDATA%\MeowyClientPack\notify.txt)
 //   meowy.NotifyEnabled()             true | false, or nil, reason
+//   meowy.TimelineEvent(kind)         true | false, reason: a marker on Steam's
+//                                     game-recording timeline ("Arrested"), whether
+//                                     or not the game is in front. `kind` is one of
+//                                     timeline.cpp's fixed list; title, description
+//                                     and icon are the pack's. Reasons: "only works
+//                                     on Meowy Network servers", "unknown kind",
+//                                     "timeline unavailable", "rate limited". See
+//                                     timeline.h, timeline_steam.h
 //
 // Since 1.2.1 everything except VERSION, DiscordState, DiscordClear,
 // RestoreMaterialReload and MaterialReloadState only
@@ -49,7 +57,8 @@
 //   party_size, party_max
 //   buttons              up to 2 { label = "...", url = "https://..." } (https only)
 //
-// The module only talks to Discord's local IPC pipe, reads the game's own
+// The module only talks to Discord's local IPC pipe (and, for TimelineEvent,
+// to Steam through the steam_api the game already loaded), reads the game's own
 // crashes/ folder and asks Windows for the CPU/GPU/RAM description. It makes
 // no network connections. It writes only in %LOCALAPPDATA%\MeowyClientPack
 // (not garrysmod/data, which servers' Lua can read): the start-up stub's
@@ -70,6 +79,8 @@
 #include "server_rep.h"
 #include "notify.h"
 #include "notify_toast.h"
+#include "timeline.h"
+#include "timeline_steam.h"
 
 #include <cstdio>
 #include <string>
@@ -584,6 +595,63 @@ namespace
 		return 1;
 	}
 
+	// --- Steam Timeline markers (timeline.h, timeline_steam.h) -------------------
+
+	timeline::RateLimiter g_timelineLimiter;
+	bool g_timelineLoading = false;   // the bar is in LoadingScreen mode for one of our joins
+
+	// meowy.TimelineEvent(kind) -> true | false, reason. Only the kind is read;
+	// what Steam shows is the pack's. One short call into the local Steam client.
+	int TimelineEvent(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		const char* kind = nullptr;
+		unsigned int len = 0;
+		if (LUA->IsType(1, Type::String))
+			kind = LUA->GetString(1, &len);
+
+		const char* reason = nullptr;
+		try
+		{
+			timeline::Inputs in;
+			in.ourServer = server_gate::Check() == server_gate::Result::Allowed;
+			// Steam is only asked once the gate and the kind have passed.
+			if (in.ourServer && timeline::FindKind(kind, len) >= 0)
+			{
+				in.available = timeline_steam::Available();
+#ifdef _WIN32
+				in.nowMs = GetTickCount64();
+#endif
+			}
+			int index = -1;
+			timeline::Refusal r = timeline::Decide(kind, len, in, g_timelineLimiter, &index);
+			if (r != timeline::Refusal::None)
+				reason = timeline::Describe(r);
+			else if (!timeline_steam::Add(index))
+				reason = timeline::Describe(timeline::Refusal::Unavailable);
+		}
+		catch (...)
+		{
+			reason = "internal error";
+		}
+
+		LUA->PushBool(reason == nullptr);
+		if (!reason)
+			return 1;
+		LUA->PushString(reason);
+		return 2;
+	}
+
+	// Menu: the join to our server shows as loading on Steam's timeline, so a
+	// recording's "Playing" part starts when the player is in.
+	void TimelineLoading(bool loading)
+	{
+		if (loading == g_timelineLoading)
+			return;
+		g_timelineLoading = loading;
+		timeline_steam::SetMode(loading ? timeline_steam::Mode::LoadingScreen : timeline_steam::Mode::Playing);
+	}
+
 	// Menu: is the join that's loading one to our server? Same check as everything else.
 	int LoadingTarget(lua_State* L)
 	{
@@ -603,6 +671,7 @@ namespace
 		loading_screen::Begin(DataDir(), LUA->IsType(1, Type::Number) ? LUA->GetNumber(1) : -1);
 		loading_screen::Note("watch", connect_watch::Describe());
 #endif
+		TimelineLoading(true);
 		return 0;
 	}
 
@@ -651,6 +720,7 @@ namespace
 
 	int LoadingInGame(lua_State*)
 	{
+		TimelineLoading(false);
 		loading_screen::InGame();
 		return 0;
 	}
@@ -665,6 +735,7 @@ namespace
 
 	int LoadingEnd(lua_State*)
 	{
+		TimelineLoading(false);
 		loading_screen::End();
 		return 0;
 	}
@@ -1331,6 +1402,7 @@ GMOD_MODULE_OPEN()
 	SetFunction(LUA, "Notify", Notify);
 	SetFunction(LUA, "SetNotifyEnabled", SetNotifyEnabled);
 	SetFunction(LUA, "NotifyEnabled", NotifyEnabled);
+	SetFunction(LUA, "TimelineEvent", TimelineEvent);
 
 	LUA->SetField(-2, "meowy");
 	LUA->Pop();

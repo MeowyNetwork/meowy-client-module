@@ -141,6 +141,17 @@ the game closes while the pack is starting, the next start skips it once by itse
   - Only while you're on a Meowy Network server. Our server can switch them off for you
     (`meowy.SetNotifyEnabled(false)`, kept in `notify.txt`); a switch for it in the game's settings
     comes later.
+- **Markers on Steam's game recording.** If you record with Steam (Steam settings, Game Recording), the
+  pack adds a marker to the recording's timeline when you're arrested or released, your printer is
+  destroyed, you complete a contract, or you become wanted, so you can jump straight to the moment
+  and clip it in Steam. While the pack's loading screen is up, the join shows as loading on the
+  timeline.
+  - It uses Steam's own Timeline API from the Steam files Garry's Mod already loads; the pack adds
+    no Steam files and nothing leaves your PC. Without recording on, Steam just ignores the markers.
+  - The marker titles ("Arrested", "Contract complete") and icons are the pack's own. The server only
+    says which kind; nothing it sends is shown.
+  - At most one of each kind every 30 seconds and 60 an hour, and only while you're on a Meowy
+    Network server.
 - It only works on Meowy Network servers. The DLL asks the game itself which server it's connected to
   and compares that with the addresses built into it, so another server can't use it or read anything
   from it, even by faking its name or address in Lua. In singleplayer, the main menu or on any other
@@ -170,6 +181,10 @@ end
 --   if not system.HasFocus() then pcall(meowy.Notify, "printer_attacked") end. Reasons: "only works on
 --   Meowy Network servers", "unknown kind", "disabled", "focused", "rate limited". Kinds: src/notify.cpp)
 -- meowy.SetNotifyEnabled(bool) -> true | false, reason;  meowy.NotifyEnabled() -> bool | nil, reason
+-- meowy.TimelineEvent(kind) -> true | false, reason   (a Steam Timeline marker, focused or not, e.g.
+--   pcall(meowy.TimelineEvent, "arrested"). Kinds: arrested, released, printer_destroyed, hit_completed,
+--   wanted_on_you. Reasons: "only works on Meowy Network servers", "unknown kind", "timeline unavailable",
+--   "rate limited")
 ```
 Identical updates are dropped, and updates are sent at most once every 4 s (Discord's rate limit).
 
@@ -182,4 +197,5 @@ installer/build.ps1 -Win32 build32/Release/gmcl_meowy_win32.dll -Win64 build64/R
 ```
 `-DMEOWY_BUILD_TESTS=ON` adds `ipc_smoke`, which checks the Discord connection without the game:
 `ipc_smoke <discord application id> [seconds]`. It also adds `notify_smoke <scratch folder>` (the
-notification rules) and `notify_manual` (a real notification on this PC; see `tests/NOTIFY_MANUAL.md`).
+notification rules), `notify_manual` (a real notification on this PC; see `tests/NOTIFY_MANUAL.md`) and
+`timeline_smoke` (the Steam Timeline marker rules).
