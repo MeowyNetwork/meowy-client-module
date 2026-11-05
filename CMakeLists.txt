@@ -27,7 +27,9 @@ add_library(meowy SHARED
 	src/server_rep.cpp
 	src/data_sandbox.cpp
 	src/notify.cpp
-	src/notify_toast.cpp)
+	src/notify_toast.cpp
+	src/timeline.cpp
+	src/timeline_steam.cpp)
 target_include_directories(meowy PRIVATE ${gmod_module_base_SOURCE_DIR}/include)
 if(WIN32)
 	target_link_libraries(meowy PRIVATE msimg32 shlwapi winhttp ws2_32)   # GradientFill and file streams for the loading screen; HTTPS for the server list
@@ -128,5 +130,12 @@ if(MEOWY_BUILD_TESTS)
 		set_property(TARGET notify_manual PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 		target_compile_options(notify_smoke PRIVATE /W4 /utf-8)
 		target_compile_options(notify_manual PRIVATE /W4 /utf-8)
+	endif()
+	# meowy.TimelineEvent's rules (kinds, gate, Steam missing, rate limit), no game or Steam:
+	#   timeline_smoke
+	add_executable(timeline_smoke tests/timeline_smoke.cpp src/timeline.cpp src/timeline_steam.cpp)
+	if(MSVC)
+		set_property(TARGET timeline_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+		target_compile_options(timeline_smoke PRIVATE /W4 /utf-8)
 	endif()
 endif()
