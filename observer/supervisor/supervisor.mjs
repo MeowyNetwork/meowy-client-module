@@ -419,6 +419,47 @@ export async function startGameOrRecover({ start = startGame, restart = restartS
   return false;
 }
 
+// --- the disk -----------------------------------------------------------------
+// Every server visited leaves its Workshop addons and downloads behind; on
+// 2026-11-05 they had filled the VM's 58 GB disk (30 GB of Workshop content),
+// and from then on every launch died at once (the game's runtime couldn't
+// unpack: "No space left on device"). Before each visit: below
+// DISK_PRUNE_BELOW free, close the game and have game-ctl prune remove that
+// cache (Steam stopped meanwhile, and waited for after). Still below
+// DISK_MIN_FREE afterwards: no visit (keepDiskFree says false; the caller pauses).
+const GiB = 1024 ** 3;
+const DISK_PRUNE_BELOW = 12 * GiB;
+const DISK_MIN_FREE = 5 * GiB;
+
+export async function freeBytes(at = GARRYSMOD) {
+  try {
+    const s = await fs.statfs(at);
+    return s.bavail * s.bsize;
+  } catch {
+    // Older Node, or the path not reachable from here: ask df.
+    const out = await run('df', ['-B1', '--output=avail', at]);
+    const n = out && Number(out.trim().split(/\s+/).pop());
+    return Number.isFinite(n) ? n : null;
+  }
+}
+
+const gb = (n) => (n == null ? null : Math.round((n / GiB) * 10) / 10);
+
+export async function keepDiskFree({
+  free = () => freeBytes(),
+  prune = () => restartSteam({ ctl: () => asGame(['prune'], 10 * 60 * 1000) }),
+  quit = quitGame,
+} = {}) {
+  const before = await free();
+  if (before == null || before >= DISK_PRUNE_BELOW) return true; // unknown: don't block visits on it
+  log('disk_low', { freeGB: gb(before), pruneBelowGB: gb(DISK_PRUNE_BELOW) });
+  await quit();
+  await prune();
+  const after = await free();
+  log('disk_pruned', { freeGB: gb(after), wasGB: gb(before) });
+  return after == null || after >= DISK_MIN_FREE;
+}
+
 export const launchFailuresInARow = () => launchFailures;
 export const resetLaunchFailures = () => {
   launchFailures = 0;
@@ -802,6 +843,12 @@ async function main() {
           log('launch_paused', { failures: launchFailures, minutes: LAUNCH_PAUSE_MS / 60000, note: 'check Steam in the browser view (logged out? a dialog?)' });
           await sleep(LAUNCH_PAUSE_MS);
           launchFailures = 0;
+          break;
+        }
+        // Room on the disk for the next server's addons, or no visit at all.
+        if (MANAGE_GAME && GAME_USER && !(await keepDiskFree())) {
+          log('disk_full_paused', { minutes: LAUNCH_PAUSE_MS / 60000, note: 'the disk is still full after pruning: check df -h / in the VM' });
+          await sleep(LAUNCH_PAUSE_MS);
           break;
         }
         // A local test visit first (observer-queue --local): not asked of the

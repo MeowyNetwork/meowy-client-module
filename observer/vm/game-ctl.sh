@@ -15,6 +15,7 @@
 #   start       launch GMod through the running Steam, click through its prompt
 #   quit|kill   SIGTERM or SIGKILL to the game (kill: and Steam's launch wrapper)
 #   restart-steam  end the game and Steam; observer-desktop starts Steam again
+#   prune       as restart-steam, and remove the Workshop content and downloads visits left
 set -eu
 umask 0027
 ME=$(id -un)
@@ -27,6 +28,18 @@ SHARED=/var/lib/meowy-observer
 GMOD="$HOME/.steam/steam/steamapps/common/GarrysMod"
 GAME_PROCESS='hl2_linux|gmod'
 LAUNCH_WRAPPER='SteamLaunch AppId=4000( |$)'
+
+# End the game, Steam's launch wrapper for it, and Steam (TERM, then KILL).
+stop_steam() {
+	pkill -KILL -u "$(id -u)" -x "$GAME_PROCESS" || true
+	pkill -KILL -u "$(id -u)" -f "$LAUNCH_WRAPPER" || true
+	pkill -TERM -u "$(id -u)" -x steam || true
+	for _ in 1 2 3 4 5; do
+		pgrep -u "$(id -u)" -x steam >/dev/null || return 0
+		sleep 2
+	done
+	pkill -KILL -u "$(id -u)" -x steam || true
+}
 
 # The game's side of supervisor.mjs, in an environment made here.
 game_side() {
@@ -96,17 +109,25 @@ kill)
 restart-steam)
 	# Steam stopped taking launches: end the game, its launch wrapper and Steam.
 	# observer-desktop (Restart=always) starts the display and Steam again.
-	pkill -KILL -u "$(id -u)" -x "$GAME_PROCESS" || true
-	pkill -KILL -u "$(id -u)" -f "$LAUNCH_WRAPPER" || true
-	pkill -TERM -u "$(id -u)" -x steam || true
-	for _ in 1 2 3 4 5; do
-		pgrep -u "$(id -u)" -x steam >/dev/null || exit 0
-		sleep 2
-	done
-	pkill -KILL -u "$(id -u)" -x steam || true
+	stop_steam
+	;;
+prune)
+	# What visits leave behind: every server's Workshop addons and downloads,
+	# never removed, filled the 58 GB disk on 2026-11-05 (30 GB of Workshop
+	# content alone), after which no launch could start. All of it is cache: a
+	# server's addons come again when it's visited again. Steam is stopped
+	# first, so it doesn't write back its record of the Workshop items as we
+	# remove them; observer-desktop starts it again.
+	stop_steam
+	APPS="$HOME/.steam/steam/steamapps"
+	rm -rf "$APPS/workshop/content/4000" "$APPS/workshop/downloads" "$APPS/workshop/temp" \
+		"$APPS/workshop/appworkshop_4000.acf" "$APPS/shadercache"
+	rm -rf "$GMOD/garrysmod/cache" "$GMOD/garrysmod/download"
+	# The runtime's per-launch copies, left by launches that failed.
+	rm -rf "$APPS/common/SteamLinuxRuntime_soldier/var/"tmp-* "$APPS/common/SteamLinuxRuntime_sniper/var/"tmp-*
 	;;
 *)
-	echo "usage: game-ctl installed|prepare|arm|disarm|reset|start|quit|kill|restart-steam" >&2
+	echo "usage: game-ctl installed|prepare|arm|disarm|reset|start|quit|kill|restart-steam|prune" >&2
 	exit 2
 	;;
 esac
