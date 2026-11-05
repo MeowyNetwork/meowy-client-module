@@ -686,6 +686,7 @@ namespace
 		ULONGLONG countFrom = GetTickCount64(), lastShot = 0;
 		int frames = 0, shotNo = 0;
 		bool shown = false;
+		bool topmost = false;   // see "Stay above the game" below
 		ULONGLONG shownAt = 0;
 		unsigned seenJoin = 0;
 		HDC mem = nullptr;
@@ -849,6 +850,11 @@ namespace
 				ShowWindow(v.hwnd, SW_HIDE);
 				SetLayeredWindowAttributes(v.hwnd, 0, 0, LWA_ALPHA);
 				shown = false;
+				if (topmost)
+				{
+					SetWindowPos(v.hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+					topmost = false;
+				}
 				if (webOn)
 					loading_webview::Reload();   // fresh for the next join
 				continue;
@@ -883,9 +889,24 @@ namespace
 					}
 					if (webOn)
 						loading_webview::Resize(rc.right, rc.bottom);
+					// Stay above the game. HWND_TOP from this thread can't move the
+					// window above the active one, so it only worked on a join where
+					// this window came up before the game's (launching straight
+					// into the server); a second join in the same session (retry,
+					// the server browser) left it under the game, showing GMod's
+					// own loading page. Topmost works from any thread. It's only
+					// held while the game or this screen is in front, and dropped as
+					// soon as anything else is, so alt-tab behaves as usual. An
+					// owned window would also stay on top, but would share the
+					// game's input thread and freeze with it during loads.
 					HWND fg = GetForegroundWindow();
-					if (fg == v.game || fg == v.hwnd)
-						SetWindowPos(v.hwnd, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+					bool wantTop = fg == v.game || fg == v.hwnd;
+					if (wantTop != topmost)
+					{
+						SetWindowPos(v.hwnd, wantTop ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0,
+							SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+						topmost = wantTop;
+					}
 
 					int w = rc.right, h = rc.bottom;
 					HDC dc = GetDC(v.hwnd);
