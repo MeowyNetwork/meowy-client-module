@@ -176,6 +176,11 @@ local function world(opts)
 	function w.lastConnect()
 		for i = #w.commands, 1, -1 do if w.commands[i]:match("^connect ") then return w.commands[i] end end
 	end
+	function w.ran(command)
+		local n = 0
+		for _, c in ipairs(w.commands) do if c == command then n = n + 1 end end
+		return n
+	end
 	-- On our server, in game, packets flowing.
 	function w.play(seconds)
 		w.state, w.address, w.timingOut, w.silence, w.inGame, w.loading = "ours", OURS, false, 0.02, true, false
@@ -209,10 +214,13 @@ w.run(4)
 check("asked at start", w.click("Stay connected"), true)
 check("cl_timeout set", w.cl_timeout, "60")
 check("saved", w.settingsText, "asked=1\r\nenabled=1\r\nsaved_cl_timeout=30\r\n")
+check("config.cfg never rewritten by the pack", w.ran("host_writeconfig"), 0)
 check("fonts made", (w.fonts or 0) > 0, true)
 local w2 = world({ settings = w.settingsText })
+w2.cl_timeout = "60"
 w2.run(4)
 check("not asked twice", w2.click("Stay connected"), false)
+check("still 60 at start: nothing run", #w2.commands, 0)
 
 -- No changes nothing
 w = world({})
@@ -231,6 +239,33 @@ check("toggle shows on", toggle and toggle.on, true)
 toggle:SetOn(false)
 check("off restores", w.cl_timeout, "30")
 check("off saved", w.settingsText, "asked=1\r\nenabled=0\r\n")
+toggle:SetOn(true)
+check("on again: 60", w.cl_timeout, "60")
+check("on and off: config.cfg never rewritten", w.ran("host_writeconfig"), 0)
+
+-- On, but the game crashed before the engine saved cl_timeout 60 (or a config
+-- file set it back): at start it's the old value again, so 60 is set again.
+w = world({ settings = "asked=1\r\nenabled=1\r\nsaved_cl_timeout=45\r\n" })
+w.cl_timeout = "45"
+w.run(2)
+check("lost 60: not before config.cfg has run", w.cl_timeout, "45")
+w.run(2)
+check("lost 60 (saved value): set again", w.cl_timeout, "60")
+check("lost 60: config.cfg not rewritten (set again at each start instead)", w.ran("host_writeconfig"), 0)
+check("lost 60: saved value kept for turning it off", w.settingsText, "asked=1\r\nenabled=1\r\nsaved_cl_timeout=45\r\n")
+check("lost 60: logged", (w.logs or ""):find("cl_timeout is 45 again", 1, true) ~= nil, true)
+w.run(10)
+check("lost 60: once", w.ran("cl_timeout 60"), 1)
+w = world({ settings = "asked=1\r\nenabled=1\r\n" })
+w.run(4)
+check("lost 60 (the default, nothing saved): set again", w.cl_timeout, "60")
+w = world({ settings = "asked=1\r\nenabled=1\r\nsaved_cl_timeout=30\r\n" })
+w.cl_timeout = "120"
+w.run(4)
+check("player's own value since: left alone", w.cl_timeout, "120")
+w = world({ settings = "asked=1\r\nenabled=0\r\n" })
+w.run(4)
+check("off: cl_timeout left alone", w.cl_timeout, "30")
 
 -- Start with the game: shows whether the line is in menu.lua, and flips it
 w = world({ settings = "asked=1\r\nenabled=1\r\n", startup = true })
@@ -566,6 +601,101 @@ check("restart: flag spent", w.restartUntil, nil)
 w.pingAnswer = true
 w.run(40)
 check("restart: joins when it answers", w.lastConnect(), "connect " .. OURS)
+
+-- During a restart notice the player clicks Disconnect (packets flowing, the
+-- server stays up): never rejoined, nothing shown, nothing offered
+w = world({ settings = ON })
+w.play(10)
+w.restartUntil = w.now + 120
+w.run(5)
+w.cut()
+w.run(3)
+check("own disconnect in a restart notice: no card while it checks", overlayTitle(), nil)
+check("own disconnect in a restart notice: no join yet", w.connects(), 0)
+w.run(60)
+check("own disconnect in a restart notice: never joins", w.connects(), 0)
+check("own disconnect in a restart notice: no card", overlayTitle(), nil)
+check("own disconnect in a restart notice: no Rejoin now", w.click("Rejoin now"), false)
+check("own disconnect in a restart notice: logged", (w.logs or ""):find("reconnect: stopped (the server never went down", 1, true) ~= nil, true)
+check("own disconnect in a restart notice: flag spent", w.restartUntil, nil)
+w.pingAnswer = false   -- the server restarts later, after the episode ended
+w.run(60)
+w.pingAnswer = true
+w.run(120)
+check("own disconnect, server restarts later: still no join", w.connects(), 0)
+
+-- Kicked during the notice ("Disconnected: Kicked by ..."; packets flowing, the
+-- server stays up): never rejoined
+w = world({ settings = ON, native = true })
+w.steam = true
+w.play(10)
+w.restartUntil = w.now + 300
+w.run(5)
+w.refuse("Kicked by Console : AFK")
+w.cut()
+w.run(120)
+check("kicked in a restart notice: never joins", w.connects(), 0)
+check("kicked in a restart notice: no Rejoin now", w.click("Rejoin now"), false)
+check("kicked in a restart notice: no card", overlayTitle(), nil)
+
+-- The real restart: kicked, the old instance answers a few more seconds while
+-- it saves, then it's down, then back: joins once it answers again
+w = world({ settings = ON, native = true })
+w.steam = true
+w.play(10)
+w.restartUntil = w.now + 120
+w.run(5)
+w.cut()
+w.run(6)
+check("restart, old instance still up: no join", w.connects(), 0)
+check("restart, old instance still up: no card yet", overlayTitle(), nil)
+w.pingAnswer = false
+w.run(60)
+check("restart, down: no join", w.connects(), 0)
+check("restart, down: reconnect card", overlayTitle(), "Reconnecting to Meowy Network")
+w.pingAnswer = true
+w.run(40)
+check("restart, back: joins", w.lastConnect(), "connect " .. OURS)
+check("restart, back: one join", w.connects(), 1)
+
+-- Joining another server during the notice: the old connection closes first
+-- (no connection for a moment, past the first probe), then the other server's
+-- comes up. Ours stays up: never joined, even during the slow handshake.
+w = world({ settings = ON })
+w.play(10)
+w.restartUntil = w.now + 120
+w.run(5)
+w.cut()
+w.loading = true
+w.run(4)
+check("joining elsewhere in a restart notice: no join during the handshake", w.connects(), 0)
+check("joining elsewhere in a restart notice: no card", overlayTitle(), nil)
+w.state, w.address, w.inGame, w.loading = "other", nil, true, false
+w.run(2)
+check("joining elsewhere in a restart notice: stopped", (w.logs or ""):find("reconnect: stopped (joined another server)", 1, true) ~= nil, true)
+w.run(120)
+check("joining elsewhere in a restart notice: never joins ours", w.connects(), 0)
+-- ... and when that join fails and the player is back at the menu: still nothing
+w = world({ settings = ON })
+w.play(10)
+w.restartUntil = w.now + 120
+w.run(5)
+w.cut()
+w.loading = true
+w.run(4)
+w.loading = false
+w.run(120)
+check("join elsewhere failed, ours up: never joins ours", w.connects(), 0)
+check("join elsewhere failed, ours up: no Rejoin now", w.click("Rejoin now"), false)
+
+-- A real drop (the connection went silent) during a restart notice: as before,
+-- joins as soon as the server answers, without waiting to see it go down
+w = world({ settings = ON })
+w.play(10)
+w.restartUntil = w.now + 300
+w.drop(60)
+w.run(4)
+check("silent end in a restart notice: joins", w.lastConnect(), "connect " .. OURS)
 
 -- Restart notice that ran out before the connection ended: a plain kick
 w = world({ settings = ON })
