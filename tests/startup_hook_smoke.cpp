@@ -3,6 +3,7 @@
 // Exit code 0 when every check passes.
 
 #include "../src/startup_hook.h"
+#include "../src/server_gate.h"
 
 #include <cstdio>
 #include <fstream>
@@ -48,6 +49,13 @@ int main()
 	Check("v1 line: present", HasLine(v1));
 	Check("v1 line: not added twice", WithLine(v1) == v1);
 	Check("v1 line: removed", WithoutLine(v1) == stock);
+
+	// Healing is gated on our server (server_gate): only its real port, not the
+	// throwaway test servers on the same host.
+	Check("gate: Meowy Network", server_gate::IsOurAddress("138.201.62.52:27015"));
+	Check("gate: same host, other port", !server_gate::IsOurAddress("138.201.62.52:27016"));
+	Check("gate: no port", !server_gate::IsOurAddress("138.201.62.52"));
+	Check("gate: other host", !server_gate::IsOurAddress("1.2.3.4:27015"));
 
 #ifdef _WIN32
 	// File round trip in a temporary garrysmod folder.

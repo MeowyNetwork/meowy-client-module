@@ -153,7 +153,7 @@ if(MEOWY_BUILD_TESTS)
 	endif()
 	# The start-up line in menu.lua: text rules and a file round trip, no game:
 	#   startup_hook_smoke
-	add_executable(startup_hook_smoke tests/startup_hook_smoke.cpp src/startup_hook.cpp)
+	add_executable(startup_hook_smoke tests/startup_hook_smoke.cpp src/startup_hook.cpp src/server_gate.cpp)
 	if(MSVC)
 		set_property(TARGET startup_hook_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 		target_compile_options(startup_hook_smoke PRIVATE /W4 /utf-8)

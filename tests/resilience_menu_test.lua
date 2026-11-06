@@ -60,7 +60,7 @@ local function world(opts)
 			return w.pingAnswer, false
 		end or nil,
 		ResilienceSteamOnline = opts.native and function() return w.steam end or nil,
-		IsOurServer = function(a) return type(a) == "string" and a:match("^138%.201%.62%.52:%d+$") ~= nil end,
+		IsOurServer = function(a) return type(a) == "string" and a == "138.201.62.52:27015" end,
 		-- The start-up line (opts.startup: the stubs exist; w.startup: it's in menu.lua).
 		StartupHook = opts.startup ~= nil and function() return w.startup, not w.startup end or nil,
 		SetStartupHook = opts.startup ~= nil and function(on) w.startup = on return true end or nil,

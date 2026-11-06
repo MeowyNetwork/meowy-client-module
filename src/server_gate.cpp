@@ -9,9 +9,12 @@
 
 namespace
 {
-	// Meowy Network's servers. Any port on these addresses.
-	const char* const kAllowedIps[] = {
-		"138.201.62.52",
+	// Meowy Network's servers: address and port. Only these ports: the same
+	// host also runs throwaway test servers (27016, ...), which aren't ours to
+	// rejoin, show our loading screen for, or restore the start-up line from.
+	struct Server { const char* ip; int port; };
+	const Server kAllowed[] = {
+		{ "138.201.62.52", 27015 },
 	};
 
 	// IVEngineClient015 (Source SDK 2013 layout; the version string is the
@@ -139,8 +142,8 @@ namespace
 	}
 #endif
 
-	// "a.b.c.d:port" with every part in range. Returns the "a.b.c.d" part.
-	bool ParseIpv4WithPort(const char* s, std::string& ip)
+	// "a.b.c.d:port" with every part in range, as "a.b.c.d" and the port.
+	bool ParseIpv4WithPort(const char* s, std::string& ip, int& portOut)
 	{
 		const char* p = s;
 		for (int part = 0; part < 4; ++part)
@@ -174,7 +177,16 @@ namespace
 				return false;
 			++p;
 		}
+		portOut = port;
 		return digits > 0 && port > 0 && *p == '\0';
+	}
+
+	bool Allowed(const std::string& ip, int port)
+	{
+		for (const Server& s : kAllowed)
+			if (ip == s.ip && port == s.port)
+				return true;
+		return false;
 	}
 }
 
@@ -208,12 +220,10 @@ namespace server_gate
 			*address = buf;
 
 		std::string ip;
-		if (!ParseIpv4WithPort(buf, ip))
+		int port = 0;
+		if (!ParseIpv4WithPort(buf, ip, port))
 			return Result::OtherServer;   // "loopback" (singleplayer) and anything odd
-		for (const char* allowed : kAllowedIps)
-			if (ip == allowed)
-				return Result::Allowed;
-		return Result::OtherServer;
+		return Allowed(ip, port) ? Result::Allowed : Result::OtherServer;
 #else
 		(void)address;
 		return Result::Unavailable;
@@ -223,12 +233,8 @@ namespace server_gate
 	bool IsOurAddress(const std::string& address)
 	{
 		std::string ip;
-		if (!ParseIpv4WithPort(address.c_str(), ip))
-			return false;
-		for (const char* allowed : kAllowedIps)
-			if (ip == allowed)
-				return true;
-		return false;
+		int port = 0;
+		return ParseIpv4WithPort(address.c_str(), ip, port) && Allowed(ip, port);
 	}
 
 	bool NetHealth(bool& timingOut, double& silence)
