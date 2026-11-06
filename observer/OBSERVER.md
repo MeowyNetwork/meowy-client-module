@@ -20,7 +20,7 @@ This page says who it is, so anyone who wants to can check.
 | | |
 |---|---|
 | Address it connects from | `138.201.62.52` |
-| Steam account(s) | _to be filled in by Meowy Network_ |
+| Steam account(s) | [76561198843746147](https://steamcommunity.com/profiles/76561198843746147). Server owners: allowlist this SteamID64 to let the observer check your server (see meowynetwork.com/observer) |
 
 ## When it visits
 
