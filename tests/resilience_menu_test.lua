@@ -50,6 +50,8 @@ local function world(opts)
 		ResilienceSteamOnline = opts.native and function() return w.steam end or nil,
 		IsOurServer = function(a) return type(a) == "string" and a:match("^138%.201%.62%.52:%d+$") ~= nil end,
 	}
+	-- The jitter at its middle, so timings in these tests are the same every run.
+	env.math = setmetatable({ random = function() return 0.5 end }, { __index = math })
 	env.SysTime = function() return w.now end
 	env.IsInGame = function() return w.inGame end
 	env.IsInLoading = function() return w.loading end
