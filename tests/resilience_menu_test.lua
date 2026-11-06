@@ -136,7 +136,7 @@ local function world(opts)
 	function w.click(text)
 		for i = #w.buttons, 1, -1 do
 			local b = w.buttons[i]
-			if b.text == text and b.DoClick then b.DoClick() return true end
+			if b.text == text and b.DoClick and not b.removed then b.DoClick() return true end
 		end
 		return false
 	end
@@ -331,6 +331,71 @@ w.run(35)
 check("dialog up, server answers: connects", w.lastConnect(), "connect " .. OURS)
 check("no 'already under way' loop", (w.logs or ""):find("already under way", 1, true) == nil, true)
 check("no menu-state errors", w.errors, nil)
+
+-- The third live test: the server is back but Steam takes ~3 min to log on
+-- again. The pack waits for Steam (checked every second, not counted as
+-- tries) up to 5 min from the drop, then joins as soon as it's back.
+w = world({ settings = ON, native = true })
+w.play(10)
+w.steam = false
+w.pingAnswer = false
+w.drop(60)
+w.run(20)
+w.pingAnswer = true
+w.run(25)
+local function overlayTitle()
+	local o = find(function(p) return p.meowyOverlay end)
+	return o and o.title and o.title.text
+end
+check("Steam offline: waiting card", overlayTitle(), "Waiting for Steam to reconnect...")
+check("Steam offline: logged", (w.logs or ""):find("waiting for Steam to reconnect", 1, true) ~= nil, true)
+w.run(200)
+check("Steam offline 3+ min: still waiting, no join", w.connects() == 0 and (w.logs or ""):find("reconnect: stopped", 1, true) == nil, true)
+w.steam = true
+w.run(3)
+check("Steam back: joins at once", w.lastConnect(), "connect " .. OURS)
+check("Steam back: server checked once more", (w.logs or ""):find("Steam is back; checking the server once more", 1, true) ~= nil, true)
+
+-- Steam never comes back: stops at 5 min, offers "Rejoin now"
+w = world({ settings = ON, native = true })
+w.play(10)
+w.steam = false
+w.drop(60)
+w.run(320)
+check("Steam never back: stopped", (w.logs or ""):find("Steam didn't reconnect", 1, true) ~= nil, true)
+check("Steam never back: no join", w.connects(), 0)
+w.steam = true
+check("Rejoin now offered and joins", w.click("Rejoin now"), true)
+check("Rejoin now: one join to our address", w.lastConnect() == "connect " .. OURS and w.connects() == 1, true)
+
+-- Gave up (server never answered): the card stays with Rejoin now and Close
+w = world({ settings = ON })
+w.play(10)
+w.pingAnswer = false
+w.drop(60)
+w.run(400)
+check("gave up: card still up long after", overlayTitle(), "Couldn't reconnect to Meowy Network")
+check("gave up: Close works", w.click("Close"), true)
+check("gave up: card gone after Close", overlayTitle(), nil)
+
+-- The offer goes away by itself once the player is on a server again
+w = world({ settings = ON })
+w.play(10)
+w.pingAnswer = false
+w.drop(60)
+w.run(400)
+w.state, w.address = "ours", OURS
+w.run(1)
+check("offer hidden once back on a server", overlayTitle(), nil)
+
+-- A password (final): no Rejoin now
+w = world({ settings = ON })
+w.play(10)
+w.pingPass = true
+w.drop(60)
+w.run(10)
+check("password: stopped", (w.logs or ""):find("the server has a password", 1, true) ~= nil, true)
+check("password: no Rejoin now", w.click("Rejoin now"), false)
 
 -- Silent only briefly (under 10 s) when it ended: not a drop
 w = world({ settings = ON })

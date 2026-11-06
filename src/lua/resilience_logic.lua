@@ -19,7 +19,8 @@ local M = {}
 
 M.BACKOFF = { 2, 4, 8, 15, 30 }   -- seconds before each try; the last repeats
 M.JITTER = 0.3                    -- each delay +-30%
-M.CAP = { timeout = 180, restart = 300 }   -- seconds from the drop, then give up
+M.CAP = { timeout = 180, restart = 300, steam = 300 }   -- seconds from the drop, then give up
+                                                         -- (steam: once the server answered but Steam was offline)
 M.MAX_FAILED_JOINS = 3            -- joins that failed in a row, then stop for good
 M.MIN_SILENCE = 10                -- a real drop: the engine heard nothing for this long
 M.JOIN_WAIT = 20                  -- a join that has no connection after this long got no answer
@@ -73,26 +74,44 @@ function M.start(mode, now, rand)
 	return M.schedule(s, now, rand)
 end
 
+-- The cap for this episode: the mode's, or Steam's longer one once the pack
+-- has waited for Steam (it may take minutes to log back on after a drop).
+function M.capFor(s)
+	local cap = M.CAP[s.mode] or 0
+	if s.steamWait then cap = math.max(cap, M.CAP.steam) end
+	return cap
+end
+
+local function gaveUp(s, now, extra)
+	return "gave up after " .. math.floor(now - s.startedAt + 0.5) .. " s" .. (extra or "")
+end
+
+-- Stops the episode. kind: "gave_up" (the cap, joins that kept failing: the
+-- card offers "Rejoin now"), "final" (a password, a join turned down: no
+-- offer) or "cancelled" (the player).
+function M.stop(s, why, kind)
+	if not s.stopped then s.stopped, s.stopKind = why, kind or "gave_up" end
+	return s
+end
+
+-- Whether the card should offer "Rejoin now" after this episode stopped.
+function M.offerRejoin(s)
+	return s.stopped ~= nil and s.stopKind == "gave_up"
+end
+
 -- Plans the next try, or stops when it would come after the cap.
 function M.schedule(s, now, rand)
 	if s.stopped then return s end
 	s.attempt = s.attempt + 1
 	s.nextAt = now + M.delay(s.attempt, rand)
-	if s.nextAt - s.startedAt > (M.CAP[s.mode] or 0) then
-		s.stopped = "gave up after " .. math.floor(now - s.startedAt + 0.5) .. " s"
-	end
+	if s.nextAt - s.startedAt > M.capFor(s) then M.stop(s, gaveUp(s, now)) end
 	return s
 end
 
-function M.stop(s, why)
-	if not s.stopped then s.stopped = why end
-	return s
-end
-
--- The server was asked (A2S) whether it's up. Returns "join", "wait" or "stop".
--- answered: it replied; locked: the reply says it has a password;
+-- The server was asked (A2S) whether it's up. Returns "join", "wait", "steam"
+-- or "stop". answered: it replied; locked: the reply says it has a password;
 -- steamOffline: Steam itself says it isn't logged on (a join would fail its
--- Steam check), so wait for it like for the server, within the same cap.
+-- Steam check): "steam" means wait for Steam (onSteamCheck), not the server.
 function M.onProbe(s, answered, locked, now, rand, steamOffline)
 	if s.stopped then return "stop" end
 	s.waitingFor = nil
@@ -102,26 +121,46 @@ function M.onProbe(s, answered, locked, now, rand, steamOffline)
 		return s.stopped and "stop" or "wait"
 	end
 	if locked then
-		M.stop(s, "the server has a password")   -- passwords are never stored or sent
+		M.stop(s, "the server has a password", "final")   -- passwords are never stored or sent
 		return "stop"
 	end
-	if now - s.startedAt > (M.CAP[s.mode] or 0) then
-		M.stop(s, "gave up after " .. math.floor(now - s.startedAt + 0.5) .. " s")
+	if now - s.startedAt > M.capFor(s) then
+		M.stop(s, gaveUp(s, now))
 		return "stop"
 	end
 	if steamOffline == true then
-		s.waitingFor = "steam"
-		M.schedule(s, now, rand)
-		return s.stopped and "stop" or "wait"
+		s.waitingFor, s.steamWait = "steam", true
+		if now - s.startedAt > M.capFor(s) then
+			M.stop(s, gaveUp(s, now, " (Steam didn't reconnect)"))
+			return "stop"
+		end
+		return "steam"
 	end
 	return "join"
+end
+
+-- While waiting for Steam (checked about once a second, no server query, not
+-- a try): "probe" when it's back (ask the server once more, then join),
+-- "wait", or "stop" past Steam's cap from the drop.
+function M.onSteamCheck(s, online, now)
+	if s.stopped then return "stop" end
+	if online ~= false then   -- true, or unknown: don't hold the join on it
+		s.waitingFor = nil
+		s.nextAt = now
+		return "probe"
+	end
+	if now - s.startedAt > M.capFor(s) then
+		M.stop(s, gaveUp(s, now, " (Steam didn't reconnect)"))
+		return "stop"
+	end
+	return "wait"
 end
 
 -- A join didn't get in. kind: classifyJoinEnd's verdict.
 function M.onJoinFailed(s, kind, now, rand)
 	if s.stopped then return s end
 	s.failedJoins = s.failedJoins + 1
-	if kind ~= "retry" then return M.stop(s, "the server turned the join down") end
+	if kind ~= "retry" then return M.stop(s, "the server turned the join down", "final") end
 	if s.failedJoins >= M.MAX_FAILED_JOINS then return M.stop(s, "3 joins in a row failed") end
 	return M.schedule(s, now, rand)
 end
