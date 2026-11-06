@@ -17,8 +17,10 @@ namespace
 	// IVEngineClient015 (Source SDK 2013 layout; the version string is the
 	// engine's promise that this layout holds, on both branches).
 	constexpr int kGetNetChannelInfo = 72;
-	// INetChannelInfo: GetName is 0, GetAddress is 1.
+	// INetChannelInfo: GetName is 0, GetAddress is 1, GetTimeSinceLastReceived
+	// is 21 (after GetStreamProgress; Source SDK 2013's inetchannelinfo.h).
 	constexpr int kGetAddress = 1;
+	constexpr int kGetTimeSinceLastReceived = 21;
 
 	constexpr size_t kMaxAddress = 64;
 
@@ -50,6 +52,7 @@ namespace
 	// normal convention and the extra argument is ignored.
 	using GetNetChannelInfoFn = void* (__fastcall*)(void* self, void* unused);
 	using GetAddressFn = const char* (__fastcall*)(void* self, void* unused);
+	using GetFloatFn = float (__fastcall*)(void* self, void* unused);
 
 	enum RawStatus { kRawOk, kRawNotConnected, kRawFailed };
 
@@ -92,6 +95,41 @@ namespace
 		{
 			return kRawFailed;
 		}
+	}
+
+	// Same guards as ReadAddress, for GetTimeSinceLastReceived.
+	RawStatus ReadSilence(HMODULE engine, void* client, float& out)
+	{
+		__try
+		{
+			void** vtable = *reinterpret_cast<void***>(client);
+			void* getNci = vtable[kGetNetChannelInfo];
+			if (!InCode(engine, getNci))
+				return kRawFailed;
+			void* nci = reinterpret_cast<GetNetChannelInfoFn>(getNci)(client, nullptr);
+			if (!nci)
+				return kRawNotConnected;
+			void** nciVtable = *reinterpret_cast<void***>(nci);
+			void* fn = nciVtable[kGetTimeSinceLastReceived];
+			if (!InCode(engine, fn))
+				return kRawFailed;
+			out = reinterpret_cast<GetFloatFn>(fn)(nci, nullptr);
+			return kRawOk;
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			return kRawFailed;
+		}
+	}
+
+	void* EngineClient(HMODULE& engine)
+	{
+		engine = GetModuleHandleW(L"engine.dll");
+		if (!engine)
+			return nullptr;
+		using CreateInterfaceFn = void* (*)(const char* name, int* code);
+		auto create = reinterpret_cast<CreateInterfaceFn>(GetProcAddress(engine, "CreateInterface"));
+		return create ? create("VEngineClient015", nullptr) : nullptr;
 	}
 #endif
 
@@ -185,6 +223,27 @@ namespace server_gate
 			if (ip == allowed)
 				return true;
 		return false;
+	}
+
+	bool SecondsSinceLastReceived(double& seconds)
+	{
+#ifdef _WIN32
+		HMODULE engine = nullptr;
+		void* client = EngineClient(engine);
+		if (!client)
+			return false;
+		float value = -1.0f;
+		if (ReadSilence(engine, client, value) != kRawOk)
+			return false;
+		// Anything outside a sane range means the layout isn't what we expect.
+		if (!(value >= 0.0f && value <= 3600.0f))
+			return false;
+		seconds = value;
+		return true;
+#else
+		(void)seconds;
+		return false;
+#endif
 	}
 
 	const char* Describe(Result r)

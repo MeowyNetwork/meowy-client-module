@@ -29,7 +29,8 @@ add_library(meowy SHARED
 	src/notify.cpp
 	src/notify_toast.cpp
 	src/timeline.cpp
-	src/timeline_steam.cpp)
+	src/timeline_steam.cpp
+	src/resilience.cpp)
 target_include_directories(meowy PRIVATE ${gmod_module_base_SOURCE_DIR}/include)
 if(WIN32)
 	target_link_libraries(meowy PRIVATE msimg32 shlwapi winhttp ws2_32)   # GradientFill and file streams for the loading screen; HTTPS for the server list

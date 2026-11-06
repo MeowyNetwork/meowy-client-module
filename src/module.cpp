@@ -64,7 +64,8 @@
 // (not garrysmod/data, which servers' Lua can read): the start-up stub's
 // boot.lock, the loading screen's join_times.txt, last_join.txt and
 // css_scale.txt (loading_screen.h), notify.txt and notify_icon.png (the
-// notifications' switch and the toast's logo), and WebView2's profile. The one change it can make to
+// notifications' switch and the toast's logo), resilience.txt and on_server.txt
+// (connection resilience, resilience.h), and WebView2's profile. The one change it can make to
 // the game is SkipMaterialReload, in memory only, and only when Lua asks.
 
 #include "GarrysMod/Lua/Interface.h"
@@ -81,6 +82,8 @@
 #include "notify_toast.h"
 #include "timeline.h"
 #include "timeline_steam.h"
+#include "resilience.h"
+#include "resource.h"
 
 #include <cstdio>
 #include <string>
@@ -95,7 +98,7 @@ using namespace GarrysMod::Lua;
 
 namespace
 {
-	const char* const VERSION = "1.5.2";
+	const char* const VERSION = "1.6.0";
 
 	// Discord's own limits; anything longer makes it reject the whole activity.
 	constexpr size_t MAX_TEXT = 128;
@@ -865,6 +868,119 @@ namespace
 		return 1;
 	}
 
+	// --- Connection resilience (resilience.h, src/lua/resilience*.lua) -----------
+
+	// meowy.ResilienceWatch() -> state, address, silence. state: "ours", "other",
+	// "none" (not connected) or "unknown"; address: the engine's own address of
+	// our server (only when "ours"); silence: seconds since the engine last heard
+	// from the server, or nil.
+	int ResilienceWatch(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		std::string address;
+		server_gate::Result r = server_gate::Check(&address);
+		switch (r)
+		{
+		case server_gate::Result::Allowed: LUA->PushString("ours"); break;
+		case server_gate::Result::OtherServer: LUA->PushString("other"); break;
+		case server_gate::Result::NotConnected: LUA->PushString("none"); break;
+		default: LUA->PushString("unknown"); break;
+		}
+		if (r != server_gate::Result::Allowed)
+			return 1;
+		LUA->PushString(address.c_str());
+		double silence = 0;
+		if (server_gate::SecondsSinceLastReceived(silence))
+			LUA->PushNumber(silence);
+		else
+			LUA->PushNil();
+		return 3;
+	}
+
+	// meowy.ResilienceLines(ms) -> { line, ... }: the engine's console lines of the last ms, oldest first.
+	int ResilienceLines(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		double ms = LUA->IsType(1, Type::Number) ? LUA->GetNumber(1) : 3000;
+		std::vector<std::string> lines = resilience::RecentLines(ms < 0 ? 0u : ms > 60000 ? 60000u : static_cast<unsigned>(ms));
+		LUA->CreateTable();
+		int i = 0;
+		for (const std::string& line : lines)
+		{
+			LUA->PushNumber(++i);
+			LUA->PushString(line.c_str(), static_cast<unsigned int>(line.size()));
+			LUA->SetTable(-3);
+		}
+		return 1;
+	}
+
+#ifdef _WIN32
+	int ResilienceSettingsRead(lua_State* L)
+	{
+		std::string text = resilience::ReadSettings(DataDir());
+		L->luabase->PushString(text.c_str(), static_cast<unsigned int>(text.size()));
+		return 1;
+	}
+
+	int ResilienceSettingsWrite(lua_State* L)
+	{
+		bool ok = L->luabase->IsType(1, Type::String) && resilience::WriteSettings(DataDir(), L->luabase->GetString(1));
+		L->luabase->PushBool(ok);
+		return 1;
+	}
+
+	// ResilienceSession(true): on our server now (the address is the engine's,
+	// read here); false: left it.
+	int ResilienceSession(lua_State* L)
+	{
+		if (L->luabase->IsType(1, Type::Bool) && L->luabase->GetBool(1))
+		{
+			std::string address;
+			if (server_gate::Check(&address) == server_gate::Result::Allowed)
+				resilience::MarkSession(DataDir(), address);
+		}
+		else
+		{
+			resilience::ClearSession(DataDir());
+		}
+		return 0;
+	}
+
+	// The address to offer a rejoin to after a crash on our server, or nil.
+	int ResilienceCrashedSession(lua_State* L)
+	{
+		std::string address = resilience::CrashedSession(DataDir());
+		if (address.empty())
+			L->luabase->PushNil();
+		else
+			L->luabase->PushString(address.c_str());
+		return 1;
+	}
+
+	// src/lua/resilience_logic.lua and resilience.lua (meowy.rc), as one chunk:
+	// the rules become the local `Logic` the glue uses.
+	std::string ResourceText(int id)
+	{
+		HMODULE self = nullptr;
+		GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+			reinterpret_cast<LPCWSTR>(&ResourceText), &self);
+		HRSRC res = FindResourceW(self, MAKEINTRESOURCEW(id), MAKEINTRESOURCEW(10) /* RT_RCDATA */);
+		HGLOBAL data = res ? LoadResource(self, res) : nullptr;
+		const char* p = data ? static_cast<const char*>(LockResource(data)) : nullptr;
+		DWORD size = res ? SizeofResource(self, res) : 0;
+		return p && size ? std::string(p, size) : std::string();
+	}
+
+	std::string ResilienceChunk()
+	{
+		std::string logic = ResourceText(IDR_RESILIENCE_LOGIC_LUA);
+		std::string glue = ResourceText(IDR_RESILIENCE_LUA);
+		if (logic.empty() || glue.empty())
+			return std::string();
+		return "local Logic = (function()\n" + logic + "\nend)()\n" + glue;
+	}
+#endif
+
 	// Runs in the menu state. Honest server list: counts in the server browser
 	// checked before they're believed. GMod's browser shows players minus bots
 	// and ranks servers by it, so a server that reports clients that aren't
@@ -1498,14 +1614,24 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	SetFunction(LUA, "ServerRepNote", ServerRepNote);
 	SetFunction(LUA, "DataSandbox", DataSandbox);
 	SetFunction(LUA, "DataSandboxDescribe", DataSandboxDescribe);
+	SetFunction(LUA, "ResilienceWatch", ResilienceWatch);
+	SetFunction(LUA, "ResilienceLines", ResilienceLines);
+	SetFunction(LUA, "ResilienceSettingsRead", ResilienceSettingsRead);
+	SetFunction(LUA, "ResilienceSettingsWrite", ResilienceSettingsWrite);
+	SetFunction(LUA, "ResilienceSession", ResilienceSession);
+	SetFunction(LUA, "ResilienceCrashedSession", ResilienceCrashedSession);
 	LUA->SetField(-2, "meowy");
 
 	data_sandbox::Recover();
 	connect_watch::Start();
 
+	const std::string resilienceLua = ResilienceChunk();
 	for (const auto& chunk : { std::make_pair(kMenuLua, "meowy_client_pack/menu"),
-		std::make_pair(kServerListLua, "meowy_client_pack/serverlist") })
+		std::make_pair(kServerListLua, "meowy_client_pack/serverlist"),
+		std::make_pair(resilienceLua.c_str(), "meowy_client_pack/resilience") })
 	{
+		if (!*chunk.first)
+			continue;
 		LUA->GetField(-1, "RunString");
 		if (LUA->IsType(-1, Type::Function))
 		{

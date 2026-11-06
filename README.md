@@ -111,7 +111,9 @@ the game closes while the pack is starting, the next start skips it once by itse
   writes only in `%LOCALAPPDATA%\MeowyClientPack` (`boot.lock` and `recover.lock` for a moment at start-up; for the
   loading screen `join_times.txt`, how long each stage of your last join took, `last_join.txt`,
   what that join went through, and `css_scale.txt`; for notifications `notify.txt`, your on/off
-  switch, and `notify_icon.png`; and WebView2's profile). Nothing goes in
+  switch, and `notify_icon.png`; for staying connected `resilience.txt`, your answer and the
+  `cl_timeout` you had before, and `on_server.txt`, which Meowy Network server you're on, so a crash can
+  offer a rejoin; and WebView2's profile). Nothing goes in
   `garrysmod/data`, which any server's Lua can read, so other servers can't tell you have the pack.
   Before 1.4.1 these files were in `garrysmod/data/meowy/`; the pack moves them on first start.
 - **A separate `garrysmod/data` for every server.** Any server's Lua can list and read all of
@@ -130,6 +132,25 @@ the game closes while the pack is starting, the next start skips it once by itse
   it isn't (safe mode, the skip after a crash, or after a Steam "Verify integrity of game files"
   removed the start-up line), every server sees the same `data/`. `meowy_data_sandbox 0`
   turns it off (one `data/` for all servers again).
+- **Stay connected through drops** (1.6+). Once, at the main menu, the pack asks "Stay connected through
+  drops?". Nothing changes unless you say yes. Then:
+  - Garry's Mod waits 60 seconds for a dropped connection to come back instead of 30 (`cl_timeout 60`).
+    Your previous value is saved and put back when you turn it off (unless you changed it yourself since).
+  - If you're disconnected from a Meowy Network server anyway, the pack rejoins it: "Reconnecting to Meowy
+    Network... (attempt n)", with **Cancel**. The server keeps your job, jail time, wanted level and
+    loadout for 3 minutes.
+  - Only to the server the game was really connected to (the engine's own connection, as everywhere else in
+    the pack), never to an address from a message or a server's Lua. Only after the game's own "Server
+    connection timed out." (when the game had heard nothing from the server for a while, so a kick using
+    the same words doesn't count) or "Server shutting down" (and only once the server was seen to go down
+    and come back). Kicks, bans, a wrong password, your own disconnect and anything else are final.
+  - Before each join it asks the server whether it's up (the same query as the server list). Tries come
+    at about 2, 4, 8, 15 and 30 seconds (+-30%), then every 30; it gives up after 3 minutes (5 when the
+    server is restarting) or after 3 joins in a row that failed, and doesn't try again until you've been
+    back in the game. It never stores or sends a server password.
+  - After a crash while you were on Meowy Network, the next start shows "Rejoin Meowy Network?". It
+    only joins when you click **Rejoin**.
+  - `meowy_settings` in the console opens the pack's settings to change your answer.
 - **Windows notifications while you're alt-tabbed** (1.5+). When something happens to you in the city
   and the game isn't the window in front, Windows shows a notification ("Your printer is under
   attack.", "Staff replied to your ticket."), the game's taskbar button gets a small badge and flashes
@@ -203,3 +224,10 @@ installer/build.ps1 -Win32 build32/Release/gmcl_meowy_win32.dll -Win64 build64/R
 `ipc_smoke <discord application id> [seconds]`. It also adds `notify_smoke <scratch folder>` (the
 notification rules), `notify_manual` (a real notification on this PC; see `tests/NOTIFY_MANUAL.md`) and
 `timeline_smoke` (the Steam Timeline marker rules).
+
+Staying connected's menu Lua is in `src/lua/` (built into the DLL as resources). Its rules and its menu
+glue have offline tests, run by CI with Lua 5.1:
+```
+lua tests/resilience_logic_test.lua
+lua tests/resilience_menu_test.lua
+```
