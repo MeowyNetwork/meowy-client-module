@@ -43,7 +43,7 @@ jobs:
           cmake --build build64 --config Release
 
       - name: Start-up line rules (startup_hook_smoke)
-        run: build64/Release/startup_hook_smoke.exe
+        run: ./build64/Release/startup_hook_smoke.exe
 
       - name: Build installer
         shell: pwsh
