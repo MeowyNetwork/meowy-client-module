@@ -30,8 +30,10 @@ back gets a suffix such as `name.before-pack.txt`). Each server's own files go t
 Then it removes the pack's files, its start-up line and `%LOCALAPPDATA%\MeowyClientPack`; a vault
 that couldn't be emptied is left in place and named. Uninstalling by hand (deleting the four
 `gmcl_meowy_*` and `gmsv_meowy_boot_*` files from that folder and the `meowy-client-pack` line from
-`lua/includes/menu.lua`) leaves the vault where it is: copy `vault\before-sandbox` and `vault\menu`
-back into `garrysmod/data` yourself.
+`lua/includes/menu.lua`) leaves the vault where it is, and `garrysmod/data` stays a link to the main
+menu's folder in it (it keeps working). To undo that too: with the game closed, delete the
+`garrysmod/data` link (deleting a link never deletes what it points to), make an empty `data` folder,
+and copy `vault\menu` and `vault\before-sandbox` into it.
 
 **Start with the game** (on by default in the installer): the installer adds that one line to
 `lua/includes/menu.lua`, so the pack is loaded at the main menu instead of only once a server's
@@ -114,28 +116,39 @@ the game closes while the pack is starting, the next start skips it once by itse
   switch, and `notify_icon.png`; for staying connected `resilience.txt`, your answer and the
   `cl_timeout` you had before, and `on_server.txt`, which Meowy Network server you're on, so a crash can
   offer a rejoin; and WebView2's profile). Nothing goes in
-  `garrysmod/data`, which any server's Lua can read, so other servers can't tell you have the pack.
+  `garrysmod/data`, which any server's Lua can read, so the pack leaves no files there for other servers to
+  find. (Like any binary module, a server's Lua can still ask whether it's installed.)
   Before 1.4.1 these files were in `garrysmod/data/meowy/`; the pack moves them on first start.
 - **A separate `garrysmod/data` for every server.** Any server's Lua can list and read all of
   `garrysmod/data`: other servers' files (their names alone say where you've played) and anything else
-  kept there. With the pack started with the game, `data/` holds only the files of the server you're on;
-  every other server's, and the main menu's, wait in `%LOCALAPPDATA%\MeowyClientPack\vault\<server>`.
-  If the game is on another drive, they wait in `steamapps\MeowyClientPackVault`. Both are out of
-  reach of every file path GMod gives Lua. Switching is a rename, so it's instant. The first time,
-  your existing `data/` goes to `vault\before-sandbox`, kept but never shown to a server; uninstalling
-  puts it back (or copy anything back from there by hand). A connection that isn't a plain
-  `a.b.c.d:port` (a Steam P2P game, say) gets a shared sandbox of its own (`vault\p2p`, `vault\other`),
-  never the main menu's files; singleplayer and hosting a game yourself use the main menu's. After a
-  crash, the next start puts everything back where it belongs, even when the pack itself is skipped
-  (safe mode, or the skip after a crash at start-up): the start-up stub does that part on its own.
-  The sandbox itself only runs while the pack is started with the game, though: in a session where
-  it isn't (safe mode, the skip after a crash, or after a Steam "Verify integrity of game files"
-  removed the start-up line), every server sees the same `data/`. `meowy_data_sandbox 0`
-  turns it off (one `data/` for all servers again).
+  kept there. With the pack started with the game, `garrysmod/data` is a link (a directory junction) to a
+  folder of its own for each server: `%LOCALAPPDATA%\MeowyClientPack\vault\<server>` while you're on that
+  server, `vault\menu` at the main menu. If the game is on another drive the vault is
+  `steamapps\MeowyClientPackVault`. A server only ever sees its own folder: every file path GMod gives Lua
+  reaches `data/` through the link, and the vault itself is out of reach of all of them. Joining or
+  leaving re-points the link in one step, and no file is moved while the game runs, so a file the game
+  keeps open (a `.gma` a server mounted from `data/`, say) can't hold a switch up. If you look in
+  `garrysmod/data` in Explorer, you see the folder it points to right now; the others are in the vault.
+  The first time, your existing `data/` becomes `vault\before-sandbox`, kept but never shown to a server;
+  uninstalling puts it back (or copy anything back from there by hand). A connection that isn't a plain
+  `a.b.c.d:port` (a Steam P2P game, say) gets a shared folder of its own (`vault\p2p`, `vault\other`),
+  never the main menu's files; singleplayer and hosting a game yourself use the main menu's. The folder is
+  chosen from the game engine's own connection, never from anything a server prints. After a crash, the
+  next start points the link back at the main menu's folder, even when the pack itself is skipped (safe
+  mode, or the skip after a crash at start-up): the start-up stub does that part on its own. The switching
+  only runs while the pack is started with the game, though: in a session where it isn't (safe mode, the
+  skip after a crash), every server sees the main menu's folder, and after a Steam "Verify integrity of
+  game files" removed the start-up line, whichever folder the link last pointed to. Links need an NTFS
+  drive; on another kind (FAT32, exFAT) the pack puts your own files back in a plain `data/` and every
+  server shares it. `meowy_data_sandbox 0` turns it off (every server sees the main menu's folder), and
+  `meowy_data_sandbox_status` says where `data/` points.
 - **Stay connected through drops** (1.6+). Once, at the main menu, the pack asks "Stay connected through
   drops?". Nothing changes unless you say yes. Then:
   - Garry's Mod waits 60 seconds for a dropped connection to come back instead of 30 (`cl_timeout 60`).
     Your previous value is saved and put back when you turn it off (unless you changed it yourself since).
+    The game saves it to `config.cfg` when it closes normally; if it's lost (a crash, a config file), the
+    pack sets 60 again at the next start, unless you've set a value of your own. The pack never rewrites
+    `config.cfg` itself.
   - If you're disconnected from a Meowy Network server anyway, the pack rejoins it: "Reconnecting to Meowy
     Network... (attempt n)", with **Cancel**. The server keeps your job, jail time, wanted level and
     loadout for 3 minutes.
@@ -146,8 +159,10 @@ the game closes while the pack is starting, the next start skips it once by itse
     drop. If packets were still arriving (a kick, a ban, quitting, a map change), it never rejoins. No
     message or console text is read for this.
   - A planned restart: just before restarting, our server tells the pack (`meowy.ExpectRestart`, which only
-    works while you're on our server). If the connection then ends within that time, the pack waits for
-    the server to come back and rejoins.
+    works while you're on our server). If the connection then ends within that time and the server goes
+    down (stops answering), the pack waits for it to come back and rejoins. If it's still answering 15
+    seconds after you left, it wasn't the restart (you disconnected, were kicked or joined another server):
+    nothing is rejoined, shown or offered.
   - Before each join it asks the server whether it's up (the same query as the server list). Tries come
     at about 2, 4, 8, 15 and 30 seconds (+-30%), then every 30; it gives up after 3 minutes (5 when the
     server is restarting) or after 3 joins in a row that failed, and doesn't try again until you've been

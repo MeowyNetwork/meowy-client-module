@@ -18,13 +18,15 @@ namespace connect_watch
 {
 	// Registers once; safe to call again.
 	void Start();
-	// The last "Connecting to ..." line, within `withinMs`, was for one of our servers.
+	// The last "Connecting to ..." line, within `withinMs`, was for one of our
+	// servers (or, until JoinStarted, a "+connect" on the command line within a
+	// minute). Only asks; changes nothing.
 	bool HeadingToUs(unsigned withinMs);
+	// Our loading screen began a join: the command line's target is used up.
+	void JoinStarted();
 	// For the join log: whether the listener is registered, lines seen, and the last
 	// "Connecting to" address.
 	std::string Describe();
-	// The last "Connecting to" address ("" if none yet).
-	std::string LastAddress();
 	// The engine's last "Disconnected: <reason>" line: the reason and how long
 	// ago. False if there hasn't been one. Only for how soon a failed rejoin
 	// tries again; the pack never decides anything about the player on it.

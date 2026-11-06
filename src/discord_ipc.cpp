@@ -326,7 +326,13 @@ namespace discord
 	{
 		if (!g_thread.joinable())
 			return;
-		g_stop = true;
+		{
+			// Under the lock the worker waits with, so the wake-up can't fall
+			// between its check of g_stop and its wait (and be lost for up to the
+			// reconnect delay, with the game's main thread waiting here).
+			std::lock_guard<std::mutex> lock(g_mutex);
+			g_stop = true;
+		}
 		g_wake.notify_one();
 		g_thread.join();
 	}

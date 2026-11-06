@@ -193,7 +193,9 @@ namespace
 
 	std::string PowerMode()
 	{
-		HMODULE pp = LoadLibraryW(L"powrprof.dll");
+		// Loaded once and never freed: unregistering may not wait for a callback
+		// already on its way, which must still find powrprof's code there.
+		static HMODULE pp = LoadLibraryW(L"powrprof.dll");
 		if (!pp)
 			return std::string();
 		using Callback = void(WINAPI*)(int, void*);
@@ -221,7 +223,6 @@ namespace
 			if (m >= 0 && m < 7)
 				out = names[m];
 		}
-		FreeLibrary(pp);
 		return out;
 	}
 }

@@ -14,10 +14,12 @@
 // skips it once.
 //
 // The per-server data/ (data_sandbox.h) is put right by the stub itself, before
-// any of that is decided: a crash while on a server leaves that server's files
-// in data/, and a start without the pack (safe mode, the skip after a crash)
-// would otherwise show them to every server joined that session and file what
-// they write under that first server. It's file moves only, nothing in the game.
+// any of that is decided: after a crash on a server, data/ still links to that
+// server's folder, and a start without the pack (safe mode, the skip after a
+// crash) would otherwise show it to every server joined that session and file
+// what they write under that first server. It's file-system calls only, nothing
+// in the game. The pack itself never does this again: only the stub runs it,
+// under its own crash guard.
 
 #include "GarrysMod/Lua/Interface.h"
 #include "../data_sandbox.h"
@@ -97,8 +99,10 @@ namespace
 		HANDLE h = CreateFileW(lock.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
 		if (h != INVALID_HANDLE_VALUE)
 			CloseHandle(h);
-		data_sandbox::Recover();
+		const std::string said = data_sandbox::Recover();
 		DeleteFileW(lock.c_str());
+		if (!said.empty())
+			Print(LUA, ("[Meowy Client Pack] " + said).c_str());
 	}
 
 	bool SafeModeRequested()
