@@ -104,11 +104,34 @@ if concommand then
 	concommand.Add("meowy_settings", function() openSettings() end, nil, "Meowy Client Pack: settings")
 end
 
+-- A small "Meowy settings" button in the main menu's top-right corner (the
+-- stock menu has nothing there). A panel of its own, not part of the menu's
+-- page, so the stock menu is untouched; made again if a menu reload removes
+-- it, shown only while the menu itself is (not while loading or playing).
+local menuButton, buttonFailed = nil, false
+local function menuVisible()
+	if IsInLoading() then return false end
+	if not IsInGame() then return true end
+	return gui and gui.IsGameUIVisible and gui.IsGameUIVisible() or false
+end
+local function updateMenuButton()
+	if not IsValid(menuButton) then
+		menuButton = vgui.Create("DButton")
+		menuButton:SetText("Meowy settings")
+		menuButton:SetSize(120, 24)
+		menuButton.DoClick = function() openSettings() end
+		menuButton:MakePopup()
+		menuButton:SetKeyboardInputEnabled(false)   -- clicks only, never the keyboard
+	end
+	menuButton:SetPos(ScrW() - 120 - 12, 12)
+	menuButton:SetVisible(menuVisible())
+end
+
 local function askOptIn()
 	card("Stay connected through drops?",
 		"Keeps your connection alive through short drops and rejoins Meowy Network automatically "
-		.. "after a disconnect (it sets cl_timeout to 60). You can change it in the pack's settings: "
-		.. "type meowy_settings in the console.",
+		.. "after a disconnect (it sets cl_timeout to 60). You can change it later with the "
+		.. "Meowy settings button at the top right of the main menu.",
 		{ { "No thanks", function() setEnabled(false) end }, { "Yes", function() setEnabled(true) end } })
 end
 
@@ -285,6 +308,12 @@ hook.Add("Think", "MeowyClientPack.Resilience", function()
 
 	if now < nextLook then return end
 	nextLook = now + 0.2
+
+	local okButton, buttonErr = pcall(updateMenuButton)
+	if not okButton and not buttonFailed then
+		buttonFailed = true   -- report once, not five times a second
+		ErrorNoHalt("[Meowy Client Pack] settings button: " .. tostring(buttonErr) .. "\n")
+	end
 
 	-- Started straight into a join (a Steam join link): no point offering one after.
 	if not startupDone and (IsInGame() or IsInLoading()) then crashed = nil end

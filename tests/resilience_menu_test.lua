@@ -149,6 +149,17 @@ box:OnChange(false)
 check("off restores", w.cl_timeout, "30")
 check("off saved", w.settingsText, "asked=1\r\nenabled=0\r\n")
 
+-- The main menu's "Meowy settings" button opens the same window
+w = world({ settings = "asked=1" .. string.char(13, 10) .. "enabled=0" .. string.char(13, 10) })
+w.run(1)
+check("menu button opens settings", w.click("Meowy settings"), true)
+local found = false
+for _, p in ipairs(w.panels) do if p.class == "DCheckBoxLabel" then found = true end end
+check("settings window from the button", found, true)
+local buttons = 0
+for _, p in ipairs(w.panels) do if p.text == "Meowy settings" then buttons = buttons + 1 end end
+check("one button, not one per tick", buttons, 1)
+
 local ON = "asked=1\r\nenabled=1\r\nsaved_cl_timeout=30\r\n"
 
 -- The server went silent: rejoins the address the engine had, after asking the server
