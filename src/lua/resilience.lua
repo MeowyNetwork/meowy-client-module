@@ -333,6 +333,13 @@ local function showOverlay(titleText, subText, buttonText, onButton, busy)
 end
 
 -- Watching the connection ------------------------------------------------------
+-- Every decision goes to the console, so a live test shows why it did (or didn't) rejoin.
+local function log(fmt, ...)
+	MsgN("[Meowy Client Pack] " .. string.format(fmt, ...))
+end
+local function show(v) if v == nil then return "nil" end return tostring(v) end
+local function fmtNum(v) return isnumber(v) and string.format("%.1f", v) or "nil" end
+
 local onOurs, ourAddress = false, nil
 local armed = false      -- got into the game on our server since the last rejoin try
 local last               -- { timingOut, silence, at }: the engine's latest sample of our connection
@@ -341,6 +348,7 @@ local stoppedUntil = 0   -- how long the "couldn't reconnect" note stays
 local probeId = 0
 
 local function finish(why, show)
+	if episode then log("reconnect: stopped (%s)", why or "no longer needed") end
 	episode = nil
 	if show and why then
 		showOverlay("Couldn't reconnect to Meowy Network", why:sub(1, 1):upper() .. why:sub(2) .. ".", "Close", hideOverlay, false)
@@ -352,19 +360,33 @@ end
 
 local function cancel()
 	if episode then Logic.stop(episode.s, "cancelled") end
-	finish(nil, false)
+	finish("cancelled", false)
 end
 
+local function steamOffline()
+	if not meowy.ResilienceSteamOnline then return nil end
+	local on = meowy.ResilienceSteamOnline()
+	if on == nil then return nil end
+	return not on
+end
+
+-- Asks the server whether it's up: the pack's own A2S query over plain UDP
+-- (it works while Steam is offline), else GMod's serverlist.PingServer.
 local function probe(now)
 	probeId = probeId + 1
 	local id = probeId
-	episode.phase, episode.probeUntil = "probing", now + 6
+	episode.phase, episode.probeUntil = "probing", now + 9
 	local function result(answered, locked)
 		if not episode or episode.phase ~= "probing" or id ~= probeId then return end
 		local t = SysTime()
-		local act = Logic.onProbe(episode.s, answered, locked, t, math.random())
+		local offline = answered and steamOffline() or nil
+		local act = Logic.onProbe(episode.s, answered, locked, t, math.random(), offline)
+		log("reconnect: attempt %d, server %s%s -> %s", episode.s.attempt,
+			answered and "answered" or "didn't answer", offline and ", Steam offline" or "",
+			act == "wait" and ("next try in " .. fmtNum(episode.s.nextAt - t) .. " s") or act)
 		if act == "join" then
 			episode.phase, episode.joinAt, episode.sawLoading, episode.reachedOurs = "joining", t, false, false
+			log("reconnect: joining %s", episode.address)
 			RunConsoleCommand("connect", episode.address)   -- never a password
 		elseif act == "wait" then
 			episode.phase = "waiting"
@@ -373,9 +395,12 @@ local function probe(now)
 		end
 	end
 	episode.result = result
-	serverlist.PingServer(episode.address, function(ping, name, desc, map, players, maxplayers, bots, pass)
-		result(isnumber(players), pass == true)
-	end)
+	episode.native = meowy.ResilienceProbe and meowy.ResilienceProbe(episode.address) or false
+	if not episode.native then
+		serverlist.PingServer(episode.address, function(ping, name, desc, map, players, maxplayers, bots, pass)
+			result(isnumber(players), pass == true)
+		end)
+	end
 end
 
 local function tickEpisode(now, state)
@@ -391,11 +416,15 @@ local function tickEpisode(now, state)
 		if now >= e.s.nextAt then probe(now) end
 	elseif e.phase == "probing" then
 		if IsInLoading() or IsInGame() then return finish(nil, false) end
+		if e.native then
+			local answered, locked = meowy.ResilienceProbeResult()
+			if answered ~= nil then return e.result(answered, locked) end
+		end
 		if now > e.probeUntil then e.result(false, false) end
 	elseif e.phase == "joining" then
 		hideOverlay()   -- the loading screen shows the join
 		if state == "other" then return finish(nil, false) end
-		if state == "ours" and IsInGame() and not IsInLoading() then return finish(nil, false) end
+		if state == "ours" and IsInGame() and not IsInLoading() then return finish("back in the game", false) end
 		if IsInLoading() then e.sawLoading = true end
 		-- A join whose connection came up and then ended is judged where it
 		-- ends (joinEnded). Here: one that never got a connection.
@@ -404,7 +433,9 @@ local function tickEpisode(now, state)
 		local turnedAway = e.sawLoading and not IsInLoading() and not IsInGame()
 		if turnedAway or waited >= Logic.JOIN_WAIT then
 			if not turnedAway then RunConsoleCommand("disconnect") end   -- stop the engine's own retries
-			Logic.onJoinFailed(e.s, Logic.classifyJoinEnd({ reachedOurs = false, waited = waited }), now, math.random())
+			local kind = Logic.classifyJoinEnd({ reachedOurs = false, waited = waited })
+			log("reconnect: join got no connection (%s after %s s) -> %s", turnedAway and "turned away" or "no answer", fmtNum(waited), kind)
+			Logic.onJoinFailed(e.s, kind, now, math.random())
 			if e.s.stopped then return finish(e.s.stopped, true) end
 			e.phase = "waiting"
 			e.s.nextAt = math.max(e.s.nextAt, now + 1)   -- let the disconnect settle
@@ -415,7 +446,9 @@ end
 -- A join's connection to our server came up, then ended before the player was in.
 local function joinEnded(now, facts)
 	local e = episode
-	Logic.onJoinFailed(e.s, Logic.classifyJoinEnd({ reachedOurs = true, timingOut = facts.timingOut, silence = facts.silence }), now, math.random())
+	local kind = Logic.classifyJoinEnd({ reachedOurs = true, timingOut = facts.timingOut, silence = facts.silence })
+	log("reconnect: the join's connection ended (timingOut=%s, silence=%s) -> %s", show(facts.timingOut), fmtNum(facts.silence), kind)
+	Logic.onJoinFailed(e.s, kind, now, math.random())
 	if e.s.stopped then return finish(e.s.stopped, true) end
 	e.phase = "waiting"
 end
@@ -454,7 +487,11 @@ hook.Add("Think", "MeowyClientPack.Resilience", function()
 	local state, address, timingOut, quiet = meowy.ResilienceWatch()
 	local ended
 	if state == "ours" then
-		if not onOurs then meowy.ResilienceSession(true) end
+		if not onOurs then
+			meowy.ResilienceSession(true)
+			log("connected to our server %s; connection reading: timingOut=%s, silence=%s%s", show(address), show(timingOut),
+				fmtNum(quiet), timingOut == nil and " (couldn't read it: a drop won't be recognised)" or "")
+		end
 		onOurs, ourAddress = true, address
 		last = { timingOut = timingOut, silence = quiet, at = now }
 		if episode and episode.phase == "joining" then episode.reachedOurs = true end
@@ -462,28 +499,45 @@ hook.Add("Think", "MeowyClientPack.Resilience", function()
 	elseif (state == "none" or state == "other") and onOurs then
 		onOurs = false
 		meowy.ResilienceSession(false)
-		-- Only a sample from just before counts (the menu runs every frame).
-		local fresh = last and now - last.at < 1
-		ended = {
-			connectionEnded = state == "none",
-			timingOut = fresh and last.timingOut or nil,
-			silence = fresh and last.silence or nil,
-			restartExpected = meowy.ResilienceRestartExpected(),
-		}
+		-- Only a sample from just before counts (the menu runs every frame;
+		-- a few "unknown" frames while the engine tears the connection down are fine).
+		local fresh = last and now - last.at < 3 or false
+		ended = { connectionEnded = state == "none", restartExpected = meowy.ResilienceRestartExpected() }
+		if fresh then ended.timingOut, ended.silence = last.timingOut, last.silence end   -- false stays false
 		meowy.ResilienceClearRestart()   -- used (or not): either way it's spent
+		ended.fresh, ended.state, ended.sampleAge = fresh, state, last and (now - last.at) or nil
 		last = nil
 	end
 
 	if ended then
+		local mode = Logic.classifyEnd(ended)
+		local decision
+		if episode and episode.phase == "joining" then
+			decision = "part of a rejoin attempt"
+		elseif episode then
+			decision = "no rejoin: one is already running"
+		elseif not settings.enabled then
+			decision = "no rejoin: staying connected is off"
+		elseif not armed then
+			decision = "no rejoin: not in the game since the last try"
+		elseif not (isstring(ourAddress) and meowy.IsOurServer(ourAddress)) then
+			decision = "no rejoin: no address of ours"
+		elseif not mode then
+			decision = ended.connectionEnded and (ended.timingOut == nil and "no rejoin: no engine sample" or "no rejoin: packets were still arriving")
+				or "no rejoin: joined another server"
+		else
+			decision = "rejoin (" .. mode .. ")"
+		end
+		log("connection ended: state=%s, fresh sample=%s (%s s old), timingOut=%s, silence=%s, restartExpected=%s, armed=%s, enabled=%s -> %s",
+			show(ended.state), show(ended.fresh), fmtNum(ended.sampleAge), show(ended.timingOut), fmtNum(ended.silence),
+			show(ended.restartExpected), show(armed), show(settings.enabled), decision)
 		if episode and episode.phase == "joining" then
 			local ok, err = pcall(joinEnded, now, ended)
 			if not ok then ErrorNoHalt("[Meowy Client Pack] reconnect: " .. tostring(err) .. "\n") finish(nil, false) end
-		elseif not episode and armed and settings.enabled and isstring(ourAddress) and meowy.IsOurServer(ourAddress) then
-			local mode = Logic.classifyEnd(ended)
-			if mode then
-				armed = false   -- the next try needs the player in the game again
-				episode = { s = Logic.start(mode, now, math.random()), address = ourAddress, phase = "waiting" }
-			end
+		elseif decision:sub(1, 6) == "rejoin" then
+			armed = false   -- the next try needs the player in the game again
+			episode = { s = Logic.start(mode, now, math.random()), address = ourAddress, phase = "waiting" }
+			log("reconnect: %s, first try in %s s, giving up after %d s", mode, fmtNum(episode.s.nextAt - now), Logic.CAP[mode] or 0)
 		end
 	end
 
@@ -515,3 +569,26 @@ hook.Add("Think", "MeowyClientPack.Resilience", function()
 		hideOverlay()
 	end
 end)
+
+-- meowy_resilience_debug: the engine's live reading and what the pack would do,
+-- to check the net-channel reads in game. Prints only; changes nothing.
+if concommand then
+	concommand.Add("meowy_resilience_debug", function()
+		local state, address, timingOut, quiet = meowy.ResilienceWatch()
+		log("debug: state=%s, address=%s, timingOut=%s, silence=%s (nil = couldn't read)",
+			show(state), show(address), show(timingOut), fmtNum(quiet))
+		log("debug: enabled=%s, armed=%s, on our server=%s, last sample %s, restartExpected=%s, Steam online=%s",
+			show(settings.enabled), show(armed), show(onOurs),
+			last and (fmtNum(SysTime() - last.at) .. " s ago") or "none",
+			show(meowy.ResilienceRestartExpected()),
+			show(meowy.ResilienceSteamOnline and meowy.ResilienceSteamOnline()))
+		if episode then
+			local s = episode.s
+			log("debug: rejoin %s to %s: phase=%s, attempt=%d, failed joins=%d, next try in %s s, waiting for %s, %s s of %d",
+				s.mode, show(episode.address), episode.phase, s.attempt, s.failedJoins, fmtNum(s.nextAt - SysTime()),
+				show(s.waitingFor), fmtNum(SysTime() - s.startedAt), Logic.CAP[s.mode] or 0)
+		else
+			log("debug: no rejoin running")
+		end
+	end, nil, "Meowy Client Pack: print the connection reading and the rejoin state")
+end

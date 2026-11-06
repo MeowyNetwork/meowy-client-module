@@ -41,6 +41,13 @@ local function world(opts)
 		ResilienceSettingsWrite = function(t) w.settingsText = t return true end,
 		ResilienceSession = function(on) w.session = on end,
 		ResilienceCrashedSession = function() return w.crashed end,
+		ResilienceProbe = opts.native and function(a) w.pinged = a w.probeAsked = true return true end or nil,
+		ResilienceProbeResult = opts.native and function()
+			if not w.probeAsked then return nil end
+			w.probeAsked = false
+			return w.pingAnswer, false
+		end or nil,
+		ResilienceSteamOnline = opts.native and function() return w.steam end or nil,
 		IsOurServer = function(a) return type(a) == "string" and a:match("^138%.201%.62%.52:%d+$") ~= nil end,
 	}
 	env.SysTime = function() return w.now end
@@ -74,6 +81,7 @@ local function world(opts)
 		env.pnlMainMenu = { Call = function(self, js) w.jsCalls = w.jsCalls + 1 w.js = js end }
 	end
 	env.Msg = function(m) w.printed = (w.printed or "") .. m end
+	env.MsgN = function(m) w.logs = (w.logs or "") .. m .. "\n" end
 	env.FILL, env.TOP = 1, 4
 	env.isnumber = function(v) return type(v) == "number" end
 	env.isstring = function(v) return type(v) == "string" end
@@ -230,6 +238,31 @@ check("timeout: pinged our address", w.pinged, OURS)
 check("timeout: joined", w.lastConnect(), "connect " .. OURS)
 check("timeout: one join", w.connects(), 1)
 
+check("timeout: logged the decision", (w.logs or ""):find("connection ended: state=none, fresh sample=true", 1, true) ~= nil, true)
+check("timeout: logged rejoin", (w.logs or ""):find("-> rejoin (timeout)", 1, true) ~= nil, true)
+check("timeout: logged the join", (w.logs or ""):find("reconnect: joining " .. OURS, 1, true) ~= nil, true)
+
+-- The live test's case: the client times out, the network (and Steam) are down
+-- for a while, then come back within the cap: the pack's own A2S keeps asking,
+-- waits for Steam, then joins
+w = world({ settings = ON, native = true })
+w.play(10)
+w.steam = false
+w.pingAnswer = false
+w.drop(60)
+w.run(60)
+check("network down: no join yet", w.connects(), 0)
+check("network down: still trying", (w.logs or ""):find("reconnect: stopped", 1, true) == nil, true)
+w.pingAnswer = true
+w.run(35)
+check("server back, Steam still offline: no join", w.connects(), 0)
+check("logged Steam offline", (w.logs or ""):find("Steam offline", 1, true) ~= nil, true)
+w.steam = true
+w.run(35)
+check("Steam back: joins", w.lastConnect(), "connect " .. OURS)
+w.concommands.meowy_resilience_debug()
+check("debug command prints the reading", (w.logs or ""):find("debug: state=", 1, true) ~= nil, true)
+
 -- Silent only briefly (under 10 s) when it ended: not a drop
 w = world({ settings = ON })
 w.play(10)
@@ -243,6 +276,7 @@ w.play(10)
 w.cut()
 w.run(60)
 check("packets flowing: no rejoin", w.connects(), 0)
+check("packets flowing: logged why", (w.logs or ""):find("-> no rejoin: packets were still arriving", 1, true) ~= nil, true)
 
 -- Engine sample unreadable: nothing
 w = world({ settings = ON })
@@ -252,6 +286,7 @@ w.run(1)
 w.cut()
 w.run(60)
 check("no sample: no rejoin", w.connects(), 0)
+check("no sample: logged why", (w.logs or ""):find("-> no rejoin: no engine sample", 1, true) ~= nil, true)
 
 -- Not opted in: nothing
 w = world({ settings = "asked=1\r\nenabled=0\r\n" })
@@ -259,6 +294,7 @@ w.play(10)
 w.drop(60)
 w.run(60)
 check("opted out: no rejoin", w.connects(), 0)
+check("opted out: logged why", (w.logs or ""):find("staying connected is off", 1, true) ~= nil, true)
 
 -- Another server: nothing (the address never comes from anywhere else)
 w = world({ settings = ON })

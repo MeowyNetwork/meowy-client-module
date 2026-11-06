@@ -28,6 +28,16 @@ namespace resilience
 	// Used, or the player left: forget it.
 	void ClearRestart();
 
+	// resilience_net.cpp. Is our server up? One A2S_INFO query over plain UDP
+	// (not through Steam, which may be offline after the same drop), on its own
+	// thread. StartProbe refuses anything but our addresses.
+	bool StartProbe(const std::string& address);
+	// 0 still waiting (or none asked), 1 answered, -1 no answer. `locked`: it
+	// says it has a password.
+	int ProbeResult(bool& locked);
+	// Steam's own "logged on" (ISteamUser::BLoggedOn): 1, 0, or -1 unknown.
+	int SteamOnline();
+
 	// resilience.txt in `dir` ("" if missing); writes at most 512 bytes.
 	std::string ReadSettings(const std::wstring& dir);
 	bool WriteSettings(const std::wstring& dir, const std::string& text);

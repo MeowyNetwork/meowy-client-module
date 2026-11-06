@@ -90,10 +90,14 @@ function M.stop(s, why)
 end
 
 -- The server was asked (A2S) whether it's up. Returns "join", "wait" or "stop".
--- answered: it replied; locked: the reply says it has a password.
-function M.onProbe(s, answered, locked, now, rand)
+-- answered: it replied; locked: the reply says it has a password;
+-- steamOffline: Steam itself says it isn't logged on (a join would fail its
+-- Steam check), so wait for it like for the server, within the same cap.
+function M.onProbe(s, answered, locked, now, rand, steamOffline)
 	if s.stopped then return "stop" end
+	s.waitingFor = nil
 	if not answered then
+		s.waitingFor = "server"
 		M.schedule(s, now, rand)
 		return s.stopped and "stop" or "wait"
 	end
@@ -104,6 +108,11 @@ function M.onProbe(s, answered, locked, now, rand)
 	if now - s.startedAt > (M.CAP[s.mode] or 0) then
 		M.stop(s, "gave up after " .. math.floor(now - s.startedAt + 0.5) .. " s")
 		return "stop"
+	end
+	if steamOffline == true then
+		s.waitingFor = "steam"
+		M.schedule(s, now, rand)
+		return s.stopped and "stop" or "wait"
 	end
 	return "join"
 end
