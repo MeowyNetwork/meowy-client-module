@@ -42,8 +42,10 @@ namespace MeowyInstaller
 
 		// The start-up line. Matched by its marker, so later versions can rewrite it.
 		const string HookMarker = "meowy-client-pack";
-		const string HookLine = "pcall(require, \"meowy_boot\") -- meowy-client-pack v1 " +
-			"(loads the Meowy Client Pack at start-up; delete this line to disable)";
+		// Same text as src/startup_hook.cpp's kLine: the pack puts it back after a
+		// game update removes it, so it's turned off in Meowy settings, not deleted.
+		const string HookLine = "pcall(require, \"meowy_boot\") -- meowy-client-pack v2 " +
+			"(loads the Meowy Client Pack at start-up; turn it off in Meowy settings, in the main menu)";
 		static readonly string[] HookHosts = { @"lua\includes\menu.lua", @"lua\menu\menu.lua" };
 
 		// No arguments: the window. "--install" / "--uninstall" [path] [--no-startup]:
@@ -101,6 +103,8 @@ namespace MeowyInstaller
 					AddStartupHook(garrysmod);
 				else
 					RemoveStartupHook(garrysmod);
+				if (install)
+					SetStartupChoice(startup);
 				Console.WriteLine("start with the game: " + (StartupHookPresent(garrysmod) ? "on" : "off"));
 				Console.WriteLine(install ? InstallShortcut(garrysmod) : UninstallShortcut());
 				return 0;
@@ -157,12 +161,32 @@ namespace MeowyInstaller
 			return false;
 		}
 
-		// Appends the line to lua/includes/menu.lua (CRLF, like the file), unless
-		// a line with the marker is already in either host file.
+		// The player's "Start with the game" choice, which the pack reads before
+		// putting the line back after a game update (startup_hook.h): a file in
+		// %LOCALAPPDATA%\MeowyClientPack while it's off.
+		public static void SetStartupChoice(bool on)
+		{
+			string local = Environment.GetEnvironmentVariable("LOCALAPPDATA");
+			if (string.IsNullOrEmpty(local))
+				return;
+			string dir = Path.Combine(local, "MeowyClientPack");
+			string file = Path.Combine(dir, "startup_off.txt");
+			if (on)
+			{
+				if (File.Exists(file))
+					File.Delete(file);
+				return;
+			}
+			Directory.CreateDirectory(dir);
+			File.WriteAllText(file, "Start with the game is off (installer). Delete this file to turn it back on.\r\n");
+		}
+
+		// Appends the line to lua/includes/menu.lua (CRLF, like the file). An
+		// older version's line is replaced, so its text stays current.
 		public static void AddStartupHook(string garrysmod)
 		{
 			if (StartupHookPresent(garrysmod))
-				return;
+				RemoveStartupHook(garrysmod);
 			string file = Path.Combine(garrysmod, HookHosts[0]);
 			if (!File.Exists(file))
 				throw new IOException(@"lua\includes\menu.lua not found; verify Garry's Mod's files in Steam");
@@ -879,6 +903,7 @@ namespace MeowyInstaller
 					Program.AddStartupHook(m_path.Text.Trim());
 				else
 					Program.RemoveStartupHook(m_path.Text.Trim());
+				Program.SetStartupChoice(m_startup.Checked);
 				Program.InstallShortcut(m_path.Text.Trim());   // never fails the install (balloons without it)
 				RefreshStatus();
 				MessageBox.Show(this, "Installed. Join Meowy Network and your Discord status will show where you are.", Text,

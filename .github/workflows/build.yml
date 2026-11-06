@@ -42,6 +42,9 @@ jobs:
           cmake -S . -B build64 -A x64
           cmake --build build64 --config Release
 
+      - name: Start-up line rules (startup_hook_smoke)
+        run: build64/Release/startup_hook_smoke.exe
+
       - name: Build installer
         shell: pwsh
         run: ./installer/build.ps1 -Win32 build32/Release/gmcl_meowy_win32.dll -Win64 build64/Release/gmcl_meowy_win64.dll -Boot32 build32/Release/gmsv_meowy_boot_win32.dll -Boot64 build64/Release/gmsv_meowy_boot_win64.dll -Out MeowyClientPack.exe

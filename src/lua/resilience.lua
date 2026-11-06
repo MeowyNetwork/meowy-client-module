@@ -90,6 +90,25 @@ local function openSettings(startTab)
 		t.meowyToggle = "stay_connected"
 		t.gapBefore = S(10)
 		blocks[#blocks + 1] = t
+		-- The start-up line in menu.lua (startup_hook.h). Off: the pack loads only
+		-- when you join, and doesn't put the line back after a game update.
+		if meowy.StartupHook then
+			local present = meowy.StartupHook()
+			local label = UI.Label(nil, "Start-up")
+			label.gapBefore = S(22)
+			blocks[#blocks + 1] = label
+			local st = UI.Toggle(nil, "Start with the game",
+				"Loads the pack when Garry's Mod starts, for our loading screen, faster joins and these settings "
+				.. "in the main menu. Off: it loads only once you join Meowy Network. Takes effect next start.",
+				present == true, function(on)
+					if not meowy.SetStartupHook(on) then
+						ErrorNoHalt("[Meowy Client Pack] couldn't change the start-up line in lua/includes/menu.lua\n")
+					end
+				end)
+			st.meowyToggle = "start_with_game"
+			st.gapBefore = S(10)
+			blocks[#blocks + 1] = st
+		end
 		return blocks
 	end
 	pages.doctor = function()
@@ -545,6 +564,18 @@ local function tickEpisode(now, state)
 		-- ends (joinEnded). Here: one that never got a connection.
 		if e.reachedOurs then return end
 		local waited = now - e.joinAt
+		-- The engine said why the join ended ("Disconnected: <reason>",
+		-- since this join started): judged at once, not after JOIN_WAIT.
+		local reason, ago
+		if meowy.ResilienceLastDisconnect then reason, ago = meowy.ResilienceLastDisconnect() end
+		if isstring(reason) and isnumber(ago) and ago < waited then
+			local kind = Logic.classifyRefusal(reason)
+			log("reconnect: join refused after %s s (%s) -> %s", fmtNum(waited), reason, kind)
+			Logic.onJoinFailed(e.s, kind, now, math.random())
+			if e.s.stopped then return finish(e.s.stopped, true) end
+			e.phase = "waiting"
+			return
+		end
 		local turnedAway = e.sawLoading and not IsInLoading() and not IsInGame()
 		if turnedAway or waited >= Logic.JOIN_WAIT then
 			if not turnedAway then RunConsoleCommand("disconnect") end   -- stop the engine's own retries

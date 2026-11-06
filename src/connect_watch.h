@@ -25,4 +25,8 @@ namespace connect_watch
 	std::string Describe();
 	// The last "Connecting to" address ("" if none yet).
 	std::string LastAddress();
+	// The engine's last "Disconnected: <reason>" line: the reason and how long
+	// ago. False if there hasn't been one. Only for how soon a failed rejoin
+	// tries again; the pack never decides anything about the player on it.
+	bool LastDisconnect(std::string& reason, unsigned long long& msAgo);
 }

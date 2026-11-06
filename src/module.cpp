@@ -90,6 +90,7 @@
 #include "timeline_steam.h"
 #include "resilience.h"
 #include "doctor.h"
+#include "startup_hook.h"
 #include "resource.h"
 
 #include <cstdio>
@@ -486,6 +487,37 @@ namespace
 			RemoveDirectoryW(old.c_str()); // only if nothing else is left in it
 		}
 		return dir;
+	}
+
+	// The game's garrysmod folder, from this DLL's own path (garrysmod/lua/bin).
+	std::wstring GarrysModDir()
+	{
+		HMODULE self = nullptr;
+		GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+			reinterpret_cast<LPCWSTR>(&GarrysModDir), &self);
+		wchar_t path[MAX_PATH];
+		DWORD n = GetModuleFileNameW(self, path, MAX_PATH);
+		std::wstring s(path, n < MAX_PATH ? n : 0);
+		size_t slash = s.find_last_of(L"\\/");
+		return slash == std::wstring::npos ? L"" : s.substr(0, slash + 1) + L"..\\..";
+	}
+
+	// --- Start with the game (startup_hook.h) ------------------------------------
+
+	// Menu: meowy.StartupHook() -> on (the line is in menu.lua), off (the player
+	// turned it off).
+	int StartupHookState(lua_State* L)
+	{
+		L->luabase->PushBool(startup_hook::Present(GarrysModDir()));
+		L->luabase->PushBool(startup_hook::Off(DataDir()));
+		return 2;
+	}
+
+	// Menu: meowy.SetStartupHook(on) -> ok. Meowy settings' "Start with the game".
+	int SetStartupHook(lua_State* L)
+	{
+		L->luabase->PushBool(startup_hook::Set(GarrysModDir(), DataDir(), L->luabase->GetBool(1)));
+		return 1;
 	}
 #endif
 
@@ -956,6 +988,19 @@ namespace
 			LUA->PushNil();
 		}
 		return 4;
+	}
+
+	// meowy.ResilienceLastDisconnect() -> reason, secondsAgo: the engine's last
+	// "Disconnected: <reason>" line (connect_watch), or nil before the first.
+	int ResilienceLastDisconnect(lua_State* L)
+	{
+		std::string reason;
+		unsigned long long msAgo = 0;
+		if (!connect_watch::LastDisconnect(reason, msAgo))
+			return 0;
+		L->luabase->PushString(reason.c_str());
+		L->luabase->PushNumber(static_cast<double>(msAgo) / 1000.0);
+		return 2;
 	}
 
 	// Menu: our server said it restarts soon (meowy.ExpectRestart), still in force.
@@ -1692,6 +1737,25 @@ GMOD_MODULE_OPEN()
 	// Client Lua starting is the start of the join's longest stage, and the
 	// menu can't report it: the game's main thread is busy until it's over.
 	loading_screen::ClientLuaStarted();
+
+#ifdef _WIN32
+	// Loaded by our server's client Lua without having started with the game:
+	// a Garry's Mod update (or a file check) put the stock menu.lua back. Put
+	// the start-up line back for next time, unless the player turned it off.
+	if (!startup_hook::MenuLoaded() && server_gate::Check() == server_gate::Result::Allowed)
+	{
+		const std::string did = startup_hook::Heal(GarrysModDir(), DataDir());
+		if (did != "present" && did != "off")
+		{
+			LUA->PushSpecial(SPECIAL_GLOB);
+			LUA->GetField(-1, "print");
+			LUA->PushString(("[Meowy Client Pack] start-up line in lua/includes/menu.lua: " + did +
+				(did == "added" ? " (a game update had removed it; the pack starts with the game again next time)" : "")).c_str());
+			LUA->Call(1, 0);
+			LUA->Pop();
+		}
+	}
+#endif
 	return 0;
 }
 
@@ -1713,6 +1777,9 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	LUA->SetField(-2, "VERSION");
 	LUA->PushString("menu");
 	LUA->SetField(-2, "REALM");
+	startup_hook::NoteMenuLoaded();
+	SetFunction(LUA, "StartupHook", StartupHookState);
+	SetFunction(LUA, "SetStartupHook", SetStartupHook);
 	SetFunction(LUA, "LoadingTarget", LoadingTarget);
 	SetFunction(LUA, "LoadingHeadsUp", LoadingHeadsUp);
 	SetFunction(LUA, "LoadingTargetState", LoadingTargetState);
@@ -1737,6 +1804,7 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	SetFunction(LUA, "DataSandboxDescribe", DataSandboxDescribe);
 	SetFunction(LUA, "ResilienceWatch", ResilienceWatch);
 	SetFunction(LUA, "ResilienceRestartExpected", ResilienceRestartExpected);
+	SetFunction(LUA, "ResilienceLastDisconnect", ResilienceLastDisconnect);
 	SetFunction(LUA, "ResilienceClearRestart", ResilienceClearRestart);
 	SetFunction(LUA, "ResilienceProbe", ResilienceProbe);
 	SetFunction(LUA, "ResilienceProbeResult", ResilienceProbeResult);

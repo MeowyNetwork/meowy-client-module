@@ -62,6 +62,22 @@ function M.classifyJoinEnd(f)
 	return "final"
 end
 
+-- The engine's reason for a join that ended before it had a connection
+-- ("Disconnected: <reason>"). Right after a drop these clear up by
+-- themselves (Steam still re-validating the old session, the network
+-- settling): "retry". Anything else is the server turning the player down
+-- (ban, whitelist, password): "final". Unknown (nil): nil, decided by the clock.
+local PASSING = { "steam validation rejected", "bad server address", "timed out", "server is full",
+	"no steam logon", "steam connection lost", "connection failed", "couldn't connect" }
+function M.classifyRefusal(reason)
+	if type(reason) ~= "string" then return nil end
+	local r = reason:lower()
+	for _, p in ipairs(PASSING) do
+		if r:find(p, 1, true) then return "retry" end
+	end
+	return "final"
+end
+
 -- Seconds before try n (1-based), with rand in [0, 1).
 function M.delay(n, rand)
 	local base = M.BACKOFF[math.min(math.max(n, 1), #M.BACKOFF)]

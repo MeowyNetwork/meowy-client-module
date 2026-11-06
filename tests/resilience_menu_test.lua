@@ -61,6 +61,14 @@ local function world(opts)
 		end or nil,
 		ResilienceSteamOnline = opts.native and function() return w.steam end or nil,
 		IsOurServer = function(a) return type(a) == "string" and a:match("^138%.201%.62%.52:%d+$") ~= nil end,
+		-- The start-up line (opts.startup: the stubs exist; w.startup: it's in menu.lua).
+		StartupHook = opts.startup ~= nil and function() return w.startup, not w.startup end or nil,
+		SetStartupHook = opts.startup ~= nil and function(on) w.startup = on return true end or nil,
+		-- The engine's last "Disconnected: <reason>" (w.refuse sets it).
+		ResilienceLastDisconnect = function()
+			if not w.refusedAt then return nil end
+			return w.refusal, w.now - w.refusedAt
+		end,
 	}
 	-- The jitter at its middle, so timings in these tests are the same every run.
 	env.math = setmetatable({ random = function() return 0.5 end,
@@ -174,6 +182,8 @@ local function world(opts)
 		w.run(seconds or 5)
 	end
 	-- The server goes silent; the engine gives up after `after` seconds.
+	-- The engine refuses the join under way: "Disconnected: <reason>".
+	function w.refuse(reason) w.refusal, w.refusedAt = reason, w.now end
 	function w.drop(after)
 		local t = 0
 		while t < (after or 60) do
@@ -221,6 +231,17 @@ check("toggle shows on", toggle and toggle.on, true)
 toggle:SetOn(false)
 check("off restores", w.cl_timeout, "30")
 check("off saved", w.settingsText, "asked=1\r\nenabled=0\r\n")
+
+-- Start with the game: shows whether the line is in menu.lua, and flips it
+w = world({ settings = "asked=1\r\nenabled=1\r\n", startup = true })
+w.startup = true
+w.run(4)
+w.concommands.meowy_settings()
+local start = find(function(p) return p.meowyToggle == "start_with_game" end)
+check("start-up toggle shows on", start and start.on, true)
+start:SetOn(false)
+check("start-up off: line removed", w.startup, false)
+check("settings with start-up paint", w.paintAll(), "")
 
 -- Main menu entry: the menu page gets the JS, and once it says the entry is
 -- there, no fallback pill
@@ -301,6 +322,28 @@ w.run(5)
 check("JoinServer: used", w.joinServer, 1)
 check("JoinServer: our address", w.joinedVia, OURS)
 check("JoinServer: no connect command", w.connects(), 0)
+
+-- A join refused at once for a reason that clears up (Steam re-validating the
+-- old session, 6 Nov Wi-Fi run 3): tries again within seconds, not after 20.
+w = world({ settings = ON })
+w.play(10)
+w.drop(60)
+w.run(5)
+check("refused: first join", w.connects(), 1)
+w.refuse("STEAM validation rejected")
+w.run(5)
+check("refused (Steam): joined again within 5 s", w.connects(), 2)
+check("refused (Steam): logged", (w.logs or ""):find("join refused after", 1, true) ~= nil, true)
+
+-- Refused for any other reason (a ban, the whitelist): stops, no Rejoin now.
+w = world({ settings = ON })
+w.play(10)
+w.drop(60)
+w.run(5)
+w.refuse("You are banned from this server")
+w.run(30)
+check("refused (ban): one join only", w.connects(), 1)
+check("refused (ban): no Rejoin now", w.click("Rejoin now"), false)
 
 -- The live test's case: the client times out, the network (and Steam) are down
 -- for a while, then come back within the cap: the pack's own A2S keeps asking,
