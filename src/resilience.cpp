@@ -6,7 +6,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
-#include <mutex>
+#include <atomic>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -15,19 +15,9 @@
 
 namespace
 {
-	constexpr size_t kMaxLines = 24;
-	constexpr size_t kMaxLineLength = 160;
 	constexpr size_t kMaxSettings = 512;
 
-	struct Line
-	{
-		unsigned long long at;
-		std::string text;
-	};
-
-	std::mutex g_mutex;
-	Line g_lines[kMaxLines];
-	size_t g_next = 0;
+	std::atomic<unsigned long long> g_restartUntil{ 0 };   // GetTickCount64 ms; 0: none
 
 	unsigned long long NowMs()
 	{
@@ -67,46 +57,29 @@ namespace
 
 namespace resilience
 {
-	void OnConsoleLine(const char* message)
+	int ExpectRestart(double seconds)
 	{
-		if (!message)
-			return;
-		const unsigned long long at = NowMs();
-		std::lock_guard<std::mutex> lock(g_mutex);
-		// One message can hold several lines ("\nServer connection timed out.\n").
-		const char* p = message;
-		while (*p)
-		{
-			const char* end = std::strchr(p, '\n');
-			size_t len = end ? static_cast<size_t>(end - p) : std::strlen(p);
-			bool blank = true;
-			for (size_t i = 0; i < len; ++i)
-				if (p[i] != ' ' && p[i] != '\r' && p[i] != '\t')
-					blank = false;
-			if (!blank)
-			{
-				g_lines[g_next].at = at;
-				g_lines[g_next].text.assign(p, len < kMaxLineLength ? len : kMaxLineLength);
-				g_next = (g_next + 1) % kMaxLines;
-			}
-			if (!end)
-				break;
-			p = end + 1;
-		}
+		int s = !(seconds >= 30) ? 30 : seconds > 600 ? 600 : static_cast<int>(seconds);
+		g_restartUntil = NowMs() + static_cast<unsigned long long>(s) * 1000ULL;
+		return s;
 	}
 
-	std::vector<std::string> RecentLines(unsigned withinMs)
+	bool RestartExpected()
 	{
-		const unsigned long long now = NowMs();
-		std::vector<std::string> out;
-		std::lock_guard<std::mutex> lock(g_mutex);
-		for (size_t i = 0; i < kMaxLines; ++i)
+		unsigned long long until = g_restartUntil;
+		if (until == 0)
+			return false;
+		if (NowMs() > until)
 		{
-			const Line& l = g_lines[(g_next + i) % kMaxLines];
-			if (l.at && now - l.at <= withinMs)
-				out.push_back(l.text);
+			g_restartUntil = 0;   // run out
+			return false;
 		}
-		return out;
+		return true;
+	}
+
+	void ClearRestart()
+	{
+		g_restartUntil = 0;
 	}
 
 #ifdef _WIN32

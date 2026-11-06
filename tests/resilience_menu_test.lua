@@ -1,8 +1,8 @@
 -- Connection resilience's menu glue (src/lua/resilience.lua) against a stubbed
 -- Garry's Mod menu state, no game. It runs the same joined chunk module.cpp runs:
 --   lua tests/resilience_menu_test.lua        (from the repository root; Lua 5.1+)
--- What it can't show: that the engine prints these exact lines, that the menu
--- state's Derma looks right, or that GetTimeSinceLastReceived reads correctly.
+-- What it can't show: that the engine's IsTimingOut / GetTimeSinceLastReceived
+-- read correctly in game, or that the menu state's Derma looks right.
 local here = (arg and arg[0] or ""):match("^(.*)[/\\]") or "."
 local function readFile(p) local f = assert(io.open(p, "rb")) local s = f:read("*a") f:close() return s end
 local chunkText = "local Logic = (function()\n" .. readFile(here .. "/../src/lua/resilience_logic.lua")
@@ -23,21 +23,18 @@ local OURS = "138.201.62.52:27015"
 -- A fresh fake menu state per scenario.
 local function world(opts)
 	local w = {
-		now = 0, state = "none", address = nil, silence = nil, inGame = false, loading = false,
-		lines = {}, linesAt = {}, commands = {}, settingsText = opts.settings or "", crashed = opts.crashed,
+		now = 0, state = "none", address = nil, timingOut = nil, silence = nil, inGame = false, loading = false,
+		restartUntil = nil, commands = {}, settingsText = opts.settings or "", crashed = opts.crashed,
 		cl_timeout = "30", pingAnswer = true, pingPass = false, buttons = {}, think = nil,
 	}
 	local env = setmetatable({}, { __index = _G })
 	env.meowy = {
 		ResilienceWatch = function()
-			if w.state == "ours" then return "ours", w.address, w.silence end
+			if w.state == "ours" then return "ours", w.address, w.timingOut, w.silence end
 			return w.state
 		end,
-		ResilienceLines = function(ms)
-			local out = {}
-			for i, l in ipairs(w.lines) do if (w.now - w.linesAt[i]) * 1000 <= ms then out[#out + 1] = l end end
-			return out
-		end,
+		ResilienceRestartExpected = function() return w.restartUntil ~= nil and w.now <= w.restartUntil end,
+		ResilienceClearRestart = function() w.restartUntil = nil end,
 		ResilienceSettingsRead = function() return w.settingsText end,
 		ResilienceSettingsWrite = function(t) w.settingsText = t return true end,
 		ResilienceSession = function(on) w.session = on end,
@@ -88,7 +85,6 @@ local function world(opts)
 			w.think()
 		end
 	end
-	function w.print(line) w.lines[#w.lines + 1] = line w.linesAt[#w.linesAt + 1] = w.now end
 	function w.click(text)
 		for i = #w.buttons, 1, -1 do
 			local b = w.buttons[i]
@@ -106,9 +102,21 @@ local function world(opts)
 	end
 	-- On our server, in game, packets flowing.
 	function w.play(seconds)
-		w.state, w.address, w.silence, w.inGame, w.loading = "ours", OURS, 0.02, true, false
+		w.state, w.address, w.timingOut, w.silence, w.inGame, w.loading = "ours", OURS, false, 0.02, true, false
 		w.run(seconds or 5)
 	end
+	-- The server goes silent; the engine gives up after `after` seconds.
+	function w.drop(after)
+		local t = 0
+		while t < (after or 60) do
+			w.run(0.5)
+			t = t + 0.5
+			w.silence, w.timingOut = t, t > 4
+		end
+		w.state, w.inGame = "none", false
+	end
+	-- Packets flowing right up to the end (kick, ban, quit, map change).
+	function w.cut() w.state, w.inGame = "none", false end
 	return w
 end
 
@@ -143,13 +151,10 @@ check("off saved", w.settingsText, "asked=1\r\nenabled=0\r\n")
 
 local ON = "asked=1\r\nenabled=1\r\nsaved_cl_timeout=30\r\n"
 
--- Engine timeout: rejoins the address the engine had, after asking the server
+-- The server went silent: rejoins the address the engine had, after asking the server
 w = world({ settings = ON })
 w.play(10)
-w.silence = 60
-w.run(0.3)
-w.state, w.inGame = "none", false
-w.print("Server connection timed out.")
+w.drop(60)
 w.run(1.5)
 local overlayShown = false
 for _, p in ipairs(w.panels) do if p.class == "DPanel" and not p.removed then overlayShown = true end end
@@ -159,50 +164,49 @@ check("timeout: pinged our address", w.pinged, OURS)
 check("timeout: joined", w.lastConnect(), "connect " .. OURS)
 check("timeout: one join", w.connects(), 1)
 
--- Kick with the same words while packets were flowing: nothing
+-- Silent only briefly (under 10 s) when it ended: not a drop
 w = world({ settings = ON })
 w.play(10)
-w.state, w.inGame = "none", false
-w.print("Disconnect: Server connection timed out.")
+w.drop(5)
 w.run(60)
-check("kick 'timed out': no rejoin", w.connects(), 0)
+check("short silence: no rejoin", w.connects(), 0)
 
--- Ban: nothing
+-- Kick, ban, quit, map change: packets were flowing, nothing
 w = world({ settings = ON })
 w.play(10)
-w.silence = 0
-w.state, w.inGame = "none", false
-w.print("Disconnect: You have been banned.")
+w.cut()
 w.run(60)
-check("ban: no rejoin", w.connects(), 0)
+check("packets flowing: no rejoin", w.connects(), 0)
+
+-- Engine sample unreadable: nothing
+w = world({ settings = ON })
+w.play(10)
+w.timingOut, w.silence = nil, nil
+w.run(1)
+w.cut()
+w.run(60)
+check("no sample: no rejoin", w.connects(), 0)
 
 -- Not opted in: nothing
 w = world({ settings = "asked=1\r\nenabled=0\r\n" })
 w.play(10)
-w.silence = 60
-w.run(0.3)
-w.state, w.inGame = "none", false
-w.print("Server connection timed out.")
+w.drop(60)
 w.run(60)
 check("opted out: no rejoin", w.connects(), 0)
 
--- Another server: nothing (and the address never comes from anywhere else)
+-- Another server: nothing (the address never comes from anywhere else)
 w = world({ settings = ON })
-w.state, w.address, w.silence, w.inGame = "other", nil, nil, true
+w.state, w.address, w.timingOut, w.silence, w.inGame = "other", nil, true, 60, true
 w.run(5)
-w.state, w.inGame = "none", false
-w.print("Server connection timed out.")
+w.cut()
 w.run(60)
 check("other server: no rejoin", w.connects(), 0)
 
 -- Cancel stops it for good
 w = world({ settings = ON })
 w.play(10)
-w.silence = 60
-w.run(0.3)
-w.state, w.inGame = "none", false
 w.pingAnswer = false
-w.print("Server connection timed out.")
+w.drop(60)
 w.run(1.5)
 check("cancel button there", w.click("Cancel"), true)
 w.pingAnswer = true
@@ -212,72 +216,77 @@ check("cancelled: no join", w.connects(), 0)
 -- Server never answers: gives up within 3 minutes, no join
 w = world({ settings = ON })
 w.play(10)
-w.silence = 60
-w.run(0.3)
-w.state, w.inGame = "none", false
 w.pingAnswer = false
-w.print("Server connection timed out.")
+w.drop(60)
 w.run(400)
 check("no answer: no join", w.connects(), 0)
 check("no answer: says so", w.click("Close"), true)
 
--- Restart: polls while it's down, joins once it answers (~4 min in)
+-- Planned restart: our server said so, the connection ends with packets flowing;
+-- polls while it's down and joins once it answers (~4 min in)
 w = world({ settings = ON })
 w.play(10)
-w.state, w.inGame = "none", false
+w.restartUntil = w.now + 120
+w.run(30)
 w.pingAnswer = false
-w.print("Disconnect: Server shutting down.")
+w.cut()
 w.run(240)
 check("restart: no join while down", w.connects(), 0)
+check("restart: flag spent", w.restartUntil, nil)
 w.pingAnswer = true
 w.run(40)
 check("restart: joins when it answers", w.lastConnect(), "connect " .. OURS)
 
--- "Server shutting down" from a server that never went down: a kick, no join
+-- Restart notice that ran out before the connection ended: a plain kick
 w = world({ settings = ON })
 w.play(10)
-w.state, w.inGame = "none", false
-w.print("Disconnect: Server shutting down.")
+w.restartUntil = w.now + 30
+w.run(40)
+w.cut()
 w.run(60)
-check("fake shutdown: no join", w.connects(), 0)
+check("expired restart: no rejoin", w.connects(), 0)
 
--- Joins that keep failing: at most 3, then it stops
+-- Joins whose connection keeps going silent: at most 3, then it stops
 w = world({ settings = ON })
 w.play(10)
-w.silence = 60
-w.run(0.3)
-w.state, w.inGame = "none", false
-w.print("Server connection timed out.")
--- Each join: loading, then the engine gives up.
+w.drop(60)
 local seen = 0
 for _ = 1, 3000 do
 	w.run(0.1)
 	if w.connects() > seen then
 		seen = w.connects()
-		w.loading = true
+		w.state, w.address, w.timingOut, w.silence, w.loading = "ours", OURS, false, 0.02, true
 		w.run(1)
+		w.drop(30)
 		w.loading = false
-		w.print("Connection failed after 4 retries.")
 	end
 end
 w.run(200)
 check("at most 3 joins", w.connects(), 3)
 
--- A join turned down (banned on the way in): stops at once
+-- A join turned away before any connection (banned, password): stops at once
 w = world({ settings = ON })
 w.play(10)
-w.silence = 60
-w.run(0.3)
-w.state, w.inGame = "none", false
-w.print("Server connection timed out.")
+w.drop(60)
 w.run(5)
 check("first join", w.connects(), 1)
 w.loading = true
 w.run(1)
 w.loading = false
-w.print("Disconnect: Bad password.")
 w.run(200)
-check("password: no more joins", w.connects(), 1)
+check("turned away: no more joins", w.connects(), 1)
+
+-- Kicked during the rejoin's loading (packets flowing): stops at once
+w = world({ settings = ON })
+w.play(10)
+w.drop(60)
+w.run(5)
+w.state, w.address, w.timingOut, w.silence, w.loading = "ours", OURS, false, 0.02, true
+w.run(2)
+w.cut()
+w.loading = false
+w.run(200)
+check("kicked while joining: no more joins", w.connects(), 1)
 
 -- Crash card: offered, never joins without the click
 w = world({ settings = ON, crashed = OURS })

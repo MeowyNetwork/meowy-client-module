@@ -17,9 +17,12 @@ namespace
 	// IVEngineClient015 (Source SDK 2013 layout; the version string is the
 	// engine's promise that this layout holds, on both branches).
 	constexpr int kGetNetChannelInfo = 72;
-	// INetChannelInfo: GetName is 0, GetAddress is 1, GetTimeSinceLastReceived
-	// is 21 (after GetStreamProgress; Source SDK 2013's inetchannelinfo.h).
+	// INetChannelInfo (Source SDK 2013's inetchannelinfo.h): GetName 0,
+	// GetAddress 1, GetTime 2, GetTimeConnected 3, GetBufferSize 4,
+	// GetDataRate 5, IsLoopback 6, IsTimingOut 7, ... GetStreamProgress 20,
+	// GetTimeSinceLastReceived 21.
 	constexpr int kGetAddress = 1;
+	constexpr int kIsTimingOut = 7;
 	constexpr int kGetTimeSinceLastReceived = 21;
 
 	constexpr size_t kMaxAddress = 64;
@@ -53,6 +56,7 @@ namespace
 	using GetNetChannelInfoFn = void* (__fastcall*)(void* self, void* unused);
 	using GetAddressFn = const char* (__fastcall*)(void* self, void* unused);
 	using GetFloatFn = float (__fastcall*)(void* self, void* unused);
+	using GetBoolFn = bool (__fastcall*)(void* self, void* unused);
 
 	enum RawStatus { kRawOk, kRawNotConnected, kRawFailed };
 
@@ -97,8 +101,8 @@ namespace
 		}
 	}
 
-	// Same guards as ReadAddress, for GetTimeSinceLastReceived.
-	RawStatus ReadSilence(HMODULE engine, void* client, float& out)
+	// Same guards as ReadAddress, for IsTimingOut and GetTimeSinceLastReceived.
+	RawStatus ReadHealth(HMODULE engine, void* client, bool& timingOut, float& silence)
 	{
 		__try
 		{
@@ -110,10 +114,12 @@ namespace
 			if (!nci)
 				return kRawNotConnected;
 			void** nciVtable = *reinterpret_cast<void***>(nci);
-			void* fn = nciVtable[kGetTimeSinceLastReceived];
-			if (!InCode(engine, fn))
+			void* isTimingOut = nciVtable[kIsTimingOut];
+			void* sinceReceived = nciVtable[kGetTimeSinceLastReceived];
+			if (!InCode(engine, isTimingOut) || !InCode(engine, sinceReceived))
 				return kRawFailed;
-			out = reinterpret_cast<GetFloatFn>(fn)(nci, nullptr);
+			timingOut = reinterpret_cast<GetBoolFn>(isTimingOut)(nci, nullptr);
+			silence = reinterpret_cast<GetFloatFn>(sinceReceived)(nci, nullptr);
 			return kRawOk;
 		}
 		__except (EXCEPTION_EXECUTE_HANDLER)
@@ -225,23 +231,26 @@ namespace server_gate
 		return false;
 	}
 
-	bool SecondsSinceLastReceived(double& seconds)
+	bool NetHealth(bool& timingOut, double& silence)
 	{
 #ifdef _WIN32
 		HMODULE engine = nullptr;
 		void* client = EngineClient(engine);
 		if (!client)
 			return false;
+		bool timing = false;
 		float value = -1.0f;
-		if (ReadSilence(engine, client, value) != kRawOk)
+		if (ReadHealth(engine, client, timing, value) != kRawOk)
 			return false;
 		// Anything outside a sane range means the layout isn't what we expect.
 		if (!(value >= 0.0f && value <= 3600.0f))
 			return false;
-		seconds = value;
+		timingOut = timing;
+		silence = value;
 		return true;
 #else
-		(void)seconds;
+		(void)timingOut;
+		(void)silence;
 		return false;
 #endif
 	}

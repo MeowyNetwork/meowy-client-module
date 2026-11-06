@@ -6,9 +6,11 @@
 --   in %LOCALAPPDATA%\MeowyClientPack\resilience.txt. meowy_settings opens a
 --   window to change it; turning it off puts the player's cl_timeout back.
 -- * Automatic rejoin, only to the Meowy Network server the game was really
---   connected to (the engine's own address, meowy.ResilienceWatch), only after
---   the engine's own timeout or the server shutting down (Logic.classifyDrop),
---   and only after the player had got into the game there. The server is asked
+--   connected to (the engine's own address, meowy.ResilienceWatch), and only
+--   when the engine says the server had gone silent before the connection
+--   ended (IsTimingOut and 10+ s since a packet, sampled every frame), or our
+--   server had said it was restarting (meowy.ExpectRestart). Never from text.
+--   Only after the player had got into the game there. The server is asked
 --   whether it's up (A2S, serverlist.PingServer) before each join. A small
 --   window shows each try and has Cancel.
 -- * After a crash while on our server, the next start offers "Rejoin Meowy
@@ -140,9 +142,8 @@ end
 
 -- Watching the connection ------------------------------------------------------
 local onOurs, ourAddress = false, nil
-local silence, silenceAt = nil, -1e9
 local armed = false      -- got into the game on our server since the last rejoin try
-local dropPending        -- { at, address, silence }: a drop, read once its lines are printed
+local last               -- { timingOut, silence, at }: the engine's latest sample of our connection
 local episode            -- { s, address, phase = "waiting" | "probing" | "joining", ... }
 local stoppedUntil = 0   -- how long the "couldn't reconnect" note stays
 local probeId = 0
@@ -171,7 +172,7 @@ local function probe(now)
 		local t = SysTime()
 		local act = Logic.onProbe(episode.s, answered, locked, t, math.random())
 		if act == "join" then
-			episode.phase, episode.joinAt, episode.sawLoading, episode.failAt = "joining", t, false, nil
+			episode.phase, episode.joinAt, episode.sawLoading, episode.reachedOurs = "joining", t, false, false
 			RunConsoleCommand("connect", episode.address)   -- never a password
 		elseif act == "wait" then
 			episode.phase = "waiting"
@@ -202,16 +203,27 @@ local function tickEpisode(now, state)
 		if state == "other" then return finish(nil, false) end
 		if state == "ours" and IsInGame() and not IsInLoading() then return finish(nil, false) end
 		if IsInLoading() then e.sawLoading = true end
-		if not e.failAt and ((e.sawLoading and not IsInLoading() and not IsInGame()) or (not e.sawLoading and now - e.joinAt > 20)) then
-			e.failAt = now + 0.7   -- let the engine print why
-		end
-		if e.failAt and now >= e.failAt then
-			local lines = meowy.ResilienceLines(math.min(math.floor((now - e.joinAt) * 1000), 15000))
-			Logic.onJoinFailed(e.s, Logic.classifyJoinFailure(lines), now, math.random())
+		-- A join whose connection came up and then ended is judged where it
+		-- ends (joinEnded). Here: one that never got a connection.
+		if e.reachedOurs then return end
+		local waited = now - e.joinAt
+		local turnedAway = e.sawLoading and not IsInLoading() and not IsInGame()
+		if turnedAway or waited >= Logic.JOIN_WAIT then
+			if not turnedAway then RunConsoleCommand("disconnect") end   -- stop the engine's own retries
+			Logic.onJoinFailed(e.s, Logic.classifyJoinEnd({ reachedOurs = false, waited = waited }), now, math.random())
 			if e.s.stopped then return finish(e.s.stopped, true) end
-			e.phase, e.failAt = "waiting", nil
+			e.phase = "waiting"
+			e.s.nextAt = math.max(e.s.nextAt, now + 1)   -- let the disconnect settle
 		end
 	end
+end
+
+-- A join's connection to our server came up, then ended before the player was in.
+local function joinEnded(now, facts)
+	local e = episode
+	Logic.onJoinFailed(e.s, Logic.classifyJoinEnd({ reachedOurs = true, timingOut = facts.timingOut, silence = facts.silence }), now, math.random())
+	if e.s.stopped then return finish(e.s.stopped, true) end
+	e.phase = "waiting"
 end
 
 -- Shown once at start-up (after a crash on our server), then the opt-in question.
@@ -233,6 +245,44 @@ end
 local nextLook = 0
 hook.Add("Think", "MeowyClientPack.Resilience", function()
 	local now = SysTime()
+
+	-- Every frame: the engine's own view of our connection, and the moment it goes.
+	local state, address, timingOut, quiet = meowy.ResilienceWatch()
+	local ended
+	if state == "ours" then
+		if not onOurs then meowy.ResilienceSession(true) end
+		onOurs, ourAddress = true, address
+		last = { timingOut = timingOut, silence = quiet, at = now }
+		if episode and episode.phase == "joining" then episode.reachedOurs = true end
+		if IsInGame() and not IsInLoading() then armed = true end
+	elseif (state == "none" or state == "other") and onOurs then
+		onOurs = false
+		meowy.ResilienceSession(false)
+		-- Only a sample from just before counts (the menu runs every frame).
+		local fresh = last and now - last.at < 1
+		ended = {
+			connectionEnded = state == "none",
+			timingOut = fresh and last.timingOut or nil,
+			silence = fresh and last.silence or nil,
+			restartExpected = meowy.ResilienceRestartExpected(),
+		}
+		meowy.ResilienceClearRestart()   -- used (or not): either way it's spent
+		last = nil
+	end
+
+	if ended then
+		if episode and episode.phase == "joining" then
+			local ok, err = pcall(joinEnded, now, ended)
+			if not ok then ErrorNoHalt("[Meowy Client Pack] reconnect: " .. tostring(err) .. "\n") finish(nil, false) end
+		elseif not episode and armed and settings.enabled and isstring(ourAddress) and meowy.IsOurServer(ourAddress) then
+			local mode = Logic.classifyEnd(ended)
+			if mode then
+				armed = false   -- the next try needs the player in the game again
+				episode = { s = Logic.start(mode, now, math.random()), address = ourAddress, phase = "waiting" }
+			end
+		end
+	end
+
 	if now < nextLook then return end
 	nextLook = now + 0.2
 
@@ -242,30 +292,6 @@ hook.Add("Think", "MeowyClientPack.Resilience", function()
 		startupDone = true
 		local ok, err = pcall(startup)
 		if not ok then ErrorNoHalt("[Meowy Client Pack] " .. tostring(err) .. "\n") end
-	end
-
-	local state, address, quiet = meowy.ResilienceWatch()
-	if state == "ours" then
-		if not onOurs then meowy.ResilienceSession(true) end
-		onOurs, ourAddress = true, address
-		if quiet then silence, silenceAt = quiet, now end
-		if IsInGame() and not IsInLoading() then armed = true end
-	elseif (state == "none" or state == "other") and onOurs then
-		onOurs = false
-		meowy.ResilienceSession(false)
-		if state == "none" and not episode and armed and settings.enabled then
-			dropPending = { at = now, address = ourAddress, silence = now - silenceAt < 2 and silence or nil }
-		end
-	end
-
-	if dropPending and now - dropPending.at >= 1 then
-		local d = dropPending
-		dropPending = nil
-		local mode = Logic.classifyDrop(meowy.ResilienceLines(math.floor((now - d.at) * 1000) + 3000), d.silence)
-		if mode and settings.enabled and isstring(d.address) and meowy.IsOurServer(d.address) and not IsInLoading() and not IsInGame() then
-			armed = false   -- the next try needs the player in the game again
-			episode = { s = Logic.start(mode, now, math.random()), address = d.address, phase = "waiting" }
-		end
 	end
 
 	if episode then

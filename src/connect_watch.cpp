@@ -1,6 +1,5 @@
 #include "connect_watch.h"
 #include "server_rep.h"
-#include "resilience.h"
 
 #include "server_gate.h"
 
@@ -77,7 +76,6 @@ namespace
 		if (!message)
 			return;
 		server_rep::Capture(message);
-		resilience::OnConsoleLine(message);
 		std::string address;
 		if (AddressAfter(message, "Commencing connection retry to ", address) || AddressAfter(message, "Connecting to ", address))
 			Note(address);

@@ -2,94 +2,62 @@
 -- they can be tested with a plain Lua interpreter (tests/resilience_logic_test.lua).
 -- Lua 5.1 compatible: Garry's Mod runs LuaJIT.
 --
--- The menu glue (resilience.lua) supplies the facts, all from the engine:
+-- The menu glue (resilience.lua) supplies only native facts and our own
+-- server's word, never text:
 --   * the server we were on: the engine's own net-channel address (server_gate),
 --     recorded while connected, never a string a server's Lua could set;
---   * how long the engine had heard nothing from the server just before the
---     drop (INetChannelInfo::GetTimeSinceLastReceived), nil if unknown;
---   * the engine's console lines around the drop (tier0's logging listener).
--- A drop may start an automatic rejoin only when its reason is exactly the
--- engine's own timeout or the server shutting down. Everything else (a kick, a
--- ban, a wrong password, the player's own disconnect, anything unknown) is final.
+--   * the engine's last sample of that connection before it went away, taken
+--     every frame: INetChannelInfo::IsTimingOut and GetTimeSinceLastReceived
+--     (nil when they couldn't be read);
+--   * whether our server had said it was about to restart (meowy.ExpectRestart,
+--     callable only while connected to our server).
+-- The server went silent before the connection ended: a drop, rejoin. Packets
+-- were still flowing when it ended: a kick, ban, quit or map change, never
+-- rejoin, unless our server had said it was restarting.
 
 local M = {}
 
 M.BACKOFF = { 2, 4, 8, 15, 30 }   -- seconds before each try; the last repeats
 M.JITTER = 0.3                    -- each delay +-30%
-M.CAP = { timeout = 180, shutdown = 300 }   -- seconds from the drop, then give up
+M.CAP = { timeout = 180, restart = 300 }   -- seconds from the drop, then give up
 M.MAX_FAILED_JOINS = 3            -- joins that failed in a row, then stop for good
-M.MIN_SILENCE = 10                -- a real timeout: the engine heard nothing for this long
+M.MIN_SILENCE = 10                -- a real drop: the engine heard nothing for this long
+M.JOIN_WAIT = 20                  -- a join that has no connection after this long got no answer
 M.TIMEOUT_CL = "60"               -- cl_timeout while the player has opted in
 
-local function trim(s)
-	return (string.gsub(s, "^%s+", ""):gsub("%s+$", ""))
+-- The engine had given up hearing from the server: timing out, and silent long enough.
+local function silent(timingOut, silence)
+	return timingOut == true and type(silence) == "number" and silence >= M.MIN_SILENCE
 end
 
--- The engine's own lines, exactly (trailing period optional).
-local TIMEOUT_BARE = { ["Server connection timed out"] = true }
-local DISCONNECT_TIMEOUT = { ["Server connection timed out"] = true }
-local DISCONNECT_SHUTDOWN = { ["Server shutting down"] = true }
-
-local function stripDot(s)
-	return (string.gsub(s, "%.$", ""))
-end
-
--- "Disconnect: <reason>" -> reason (without the trailing period), else nil.
-local function disconnectReason(line)
-	local r = string.match(line, "^Disconnect: (.*)$")
-	return r and stripDot(trim(r)) or nil
-end
-
--- lines: the engine console lines around the drop, oldest first.
--- silence: seconds the engine had heard nothing from the server just before
--- the drop, or nil when it couldn't be read.
--- Returns "timeout", "shutdown" or nil (final: no automatic rejoin).
-function M.classifyDrop(lines, silence)
-	local bareTimeout, decisive = false, nil
-	for _, raw in ipairs(lines or {}) do
-		if type(raw) == "string" then
-			local line = trim(raw)
-			local reason = disconnectReason(line)
-			if reason then
-				decisive = reason          -- the last "Disconnect:" line decides
-			elseif TIMEOUT_BARE[stripDot(line)] then
-				bareTimeout = true
-			end
-		end
-	end
-	local quiet = type(silence) == "number" and silence >= M.MIN_SILENCE
-	if decisive then
-		if DISCONNECT_SHUTDOWN[decisive] then return "shutdown" end
-		-- The same words as a kick message are only believed when the engine
-		-- itself had heard nothing from the server (a kick arrives as a packet).
-		if DISCONNECT_TIMEOUT[decisive] and quiet then return "timeout" end
-		return nil
-	end
-	if bareTimeout and (silence == nil or quiet) then return "timeout" end
+-- How the connection to our server ended. f = {
+--   connectionEnded = true,  -- the engine's connection to our server went away
+--   timingOut = bool|nil,    -- last sample before that: IsTimingOut
+--   silence = number|nil,    -- last sample before that: seconds since a packet
+--   restartExpected = bool,  -- our server had said it was restarting, still in force
+-- }
+-- Returns "timeout", "restart" or nil (final: no automatic rejoin).
+function M.classifyEnd(f)
+	if type(f) ~= "table" or f.connectionEnded ~= true then return nil end
+	if f.restartExpected == true then return "restart" end
+	if silent(f.timingOut, f.silence) then return "timeout" end
 	return nil
 end
 
--- Why a rejoin attempt didn't get in: "retry" only for no answer / timeouts;
--- anything else (kicked, banned, password, full, the player cancelling,
--- nothing printed at all) is "final".
-local RETRY_DISCONNECT = {
-	["Server connection timed out"] = true,
-	["Server shutting down"] = true,
-}
-function M.classifyJoinFailure(lines)
-	local verdict = "final"
-	for _, raw in ipairs(lines or {}) do
-		if type(raw) == "string" then
-			local line = trim(raw)
-			local reason = disconnectReason(line)
-			if reason then
-				verdict = RETRY_DISCONNECT[reason] and "retry" or "final"
-			elseif TIMEOUT_BARE[stripDot(line)] or string.match(line, "^Connection failed after %d+ retries%.?$") then
-				verdict = "retry"
-			end
-		end
+-- Why a rejoin attempt didn't get in. f = {
+--   reachedOurs = bool,     -- the engine's connection to our server came up
+--   timingOut, silence,     -- its last sample, if it did
+--   waited = seconds,       -- how long the join had been going without a connection
+-- }
+-- "retry" when the server went silent, or never answered for JOIN_WAIT seconds;
+-- "final" otherwise (turned away, kicked on the way in, the player cancelled).
+function M.classifyJoinEnd(f)
+	if type(f) ~= "table" then return "final" end
+	if f.reachedOurs then
+		return silent(f.timingOut, f.silence) and "retry" or "final"
 	end
-	return verdict
+	if type(f.waited) == "number" and f.waited >= M.JOIN_WAIT then return "retry" end
+	return "final"
 end
 
 -- Seconds before try n (1-based), with rand in [0, 1).
@@ -101,7 +69,7 @@ end
 
 -- One rejoin episode, after a drop classified as `mode` at time `now`.
 function M.start(mode, now, rand)
-	local s = { mode = mode, startedAt = now, attempt = 0, failedJoins = 0, sawDown = false }
+	local s = { mode = mode, startedAt = now, attempt = 0, failedJoins = 0 }
 	return M.schedule(s, now, rand)
 end
 
@@ -126,19 +94,11 @@ end
 function M.onProbe(s, answered, locked, now, rand)
 	if s.stopped then return "stop" end
 	if not answered then
-		s.sawDown = true
 		M.schedule(s, now, rand)
 		return s.stopped and "stop" or "wait"
 	end
 	if locked then
 		M.stop(s, "the server has a password")   -- passwords are never stored or sent
-		return "stop"
-	end
-	-- "Server shutting down" is also what a kick can say. A real shutdown means
-	-- the server stopped answering for a while; one that answers straight away
-	-- didn't restart, so this was a kick in disguise.
-	if s.mode == "shutdown" and not s.sawDown then
-		M.stop(s, "the server didn't restart")
 		return "stop"
 	end
 	if now - s.startedAt > (M.CAP[s.mode] or 0) then
@@ -148,7 +108,7 @@ function M.onProbe(s, answered, locked, now, rand)
 	return "join"
 end
 
--- A join didn't get in. kind: classifyJoinFailure's verdict.
+-- A join didn't get in. kind: classifyJoinEnd's verdict.
 function M.onJoinFailed(s, kind, now, rand)
 	if s.stopped then return s end
 	s.failedJoins = s.failedJoins + 1

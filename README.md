@@ -140,10 +140,14 @@ the game closes while the pack is starting, the next start skips it once by itse
     Network... (attempt n)", with **Cancel**. The server keeps your job, jail time, wanted level and
     loadout for 3 minutes.
   - Only to the server the game was really connected to (the engine's own connection, as everywhere else in
-    the pack), never to an address from a message or a server's Lua. Only after the game's own "Server
-    connection timed out." (when the game had heard nothing from the server for a while, so a kick using
-    the same words doesn't count) or "Server shutting down" (and only once the server was seen to go down
-    and come back). Kicks, bans, a wrong password, your own disconnect and anything else are final.
+    the pack), never to an address from a message or a server's Lua. Whether to rejoin is decided only from
+    the game engine's own view of the connection, checked every frame: if the engine says the server had
+    gone silent (timing out, nothing received for 10 seconds or more) when the connection ended, it was a
+    drop. If packets were still arriving (a kick, a ban, quitting, a map change), it never rejoins. No
+    message or console text is read for this.
+  - A planned restart: just before restarting, our server tells the pack (`meowy.ExpectRestart`, which only
+    works while you're on our server). If the connection then ends within that time, the pack waits for
+    the server to come back and rejoins.
   - Before each join it asks the server whether it's up (the same query as the server list). Tries come
     at about 2, 4, 8, 15 and 30 seconds (+-30%), then every 30; it gives up after 3 minutes (5 when the
     server is restarting) or after 3 joins in a row that failed, and doesn't try again until you've been
@@ -210,6 +214,9 @@ end
 --   pcall(meowy.TimelineEvent, "arrested"). Kinds: arrested, released, printer_destroyed, hit_completed,
 --   wanted_on_you. Reasons: "only works on Meowy Network servers", "unknown kind", "timeline unavailable",
 --   "rate limited")
+-- meowy.ExpectRestart(seconds) -> true, seconds | false, reason   (1.6+; the server restarts within
+--   `seconds`, clamped to 30..600. If the connection ends before then, players who chose to stay
+--   connected are rejoined once the server answers again, within 5 minutes)
 ```
 Identical updates are dropped, and updates are sent at most once every 4 s (Discord's rate limit).
 

@@ -1,11 +1,13 @@
 #pragma once
 // Connection resilience, native half (Windows). The rules are Lua
-// (src/lua/resilience_logic.lua, tested offline); this only gathers what the
-// engine says and keeps the pack's own files.
+// (src/lua/resilience_logic.lua, tested offline); this keeps the pack's own
+// files and our server's word that it's about to restart. The engine's view of
+// the connection itself comes from server_gate (Check, NetHealth).
 //
-// - The engine's console lines (from connect_watch's tier0 logging listener),
-//   the last few seconds of them, so the menu can read why a connection ended:
-//   "Server connection timed out." or "Disconnect: <reason>.". Kept in memory only.
+// - "Restart expected": set from the client realm by meowy.ExpectRestart while
+//   connected to our server (gated like every other call). If the connection
+//   ends before it runs out, the menu treats it as a restart: wait for the
+//   server to answer, then rejoin. Memory only; the DLL is shared by both realms.
 // - %LOCALAPPDATA%\MeowyClientPack\resilience.txt: whether the player was asked,
 //   their answer, and the cl_timeout they had before (key=value lines).
 // - %LOCALAPPDATA%\MeowyClientPack\on_server.txt: "<address> <unix time>" while
@@ -18,10 +20,13 @@
 
 namespace resilience
 {
-	// From the logging listener (any thread).
-	void OnConsoleLine(const char* message);
-	// Lines printed in the last `withinMs`, oldest first.
-	std::vector<std::string> RecentLines(unsigned withinMs);
+	// Our server says it restarts within `seconds` (clamped to 30..600).
+	// Returns the seconds used.
+	int ExpectRestart(double seconds);
+	// Whether that is still in force (not used and not run out).
+	bool RestartExpected();
+	// Used, or the player left: forget it.
+	void ClearRestart();
 
 	// resilience.txt in `dir` ("" if missing); writes at most 512 bytes.
 	std::string ReadSettings(const std::wstring& dir);

@@ -43,6 +43,12 @@
 //                                     on Meowy Network servers", "unknown kind",
 //                                     "timeline unavailable", "rate limited". See
 //                                     timeline.h, timeline_steam.h
+//   meowy.ExpectRestart(seconds)      true, seconds | false, reason (1.6+): the
+//                                     server restarts within `seconds` (clamped
+//                                     to 30..600); if the connection ends before
+//                                     then, players who opted in to staying
+//                                     connected are rejoined once it's back.
+//                                     See resilience.h
 //
 // Since 1.2.1 everything except VERSION, DiscordState, DiscordClear,
 // RestoreMaterialReload and MaterialReloadState only
@@ -870,10 +876,11 @@ namespace
 
 	// --- Connection resilience (resilience.h, src/lua/resilience*.lua) -----------
 
-	// meowy.ResilienceWatch() -> state, address, silence. state: "ours", "other",
-	// "none" (not connected) or "unknown"; address: the engine's own address of
-	// our server (only when "ours"); silence: seconds since the engine last heard
-	// from the server, or nil.
+	// meowy.ResilienceWatch() -> state, address, timingOut, silence. state: "ours",
+	// "other", "none" (not connected) or "unknown"; the rest only when "ours":
+	// the engine's own address of our server, and its net channel's IsTimingOut
+	// and seconds since it last heard from the server (nil, nil when they
+	// couldn't be read). The menu samples this every frame.
 	int ResilienceWatch(lua_State* L)
 	{
 		ILuaBase* LUA = L->luabase;
@@ -889,29 +896,49 @@ namespace
 		if (r != server_gate::Result::Allowed)
 			return 1;
 		LUA->PushString(address.c_str());
+		bool timingOut = false;
 		double silence = 0;
-		if (server_gate::SecondsSinceLastReceived(silence))
+		if (server_gate::NetHealth(timingOut, silence))
+		{
+			LUA->PushBool(timingOut);
 			LUA->PushNumber(silence);
+		}
 		else
+		{
 			LUA->PushNil();
-		return 3;
+			LUA->PushNil();
+		}
+		return 4;
 	}
 
-	// meowy.ResilienceLines(ms) -> { line, ... }: the engine's console lines of the last ms, oldest first.
-	int ResilienceLines(lua_State* L)
+	// Menu: our server said it restarts soon (meowy.ExpectRestart), still in force.
+	int ResilienceRestartExpected(lua_State* L)
+	{
+		L->luabase->PushBool(resilience::RestartExpected());
+		return 1;
+	}
+
+	int ResilienceClearRestart(lua_State*)
+	{
+		resilience::ClearRestart();
+		return 0;
+	}
+
+	// Client: meowy.ExpectRestart(seconds) -> true, seconds | false, reason.
+	// Our server, about to restart, says so: if the connection ends within
+	// `seconds` (30..600), the menu waits for the server to come back and
+	// rejoins (for players who opted in). Only while connected to our server.
+	int ExpectRestart(lua_State* L)
 	{
 		ILuaBase* LUA = L->luabase;
-		double ms = LUA->IsType(1, Type::Number) ? LUA->GetNumber(1) : 3000;
-		std::vector<std::string> lines = resilience::RecentLines(ms < 0 ? 0u : ms > 60000 ? 60000u : static_cast<unsigned>(ms));
-		LUA->CreateTable();
-		int i = 0;
-		for (const std::string& line : lines)
-		{
-			LUA->PushNumber(++i);
-			LUA->PushString(line.c_str(), static_cast<unsigned int>(line.size()));
-			LUA->SetTable(-3);
-		}
-		return 1;
+		int results = 0;
+		if (Refuse(LUA, results))
+			return results;
+		double seconds = LUA->CheckNumber(1);
+		int used = resilience::ExpectRestart(seconds);
+		LUA->PushBool(true);
+		LUA->PushNumber(used);
+		return 2;
 	}
 
 #ifdef _WIN32
@@ -1560,6 +1587,7 @@ GMOD_MODULE_OPEN()
 	SetFunction(LUA, "SetNotifyEnabled", SetNotifyEnabled);
 	SetFunction(LUA, "NotifyEnabled", NotifyEnabled);
 	SetFunction(LUA, "TimelineEvent", TimelineEvent);
+	SetFunction(LUA, "ExpectRestart", ExpectRestart);
 
 	LUA->SetField(-2, "meowy");
 	LUA->Pop();
@@ -1615,7 +1643,8 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	SetFunction(LUA, "DataSandbox", DataSandbox);
 	SetFunction(LUA, "DataSandboxDescribe", DataSandboxDescribe);
 	SetFunction(LUA, "ResilienceWatch", ResilienceWatch);
-	SetFunction(LUA, "ResilienceLines", ResilienceLines);
+	SetFunction(LUA, "ResilienceRestartExpected", ResilienceRestartExpected);
+	SetFunction(LUA, "ResilienceClearRestart", ResilienceClearRestart);
 	SetFunction(LUA, "ResilienceSettingsRead", ResilienceSettingsRead);
 	SetFunction(LUA, "ResilienceSettingsWrite", ResilienceSettingsWrite);
 	SetFunction(LUA, "ResilienceSession", ResilienceSession);
