@@ -90,7 +90,11 @@ the game closes while the pack is starting, the next start skips it once by itse
     `[FAKE - N real]`; it then shows and ranks by N. A server that won't give its list shows
     `[LIST HIDDEN]`, with its count untouched.
   - It also downloads Meowy Network's own verdicts (`meowynetwork.com/api/pack/servers`), from a
-    crawler that adds Steam's own count and the count's history.
+    crawler that adds Steam's own count and the count's history, and from an observer that joins
+    servers: `[VERIFIED]` means it joined in the last 7 days and saw nothing fake; `[UNVERIFIED]`
+    means the server refused it (a VPN or hosting block), which is not an accusation. Servers marked
+    `[UNVERIFIED]` or `[LIST HIDDEN]` sit slightly lower in the list than otherwise-equal ones; none
+    are hidden.
   - **What it sends:** on a server you join that isn't ours, it runs the game's `status` command
     twice, about 90 seconds in and four minutes later. It sends meowynetwork.com the server's
     address, its advertised count, the number of bots `status` lists, and for each other account
