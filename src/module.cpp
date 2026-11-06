@@ -89,6 +89,7 @@
 #include "timeline.h"
 #include "timeline_steam.h"
 #include "resilience.h"
+#include "doctor.h"
 #include "resource.h"
 
 #include <cstdio>
@@ -874,6 +875,52 @@ namespace
 		return 1;
 	}
 
+	// --- PC doctor (doctor.h, src/lua/doctor*.lua) -------------------------------
+
+	// Menu: meowy.DoctorFacts() -> { arch, gpu_time_known, on_battery, battery_saver,
+	// power_mode, adapters = { { name, vram_mb, perf_rank, power_rank, share } } }.
+	// Read-only, local; no adapter LUIDs or serials.
+	int DoctorFacts(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		doctor::Facts f = doctor::Gather();
+		LUA->CreateTable();
+		LUA->PushString(f.arch.c_str());
+		LUA->SetField(-2, "arch");
+		LUA->PushBool(f.gpuTimeKnown);
+		LUA->SetField(-2, "gpu_time_known");
+		if (f.onBattery >= 0) { LUA->PushBool(f.onBattery == 1); LUA->SetField(-2, "on_battery"); }
+		if (f.batterySaver >= 0) { LUA->PushBool(f.batterySaver == 1); LUA->SetField(-2, "battery_saver"); }
+		if (!f.powerMode.empty()) { LUA->PushString(f.powerMode.c_str()); LUA->SetField(-2, "power_mode"); }
+		LUA->CreateTable();
+		int i = 0;
+		for (const doctor::Adapter& a : f.adapters)
+		{
+			LUA->PushNumber(++i);
+			LUA->CreateTable();
+			LUA->PushString(a.name.c_str());
+			LUA->SetField(-2, "name");
+			LUA->PushNumber(static_cast<double>(a.vramMb));
+			LUA->SetField(-2, "vram_mb");
+			LUA->PushNumber(a.perfRank);
+			LUA->SetField(-2, "perf_rank");
+			LUA->PushNumber(a.powerRank);
+			LUA->SetField(-2, "power_rank");
+			if (a.share >= 0) { LUA->PushNumber(a.share); LUA->SetField(-2, "share"); }
+			LUA->SetTable(-3);
+		}
+		LUA->SetField(-2, "adapters");
+		return 1;
+	}
+
+	// Menu: meowy.DoctorOpen(id) -> bool. Only the doctor's fixed pages (doctor::Open).
+	int DoctorOpen(lua_State* L)
+	{
+		bool ok = L->luabase->IsType(1, Type::String) && doctor::Open(L->luabase->GetString(1));
+		L->luabase->PushBool(ok);
+		return 1;
+	}
+
 	// --- Connection resilience (resilience.h, src/lua/resilience*.lua) -----------
 
 	// meowy.ResilienceWatch() -> state, address, timingOut, silence. state: "ours",
@@ -984,8 +1031,10 @@ namespace
 		return 1;
 	}
 
-	// src/lua/resilience_logic.lua and resilience.lua (meowy.rc), as one chunk:
-	// the rules become the local `Logic` the glue uses.
+	// src/lua/resilience_logic.lua, doctor_logic.lua, doctor.lua and
+	// resilience.lua (meowy.rc), as one chunk: the rules become the locals
+	// `Logic` and `Doctor`, and doctor.lua's `DoctorUI` is a tab of
+	// resilience.lua's settings window.
 	std::string ResourceText(int id)
 	{
 		HMODULE self = nullptr;
@@ -1004,7 +1053,14 @@ namespace
 		std::string glue = ResourceText(IDR_RESILIENCE_LUA);
 		if (logic.empty() || glue.empty())
 			return std::string();
-		return "local Logic = (function()\n" + logic + "\nend)()\n" + glue;
+		// The PC doctor (doctor_logic.lua as the local `Doctor`, then doctor.lua,
+		// whose local `DoctorUI` becomes a tab of resilience.lua's settings window).
+		std::string doctorLogic = ResourceText(IDR_DOCTOR_LOGIC_LUA);
+		std::string doctorGlue = ResourceText(IDR_DOCTOR_LUA);
+		std::string doctor;
+		if (!doctorLogic.empty() && !doctorGlue.empty())
+			doctor = "local Doctor = (function()\n" + doctorLogic + "\nend)()\n" + doctorGlue + "\n";
+		return "local Logic = (function()\n" + logic + "\nend)()\n" + doctor + glue;
 	}
 #endif
 
@@ -1649,6 +1705,8 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	SetFunction(LUA, "ResilienceSettingsWrite", ResilienceSettingsWrite);
 	SetFunction(LUA, "ResilienceSession", ResilienceSession);
 	SetFunction(LUA, "ResilienceCrashedSession", ResilienceCrashedSession);
+	SetFunction(LUA, "DoctorFacts", DoctorFacts);
+	SetFunction(LUA, "DoctorOpen", DoctorOpen);
 	LUA->SetField(-2, "meowy");
 
 	data_sandbox::Recover();

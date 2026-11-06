@@ -25,6 +25,7 @@ jobs:
           luac5.1 -p src/lua/*.lua tests/*.lua
           lua5.1 tests/resilience_logic_test.lua
           lua5.1 tests/resilience_menu_test.lua
+          lua5.1 tests/doctor_logic_test.lua
 
   windows:
     runs-on: windows-latest

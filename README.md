@@ -156,6 +156,17 @@ the game closes while the pack is starting, the next start skips it once by itse
     only joins when you click **Rejoin**.
   - The **Meowy settings** button at the top right of the main menu (or `meowy_settings` in the console)
     opens the pack's settings to change your answer.
+- **PC doctor** (1.6+). A tab in the pack's settings (and `meowy_doctor` in the console) with tips for
+  the usual reasons the game runs slowly. It only reads; it changes no Windows or game setting, and
+  nothing it finds leaves your PC.
+  - **Which GPU draws the game.** It lists your graphics adapters (with Windows' own "high performance"
+    and "power saving" ranking) and reads how much GPU time Windows has charged to the game on each one,
+    the same numbers Task Manager shows per process. If the game is on the integrated GPU while a
+    stronger one is there, it says so and offers a button to Windows' Graphics settings, with the steps.
+    The pack doesn't set the per-app GPU preference itself: that's your Windows setting.
+  - **Power:** on battery, battery saver, and Windows' power mode ("Best power efficiency").
+  - **Multicore:** `gmod_mcore_test` and `mat_queue_mode`, with the command to type if it's off.
+  - **32-bit game:** how to switch to the 64-bit branch (Steam, Properties, Betas).
 - **Windows notifications while you're alt-tabbed** (1.5+). When something happens to you in the city
   and the game isn't the window in front, Windows shows a notification ("Your printer is under
   attack.", "Staff replied to your ticket."), the game's taskbar button gets a small badge and flashes
@@ -233,9 +244,13 @@ installer/build.ps1 -Win32 build32/Release/gmcl_meowy_win32.dll -Win64 build64/R
 notification rules), `notify_manual` (a real notification on this PC; see `tests/NOTIFY_MANUAL.md`) and
 `timeline_smoke` (the Steam Timeline marker rules).
 
-Staying connected's menu Lua is in `src/lua/` (built into the DLL as resources). Its rules and its menu
+Staying connected's and the PC doctor's menu Lua is in `src/lua/` (built into the DLL as resources). Their rules and menu
 glue have offline tests, run by CI with Lua 5.1:
 ```
 lua tests/resilience_logic_test.lua
 lua tests/resilience_menu_test.lua
+lua tests/doctor_logic_test.lua
 ```
+`-DMEOWY_BUILD_TESTS=ON` also adds `doctor_smoke [power]`: the PC doctor's facts on this PC, after
+rendering a little with Direct3D 11 on the default adapter (or with `power`, Windows' power-saving one),
+so the per-process GPU time should point at that adapter.

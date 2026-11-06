@@ -82,22 +82,39 @@ local function card(title, text, buttons, width)
 	return f
 end
 
+-- The pack's settings window: a "Connection" tab, and the "PC doctor" tab
+-- (doctor.lua's DoctorUI, in the same chunk) when it's there.
 local function openSettings()
 	local f = vgui.Create("DFrame")
 	f:SetTitle("Meowy Client Pack settings")
-	f:SetSize(440, 110)
+	f:SetSize(520, 380)
 	f:Center()
-	local box = vgui.Create("DCheckBoxLabel", f)
-	box:SetPos(16, 40)
+	local sheet = vgui.Create("DPropertySheet", f)
+	sheet:Dock(FILL)
+
+	local conn = vgui.Create("DPanel", sheet)
+	local box = vgui.Create("DCheckBoxLabel", conn)
+	box:SetPos(12, 12)
 	box:SetText("Stay connected through drops (rejoin Meowy Network automatically)")
 	box:SetValue(settings.enabled)
 	box:SizeToContents()
 	box.OnChange = function(_, value) setEnabled(value) end
-	local note = vgui.Create("DLabel", f)
-	note:SetPos(16, 66)
-	note:SetSize(408, 30)
+	local note = vgui.Create("DLabel", conn)
+	note:SetPos(12, 38)
+	note:SetSize(470, 30)
 	note:SetWrap(true)
 	note:SetText("On: cl_timeout is 60 while you play. Off: your own cl_timeout comes back.")
+	sheet:AddSheet("Connection", conn)
+
+	if DoctorUI then
+		local ok, err = pcall(function()
+			local tips, report = DoctorUI.diagnose()
+			local doc = vgui.Create("DPanel", sheet)
+			DoctorUI.fill(doc, tips, report)
+			sheet:AddSheet(DoctorUI.tabName(tips), doc)
+		end)
+		if not ok then ErrorNoHalt("[Meowy Client Pack] PC doctor: " .. tostring(err) .. "\n") end
+	end
 	f:MakePopup()
 end
 if concommand then

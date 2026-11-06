@@ -5,8 +5,11 @@
 -- read correctly in game, or that the menu state's Derma looks right.
 local here = (arg and arg[0] or ""):match("^(.*)[/\\]") or "."
 local function readFile(p) local f = assert(io.open(p, "rb")) local s = f:read("*a") f:close() return s end
+-- The same order as module.cpp's ResilienceChunk: the rules, the PC doctor, the glue.
 local chunkText = "local Logic = (function()\n" .. readFile(here .. "/../src/lua/resilience_logic.lua")
-	.. "\nend)()\n" .. readFile(here .. "/../src/lua/resilience.lua")
+	.. "\nend)()\n" .. "local Doctor = (function()\n" .. readFile(here .. "/../src/lua/doctor_logic.lua")
+	.. "\nend)()\n" .. readFile(here .. "/../src/lua/doctor.lua") .. "\n"
+	.. readFile(here .. "/../src/lua/resilience.lua")
 local loadstring = loadstring or load
 
 local failures, count = 0, 0
@@ -39,6 +42,8 @@ local function world(opts)
 		ResilienceSettingsWrite = function(t) w.settingsText = t return true end,
 		ResilienceSession = function(on) w.session = on end,
 		ResilienceCrashedSession = function() return w.crashed end,
+		DoctorFacts = function() return opts.facts or { arch = "x64", gpu_time_known = false, adapters = {} } end,
+		DoctorOpen = function(id) w.opened = id return true end,
 		IsOurServer = function(a) return type(a) == "string" and a:match("^138%.201%.62%.52:%d+$") ~= nil end,
 	}
 	env.SysTime = function() return w.now end
@@ -59,6 +64,8 @@ local function world(opts)
 	env.Color = function(r, g, b, a) return { r, g, b, a } end
 	env.draw = { RoundedBox = function() end }
 	env.ScrW = function() return 1920 end
+	env.Msg = function(m) w.printed = (w.printed or "") .. m end
+	env.FILL, env.TOP = 1, 4
 	env.isnumber = function(v) return type(v) == "number" end
 	env.isstring = function(v) return type(v) == "string" end
 	env.ErrorNoHalt = function(m) w.errors = (w.errors or "") .. m end
@@ -70,6 +77,8 @@ local function world(opts)
 			if k == "SetTitle" then return function(self, s) self.title = s end end
 			if k == "Remove" or k == "Close" then return function(self) self.removed = true end end
 			if k == "SetValue" then return function(self, v) self.value = v end end
+			if k == "AddSheet" then return function(self, name) w.sheets = w.sheets or {} w.sheets[#w.sheets + 1] = name end end
+			if k == "Add" then return function(self, class) return env.vgui.Create(class) end end
 			if type(k) == "string" and k:match("^%u") then return function() end end
 		end })
 	end
@@ -159,6 +168,21 @@ check("settings window from the button", found, true)
 local buttons = 0
 for _, p in ipairs(w.panels) do if p.text == "Meowy settings" then buttons = buttons + 1 end end
 check("one button, not one per tick", buttons, 1)
+
+-- PC doctor: a tab in the settings window, and meowy_doctor
+w = world({ settings = "asked=1" .. string.char(13, 10) .. "enabled=0" .. string.char(13, 10), facts = {
+	arch = "x64", gpu_time_known = true, on_battery = false, battery_saver = false, power_mode = "balanced",
+	adapters = {
+		{ name = "NVIDIA GeForce RTX 3070 Ti Laptop GPU", vram_mb = 8017, perf_rank = 1, power_rank = 2, share = 0 },
+		{ name = "AMD Radeon(TM) Graphics", vram_mb = 485, perf_rank = 2, power_rank = 1, share = 1 },
+	} } })
+w.run(1)
+w.concommands.meowy_settings()
+check("tabs", table.concat(w.sheets or {}, "|"), "Connection|PC doctor (1 tip)")
+check("doctor button opens Graphics settings", w.click("Open Graphics settings"), true)
+check("opened by id", w.opened, "graphics_settings")
+w.concommands.meowy_doctor()
+check("meowy_doctor prints", (w.printed or ""):match("^[^\n]+"), "[Meowy Client Pack] PC doctor: 1 tip")
 
 local ON = "asked=1\r\nenabled=1\r\nsaved_cl_timeout=30\r\n"
 
