@@ -330,6 +330,8 @@ local function showOverlay(titleText, subText, buttonText, onButton, busy)
 	end
 	overlay.button.DoClick = onButton
 	overlay:SetPos(math.floor((ScrW() - overlay.w) / 2), S(28))
+	-- Above GMod's own "Disconnected" dialog, which the engine opens after the drop.
+	overlay:MoveToFront()
 end
 
 -- Watching the connection ------------------------------------------------------
@@ -384,7 +386,12 @@ local function probe(now)
 		log("reconnect: attempt %d, server %s%s -> %s", episode.s.attempt,
 			answered and "answered" or "didn't answer", offline and ", Steam offline" or "",
 			act == "wait" and ("next try in " .. fmtNum(episode.s.nextAt - t) .. " s") or act)
-		if act == "join" then
+		if act == "join" and IsInLoading() then
+			-- A join is already under way (the player's own): don't cut across it.
+			-- If it reaches a server, the state check ends this rejoin.
+			episode.phase, episode.s.nextAt = "waiting", t + 2
+			log("reconnect: a join is already under way; checking again in 2 s")
+		elseif act == "join" then
 			episode.phase, episode.joinAt, episode.sawLoading, episode.reachedOurs = "joining", t, false, false
 			log("reconnect: joining %s", episode.address)
 			RunConsoleCommand("connect", episode.address)   -- never a password
@@ -406,16 +413,21 @@ end
 local function tickEpisode(now, state)
 	local e = episode
 	if not settings.enabled then return cancel() end
+	-- Only a real connection ends a rejoin early: the player is on our server
+	-- again, or joined another one. Not IsInGame()/IsInLoading(): for a moment
+	-- after the drop (GMod's disconnect dialog, the teardown) they still say
+	-- "in game", which ended every rejoin the moment it started.
+	if e.phase ~= "joining" then
+		if state == "ours" then return finish("back on our server", false) end
+		if state == "other" then return finish("joined another server", false) end
+	end
 	if e.phase == "waiting" then
-		-- The player started a join of their own: theirs wins.
-		if IsInLoading() or IsInGame() then return finish(nil, false) end
 		if e.s.stopped then return finish(e.s.stopped, true) end
 		showOverlay("Reconnecting to Meowy Network...",
 			("Attempt %d  ·  %s"):format(e.s.attempt, e.s.mode == "restart" and "waiting for the server to restart" or "waiting for the server"),
 			"Cancel", cancel, true)
 		if now >= e.s.nextAt then probe(now) end
 	elseif e.phase == "probing" then
-		if IsInLoading() or IsInGame() then return finish(nil, false) end
 		if e.native then
 			local answered, locked = meowy.ResilienceProbeResult()
 			if answered ~= nil then return e.result(answered, locked) end

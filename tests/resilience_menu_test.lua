@@ -288,6 +288,60 @@ check("Steam back: joins", w.lastConnect(), "connect " .. OURS)
 w.concommands.meowy_resilience_debug()
 check("debug command prints the reading", (w.logs or ""):find("debug: state=", 1, true) ~= nil, true)
 
+-- The live test's sequence: the connection is gone, but GMod still says
+-- "in game" for a moment (its disconnect dialog, the teardown). That must not
+-- end the rejoin it just started (it used to: "stopped (no longer needed)").
+w = world({ settings = ON, native = true })
+w.play(10)
+w.steam = false
+w.drop(60)
+w.inGame = true            -- the teardown frames
+w.run(0.6)
+w.inGame = false
+w.run(1)
+check("teardown: rejoin still running", (w.logs or ""):find("reconnect: stopped", 1, true) == nil, true)
+w.steam = true
+w.run(5)
+check("teardown: joins", w.lastConnect(), "connect " .. OURS)
+w.state, w.address, w.timingOut, w.silence, w.inGame, w.loading = "ours", OURS, false, 0.02, true, false
+w.run(1)
+check("teardown: back in the game ends it", (w.logs or ""):find("reconnect: stopped (back in the game)", 1, true) ~= nil, true)
+
+-- The player joins another server while it waits: the rejoin steps aside
+w = world({ settings = ON })
+w.play(10)
+w.pingAnswer = false
+w.drop(60)
+w.run(3)
+w.state, w.address, w.inGame = "other", nil, true
+w.run(1)
+check("joined elsewhere: stopped", (w.logs or ""):find("reconnect: stopped (joined another server)", 1, true) ~= nil, true)
+w.pingAnswer = true
+w.state, w.inGame = "none", false
+w.run(60)
+check("joined elsewhere: never joins ours", w.connects(), 0)
+
+-- The player rejoins by hand while it waits: ends, no second join
+w = world({ settings = ON })
+w.play(10)
+w.pingAnswer = false
+w.drop(60)
+w.run(3)
+w.state, w.address, w.timingOut, w.silence = "ours", OURS, false, 0.02
+w.run(1)
+check("rejoined by hand: stopped", (w.logs or ""):find("reconnect: stopped (back on our server)", 1, true) ~= nil, true)
+
+-- A join of the player's own is loading when ours would start: ours waits
+w = world({ settings = ON })
+w.play(10)
+w.drop(60)
+w.loading = true
+w.run(10)
+check("player's join loading: we don't connect over it", w.connects(), 0)
+w.loading = false
+w.run(5)
+check("then ours goes ahead", w.lastConnect(), "connect " .. OURS)
+
 -- Silent only briefly (under 10 s) when it ended: not a drop
 w = world({ settings = ON })
 w.play(10)
