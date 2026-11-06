@@ -31,6 +31,7 @@ add_library(meowy SHARED
 	src/timeline.cpp
 	src/timeline_steam.cpp
 	src/resilience.cpp
+	src/resilience_net.cpp
 	src/doctor.cpp)
 target_include_directories(meowy PRIVATE ${gmod_module_base_SOURCE_DIR}/include)
 if(WIN32)
@@ -132,6 +133,14 @@ if(MEOWY_BUILD_TESTS)
 		set_property(TARGET notify_manual PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 		target_compile_options(notify_smoke PRIVATE /W4 /utf-8)
 		target_compile_options(notify_manual PRIVATE /W4 /utf-8)
+	endif()
+	# Connection resilience's own A2S probe against one of our servers, no game:
+	#   probe_smoke <a.b.c.d:port>
+	add_executable(probe_smoke tests/probe_smoke.cpp src/resilience_net.cpp src/server_gate.cpp)
+	target_link_libraries(probe_smoke PRIVATE ws2_32)
+	if(MSVC)
+		set_property(TARGET probe_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+		target_compile_options(probe_smoke PRIVATE /W4 /utf-8)
 	endif()
 	# PC doctor's native facts (adapters, GPU time per adapter, power), no game:
 	#   doctor_smoke

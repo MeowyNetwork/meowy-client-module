@@ -84,6 +84,23 @@ check("restart polling never past 5 min", t <= 300, true)
 s = M.start("restart", 0, 0.5)
 check("restart that answers at once -> join", M.onProbe(s, true, false, 2, 0.5), "join")
 
+-- Steam offline (it went down with the same drop): wait for it, don't join
+s = M.start("timeout", 0, 0.5)
+check("server up, Steam offline -> wait", M.onProbe(s, true, false, 2, 0.5, true), "wait")
+check("waiting for Steam", s.waitingFor, "steam")
+check("Steam back -> join", M.onProbe(s, true, false, s.nextAt, 0.5, false), "join")
+check("Steam unknown (nil) doesn't block", M.onProbe(M.start("timeout", 0, 0.5), true, false, 2, 0.5, nil), "join")
+s = M.start("timeout", 0, 0.999)
+t = 0
+while not s.stopped do t = s.nextAt M.onProbe(s, true, false, t, 0.999, true) end
+check("Steam never back: stops within the cap", t <= 180, true)
+-- Network down for a while, then back within the cap: still joins
+s = M.start("timeout", 0, 0.5)
+t = 0
+for _ = 1, 6 do t = s.nextAt M.onProbe(s, false, false, t, 0.5) end
+check("still trying after ~80 s of no network", s.stopped == nil and s.waitingFor == "server", true)
+check("network back -> join", M.onProbe(s, true, false, s.nextAt, 0.5, false), "join")
+
 -- Password: never sent
 s = M.start("timeout", 0, 0.5)
 check("password -> stop", M.onProbe(s, true, true, 2, 0.5), "stop")

@@ -971,6 +971,41 @@ namespace
 		return 0;
 	}
 
+	// Menu: meowy.ResilienceProbe(address) -> bool: asks our server (A2S_INFO,
+	// plain UDP, not through Steam) whether it's up. Our addresses only.
+	int ResilienceProbe(lua_State* L)
+	{
+		bool started = L->luabase->IsType(1, Type::String) && resilience::StartProbe(L->luabase->GetString(1));
+		L->luabase->PushBool(started);
+		return 1;
+	}
+
+	// Menu: meowy.ResilienceProbeResult() -> nil (waiting) | answered, locked.
+	int ResilienceProbeResult(lua_State* L)
+	{
+		bool locked = false;
+		int r = resilience::ProbeResult(locked);
+		if (r == 0)
+		{
+			L->luabase->PushNil();
+			return 1;
+		}
+		L->luabase->PushBool(r > 0);
+		L->luabase->PushBool(locked);
+		return 2;
+	}
+
+	// Menu: meowy.ResilienceSteamOnline() -> true | false | nil (unknown).
+	int ResilienceSteamOnline(lua_State* L)
+	{
+		int r = resilience::SteamOnline();
+		if (r < 0)
+			L->luabase->PushNil();
+		else
+			L->luabase->PushBool(r == 1);
+		return 1;
+	}
+
 	// Client: meowy.ExpectRestart(seconds) -> true, seconds | false, reason.
 	// Our server, about to restart, says so: if the connection ends within
 	// `seconds` (30..600), the menu waits for the server to come back and
@@ -1703,6 +1738,9 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	SetFunction(LUA, "ResilienceWatch", ResilienceWatch);
 	SetFunction(LUA, "ResilienceRestartExpected", ResilienceRestartExpected);
 	SetFunction(LUA, "ResilienceClearRestart", ResilienceClearRestart);
+	SetFunction(LUA, "ResilienceProbe", ResilienceProbe);
+	SetFunction(LUA, "ResilienceProbeResult", ResilienceProbeResult);
+	SetFunction(LUA, "ResilienceSteamOnline", ResilienceSteamOnline);
 	SetFunction(LUA, "ResilienceSettingsRead", ResilienceSettingsRead);
 	SetFunction(LUA, "ResilienceSettingsWrite", ResilienceSettingsWrite);
 	SetFunction(LUA, "ResilienceSession", ResilienceSession);
