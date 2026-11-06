@@ -154,7 +154,7 @@ the game closes while the pack is starting, the next start skips it once by itse
     back in the game. It never stores or sends a server password.
   - After a crash while you were on Meowy Network, the next start shows "Rejoin Meowy Network?". It
     only joins when you click **Rejoin**.
-  - The **Meowy settings** button at the top right of the main menu (or `meowy_settings` in the console)
+  - **Meowy settings** in the main menu's list, after Options (or `meowy_settings` in the console)
     opens the pack's settings to change your answer.
 - **Windows notifications while you're alt-tabbed** (1.5+). When something happens to you in the city
   and the game isn't the window in front, Windows shows a notification ("Your printer is under
