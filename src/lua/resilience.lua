@@ -407,13 +407,15 @@ local function finish(why, show)
 			-- Gave up (not a kick, ban, password or the player cancelling): the
 			-- card stays, with one click to try once more.
 			local address = e.address
+			-- The spelling the last join didn't use (see Logic.joinAddress).
+			local typed = Logic.joinAddress(address, (e.s.failedJoins or 0) + 1)
 			showOverlay("Couldn't reconnect to Meowy Network", text, {
 				{ "Close", "secondary", closeNote },
 				{ "Rejoin now", "primary", function()
 					closeNote()
 					if isstring(address) and meowy.IsOurServer(address) then
-						log("reconnect: Rejoin now -> joining %s", address)
-						RunConsoleCommand("connect", address)   -- never a password
+						log("reconnect: Rejoin now -> joining %s", typed)
+						RunConsoleCommand("connect", typed)   -- never a password
 					end
 				end },
 			}, false)
@@ -465,8 +467,9 @@ local function probe(now)
 		-- (tickEpisode); one that doesn't is replaced by this connect.
 		if act == "join" then
 			episode.phase, episode.joinAt, episode.sawLoading, episode.reachedOurs = "joining", t, false, false
-			log("reconnect: joining %s", episode.address)
-			RunConsoleCommand("connect", episode.address)   -- never a password
+			local typed = Logic.joinAddress(episode.address, episode.s.failedJoins)
+			log("reconnect: joining %s", typed)
+			RunConsoleCommand("connect", typed)   -- never a password
 		elseif act == "wait" then
 			episode.phase = "waiting"
 		elseif act == "steam" then

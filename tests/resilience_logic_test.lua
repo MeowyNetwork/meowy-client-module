@@ -149,6 +149,21 @@ M.onJoinFailed(s, "retry", 20, 0.5)
 check("3 failed joins: stops", s.stopped, "3 joins in a row failed")
 check("stopped episode never joins", M.onProbe(s, true, false, 30, 0.5), "stop")
 
+-- The 6 Nov Wi-Fi test: the server answered at 145 s, the join failed at once
+-- ("Bad server address") and waited out JOIN_WAIT to 165 s. The next try
+-- would be past the 180 s cap: it must still go ahead, soon.
+s = M.start("timeout", 0, 0.5)
+check("late join, server answered -> join", M.onProbe(s, true, false, 145, 0.5, false), "join")
+M.onJoinFailed(s, "retry", 165, 0.5)
+check("failed late join: not stopped by the clock", s.stopped, nil)
+check("failed late join: retries in JOIN_RETRY", s.nextAt, 165 + M.JOIN_RETRY)
+check("failed late join: past the cap, server answers -> join", M.onProbe(s, true, false, 190, 0.5, false), "join")
+check("first join: address as is", M.joinAddress("138.201.62.52:27015", 0), "138.201.62.52:27015")
+check("after a failed join: default port left off", M.joinAddress("138.201.62.52:27015", 1), "138.201.62.52")
+check("then back to the full address", M.joinAddress("138.201.62.52:27015", 2), "138.201.62.52:27015")
+check("other port: always as is", M.joinAddress("138.201.62.52:27016", 1), "138.201.62.52:27016")
+check("past the cap, no answer -> stops", M.onProbe(M.start("timeout", 0, 0.5), false, false, 190, 0.5), "stop")
+
 s = M.start("timeout", 0, 0.5)
 M.onJoinFailed(s, "final", 3, 0.5)
 check("final failure stops at once", s.stopped, "the server turned the join down")

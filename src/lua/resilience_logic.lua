@@ -24,6 +24,7 @@ M.CAP = { timeout = 180, restart = 300, steam = 300 }   -- seconds from the drop
 M.MAX_FAILED_JOINS = 3            -- joins that failed in a row, then stop for good
 M.MIN_SILENCE = 10                -- a real drop: the engine heard nothing for this long
 M.JOIN_WAIT = 20                  -- a join that has no connection after this long got no answer
+M.JOIN_RETRY = 3                  -- seconds before trying again after a failed join
 M.TIMEOUT_CL = "60"               -- cl_timeout while the player has opted in
 
 -- The engine had given up hearing from the server: timing out, and silent long enough.
@@ -124,7 +125,8 @@ function M.onProbe(s, answered, locked, now, rand, steamOffline)
 		M.stop(s, "the server has a password", "final")   -- passwords are never stored or sent
 		return "stop"
 	end
-	if now - s.startedAt > M.capFor(s) then
+	-- Past the cap, but a join already reached the server: MAX_FAILED_JOINS decides.
+	if s.failedJoins == 0 and now - s.startedAt > M.capFor(s) then
 		M.stop(s, gaveUp(s, now))
 		return "stop"
 	end
@@ -162,7 +164,23 @@ function M.onJoinFailed(s, kind, now, rand)
 	s.failedJoins = s.failedJoins + 1
 	if kind ~= "retry" then return M.stop(s, "the server turned the join down", "final") end
 	if s.failedJoins >= M.MAX_FAILED_JOINS then return M.stop(s, "3 joins in a row failed") end
-	return M.schedule(s, now, rand)
+	-- The server answered just before this join, so try again soon, and past
+	-- the cap: MAX_FAILED_JOINS bounds these, not the clock. (A join right after
+	-- the network came back can fail at once while the server is fine.)
+	s.attempt = s.attempt + 1
+	s.nextAt = now + M.JOIN_RETRY
+	return s
+end
+
+-- The address to type for a join. After the network drops, the engine can
+-- refuse the exact address it timed out on ("Bad server address", at once)
+-- while the same server under another spelling gets in, so after a failed
+-- join the default port is left off ("1.2.3.4" is "1.2.3.4:27015").
+function M.joinAddress(address, failedJoins)
+	if type(address) ~= "string" then return address end
+	local ip = address:match("^(%d+%.%d+%.%d+%.%d+):27015$")
+	if ip and (failedJoins or 0) % 2 == 1 then return ip end
+	return address
 end
 
 -- Settings file (%LOCALAPPDATA%\MeowyClientPack\resilience.txt): key=value lines.

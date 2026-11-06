@@ -159,6 +159,9 @@ local function world(opts)
 		for _, c in ipairs(w.commands) do if c:match("^connect ") then n = n + 1 end end
 		return n
 	end
+	function w.firstConnect()
+		for _, c in ipairs(w.commands) do if c:match("^connect ") then return c end end
+	end
 	function w.lastConnect()
 		for i = #w.commands, 1, -1 do if w.commands[i]:match("^connect ") then return w.commands[i] end end
 	end
@@ -303,7 +306,7 @@ check("server back, Steam still offline: no join", w.connects(), 0)
 check("logged Steam offline", (w.logs or ""):find("Steam offline", 1, true) ~= nil, true)
 w.steam = true
 w.run(35)
-check("Steam back: joins", w.lastConnect(), "connect " .. OURS)
+check("Steam back: joins", w.firstConnect(), "connect " .. OURS)
 w.concommands.meowy_resilience_debug()
 check("debug command prints the reading", (w.logs or ""):find("debug: state=", 1, true) ~= nil, true)
 
@@ -363,7 +366,7 @@ w.run(20)
 check("dialog up, server down: no join yet", w.connects(), 0)
 w.pingAnswer = true
 w.run(35)
-check("dialog up, server answers: connects", w.lastConnect(), "connect " .. OURS)
+check("dialog up, server answers: connects", w.firstConnect(), "connect " .. OURS)
 check("no 'already under way' loop", (w.logs or ""):find("already under way", 1, true) == nil, true)
 check("no menu-state errors", w.errors, nil)
 
@@ -401,7 +404,9 @@ check("Steam never back: stopped", (w.logs or ""):find("Steam didn't reconnect",
 check("Steam never back: no join", w.connects(), 0)
 w.steam = true
 check("Rejoin now offered and joins", w.click("Rejoin now"), true)
-check("Rejoin now: one join to our address", w.lastConnect() == "connect " .. OURS and w.connects() == 1, true)
+-- Either spelling of our address (Logic.joinAddress may leave the default port off).
+local function ours(cmd) return cmd == "connect " .. OURS or cmd == "connect " .. OURS:match("^(.-):27015$") end
+check("Rejoin now: one join to our address", ours(w.lastConnect()) and w.connects() == 1, true)
 
 -- Gave up (server never answered): the card stays with Rejoin now and Close
 w = world({ settings = ON })
@@ -506,7 +511,7 @@ check("restart: no join while down", w.connects(), 0)
 check("restart: flag spent", w.restartUntil, nil)
 w.pingAnswer = true
 w.run(40)
-check("restart: joins when it answers", w.lastConnect(), "connect " .. OURS)
+check("restart: joins when it answers", w.firstConnect(), "connect " .. OURS)
 
 -- Restart notice that ran out before the connection ended: a plain kick
 w = world({ settings = ON })
