@@ -23,45 +23,54 @@ function DoctorUI.diagnose()
 	return Doctor.diagnose(facts, { mcore = cvarString("gmod_mcore_test"), queue = cvarString("mat_queue_mode") })
 end
 
-function DoctorUI.tabName(tips)
-	return "PC doctor (" .. Doctor.summary(tips) .. ")"
-end
+-- The PC doctor tab's contents, as blocks for the settings window to stack:
+-- a summary, one card per tip (coloured by how much it matters, with its
+-- button), then what was found.
+function DoctorUI.build(tips, report)
+	local C, S = UI.C, UI.S
+	local blocks = {}
+	local head = UI.Text(nil, "PC doctor", "MeowyPack.Heading", C.white)
+	blocks[#blocks + 1] = head
+	local summary = #tips == 0 and "Checked just now. Nothing to fix: this PC is set up well for Garry's Mod."
+		or ("Checked just now. %s for this PC."):format(Doctor.summary(tips))
+	local sub = UI.Text(nil, summary, "MeowyPack.Small", C.dim)
+	sub.gapBefore = S(4)
+	blocks[#blocks + 1] = sub
 
-local FG, DIM = Color(30, 30, 35), Color(70, 70, 80)
-
--- The tab's contents: each tip (title, what to do, a button when there's a
--- page to open), then what was found.
-function DoctorUI.fill(parent, tips, report)
-	local scroll = vgui.Create("DScrollPanel", parent)
-	scroll:Dock(FILL)
-	local function label(text, font, color, top)
-		local l = scroll:Add("DLabel")
-		l:SetFont(font)
-		l:SetTextColor(color)
-		l:SetWrap(true)
-		l:SetAutoStretchVertical(true)
-		l:SetText(text)
-		l:Dock(TOP)
-		l:DockMargin(10, top or 2, 10, 0)
-		return l
+	if #tips == 0 then
+		local ok = UI.Card(nil, C.green)
+		ok.icon, ok.indent = { color = C.green, check = true }, S(40)
+		ok:Add(UI.Text(ok, "All good", "MeowyPack.Heading", C.white))
+		ok:Add(UI.Text(ok, "The game is on your strongest GPU, multicore rendering is on and nothing is holding the PC back.", "MeowyPack.Body", C.text), S(4))
+		ok.gapBefore = S(16)
+		blocks[#blocks + 1] = ok
 	end
-	if #tips == 0 then label("Nothing to fix: this PC is set up well for Garry's Mod.", "DermaDefaultBold", FG, 10) end
-	for _, tip in ipairs(tips) do
-		label(tip.title, "DermaDefaultBold", FG, 10)
-		label(tip.text, "DermaDefault", DIM)
+	for i, tip in ipairs(tips) do
+		local color = tip.severity == "high" and C.accent or C.amber
+		local card = UI.Card(nil, color)
+		card.icon, card.indent = { color = color, glyph = "!" }, S(40)
+		card.meowyTip = tip.id
+		card:Add(UI.Text(card, tip.title, "MeowyPack.Heading", C.white))
+		card:Add(UI.Text(card, tip.text, "MeowyPack.Body", C.text), S(6))
 		if tip.action then
-			local b = scroll:Add("DButton")
-			b:SetText(tip.action_label or "Open")
-			b:SetTall(24)
-			b:Dock(TOP)
-			b:DockMargin(10, 4, 330, 0)
 			local action = tip.action
-			b.DoClick = function() meowy.DoctorOpen(action) end
+			card:Add(UI.Button(card, tip.action_label or "Open", "primary", function() meowy.DoctorOpen(action) end), S(14))
 		end
+		card.gapBefore = i == 1 and S(16) or S(12)
+		blocks[#blocks + 1] = card
 	end
-	label("What the doctor found", "DermaDefaultBold", FG, 14)
-	for _, line in ipairs(report) do label(line, "DermaDefault", DIM) end
-	label("Nothing here leaves your PC, and the pack doesn't change these settings for you.", "DermaDefault", DIM, 10)
+
+	local found = UI.Card(nil)
+	found:Add(UI.Text(found, "What the doctor found", "MeowyPack.Heading", C.white))
+	for _, line in ipairs(report) do
+		found:Add(UI.Text(found, line, "MeowyPack.Small", C.text), S(6))
+	end
+	found.gapBefore = S(20)
+	blocks[#blocks + 1] = found
+	local note = UI.Text(nil, "Nothing here leaves your PC, and the pack doesn't change these settings for you.", "MeowyPack.Small", C.dim)
+	note.gapBefore = S(12)
+	blocks[#blocks + 1] = note
+	return blocks
 end
 
 if concommand then

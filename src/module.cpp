@@ -1049,9 +1049,10 @@ namespace
 
 	std::string ResilienceChunk()
 	{
+		std::string ui = ResourceText(IDR_UI_LUA);   // the menu UI kit, as the local `UI`
 		std::string logic = ResourceText(IDR_RESILIENCE_LOGIC_LUA);
 		std::string glue = ResourceText(IDR_RESILIENCE_LUA);
-		if (logic.empty() || glue.empty())
+		if (ui.empty() || logic.empty() || glue.empty())
 			return std::string();
 		// The PC doctor (doctor_logic.lua as the local `Doctor`, then doctor.lua,
 		// whose local `DoctorUI` becomes a tab of resilience.lua's settings window).
@@ -1060,7 +1061,8 @@ namespace
 		std::string doctor;
 		if (!doctorLogic.empty() && !doctorGlue.empty())
 			doctor = "local Doctor = (function()\n" + doctorLogic + "\nend)()\n" + doctorGlue + "\n";
-		return "local Logic = (function()\n" + logic + "\nend)()\n" + doctor + glue;
+		return "local UI = (function()\n" + ui + "\nend)()\n"
+			"local Logic = (function()\n" + logic + "\nend)()\n" + doctor + glue;
 	}
 #endif
 

@@ -12,6 +12,9 @@ local M = {}
 
 M.MIN_SHARE = 0.5   -- the adapter with at least this much of the game's GPU time draws it
 
+-- How much each tip matters: "high" (a big, fixable slowdown or crashes) or "medium".
+M.SEVERITY = { gpu = "high", mcore = "high", branch = "high", queue = "medium", battery = "medium", battery_saver = "medium", power_mode = "medium" }
+
 local function str(v) return type(v) == "string" and v or "" end
 
 -- The adapter drawing the game: most of this process's GPU time, if known.
@@ -123,6 +126,7 @@ function M.diagnose(facts, cvars)
 		report[#report + 1] = "Game: 64-bit"
 	end
 
+	for _, t in ipairs(tips) do t.severity = M.SEVERITY[t.id] or "medium" end
 	return tips, report
 end
 

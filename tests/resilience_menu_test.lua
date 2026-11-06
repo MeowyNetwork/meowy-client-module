@@ -5,8 +5,9 @@
 -- read correctly in game, or that the menu state's Derma looks right.
 local here = (arg and arg[0] or ""):match("^(.*)[/\\]") or "."
 local function readFile(p) local f = assert(io.open(p, "rb")) local s = f:read("*a") f:close() return s end
--- The same order as module.cpp's ResilienceChunk: the rules, the PC doctor, the glue.
-local chunkText = "local Logic = (function()\n" .. readFile(here .. "/../src/lua/resilience_logic.lua")
+-- The same order as module.cpp's ResilienceChunk: the UI kit, the rules, the PC doctor, the glue.
+local chunkText = "local UI = (function()\n" .. readFile(here .. "/../src/lua/ui.lua") .. "\nend)()\n"
+	.. "local Logic = (function()\n" .. readFile(here .. "/../src/lua/resilience_logic.lua")
 	.. "\nend)()\n" .. "local Doctor = (function()\n" .. readFile(here .. "/../src/lua/doctor_logic.lua")
 	.. "\nend)()\n" .. readFile(here .. "/../src/lua/doctor.lua") .. "\n"
 	.. readFile(here .. "/../src/lua/resilience.lua")
@@ -28,7 +29,7 @@ local function world(opts)
 	local w = {
 		now = 0, state = "none", address = nil, timingOut = nil, silence = nil, inGame = false, loading = false,
 		restartUntil = nil, commands = {}, settingsText = opts.settings or "", crashed = opts.crashed,
-		cl_timeout = "30", pingAnswer = true, pingPass = false, buttons = {}, think = nil,
+		cl_timeout = "30", pingAnswer = true, pingPass = false, buttons = {}, think = nil, jsCalls = 0,
 	}
 	local env = setmetatable({}, { __index = _G })
 	env.meowy = {
@@ -61,9 +62,21 @@ local function world(opts)
 		if w.pingAnswer then cb(30, "Meowy", "", "map", 10, 64, 0, w.pingPass) end
 	end }
 	env.concommand = { Add = function(name, fn) w.concommands = w.concommands or {} w.concommands[name] = fn end }
-	env.Color = function(r, g, b, a) return { r, g, b, a } end
-	env.draw = { RoundedBox = function() end }
+	env.Color = function(r, g, b, a) return { r = r, g = g, b = b, a = a or 255 } end
+	env.draw = { RoundedBox = function() end, RoundedBoxEx = function() end, SimpleText = function() end }
+	env.surface = {
+		CreateFont = function(name) w.fonts = (w.fonts or 0) + 1 end,
+		SetFont = function(f) w.font = f end,
+		GetTextSize = function(t) return #tostring(t) * 8, 16 end,
+		SetDrawColor = function() end, DrawLine = function() end,
+	}
 	env.ScrW = function() return 1920 end
+	env.ScrH = function() return 1080 end
+	env.RealTime = function() return w.now end
+	env.TEXT_ALIGN_CENTER = 1
+	if opts.menu then
+		env.pnlMainMenu = { Call = function(self, js) w.jsCalls = w.jsCalls + 1 w.js = js end }
+	end
 	env.Msg = function(m) w.printed = (w.printed or "") .. m end
 	env.FILL, env.TOP = 1, 4
 	env.isnumber = function(v) return type(v) == "number" end
@@ -77,12 +90,14 @@ local function world(opts)
 			if k == "SetTitle" then return function(self, s) self.title = s end end
 			if k == "Remove" or k == "Close" then return function(self) self.removed = true end end
 			if k == "SetValue" then return function(self, v) self.value = v end end
-			if k == "AddSheet" then return function(self, name) w.sheets = w.sheets or {} w.sheets[#w.sheets + 1] = name end end
-			if k == "Add" then return function(self, class) return env.vgui.Create(class) end end
+			if k == "GetText" then return function(self) return self.text end end
+			if k == "SetVisible" then return function(self, v) self.visible = v end end
+			if k == "Add" then return function(self, child) if type(child) == "string" then return env.vgui.Create(child) end return child end end
 			if type(k) == "string" and k:match("^%u") then return function() end end
 		end })
 	end
 	env.vgui = { Create = function(class) local p = panel(class) w.panels = w.panels or {} w.panels[#w.panels + 1] = p return p end }
+	w.env = env
 	local fn = assert(loadstring(chunkText, "resilience"))
 	if setfenv then setfenv(fn, env) else fn = assert(load(chunkText, "resilience", "t", env)) end
 	fn()
@@ -93,6 +108,17 @@ local function world(opts)
 			w.now = w.now + 0.1
 			w.think()
 		end
+	end
+	-- Paints every live panel once, as Derma would: any Lua error is returned.
+	function w.paintAll()
+		local errs = {}
+		for _, p in ipairs(w.panels or {}) do
+			if not p.removed and rawget(p, "Paint") then
+				local ok, err = pcall(p.Paint, p, 300, 60)
+				if not ok then errs[#errs + 1] = (p.class or "?") .. ": " .. tostring(err) end
+			end
+		end
+		return table.concat(errs, "; ")
 	end
 	function w.click(text)
 		for i = #w.buttons, 1, -1 do
@@ -129,15 +155,21 @@ local function world(opts)
 	return w
 end
 
+local w
+local function find(pred)
+	for _, p in ipairs(w and w.panels or {}) do if not p.removed and pred(p) then return p end end
+end
+
 -- Opt-in: asked once, Yes sets cl_timeout 60 and remembers the old value
-local w = world({})
+w = world({})
 w.run(4)
-check("asked at start", w.click("Yes"), true)
+check("asked at start", w.click("Yes, stay connected"), true)
 check("cl_timeout set", w.cl_timeout, "60")
 check("saved", w.settingsText, "asked=1\r\nenabled=1\r\nsaved_cl_timeout=30\r\n")
+check("fonts made", (w.fonts or 0) > 0, true)
 local w2 = world({ settings = w.settingsText })
 w2.run(4)
-check("not asked twice", w2.click("Yes"), false)
+check("not asked twice", w2.click("Yes, stay connected"), false)
 
 -- No changes nothing
 w = world({})
@@ -146,31 +178,48 @@ w.click("No thanks")
 check("No: cl_timeout untouched", w.cl_timeout, "30")
 check("No: remembered", w.settingsText, "asked=1\r\nenabled=0\r\n")
 
--- Settings window: turning it off restores cl_timeout
+-- Settings window: the toggle shows the setting; turning it off restores cl_timeout
 w = world({ settings = "asked=1\r\nenabled=1\r\nsaved_cl_timeout=30\r\n" })
 w.cl_timeout = "60"
 w.run(4)
 w.concommands.meowy_settings()
-local box
-for _, p in ipairs(w.panels) do if p.class == "DCheckBoxLabel" then box = p end end
-check("checkbox shows on", box.value, true)
-box:OnChange(false)
+local toggle = find(function(p) return p.meowyToggle == "stay_connected" end)
+check("toggle shows on", toggle and toggle.on, true)
+toggle:SetOn(false)
 check("off restores", w.cl_timeout, "30")
 check("off saved", w.settingsText, "asked=1\r\nenabled=0\r\n")
 
--- The main menu's "Meowy settings" button opens the same window
-w = world({ settings = "asked=1" .. string.char(13, 10) .. "enabled=0" .. string.char(13, 10) })
+-- Main menu entry: the menu page gets the JS, and once it says the entry is
+-- there, no fallback pill
+w = world({ settings = "asked=1\r\nenabled=0\r\n", menu = true })
+w.run(2)
+check("entry JS sent", w.jsCalls > 0, true)
+check("entry goes after Options", (w.js or ""):find("OpenOptionsDialog", 1, true) ~= nil, true)
+check("entry opens the settings", (w.js or ""):find("MeowyClientPackOpenSettings()", 1, true) ~= nil, true)
+local pill = find(function(p) return p.text == "Meowy settings" end)
+check("no pill while the entry may still show up", pill == nil or pill.visible == false, true)
+w.env.MeowyClientPackMenuEntry()   -- what the page does once the entry is in
+w.run(10)
+pill = find(function(p) return p.text == "Meowy settings" end)
+check("entry there: no pill", pill == nil or pill.visible == false, true)
+w = world({ settings = "asked=1" .. string.char(13, 10) .. "enabled=0" .. string.char(13, 10), menu = true })
+w.run(8)
+pill = find(function(p) return p.text == "Meowy settings" end)
+check("entry never confirmed: pill after 6 s", pill and pill.visible, true)
+
+-- No menu page to add to: the pill shows, and opens the same window
+w = world({ settings = "asked=1\r\nenabled=0\r\n" })
 w.run(1)
-check("menu button opens settings", w.click("Meowy settings"), true)
-local found = false
-for _, p in ipairs(w.panels) do if p.class == "DCheckBoxLabel" then found = true end end
-check("settings window from the button", found, true)
+pill = find(function(p) return p.text == "Meowy settings" end)
+check("pill shown", pill and pill.visible, true)
+check("pill opens settings", w.click("Meowy settings"), true)
+check("settings window from the pill", find(function(p) return p.meowyToggle == "stay_connected" end) ~= nil, true)
 local buttons = 0
 for _, p in ipairs(w.panels) do if p.text == "Meowy settings" then buttons = buttons + 1 end end
-check("one button, not one per tick", buttons, 1)
+check("one pill, not one per tick", buttons, 1)
 
--- PC doctor: a tab in the settings window, and meowy_doctor
-w = world({ settings = "asked=1" .. string.char(13, 10) .. "enabled=0" .. string.char(13, 10), facts = {
+-- PC doctor: a tab with a badge in the settings window, and meowy_doctor
+w = world({ settings = "asked=1\r\nenabled=0\r\n", facts = {
 	arch = "x64", gpu_time_known = true, on_battery = false, battery_saver = false, power_mode = "balanced",
 	adapters = {
 		{ name = "NVIDIA GeForce RTX 3070 Ti Laptop GPU", vram_mb = 8017, perf_rank = 1, power_rank = 2, share = 0 },
@@ -178,11 +227,17 @@ w = world({ settings = "asked=1" .. string.char(13, 10) .. "enabled=0" .. string
 	} } })
 w.run(1)
 w.concommands.meowy_settings()
-check("tabs", table.concat(w.sheets or {}, "|"), "Connection|PC doctor (1 tip)")
+local docTab = find(function(p) return p.tabId == "doctor" end)
+check("doctor tab", docTab and docTab.text, "PC doctor")
+check("doctor tab badge", docTab and docTab.badge, "1 tip")
+check("general tab", find(function(p) return p.tabId == "general" end) ~= nil, true)
+check("open the doctor tab", w.click("PC doctor"), true)
+check("a card for the GPU tip", find(function(p) return p.meowyTip == "gpu" end) ~= nil, true)
 check("doctor button opens Graphics settings", w.click("Open Graphics settings"), true)
 check("opened by id", w.opened, "graphics_settings")
 w.concommands.meowy_doctor()
 check("meowy_doctor prints", (w.printed or ""):match("^[^\n]+"), "[Meowy Client Pack] PC doctor: 1 tip")
+check("settings and doctor cards paint", w.paintAll(), "")
 
 local ON = "asked=1\r\nenabled=1\r\nsaved_cl_timeout=30\r\n"
 
@@ -192,8 +247,9 @@ w.play(10)
 w.drop(60)
 w.run(1.5)
 local overlayShown = false
-for _, p in ipairs(w.panels) do if p.class == "DPanel" and not p.removed then overlayShown = true end end
+for _, p in ipairs(w.panels) do if p.meowyOverlay and not p.removed then overlayShown = true end end
 check("timeout: overlay up", overlayShown, true)
+check("overlay paints", w.paintAll(), "")
 w.run(3)
 check("timeout: pinged our address", w.pinged, OURS)
 check("timeout: joined", w.lastConnect(), "connect " .. OURS)
@@ -327,6 +383,7 @@ check("kicked while joining: no more joins", w.connects(), 1)
 w = world({ settings = ON, crashed = OURS })
 w.run(10)
 check("crash: no join on its own", w.connects(), 0)
+check("crash card paints", w.paintAll(), "")
 check("crash: card", w.click("Rejoin"), true)
 check("crash: joins on click", w.lastConnect(), "connect " .. OURS)
 w = world({ settings = ON, crashed = "1.2.3.4:27015" })
