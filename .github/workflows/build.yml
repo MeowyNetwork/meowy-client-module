@@ -12,6 +12,20 @@ permissions:
   attestations: write
 
 jobs:
+  lua:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Lua 5.1 (Garry's Mod runs LuaJIT, 5.1 syntax)
+        run: sudo apt-get update && sudo apt-get install -y lua5.1
+
+      - name: Check and test the menu Lua
+        run: |
+          luac5.1 -p src/lua/*.lua tests/*.lua
+          lua5.1 tests/resilience_logic_test.lua
+          lua5.1 tests/resilience_menu_test.lua
+
   windows:
     runs-on: windows-latest
     steps:

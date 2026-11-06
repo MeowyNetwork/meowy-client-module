@@ -32,4 +32,11 @@ namespace server_gate
 
 	// Whether "a.b.c.d:port" is one of our servers (the same list as Check).
 	bool IsOurAddress(const std::string& address);
+
+	// The engine's own view of the connection's health: INetChannelInfo::
+	// IsTimingOut (no packet for a few seconds) and GetTimeSinceLastReceived
+	// (seconds). False when not connected or it couldn't be read safely.
+	// Connection resilience uses it to tell a real drop (the server went
+	// silent) from a kick, ban, quit or map change (packets still flowing).
+	bool NetHealth(bool& timingOut, double& silence);
 }
