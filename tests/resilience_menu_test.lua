@@ -5,10 +5,12 @@
 -- read correctly in game, or that the menu state's Derma looks right.
 local here = (arg and arg[0] or ""):match("^(.*)[/\\]") or "."
 local function readFile(p) local f = assert(io.open(p, "rb")) local s = f:read("*a") f:close() return s end
--- The same order as module.cpp's ResilienceChunk: the UI kit, the rules, the glue.
+-- The same order as module.cpp's ResilienceChunk: the UI kit, the rules, the PC doctor, the glue.
 local chunkText = "local UI = (function()\n" .. readFile(here .. "/../src/lua/ui.lua") .. "\nend)()\n"
 	.. "local Logic = (function()\n" .. readFile(here .. "/../src/lua/resilience_logic.lua")
-	.. "\nend)()\n" .. readFile(here .. "/../src/lua/resilience.lua")
+	.. "\nend)()\n" .. "local Doctor = (function()\n" .. readFile(here .. "/../src/lua/doctor_logic.lua")
+	.. "\nend)()\n" .. readFile(here .. "/../src/lua/doctor.lua") .. "\n"
+	.. readFile(here .. "/../src/lua/resilience.lua")
 local loadstring = loadstring or load
 
 local failures, count = 0, 0
@@ -32,7 +34,8 @@ local function world(opts)
 	-- Globals the menu state doesn't have: touching one fails the test, the way
 	-- it fails in game ("attempt to call global 'RealTime' (a nil value)").
 	local NOT_IN_MENU = { RealTime = true, CurTime = true, FrameTime = true, RealFrameTime = true,
-		LocalPlayer = true, player = true, ents = true, net = true, timer = true, engine = true }
+		LocalPlayer = true, player = true, ents = true, net = true, timer = true, engine = true,
+		TEXT_ALIGN_LEFT = true, TEXT_ALIGN_CENTER = true, TEXT_ALIGN_RIGHT = true, TEXT_ALIGN_TOP = true, TEXT_ALIGN_BOTTOM = true }
 	local env = setmetatable({}, { __index = function(_, k)
 		if NOT_IN_MENU[k] then error("menu state has no global '" .. k .. "'", 2) end
 		return _G[k]
@@ -48,6 +51,8 @@ local function world(opts)
 		ResilienceSettingsWrite = function(t) w.settingsText = t return true end,
 		ResilienceSession = function(on) w.session = on end,
 		ResilienceCrashedSession = function() return w.crashed end,
+		DoctorFacts = function() return opts.facts or { arch = "x64", gpu_time_known = false, adapters = {} } end,
+		DoctorOpen = function(id) w.opened = id return true end,
 		ResilienceProbe = opts.native and function(a) w.pinged = a w.probeAsked = true return true end or nil,
 		ResilienceProbeResult = opts.native and function()
 			if not w.probeAsked then return nil end
@@ -55,10 +60,19 @@ local function world(opts)
 			return w.pingAnswer, false
 		end or nil,
 		ResilienceSteamOnline = opts.native and function() return w.steam end or nil,
-		IsOurServer = function(a) return type(a) == "string" and a:match("^138%.201%.62%.52:%d+$") ~= nil end,
+		IsOurServer = function(a) return type(a) == "string" and a == "138.201.62.52:27015" end,
+		-- The start-up line (opts.startup: the stubs exist; w.startup: it's in menu.lua).
+		StartupHook = opts.startup ~= nil and function() return w.startup, not w.startup end or nil,
+		SetStartupHook = opts.startup ~= nil and function(on) w.startup = on return true end or nil,
+		-- The engine's last "Disconnected: <reason>" (w.refuse sets it).
+		ResilienceLastDisconnect = function()
+			if not w.refusedAt then return nil end
+			return w.refusal, w.now - w.refusedAt
+		end,
 	}
 	-- The jitter at its middle, so timings in these tests are the same every run.
-	env.math = setmetatable({ random = function() return 0.5 end }, { __index = math })
+	env.math = setmetatable({ random = function() return 0.5 end,
+		Clamp = function(v, lo, hi) return v < lo and lo or (v > hi and hi or v) end }, { __index = math })
 	env.SysTime = function() return w.now end
 	env.IsInGame = function() return w.inGame end
 	env.IsInLoading = function() return w.loading end
@@ -73,6 +87,9 @@ local function world(opts)
 		w.pinged = addr
 		if w.pingAnswer then cb(30, "Meowy", "", "map", 10, 64, 0, w.pingPass) end
 	end }
+	if opts.joinServer then
+		env.JoinServer = function(addr) w.joinServer = (w.joinServer or 0) + 1 w.joinedVia = addr end
+	end
 	env.concommand = { Add = function(name, fn) w.concommands = w.concommands or {} w.concommands[name] = fn end }
 	env.Color = function(r, g, b, a) return { r = r, g = g, b = b, a = a or 255 } end
 	env.draw = { RoundedBox = function() end, RoundedBoxEx = function() end, SimpleText = function() end }
@@ -84,7 +101,6 @@ local function world(opts)
 	}
 	env.ScrW = function() return 1920 end
 	env.ScrH = function() return 1080 end
-	env.TEXT_ALIGN_CENTER = 1
 	if opts.menu then
 		env.pnlMainMenu = { Call = function(self, js) w.jsCalls = w.jsCalls + 1 w.js = js end }
 	end
@@ -103,6 +119,15 @@ local function world(opts)
 			if k == "Remove" or k == "Close" then return function(self) self.removed = true end end
 			if k == "SetValue" then return function(self, v) self.value = v end end
 			if k == "GetText" then return function(self) return self.text end end
+			-- Position and size, as real panels keep them (the layout reads them back).
+			if k == "SetPos" then return function(self, x, y) self.px, self.py = x, y end end
+			if k == "GetPos" then return function(self) return self.px or 0, self.py or 0 end end
+			if k == "SetSize" then return function(self, x, y) self.sw, self.sh = x, y end end
+			if k == "SetWide" then return function(self, x) self.sw = x end end
+			if k == "SetTall" then return function(self, y) self.sh = y end end
+			if k == "GetWide" then return function(self) return self.sw or 0 end end
+			if k == "GetTall" then return function(self) return self.sh or 0 end end
+			if k == "GetSize" then return function(self) return self.sw or 0, self.sh or 0 end end
 			if k == "SetVisible" then return function(self, v) self.visible = v end end
 			if k == "Add" then return function(self, child) if type(child) == "string" then return env.vgui.Create(child) end return child end end
 			if type(k) == "string" and k:match("^%u") then return function() end end
@@ -145,6 +170,9 @@ local function world(opts)
 		for _, c in ipairs(w.commands) do if c:match("^connect ") then n = n + 1 end end
 		return n
 	end
+	function w.firstConnect()
+		for _, c in ipairs(w.commands) do if c:match("^connect ") then return c end end
+	end
 	function w.lastConnect()
 		for i = #w.commands, 1, -1 do if w.commands[i]:match("^connect ") then return w.commands[i] end end
 	end
@@ -154,6 +182,8 @@ local function world(opts)
 		w.run(seconds or 5)
 	end
 	-- The server goes silent; the engine gives up after `after` seconds.
+	-- The engine refuses the join under way: "Disconnected: <reason>".
+	function w.refuse(reason) w.refusal, w.refusedAt = reason, w.now end
 	function w.drop(after)
 		local t = 0
 		while t < (after or 60) do
@@ -176,18 +206,18 @@ end
 -- Opt-in: asked once, Yes sets cl_timeout 60 and remembers the old value
 w = world({})
 w.run(4)
-check("asked at start", w.click("Yes, stay connected"), true)
+check("asked at start", w.click("Stay connected"), true)
 check("cl_timeout set", w.cl_timeout, "60")
 check("saved", w.settingsText, "asked=1\r\nenabled=1\r\nsaved_cl_timeout=30\r\n")
 check("fonts made", (w.fonts or 0) > 0, true)
 local w2 = world({ settings = w.settingsText })
 w2.run(4)
-check("not asked twice", w2.click("Yes, stay connected"), false)
+check("not asked twice", w2.click("Stay connected"), false)
 
 -- No changes nothing
 w = world({})
 w.run(4)
-w.click("No thanks")
+w.click("Not now")
 check("No: cl_timeout untouched", w.cl_timeout, "30")
 check("No: remembered", w.settingsText, "asked=1\r\nenabled=0\r\n")
 
@@ -201,6 +231,17 @@ check("toggle shows on", toggle and toggle.on, true)
 toggle:SetOn(false)
 check("off restores", w.cl_timeout, "30")
 check("off saved", w.settingsText, "asked=1\r\nenabled=0\r\n")
+
+-- Start with the game: shows whether the line is in menu.lua, and flips it
+w = world({ settings = "asked=1\r\nenabled=1\r\n", startup = true })
+w.startup = true
+w.run(4)
+w.concommands.meowy_settings()
+local start = find(function(p) return p.meowyToggle == "start_with_game" end)
+check("start-up toggle shows on", start and start.on, true)
+start:SetOn(false)
+check("start-up off: line removed", w.startup, false)
+check("settings with start-up paint", w.paintAll(), "")
 
 -- Main menu entry: the menu page gets the JS, and once it says the entry is
 -- there, no fallback pill
@@ -231,6 +272,27 @@ local buttons = 0
 for _, p in ipairs(w.panels) do if p.text == "Meowy settings" then buttons = buttons + 1 end end
 check("one pill, not one per tick", buttons, 1)
 
+-- PC doctor: a tab with a badge in the settings window, and meowy_doctor
+w = world({ settings = "asked=1\r\nenabled=0\r\n", facts = {
+	arch = "x64", gpu_time_known = true, on_battery = false, battery_saver = false, power_mode = "balanced",
+	adapters = {
+		{ name = "NVIDIA GeForce RTX 3070 Ti Laptop GPU", vram_mb = 8017, perf_rank = 1, power_rank = 2, share = 0 },
+		{ name = "AMD Radeon(TM) Graphics", vram_mb = 485, perf_rank = 2, power_rank = 1, share = 1 },
+	} } })
+w.run(1)
+w.concommands.meowy_settings()
+local docTab = find(function(p) return p.tabId == "doctor" end)
+check("doctor tab", docTab and docTab.text, "PC doctor")
+check("doctor tab badge", docTab and docTab.badge, "1 tip")
+check("general tab", find(function(p) return p.tabId == "general" end) ~= nil, true)
+check("open the doctor tab", w.click("PC doctor"), true)
+check("a card for the GPU tip", find(function(p) return p.meowyTip == "gpu" end) ~= nil, true)
+check("doctor button opens Graphics settings", w.click("Open Graphics settings"), true)
+check("opened by id", w.opened, "graphics_settings")
+w.concommands.meowy_doctor()
+check("meowy_doctor prints", (w.printed or ""):match("^[^\n]+"), "[Meowy Client Pack] PC doctor: 1 tip")
+check("settings and doctor cards paint", w.paintAll(), "")
+
 local ON = "asked=1\r\nenabled=1\r\nsaved_cl_timeout=30\r\n"
 
 -- The server went silent: rejoins the address the engine had, after asking the server
@@ -250,6 +312,38 @@ check("timeout: one join", w.connects(), 1)
 check("timeout: logged the decision", (w.logs or ""):find("connection ended: state=none, fresh sample=true", 1, true) ~= nil, true)
 check("timeout: logged rejoin", (w.logs or ""):find("-> rejoin (timeout)", 1, true) ~= nil, true)
 check("timeout: logged the join", (w.logs or ""):find("reconnect: joining " .. OURS, 1, true) ~= nil, true)
+
+-- With the engine's JoinServer (the menu state has it): joins through it, the
+-- way the server browser does, not RunConsoleCommand("connect").
+w = world({ settings = ON, joinServer = true })
+w.play(10)
+w.drop(60)
+w.run(5)
+check("JoinServer: used", w.joinServer, 1)
+check("JoinServer: our address", w.joinedVia, OURS)
+check("JoinServer: no connect command", w.connects(), 0)
+
+-- A join refused at once for a reason that clears up (Steam re-validating the
+-- old session, 6 Nov Wi-Fi run 3): tries again within seconds, not after 20.
+w = world({ settings = ON })
+w.play(10)
+w.drop(60)
+w.run(5)
+check("refused: first join", w.connects(), 1)
+w.refuse("STEAM validation rejected")
+w.run(5)
+check("refused (Steam): joined again within 5 s", w.connects(), 2)
+check("refused (Steam): logged", (w.logs or ""):find("join refused after", 1, true) ~= nil, true)
+
+-- Refused for any other reason (a ban, the whitelist): stops, no Rejoin now.
+w = world({ settings = ON })
+w.play(10)
+w.drop(60)
+w.run(5)
+w.refuse("You are banned from this server")
+w.run(30)
+check("refused (ban): one join only", w.connects(), 1)
+check("refused (ban): no Rejoin now", w.click("Rejoin now"), false)
 
 -- The live test's case: the client times out, the network (and Steam) are down
 -- for a while, then come back within the cap: the pack's own A2S keeps asking,
@@ -347,7 +441,7 @@ local function overlayTitle()
 	local o = find(function(p) return p.meowyOverlay end)
 	return o and o.title and o.title.text
 end
-check("Steam offline: waiting card", overlayTitle(), "Waiting for Steam to reconnect...")
+check("Steam offline: waiting card", overlayTitle(), "Waiting for Steam to reconnect")
 check("Steam offline: logged", (w.logs or ""):find("waiting for Steam to reconnect", 1, true) ~= nil, true)
 w.run(200)
 check("Steam offline 3+ min: still waiting, no join", w.connects() == 0 and (w.logs or ""):find("reconnect: stopped", 1, true) == nil, true)

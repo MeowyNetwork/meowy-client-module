@@ -24,6 +24,7 @@ M.CAP = { timeout = 180, restart = 300, steam = 300 }   -- seconds from the drop
 M.MAX_FAILED_JOINS = 3            -- joins that failed in a row, then stop for good
 M.MIN_SILENCE = 10                -- a real drop: the engine heard nothing for this long
 M.JOIN_WAIT = 20                  -- a join that has no connection after this long got no answer
+M.JOIN_RETRY = 3                  -- seconds before trying again after a failed join
 M.TIMEOUT_CL = "60"               -- cl_timeout while the player has opted in
 
 -- The engine had given up hearing from the server: timing out, and silent long enough.
@@ -58,6 +59,22 @@ function M.classifyJoinEnd(f)
 		return silent(f.timingOut, f.silence) and "retry" or "final"
 	end
 	if type(f.waited) == "number" and f.waited >= M.JOIN_WAIT then return "retry" end
+	return "final"
+end
+
+-- The engine's reason for a join that ended before it had a connection
+-- ("Disconnected: <reason>"). Right after a drop these clear up by
+-- themselves (Steam still re-validating the old session, the network
+-- settling): "retry". Anything else is the server turning the player down
+-- (ban, whitelist, password): "final". Unknown (nil): nil, decided by the clock.
+local PASSING = { "steam validation rejected", "bad server address", "timed out", "server is full",
+	"no steam logon", "steam connection lost", "connection failed", "couldn't connect" }
+function M.classifyRefusal(reason)
+	if type(reason) ~= "string" then return nil end
+	local r = reason:lower()
+	for _, p in ipairs(PASSING) do
+		if r:find(p, 1, true) then return "retry" end
+	end
 	return "final"
 end
 
@@ -124,7 +141,8 @@ function M.onProbe(s, answered, locked, now, rand, steamOffline)
 		M.stop(s, "the server has a password", "final")   -- passwords are never stored or sent
 		return "stop"
 	end
-	if now - s.startedAt > M.capFor(s) then
+	-- Past the cap, but a join already reached the server: MAX_FAILED_JOINS decides.
+	if s.failedJoins == 0 and now - s.startedAt > M.capFor(s) then
 		M.stop(s, gaveUp(s, now))
 		return "stop"
 	end
@@ -162,7 +180,12 @@ function M.onJoinFailed(s, kind, now, rand)
 	s.failedJoins = s.failedJoins + 1
 	if kind ~= "retry" then return M.stop(s, "the server turned the join down", "final") end
 	if s.failedJoins >= M.MAX_FAILED_JOINS then return M.stop(s, "3 joins in a row failed") end
-	return M.schedule(s, now, rand)
+	-- The server answered just before this join, so try again soon, and past
+	-- the cap: MAX_FAILED_JOINS bounds these, not the clock. (A join right after
+	-- the network came back can fail at once while the server is fine.)
+	s.attempt = s.attempt + 1
+	s.nextAt = now + M.JOIN_RETRY
+	return s
 end
 
 -- Settings file (%LOCALAPPDATA%\MeowyClientPack\resilience.txt): key=value lines.

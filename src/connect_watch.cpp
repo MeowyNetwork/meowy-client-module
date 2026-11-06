@@ -31,6 +31,10 @@ namespace
 	std::mutex g_addressMutex;
 	std::string g_lastAddress;
 	std::atomic<ULONGLONG> g_at{ 0 };
+	// The engine's last "Disconnected: <reason>" line (a join refused, a kick,
+	// a timeout) and when; written on the logging thread.
+	std::string g_lastDisconnect;
+	std::atomic<ULONGLONG> g_disconnectAt{ 0 };
 
 	void Note(const std::string& address)
 	{
@@ -79,6 +83,18 @@ namespace
 		std::string address;
 		if (AddressAfter(message, "Commencing connection retry to ", address) || AddressAfter(message, "Connecting to ", address))
 			Note(address);
+		static const char kDisconnected[] = "Disconnected: ";
+		if (std::strncmp(message, kDisconnected, sizeof(kDisconnected) - 1) == 0)
+		{
+			std::string reason;
+			for (const char* p = message + sizeof(kDisconnected) - 1; *p && *p != '\r' && *p != '\n' && reason.size() < 128; ++p)
+				reason += *p;
+			{
+				std::lock_guard<std::mutex> lock(g_addressMutex);
+				g_lastDisconnect = reason;
+			}
+			g_disconnectAt = GetTickCount64();
+		}
 	}
 
 	Listener g_listener;
@@ -128,6 +144,19 @@ namespace connect_watch
 		return g_at ? Last() : std::string();
 	}
 
+	bool LastDisconnect(std::string& reason, unsigned long long& msAgo)
+	{
+		ULONGLONG at = g_disconnectAt;
+		if (!at)
+			return false;
+		{
+			std::lock_guard<std::mutex> lock(g_addressMutex);
+			reason = g_lastDisconnect;
+		}
+		msAgo = GetTickCount64() - at;
+		return true;
+	}
+
 	bool HeadingToUs(unsigned withinMs)
 	{
 		ULONGLONG at = g_at;
@@ -149,6 +178,7 @@ namespace connect_watch
 	bool HeadingToUs(unsigned) { return false; }
 	std::string Describe() { return "unsupported"; }
 	std::string LastAddress() { return std::string(); }
+	bool LastDisconnect(std::string&, unsigned long long&) { return false; }
 }
 
 #endif

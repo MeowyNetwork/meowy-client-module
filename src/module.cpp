@@ -89,6 +89,8 @@
 #include "timeline.h"
 #include "timeline_steam.h"
 #include "resilience.h"
+#include "doctor.h"
+#include "startup_hook.h"
 #include "resource.h"
 
 #include <cstdio>
@@ -486,6 +488,37 @@ namespace
 		}
 		return dir;
 	}
+
+	// The game's garrysmod folder, from this DLL's own path (garrysmod/lua/bin).
+	std::wstring GarrysModDir()
+	{
+		HMODULE self = nullptr;
+		GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+			reinterpret_cast<LPCWSTR>(&GarrysModDir), &self);
+		wchar_t path[MAX_PATH];
+		DWORD n = GetModuleFileNameW(self, path, MAX_PATH);
+		std::wstring s(path, n < MAX_PATH ? n : 0);
+		size_t slash = s.find_last_of(L"\\/");
+		return slash == std::wstring::npos ? L"" : s.substr(0, slash + 1) + L"..\\..";
+	}
+
+	// --- Start with the game (startup_hook.h) ------------------------------------
+
+	// Menu: meowy.StartupHook() -> on (the line is in menu.lua), off (the player
+	// turned it off).
+	int StartupHookState(lua_State* L)
+	{
+		L->luabase->PushBool(startup_hook::Present(GarrysModDir()));
+		L->luabase->PushBool(startup_hook::Off(DataDir()));
+		return 2;
+	}
+
+	// Menu: meowy.SetStartupHook(on) -> ok. Meowy settings' "Start with the game".
+	int SetStartupHook(lua_State* L)
+	{
+		L->luabase->PushBool(startup_hook::Set(GarrysModDir(), DataDir(), L->luabase->GetBool(1)));
+		return 1;
+	}
 #endif
 
 	// --- Notifications (notify.h, notify_toast.h) -------------------------------
@@ -874,6 +907,52 @@ namespace
 		return 1;
 	}
 
+	// --- PC doctor (doctor.h, src/lua/doctor*.lua) -------------------------------
+
+	// Menu: meowy.DoctorFacts() -> { arch, gpu_time_known, on_battery, battery_saver,
+	// power_mode, adapters = { { name, vram_mb, perf_rank, power_rank, share } } }.
+	// Read-only, local; no adapter LUIDs or serials.
+	int DoctorFacts(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		doctor::Facts f = doctor::Gather();
+		LUA->CreateTable();
+		LUA->PushString(f.arch.c_str());
+		LUA->SetField(-2, "arch");
+		LUA->PushBool(f.gpuTimeKnown);
+		LUA->SetField(-2, "gpu_time_known");
+		if (f.onBattery >= 0) { LUA->PushBool(f.onBattery == 1); LUA->SetField(-2, "on_battery"); }
+		if (f.batterySaver >= 0) { LUA->PushBool(f.batterySaver == 1); LUA->SetField(-2, "battery_saver"); }
+		if (!f.powerMode.empty()) { LUA->PushString(f.powerMode.c_str()); LUA->SetField(-2, "power_mode"); }
+		LUA->CreateTable();
+		int i = 0;
+		for (const doctor::Adapter& a : f.adapters)
+		{
+			LUA->PushNumber(++i);
+			LUA->CreateTable();
+			LUA->PushString(a.name.c_str());
+			LUA->SetField(-2, "name");
+			LUA->PushNumber(static_cast<double>(a.vramMb));
+			LUA->SetField(-2, "vram_mb");
+			LUA->PushNumber(a.perfRank);
+			LUA->SetField(-2, "perf_rank");
+			LUA->PushNumber(a.powerRank);
+			LUA->SetField(-2, "power_rank");
+			if (a.share >= 0) { LUA->PushNumber(a.share); LUA->SetField(-2, "share"); }
+			LUA->SetTable(-3);
+		}
+		LUA->SetField(-2, "adapters");
+		return 1;
+	}
+
+	// Menu: meowy.DoctorOpen(id) -> bool. Only the doctor's fixed pages (doctor::Open).
+	int DoctorOpen(lua_State* L)
+	{
+		bool ok = L->luabase->IsType(1, Type::String) && doctor::Open(L->luabase->GetString(1));
+		L->luabase->PushBool(ok);
+		return 1;
+	}
+
 	// --- Connection resilience (resilience.h, src/lua/resilience*.lua) -----------
 
 	// meowy.ResilienceWatch() -> state, address, timingOut, silence. state: "ours",
@@ -909,6 +988,19 @@ namespace
 			LUA->PushNil();
 		}
 		return 4;
+	}
+
+	// meowy.ResilienceLastDisconnect() -> reason, secondsAgo: the engine's last
+	// "Disconnected: <reason>" line (connect_watch), or nil before the first.
+	int ResilienceLastDisconnect(lua_State* L)
+	{
+		std::string reason;
+		unsigned long long msAgo = 0;
+		if (!connect_watch::LastDisconnect(reason, msAgo))
+			return 0;
+		L->luabase->PushString(reason.c_str());
+		L->luabase->PushNumber(static_cast<double>(msAgo) / 1000.0);
+		return 2;
 	}
 
 	// Menu: our server said it restarts soon (meowy.ExpectRestart), still in force.
@@ -1019,8 +1111,10 @@ namespace
 		return 1;
 	}
 
-	// src/lua/resilience_logic.lua and resilience.lua (meowy.rc), as one chunk:
-	// the rules become the local `Logic` the glue uses.
+	// src/lua/resilience_logic.lua, doctor_logic.lua, doctor.lua and
+	// resilience.lua (meowy.rc), as one chunk: the rules become the locals
+	// `Logic` and `Doctor`, and doctor.lua's `DoctorUI` is a tab of
+	// resilience.lua's settings window.
 	std::string ResourceText(int id)
 	{
 		HMODULE self = nullptr;
@@ -1040,8 +1134,15 @@ namespace
 		std::string glue = ResourceText(IDR_RESILIENCE_LUA);
 		if (ui.empty() || logic.empty() || glue.empty())
 			return std::string();
+		// The PC doctor (doctor_logic.lua as the local `Doctor`, then doctor.lua,
+		// whose local `DoctorUI` becomes a tab of resilience.lua's settings window).
+		std::string doctorLogic = ResourceText(IDR_DOCTOR_LOGIC_LUA);
+		std::string doctorGlue = ResourceText(IDR_DOCTOR_LUA);
+		std::string doctor;
+		if (!doctorLogic.empty() && !doctorGlue.empty())
+			doctor = "local Doctor = (function()\n" + doctorLogic + "\nend)()\n" + doctorGlue + "\n";
 		return "local UI = (function()\n" + ui + "\nend)()\n"
-			"local Logic = (function()\n" + logic + "\nend)()\n" + glue;
+			"local Logic = (function()\n" + logic + "\nend)()\n" + doctor + glue;
 	}
 #endif
 
@@ -1636,6 +1737,25 @@ GMOD_MODULE_OPEN()
 	// Client Lua starting is the start of the join's longest stage, and the
 	// menu can't report it: the game's main thread is busy until it's over.
 	loading_screen::ClientLuaStarted();
+
+#ifdef _WIN32
+	// Loaded by our server's client Lua without having started with the game:
+	// a Garry's Mod update (or a file check) put the stock menu.lua back. Put
+	// the start-up line back for next time, unless the player turned it off.
+	if (!startup_hook::MenuLoaded() && server_gate::Check() == server_gate::Result::Allowed)
+	{
+		const std::string did = startup_hook::Heal(GarrysModDir(), DataDir());
+		if (did != "present" && did != "off")
+		{
+			LUA->PushSpecial(SPECIAL_GLOB);
+			LUA->GetField(-1, "print");
+			LUA->PushString(("[Meowy Client Pack] start-up line in lua/includes/menu.lua: " + did +
+				(did == "added" ? " (a game update had removed it; the pack starts with the game again next time)" : "")).c_str());
+			LUA->Call(1, 0);
+			LUA->Pop();
+		}
+	}
+#endif
 	return 0;
 }
 
@@ -1657,6 +1777,9 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	LUA->SetField(-2, "VERSION");
 	LUA->PushString("menu");
 	LUA->SetField(-2, "REALM");
+	startup_hook::NoteMenuLoaded();
+	SetFunction(LUA, "StartupHook", StartupHookState);
+	SetFunction(LUA, "SetStartupHook", SetStartupHook);
 	SetFunction(LUA, "LoadingTarget", LoadingTarget);
 	SetFunction(LUA, "LoadingHeadsUp", LoadingHeadsUp);
 	SetFunction(LUA, "LoadingTargetState", LoadingTargetState);
@@ -1681,6 +1804,7 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	SetFunction(LUA, "DataSandboxDescribe", DataSandboxDescribe);
 	SetFunction(LUA, "ResilienceWatch", ResilienceWatch);
 	SetFunction(LUA, "ResilienceRestartExpected", ResilienceRestartExpected);
+	SetFunction(LUA, "ResilienceLastDisconnect", ResilienceLastDisconnect);
 	SetFunction(LUA, "ResilienceClearRestart", ResilienceClearRestart);
 	SetFunction(LUA, "ResilienceProbe", ResilienceProbe);
 	SetFunction(LUA, "ResilienceProbeResult", ResilienceProbeResult);
@@ -1689,6 +1813,8 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	SetFunction(LUA, "ResilienceSettingsWrite", ResilienceSettingsWrite);
 	SetFunction(LUA, "ResilienceSession", ResilienceSession);
 	SetFunction(LUA, "ResilienceCrashedSession", ResilienceCrashedSession);
+	SetFunction(LUA, "DoctorFacts", DoctorFacts);
+	SetFunction(LUA, "DoctorOpen", DoctorOpen);
 	LUA->SetField(-2, "meowy");
 
 	data_sandbox::Recover();

@@ -4,4 +4,6 @@
 #define IDR_NOTIFY_PNG 102   // the toast's logo (written to %LOCALAPPDATA%\MeowyClientPack\notify_icon.png)
 #define IDR_RESILIENCE_LOGIC_LUA 103   // src/lua/resilience_logic.lua: connection resilience's rules (menu state)
 #define IDR_RESILIENCE_LUA 104         // src/lua/resilience.lua: its menu glue and UI
+#define IDR_DOCTOR_LOGIC_LUA 105       // src/lua/doctor_logic.lua: the PC doctor's rules (menu state)
+#define IDR_DOCTOR_LUA 106             // src/lua/doctor.lua: its settings tab and meowy_doctor
 #define IDR_UI_LUA 107                 // src/lua/ui.lua: the menu UI kit (cards, buttons, prompts)

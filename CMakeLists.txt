@@ -31,10 +31,12 @@ add_library(meowy SHARED
 	src/timeline.cpp
 	src/timeline_steam.cpp
 	src/resilience.cpp
-	src/resilience_net.cpp)
+	src/resilience_net.cpp
+	src/doctor.cpp
+	src/startup_hook.cpp)
 target_include_directories(meowy PRIVATE ${gmod_module_base_SOURCE_DIR}/include)
 if(WIN32)
-	target_link_libraries(meowy PRIVATE msimg32 shlwapi winhttp ws2_32)   # GradientFill and file streams for the loading screen; HTTPS for the server list
+	target_link_libraries(meowy PRIVATE msimg32 shlwapi winhttp ws2_32 shell32)   # GradientFill and file streams for the loading screen; HTTPS for the server list
 	# Notifications: WinRT toasts (RoGetActivationFactory, HSTRINGs) and the
 	# bundled icons (src/meowy.rc).
 	target_sources(meowy PRIVATE src/meowy.rc)
@@ -140,6 +142,21 @@ if(MEOWY_BUILD_TESTS)
 	if(MSVC)
 		set_property(TARGET probe_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 		target_compile_options(probe_smoke PRIVATE /W4 /utf-8)
+	endif()
+	# PC doctor's native facts (adapters, GPU time per adapter, power), no game:
+	#   doctor_smoke
+	add_executable(doctor_smoke tests/doctor_smoke.cpp src/doctor.cpp)
+	target_link_libraries(doctor_smoke PRIVATE shell32)
+	if(MSVC)
+		set_property(TARGET doctor_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+		target_compile_options(doctor_smoke PRIVATE /W4 /utf-8)
+	endif()
+	# The start-up line in menu.lua: text rules and a file round trip, no game:
+	#   startup_hook_smoke
+	add_executable(startup_hook_smoke tests/startup_hook_smoke.cpp src/startup_hook.cpp src/server_gate.cpp)
+	if(MSVC)
+		set_property(TARGET startup_hook_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+		target_compile_options(startup_hook_smoke PRIVATE /W4 /utf-8)
 	endif()
 	# meowy.TimelineEvent's rules (kinds, gate, Steam missing, rate limit), no game or Steam:
 	#   timeline_smoke

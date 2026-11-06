@@ -50,17 +50,28 @@ local C, S = UI.C, UI.S
 local settingsWindow
 local function openSettings(startTab)
 	if IsValid(settingsWindow) then settingsWindow:Remove() end
-	local back, card = UI.Modal(780)
+	local back, card = UI.Modal(720)
 	settingsWindow = back
-	local W, H = card.w, S(540)
-	local pad, side = S(24), S(196)
+	local W = card.w
+	local headerH, nav, pad = S(64), S(184), S(24)
+	local version = "v" .. tostring(meowy.VERSION or "")
 
-	local title = UI.Text(card, "Meowy Client Pack", "MeowyPack.Title", C.white)
-	local sub = UI.Text(card, "Settings  ·  " .. tostring(meowy.VERSION or ""), "MeowyPack.Small", C.dim)
-	sub.gapBefore = S(2)
-	local headerBottom = UI.stack({ title, sub }, pad + S(4), pad, side + S(200))
+	-- Header: the name, a version chip, the close button, a divider.
+	local header = vgui.Create("DPanel", card)
+	header:SetPos(0, 0)
+	header:SetSize(W, headerH)
+	header:SetMouseInputEnabled(false)
+	header.Paint = function(self, w, h)
+		draw.SimpleText("Meowy Client Pack", "MeowyPack.Title", pad, h / 2, C.text, UI.LEFT, UI.CENTER)
+		local tw = UI.textW("Meowy Client Pack", "MeowyPack.Title")
+		surface.SetFont("MeowyPack.Label")
+		local _, ch = surface.GetTextSize("1")
+		UI.chip(version, pad + tw + S(12), math.floor(h / 2 - (ch + S(8)) / 2))
+		draw.RoundedBox(0, 0, h - 1, w, 1, C.divider)
+		return true
+	end
 	local x = UI.Close(card, function() back:Dismiss() end)
-	x:SetPos(W - S(16) - x.w, S(16))
+	x:SetPos(W - S(18) - x.w, math.floor((headerH - x.w) / 2))
 
 	-- PC doctor's findings, worked out once per opening (it asks Windows).
 	local tips, report
@@ -69,98 +80,126 @@ local function openSettings(startTab)
 		if ok then tips, report = a, b else ErrorNoHalt("[Meowy Client Pack] PC doctor: " .. tostring(a) .. "\n") end
 	end
 
-	local top = headerBottom + S(20)
-	local contentX = pad + S(4) + side + pad
-	local contentW = W - contentX - pad
-	local scroll = vgui.Create("DScrollPanel", card)
-	scroll:SetPos(contentX, top)
-	scroll:SetSize(contentW, H - top - pad)
-	local bar = scroll.GetVBar and scroll:GetVBar()
-	if bar then
-		bar:SetWide(S(6))
-		if bar.SetHideButtons then bar:SetHideButtons(true) end
-		bar.Paint = function() end
-		if bar.btnGrip then bar.btnGrip.Paint = function(_, w, h) draw.RoundedBox(w / 2, 0, 0, w, h, C.border) end end
-	end
-	local innerW = contentW - S(14)
-
-	local function heading(text, gap)
-		local t = UI.Text(nil, text, "MeowyPack.Heading", C.white)
-		t.gapBefore = gap
-		return t
-	end
-
 	local pages = {}
 	pages.general = function()
-		local blocks = { heading("Connection") }
-		local card1 = UI.Card(nil)
-		card1:Add(UI.Toggle(card1, "Stay connected through drops",
-			"Keeps your connection through short drops (cl_timeout 60) and rejoins Meowy Network by itself after "
-			.. "a timeout or a server restart. Turning it off puts your own cl_timeout back.",
-			settings.enabled, function(on) setEnabled(on) end))
-		card1.blocks[1].meowyToggle = "stay_connected"
-		blocks[#blocks + 1] = card1
-		card1.gapBefore = S(12)
+		local blocks = { UI.Label(nil, "Connection") }
+		local t = UI.Toggle(nil, "Stay connected through drops",
+			"Waits through short drops instead of giving up, and rejoins Meowy Network by itself after a timeout "
+			.. "or a server restart. Turning it off puts your own cl_timeout back.",
+			settings.enabled, function(on) setEnabled(on) end)
+		t.meowyToggle = "stay_connected"
+		t.gapBefore = S(10)
+		blocks[#blocks + 1] = t
+		-- The start-up line in menu.lua (startup_hook.h). Off: the pack loads only
+		-- when you join, and doesn't put the line back after a game update.
+		if meowy.StartupHook then
+			local present = meowy.StartupHook()
+			local label = UI.Label(nil, "Start-up")
+			label.gapBefore = S(22)
+			blocks[#blocks + 1] = label
+			local st = UI.Toggle(nil, "Start with the game",
+				"Loads the pack when Garry's Mod starts, for our loading screen, faster joins and these settings "
+				.. "in the main menu. Off: it loads only once you join Meowy Network. Takes effect next start.",
+				present == true, function(on)
+					if not meowy.SetStartupHook(on) then
+						ErrorNoHalt("[Meowy Client Pack] couldn't change the start-up line in lua/includes/menu.lua\n")
+					end
+				end)
+			st.meowyToggle = "start_with_game"
+			st.gapBefore = S(10)
+			blocks[#blocks + 1] = st
+		end
 		return blocks
 	end
 	pages.doctor = function()
 		if not DoctorUI or not tips then
-			return { UI.Text(nil, "The PC doctor couldn't run.", "MeowyPack.Body", C.text) }
+			return { UI.Text(nil, "The PC doctor couldn't run.", "MeowyPack.Body", C.body) }
 		end
 		return DoctorUI.build(tips, report)
 	end
 
-	local tabs, current = {}, nil
+	-- The page area: a quiet scrollbar, used only when a page is taller than
+	-- the screen allows.
+	local contentX = nav + 1
+	local contentW = W - contentX
+	local innerW = contentW - pad * 2
+	local scroll = vgui.Create("DScrollPanel", card)
+	scroll:SetPos(contentX, headerH)
+	local vbar = scroll.GetVBar and scroll:GetVBar()
+	if vbar then
+		vbar:SetWide(S(6))
+		if vbar.SetHideButtons then vbar:SetHideButtons(true) end
+		vbar.Paint = function() end
+		if vbar.btnGrip then vbar.btnGrip.Paint = function(_, w, h) draw.RoundedBox(w / 2, 0, 0, w, h, C.raised) end end
+	end
+
+	-- Left nav, with a divider on its right.
+	local navPanel = vgui.Create("DPanel", card)
+	navPanel:SetPos(0, headerH)
+	navPanel.Paint = function(self, w, h)
+		draw.RoundedBox(0, w - 1, 0, 1, h, C.divider)
+		return true
+	end
+
+	local current
+	local maxH = math.floor(ScrH() * 0.8)
+	-- Shows a page and sizes the window to it (between 300 px and 80% of the screen).
 	local function show(id)
 		current = id
 		scroll:Clear()
+		local holder = vgui.Create("DPanel")
+		holder.Paint = function() end
 		local blocks = pages[id]()
-		for _, b in ipairs(blocks) do scroll:Add(b) end
-		UI.stack(blocks, 0, 0, innerW, S(12))
+		for _, b in ipairs(blocks) do b:SetParent(holder) end
+		local h = UI.stack(blocks, pad, pad, innerW, S(10)) + pad
+		holder:SetSize(contentW, h)
+		scroll:AddItem(holder)
+		local H = math.min(math.max(headerH + h, S(300)), maxH)
+		card:SetSize(W, H)
+		card:SetPos(math.floor((ScrW() - W) / 2), math.floor((ScrH() - H) / 2))
+		scroll:SetSize(contentW, H - headerH)
+		navPanel:SetSize(nav, H - headerH)
 		if scroll.InvalidateLayout then scroll:InvalidateLayout(true) end
 	end
 
-	local tabY = top
-	local function tab(id, label, badge, badgeColor)
-		local b = vgui.Create("DButton", card)
+	local navY = S(14)
+	local function tab(id, label, badge, tone)
+		local b = vgui.Create("DButton", navPanel)
 		b:SetText(label)
-		b:SetFont("MeowyPack.Button")
-		b.badge, b.tabId = badge, id
-		b:SetSize(side, S(42))
-		b:SetPos(pad + S(4), tabY)
-		tabY = tabY + S(46)
-		b:SetContentAlignment(4)
-		b:SetTextInset(S(16), 0)
-		b.UpdateColours = function(self) return self:SetTextStyleColor(current == id and C.white or C.text) end
+		b.text, b.badge, b.tabId = label, badge, id
+		b:SetPos(S(12), navY)
+		b:SetSize(nav - S(24), S(38))
+		navY = navY + S(42)
 		b.Paint = function(self, w, h)
 			local t = UI.hover(self, self:IsHovered())
-			if current == id then
-				draw.RoundedBox(S(8), 0, 0, w, h, C.cardHi)
+			local on = current == id
+			if on then
+				draw.RoundedBox(S(8), 0, 0, w, h, C.raised)
 				draw.RoundedBox(S(2), 0, S(10), S(3), h - S(20), C.accent)
 			elseif t > 0.01 then
-				draw.RoundedBox(S(8), 0, 0, w, h, Color(255, 255, 255, 10 * t))
+				draw.RoundedBox(S(8), 0, 0, w, h, Color(255, 255, 255, 8 * t))
 			end
+			draw.SimpleText(label, "MeowyPack.Button", S(14), h / 2, on and C.text or UI.mix(C.body, C.text, t), UI.LEFT, UI.CENTER)
 			if self.badge then
-				surface.SetFont("MeowyPack.Small")
-				local tw, th = surface.GetTextSize(self.badge)
-				local bw, bh = tw + S(14), th + S(4)
-				local bx, by = w - bw - S(10), math.floor((h - bh) / 2)
-				draw.RoundedBox(bh / 2, bx, by, bw, bh, badgeColor)
-				draw.SimpleText(self.badge, "MeowyPack.Small", bx + bw / 2, by + bh / 2, C.white, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+				surface.SetFont("MeowyPack.Label")
+				local _, ch = surface.GetTextSize("1")
+				UI.chip(self.chipText or self.badge, w - S(10), math.floor(h / 2 - (ch + S(8)) / 2), tone, true)
 			end
+			return true
 		end
 		b.DoClick = function() show(id) end
-		tabs[#tabs + 1] = b
 		return b
 	end
 	tab("general", "General")
 	if DoctorUI then
 		local n = tips and #tips or 0
-		tab("doctor", "PC doctor", tips and Doctor.summary(tips) or "?", n > 0 and C.accent or C.green)
+		local t = tab("doctor", "PC doctor", tips and Doctor.summary(tips) or "?", n > 0 and "amber" or "green")
+		t.chipText = tips and (n == 0 and "OK" or tostring(n)) or "?"
 	end
 
+	card.w = W
+	back:Open(S(300))
 	show(pages[startTab or ""] and startTab or "general")
-	back:Open(H)
 	return back
 end
 
@@ -187,7 +226,7 @@ local ENTRY_JS = [==[
 				li.className = 'meowy-settings-entry';
 				var a = document.createElement('a');
 				a.style.cursor = 'pointer';
-				a.innerHTML = '<span style="display:inline-block;width:0.42em;height:0.42em;border-radius:50%;background:#c2407a;margin-right:0.45em;vertical-align:middle;position:relative;top:-0.08em"></span>Meowy settings';
+				a.textContent = 'Meowy settings';
 				a.onclick = function () { lua.Run('MeowyClientPackOpenSettings()'); };
 				li.appendChild(a);
 				after.parentNode.insertBefore(li, after.nextSibling);
@@ -270,14 +309,15 @@ end
 -- Prompts -------------------------------------------------------------------------
 local function askOptIn(after)
 	UI.Prompt({
+		icon = { "signal", "accent" },
 		title = "Stay connected through drops?",
-		body = "If your connection drops for a moment, Garry's Mod keeps waiting for it (cl_timeout 60), "
-			.. "and if you're disconnected anyway, the pack rejoins Meowy Network for you. Your job and "
-			.. "items come back if you're in within 3 minutes.",
-		note = "You can change this any time in Meowy settings, in the main menu.",
+		body = "If your connection drops for a moment, the game keeps waiting instead of giving up, "
+			.. "and if you're disconnected anyway, the pack brings you back to Meowy Network by itself. "
+			.. "Your job and loadout come back if you're in within 3 minutes.",
+		note = "Change it any time in Meowy settings, in the main menu.",
 		buttons = {
-			{ "No thanks", "secondary", function() setEnabled(false) if after then after() end end },
-			{ "Yes, stay connected", "primary", function() setEnabled(true) if after then after() end end },
+			{ "Not now", "ghost", function() setEnabled(false) if after then after() end end },
+			{ "Stay connected", "primary", function() setEnabled(true) if after then after() end end },
 		},
 		onDismiss = after,   -- Escape: asked again next start
 	})
@@ -289,34 +329,42 @@ local function hideOverlay()
 	if IsValid(overlay) then overlay:Remove() end
 	overlay = nil
 end
--- buttons: { { text, kind, fn }, ... }, right-aligned; busy shows the dots.
-local function showOverlay(titleText, subText, buttons, busy)
+-- buttons: { { text, kind, fn }, ... }, right-aligned; busy shows a spinner;
+-- progress (0..1 or nil) is a thin bar along the bottom: time used of the cap.
+local function showOverlay(titleText, subText, buttons, busy, progress)
 	if not IsValid(overlay) then
 		UI.fonts()
 		overlay = vgui.Create("DPanel")
 		overlay.meowyOverlay = true
-		overlay.w = S(540)
+		overlay.w = S(460)
 		overlay.Paint = function(self, w, h)
-			UI.box(S(12), 0, 0, w, h, C.bg, C.border)
-			draw.RoundedBoxEx(S(12), 0, 0, S(5), h, C.accent, true, false, true, false)
-			if self.busy then   -- three dots, one after another
-				for i = 0, 2 do
-					local a = 0.35 + 0.65 * math.max(0, math.sin(SysTime() * 5 - i * 0.9))
-					local d = S(7)
-					draw.RoundedBox(d / 2, S(26) + i * S(12), math.floor(h / 2) - d / 2, d, d, Color(194, 64, 122, 255 * a))
-				end
+			UI.shadow(S(12), 0, 0, w, h)
+			UI.box(S(12), 0, 0, w, h, C.window, C.border)
+			local bar = self.progress and S(10) or 0
+			if self.busy then UI.spinner(S(32), math.floor((h - bar) / 2), S(10), C.accentHi) end
+			if self.progress then
+				local bw, bh, by = w - S(24), S(3), h - S(9)
+				draw.RoundedBox(S(2), S(12), by, bw, bh, C.raised)
+				draw.RoundedBox(S(2), S(12), by, math.max(bh, bw * math.Clamp(self.progress, 0, 1)), bh, C.accent)
 			end
 			return true
 		end
-		overlay.title = UI.Text(overlay, "", "MeowyPack.Heading", C.white)
-		overlay.sub = UI.Text(overlay, "", "MeowyPack.Small", C.dim)
+		overlay.title = UI.Text(overlay, "", "MeowyPack.Heading", C.text)
+		overlay.sub = UI.Text(overlay, "", "MeowyPack.Small", C.body)
 		overlay.buttons = {}
 		overlay:MakePopup()
 		overlay:SetKeyboardInputEnabled(false)
 		UI.fadeIn(overlay)
 	end
-	local key = titleText .. "|" .. subText .. "|" .. tostring(busy)
+	overlay.progress = progress
+	-- The layout is rebuilt only when the title, buttons or bar change; the
+	-- status line (a countdown) is just re-wrapped in place.
+	local key = titleText .. "|" .. tostring(busy) .. "|" .. tostring(progress ~= nil)
 	for _, spec in ipairs(buttons) do key = key .. "|" .. spec[1] end
+	if overlay.key == key and overlay.sub.text ~= subText then
+		overlay.sub.text = subText
+		overlay.sub:Fit(overlay.sub:GetWide())
+	end
 	if overlay.key ~= key then
 		overlay.key, overlay.busy = key, busy
 		overlay.title.text, overlay.sub.text = titleText, subText
@@ -326,14 +374,16 @@ local function showOverlay(titleText, subText, buttons, busy)
 		for _, spec in ipairs(buttons) do
 			local b = UI.Button(overlay, spec[1], spec[2], spec[3])
 			overlay.buttons[#overlay.buttons + 1] = b
-			buttonsW = buttonsW + b.w + S(10)
+			buttonsW = buttonsW + b.w + S(8)
 		end
-		local left = busy and S(70) or S(26)
-		local textW = overlay.w - left - buttonsW - S(30)
-		local y = UI.stack({ overlay.title, overlay.sub }, left, S(16), textW, S(2))
-		local h = math.max(y + S(16), S(40) + S(28))
+		local pad = S(18)
+		local bar = progress and S(10) or 0
+		local left = busy and pad + S(36) or pad
+		local textW = overlay.w - left - pad - buttonsW - S(8)
+		local y = UI.stack({ overlay.title, overlay.sub }, left, pad, textW, S(3))
+		local h = math.max(y + pad, S(38) + pad * 2) + bar
 		overlay:SetSize(overlay.w, h)
-		UI.row(overlay.buttons, 0, math.floor((h - S(40)) / 2), overlay.w - S(18))
+		UI.row(overlay.buttons, 0, math.floor((h - bar - S(38)) / 2), overlay.w - pad)
 	else
 		-- Same buttons, maybe new handlers.
 		for i, spec in ipairs(buttons) do
@@ -353,6 +403,15 @@ local function log(fmt, ...)
 end
 local function show(v) if v == nil then return "nil" end return tostring(v) end
 local function fmtNum(v) return isnumber(v) and string.format("%.1f", v) or "nil" end
+
+-- Joins a server the way the menu's own server browser does (the engine's
+-- JoinServer). After a Wi-Fi drop the engine kept refusing
+-- RunConsoleCommand("connect", address) with "Bad server address" while
+-- the same address entered in the console got straight in. Never a password.
+local function join(address)
+	if JoinServer then return JoinServer(address) end
+	RunConsoleCommand("connect", address)
+end
 
 local onOurs, ourAddress = false, nil
 local armed = false      -- got into the game on our server since the last rejoin try
@@ -382,7 +441,7 @@ local function finish(why, show)
 					closeNote()
 					if isstring(address) and meowy.IsOurServer(address) then
 						log("reconnect: Rejoin now -> joining %s", address)
-						RunConsoleCommand("connect", address)   -- never a password
+						join(address)
 					end
 				end },
 			}, false)
@@ -435,7 +494,7 @@ local function probe(now)
 		if act == "join" then
 			episode.phase, episode.joinAt, episode.sawLoading, episode.reachedOurs = "joining", t, false, false
 			log("reconnect: joining %s", episode.address)
-			RunConsoleCommand("connect", episode.address)   -- never a password
+			join(episode.address)
 		elseif act == "wait" then
 			episode.phase = "waiting"
 		elseif act == "steam" then
@@ -469,13 +528,17 @@ local function tickEpisode(now, state)
 	end
 	if e.phase == "waiting" then
 		if e.s.stopped then return finish(e.s.stopped, true) end
-		showOverlay("Reconnecting to Meowy Network...",
-			("Attempt %d  ·  %s"):format(e.s.attempt, e.s.mode == "restart" and "waiting for the server to restart" or "waiting for the server"),
-			{ { "Cancel", "secondary", cancel } }, true)
+		local wait = math.max(0, math.ceil(e.s.nextAt - now))
+		local status = e.s.attempt == 0 and "Starting..."
+			or (e.s.mode == "restart" and "The server is restarting. " or "The server didn't answer. ")
+				.. (wait > 0 and ("Trying again in %d s."):format(wait) or "Checking now...")
+		showOverlay("Reconnecting to Meowy Network", status, { { "Cancel", "secondary", cancel } }, true,
+			(now - e.s.startedAt) / Logic.capFor(e.s))
 		if now >= e.s.nextAt then probe(now) end
 	elseif e.phase == "steam" then
-		showOverlay("Waiting for Steam to reconnect...",
-			"The server is up. Rejoining as soon as Steam is back.", { { "Cancel", "secondary", cancel } }, true)
+		showOverlay("Waiting for Steam to reconnect",
+			"The server is up. Rejoining as soon as Steam is back.", { { "Cancel", "secondary", cancel } }, true,
+			(now - e.s.startedAt) / Logic.capFor(e.s))
 		if now >= e.nextSteam then
 			e.nextSteam = now + 1
 			local act = Logic.onSteamCheck(e.s, steamOnline(), now)
@@ -501,6 +564,18 @@ local function tickEpisode(now, state)
 		-- ends (joinEnded). Here: one that never got a connection.
 		if e.reachedOurs then return end
 		local waited = now - e.joinAt
+		-- The engine said why the join ended ("Disconnected: <reason>",
+		-- since this join started): judged at once, not after JOIN_WAIT.
+		local reason, ago
+		if meowy.ResilienceLastDisconnect then reason, ago = meowy.ResilienceLastDisconnect() end
+		if isstring(reason) and isnumber(ago) and ago < waited then
+			local kind = Logic.classifyRefusal(reason)
+			log("reconnect: join refused after %s s (%s) -> %s", fmtNum(waited), reason, kind)
+			Logic.onJoinFailed(e.s, kind, now, math.random())
+			if e.s.stopped then return finish(e.s.stopped, true) end
+			e.phase = "waiting"
+			return
+		end
 		local turnedAway = e.sawLoading and not IsInLoading() and not IsInGame()
 		if turnedAway or waited >= Logic.JOIN_WAIT then
 			if not turnedAway then RunConsoleCommand("disconnect") end   -- stop the engine's own retries
@@ -534,13 +609,14 @@ local function startup()
 	if crashed and meowy.IsOurServer(crashed) then
 		local address = crashed
 		UI.Prompt({
+			icon = { "signal", "accent" },
 			title = "Rejoin Meowy Network?",
-			body = "Garry's Mod closed unexpectedly while you were playing on Meowy Network.",
+			body = "Garry's Mod closed unexpectedly while you were playing. Jump back in?",
 			closable = true,
 			buttons = {
-				{ "Not now", "secondary", optIn },
+				{ "Not now", "ghost", optIn },
 				{ "Rejoin", "primary", function()
-					if meowy.IsOurServer(address) then RunConsoleCommand("connect", address) end
+					if meowy.IsOurServer(address) then join(address) end
 				end },
 			},
 			onDismiss = optIn,

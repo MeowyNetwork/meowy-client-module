@@ -9,4 +9,6 @@ IDR_NOTIFY_PNG RCDATA "../assets/notify.png"
 // and luac -p can read them; module.cpp joins and runs them.
 IDR_RESILIENCE_LOGIC_LUA RCDATA "lua/resilience_logic.lua"
 IDR_RESILIENCE_LUA RCDATA "lua/resilience.lua"
+IDR_DOCTOR_LOGIC_LUA RCDATA "lua/doctor_logic.lua"
+IDR_DOCTOR_LUA RCDATA "lua/doctor.lua"
 IDR_UI_LUA RCDATA "lua/ui.lua"
