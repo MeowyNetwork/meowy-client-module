@@ -172,17 +172,6 @@ function M.onJoinFailed(s, kind, now, rand)
 	return s
 end
 
--- The address to type for a join. After the network drops, the engine can
--- refuse the exact address it timed out on ("Bad server address", at once)
--- while the same server under another spelling gets in, so after a failed
--- join the default port is left off ("1.2.3.4" is "1.2.3.4:27015").
-function M.joinAddress(address, failedJoins)
-	if type(address) ~= "string" then return address end
-	local ip = address:match("^(%d+%.%d+%.%d+%.%d+):27015$")
-	if ip and (failedJoins or 0) % 2 == 1 then return ip end
-	return address
-end
-
 -- Settings file (%LOCALAPPDATA%\MeowyClientPack\resilience.txt): key=value lines.
 function M.parseSettings(text)
 	local out = { asked = false, enabled = false, saved_cl_timeout = nil }

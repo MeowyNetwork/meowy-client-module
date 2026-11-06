@@ -385,6 +385,15 @@ end
 local function show(v) if v == nil then return "nil" end return tostring(v) end
 local function fmtNum(v) return isnumber(v) and string.format("%.1f", v) or "nil" end
 
+-- Joins a server the way the menu's own server browser does (the engine's
+-- JoinServer). After a Wi-Fi drop the engine kept refusing
+-- RunConsoleCommand("connect", address) with "Bad server address" while
+-- the same address entered in the console got straight in. Never a password.
+local function join(address)
+	if JoinServer then return JoinServer(address) end
+	RunConsoleCommand("connect", address)
+end
+
 local onOurs, ourAddress = false, nil
 local armed = false      -- got into the game on our server since the last rejoin try
 local last               -- { timingOut, silence, at }: the engine's latest sample of our connection
@@ -407,15 +416,13 @@ local function finish(why, show)
 			-- Gave up (not a kick, ban, password or the player cancelling): the
 			-- card stays, with one click to try once more.
 			local address = e.address
-			-- The spelling the last join didn't use (see Logic.joinAddress).
-			local typed = Logic.joinAddress(address, (e.s.failedJoins or 0) + 1)
 			showOverlay("Couldn't reconnect to Meowy Network", text, {
 				{ "Close", "secondary", closeNote },
 				{ "Rejoin now", "primary", function()
 					closeNote()
 					if isstring(address) and meowy.IsOurServer(address) then
-						log("reconnect: Rejoin now -> joining %s", typed)
-						RunConsoleCommand("connect", typed)   -- never a password
+						log("reconnect: Rejoin now -> joining %s", address)
+						join(address)
 					end
 				end },
 			}, false)
@@ -467,9 +474,8 @@ local function probe(now)
 		-- (tickEpisode); one that doesn't is replaced by this connect.
 		if act == "join" then
 			episode.phase, episode.joinAt, episode.sawLoading, episode.reachedOurs = "joining", t, false, false
-			local typed = Logic.joinAddress(episode.address, episode.s.failedJoins)
-			log("reconnect: joining %s", typed)
-			RunConsoleCommand("connect", typed)   -- never a password
+			log("reconnect: joining %s", episode.address)
+			join(episode.address)
 		elseif act == "wait" then
 			episode.phase = "waiting"
 		elseif act == "steam" then
@@ -579,7 +585,7 @@ local function startup()
 			buttons = {
 				{ "Not now", "ghost", optIn },
 				{ "Rejoin", "primary", function()
-					if meowy.IsOurServer(address) then RunConsoleCommand("connect", address) end
+					if meowy.IsOurServer(address) then join(address) end
 				end },
 			},
 			onDismiss = optIn,
