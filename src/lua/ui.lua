@@ -1,31 +1,41 @@
 -- The pack's menu UI kit (menu state). module.cpp puts this first in the
 -- resilience chunk, as the local `UI` that doctor.lua and resilience.lua use.
 --
--- Meowy's in-game look: dark cards (#18191c / #1f2023) with a 1px #2a2b2f
--- border, 12px corners, a pink accent (#c2407a), Roboto. Everything is drawn
--- by hand (no DFrame chrome) and scaled with the screen height, readable from
--- 1280x720 to 4K. Layout is computed in Lua when a panel is built (text is
--- wrapped by measuring it), so sizes never wait for a Derma layout pass.
+-- One look for every pack screen, matching Meowy's in-game UI: a dark window
+-- with a soft shadow, 14px corners, one pink accent (#c2407a) used sparingly
+-- (primary buttons, the active tab, switches), Roboto in a clear type scale.
+-- Everything is drawn by hand (no DFrame chrome), sized in 1080p pixels and
+-- scaled with the screen height (never below 0.85, so 720p stays readable).
+-- Only menu-state globals are used: SysTime, never RealTime/FrameTime.
 
 local UI = {}
 
+-- draw.SimpleText alignments. The menu state has no TEXT_ALIGN_* globals, and
+-- nil there means top-left, so every centred label would sit off-centre.
+UI.LEFT, UI.CENTER, UI.RIGHT = 0, 1, 2
+
 UI.C = {
-	bg = Color(24, 25, 28),           -- #18191c
-	card = Color(31, 32, 35),         -- #1f2023
-	cardHi = Color(38, 39, 43),
-	border = Color(42, 43, 47),       -- #2a2b2f
-	accent = Color(194, 64, 122),     -- #c2407a
-	accentHi = Color(214, 88, 146),
-	amber = Color(217, 164, 65),
-	green = Color(76, 175, 120),
-	text = Color(195, 198, 204),      -- #c3c6cc
-	dim = Color(139, 143, 151),       -- #8b8f97
+	window = Color(20, 21, 24),        -- the window
+	surface = Color(27, 28, 32),       -- cards, rows
+	raised = Color(36, 37, 42),        -- hover, active tab, chips
+	border = Color(44, 45, 51),
+	divider = Color(36, 37, 42),
+	accent = Color(194, 64, 122),      -- #c2407a
+	accentHi = Color(212, 86, 144),
+	accentSoft = Color(194, 64, 122, 40),
+	green = Color(63, 185, 122),
+	greenSoft = Color(63, 185, 122, 38),
+	amber = Color(226, 168, 62),
+	amberSoft = Color(226, 168, 62, 38),
+	text = Color(232, 233, 236),       -- headings, values
+	body = Color(178, 182, 190),       -- paragraphs
+	dim = Color(124, 129, 138),        -- labels, hints
 	white = Color(255, 255, 255),
-	backdrop = Color(0, 0, 0, 160),
+	backdrop = Color(8, 8, 10, 175),
 }
 local C = UI.C
 
--- Pixels at 1080p to pixels on this screen. Never below 0.85 (720p stays readable).
+-- 1080p pixels to pixels on this screen.
 function UI.S(n)
 	local scale = math.min(math.max(ScrH() / 1080, 0.85), 2.4)
 	return math.floor(n * scale + 0.5)
@@ -37,36 +47,30 @@ function UI.fonts()
 	local h = ScrH()
 	if fontsFor == h then return end
 	fontsFor = h
-	surface.CreateFont("MeowyPack.Title", { font = "Roboto", size = S(26), weight = 700, antialias = true })
-	surface.CreateFont("MeowyPack.Heading", { font = "Roboto", size = S(19), weight = 700, antialias = true })
-	surface.CreateFont("MeowyPack.Body", { font = "Roboto", size = S(17), weight = 500, antialias = true })
-	surface.CreateFont("MeowyPack.Small", { font = "Roboto", size = S(15), weight = 500, antialias = true })
-	surface.CreateFont("MeowyPack.Button", { font = "Roboto", size = S(16), weight = 700, antialias = true })
+	local function font(name, size, weight)
+		surface.CreateFont("MeowyPack." .. name, { font = "Roboto", size = S(size), weight = weight, antialias = true, extended = true })
+	end
+	font("Title", 22, 700)
+	font("Heading", 16, 700)
+	font("Body", 15, 500)
+	font("Small", 13, 500)
+	font("Label", 12, 700)
+	font("Button", 15, 700)
 end
 
 local function lerp(a, b, t) return a + (b - a) * t end
 local function mix(c1, c2, t)
 	return Color(lerp(c1.r, c2.r, t), lerp(c1.g, c2.g, t), lerp(c1.b, c2.b, t), lerp(c1.a or 255, c2.a or 255, t))
 end
--- Seconds since this panel's `key` animation last stepped, from SysTime (the
--- menu state has no RealTime, RealFrameTime or FrameTime). Per panel, so
--- several calls in one frame don't shrink each other's step; clamped so a
--- stall doesn't jump an animation.
+UI.mix = mix
+
+-- Seconds since this panel's `key` animation last stepped (SysTime; per panel,
+-- clamped so a stall doesn't jump an animation).
 local function stepTime(p, key)
 	local now = SysTime()
 	local before = p[key] or now
 	p[key] = now
 	return math.min(math.max(now - before, 0), 0.1)
-end
-
--- A 1px-bordered rounded box: the border colour, then the fill inset by 1px.
-function UI.box(r, x, y, w, h, fill, border)
-	if border then
-		draw.RoundedBox(r, x, y, w, h, border)
-		draw.RoundedBox(math.max(r - 1, 0), x + 1, y + 1, w - 2, h - 2, fill)
-	else
-		draw.RoundedBox(r, x, y, w, h, fill)
-	end
 end
 
 -- Hover amount 0..1, eased, kept on the panel.
@@ -76,11 +80,37 @@ local function hover(p, on)
 end
 UI.hover = hover
 
+-- A rounded box with an optional 1px border.
+function UI.box(r, x, y, w, h, fill, border)
+	if border then
+		draw.RoundedBox(r, x, y, w, h, border)
+		draw.RoundedBox(math.max(r - 1, 0), x + 1, y + 1, w - 2, h - 2, fill)
+	else
+		draw.RoundedBox(r, x, y, w, h, fill)
+	end
+end
+
+-- A soft drop shadow under a w x h box with corner radius r.
+local SHADOW = { Color(0, 0, 0, 34), Color(0, 0, 0, 20), Color(0, 0, 0, 9) }
+function UI.shadow(r, x, y, w, h)
+	-- Three soft layers: enough depth, cheap enough for several open windows.
+	for i = 1, 3 do
+		local g = S(i * 5)
+		draw.RoundedBox(r + g, x - g, y - g + S(4), w + g * 2, h + g * 2, SHADOW[i])
+	end
+end
+
 function UI.fadeIn(p)
 	if p.AlphaTo then
 		p:SetAlpha(0)
-		p:AlphaTo(255, 0.15, 0)
+		p:AlphaTo(255, 0.14, 0)
 	end
+end
+
+-- Width of `text` in `font`.
+function UI.textW(text, font)
+	surface.SetFont(font)
+	return (surface.GetTextSize(text))
 end
 
 -- Word-wrap `text` to `width` pixels in `font`: a list of lines.
@@ -106,13 +136,14 @@ end
 local function lineHeight(font)
 	surface.SetFont(font)
 	local _, h = surface.GetTextSize("Ag")
-	return math.floor(h * 1.25 + 0.5)
+	return math.floor(h * 1.32 + 0.5)
 end
+UI.lineHeight = lineHeight
 
 -- Wrapped text. :Fit(width) wraps it and returns its height.
 function UI.Text(parent, text, font, color)
 	local p = vgui.Create("DPanel", parent)
-	p.text, p.font, p.color, p.h = text, font or "MeowyPack.Body", color or C.text, 0
+	p.text, p.font, p.color, p.h = text, font or "MeowyPack.Body", color or C.body, 0
 	p:SetMouseInputEnabled(false)
 	function p:Fit(width)
 		self.lines = UI.wrap(self.text, self.font, width)
@@ -130,45 +161,114 @@ function UI.Text(parent, text, font, color)
 	return p
 end
 
--- A button. kind: "primary" (filled accent), "secondary" (outline), "ghost".
+-- A small uppercase section label ("CONNECTION").
+function UI.Label(parent, text)
+	return UI.Text(parent, string.upper(text), "MeowyPack.Label", C.dim)
+end
+
+-- A pill-shaped status chip at x, y (or right-aligned to x when alignRight).
+-- tone: "green", "amber", "accent" or nil (neutral). Returns width, height.
+function UI.chip(text, x, y, tone, alignRight)
+	surface.SetFont("MeowyPack.Label")
+	local tw, th = surface.GetTextSize(text)
+	local w, h = tw + S(16), th + S(8)
+	if alignRight then x = x - w end
+	local bg = tone == "green" and C.greenSoft or tone == "amber" and C.amberSoft or tone == "accent" and C.accentSoft or C.raised
+	local fg = tone == "green" and C.green or tone == "amber" and C.amber or tone == "accent" and C.accentHi or C.dim
+	draw.RoundedBox(math.floor(h / 2), x, y, w, h, bg)
+	draw.SimpleText(text, "MeowyPack.Label", x + w / 2, y + h / 2, fg, UI.CENTER, UI.CENTER)
+	return w, h
+end
+
+-- Icons, drawn (fonts may not have the glyphs). cx, cy: centre; r: radius.
+function UI.iconCheck(cx, cy, r, color)
+	surface.SetDrawColor(color.r, color.g, color.b, color.a or 255)
+	for o = -1, 1 do
+		surface.DrawLine(cx - r * 0.42, cy + o, cx - r * 0.1, cy + r * 0.32 + o)
+		surface.DrawLine(cx - r * 0.1, cy + r * 0.32 + o, cx + r * 0.45, cy - r * 0.3 + o)
+	end
+end
+
+function UI.iconAlert(cx, cy, r, color)
+	local w = math.max(S(3), 2)
+	draw.RoundedBox(w / 2, cx - w / 2, cy - r * 0.45, w, r * 0.6, color)
+	draw.RoundedBox(w / 2, cx - w / 2, cy + r * 0.28, w, w, color)
+end
+
+-- Four rising bars: connection strength.
+function UI.iconSignal(cx, cy, r, color)
+	local bw, gap = math.max(S(3), 2), math.max(S(2), 1)
+	local total = bw * 4 + gap * 3
+	local x = cx - total / 2
+	for i = 1, 4 do
+		local h = r * (0.35 + 0.22 * (i - 1))
+		draw.RoundedBox(1, x, cy + r * 0.5 - h, bw, h, color)
+		x = x + bw + gap
+	end
+end
+
+-- A badge: a soft circle with an icon. kind: "check", "alert", "signal".
+function UI.badge(cx, cy, r, kind, tone)
+	local soft = tone == "green" and C.greenSoft or tone == "amber" and C.amberSoft or C.accentSoft
+	local fg = tone == "green" and C.green or tone == "amber" and C.amber or C.accentHi
+	draw.RoundedBox(r, cx - r, cy - r, r * 2, r * 2, soft)
+	if kind == "check" then UI.iconCheck(cx, cy, r * 0.62, fg)
+	elseif kind == "alert" then UI.iconAlert(cx, cy, r * 0.75, fg)
+	else UI.iconSignal(cx, cy, r * 0.62, fg) end
+end
+
+-- A spinner: dots around a circle, the bright one going round.
+function UI.spinner(cx, cy, r, color)
+	local n, t = 8, SysTime() * 1.4
+	for i = 0, n - 1 do
+		local a = i / n * math.pi * 2
+		local phase = (t - i / n) % 1
+		local d = math.max(S(4), 3)
+		local alpha = 255 * (0.18 + 0.82 * (1 - phase) ^ 3)
+		draw.RoundedBox(d / 2, cx + math.cos(a) * r - d / 2, cy + math.sin(a) * r - d / 2, d, d, Color(color.r, color.g, color.b, alpha))
+	end
+end
+
+-- A button. kind: "primary" (filled accent), "secondary" (outlined), "ghost" (text only).
 function UI.Button(parent, text, kind, onClick)
 	UI.fonts()
 	local b = vgui.Create("DButton", parent)
 	b:SetText(text)
 	b:SetFont("MeowyPack.Button")
 	b.kind = kind or "secondary"
-	surface.SetFont("MeowyPack.Button")
-	local tw = surface.GetTextSize(text)
-	b.w, b.h = tw + S(36), S(40)
+	b.w, b.h = UI.textW(text, "MeowyPack.Button") + S(b.kind == "ghost" and 24 or 36), S(38)
 	b:SetSize(b.w, b.h)
-	b.UpdateColours = function(self) return self:SetTextStyleColor(self.kind == "primary" and C.white or C.text) end
+	b.UpdateColours = function(self)
+		if self.kind == "primary" then return self:SetTextStyleColor(C.white) end
+		return self:SetTextStyleColor(mix(C.body, C.text, self.meowyHover or 0))
+	end
 	b.Paint = function(self, w, h)
 		local t = hover(self, self:IsHovered())
 		if self.kind == "primary" then
 			UI.box(S(8), 0, 0, w, h, mix(C.accent, C.accentHi, t))
 		elseif self.kind == "ghost" then
-			if t > 0.01 then UI.box(S(8), 0, 0, w, h, Color(255, 255, 255, 14 * t)) end
+			if t > 0.01 then UI.box(S(8), 0, 0, w, h, Color(255, 255, 255, 12 * t)) end
 		else
-			UI.box(S(8), 0, 0, w, h, mix(C.card, C.cardHi, t), mix(C.border, C.dim, t * 0.6))
+			UI.box(S(8), 0, 0, w, h, mix(C.surface, C.raised, t), mix(C.border, Color(70, 72, 80), t))
 		end
 	end
 	b.DoClick = function() if onClick then onClick() end end
 	return b
 end
 
--- A small round "x" for closing.
+-- A small "x" for closing.
 function UI.Close(parent, onClick)
 	local b = vgui.Create("DButton", parent)
 	b:SetText("")
 	b.meowyClose = true
-	b.w = S(32)
+	b.w = S(30)
 	b:SetSize(b.w, b.w)
 	b.Paint = function(self, w, h)
 		local t = hover(self, self:IsHovered())
-		if t > 0.01 then draw.RoundedBox(S(8), 0, 0, w, h, Color(255, 255, 255, 18 * t)) end
-		local c = mix(C.dim, C.white, t)
+		if t > 0.01 then draw.RoundedBox(S(7), 0, 0, w, h, Color(255, 255, 255, 14 * t)) end
+		local c = mix(C.dim, C.text, t)
 		surface.SetDrawColor(c.r, c.g, c.b, 255)
-		local m, n = math.floor(w * 0.34), math.floor(w * 0.66)
+		local m, n = math.floor(w * 0.35), math.floor(w * 0.65)
 		for o = 0, 1 do
 			surface.DrawLine(m + o, m, n + o, n)
 			surface.DrawLine(n + o, m, m + o, n)
@@ -179,23 +279,24 @@ function UI.Close(parent, onClick)
 	return b
 end
 
--- A toggle switch with a label and a description. :Fit(width) -> height.
+-- A setting row: title and description on the left, a switch on the right,
+-- on a surface card. The whole row toggles. :Fit(width) -> height.
 function UI.Toggle(parent, label, description, on, onChange)
 	local p = vgui.Create("DButton", parent)
 	p:SetText("")
 	p.on, p.knob = on and true or false, on and 1 or 0
-	p.title = UI.Text(p, label, "MeowyPack.Heading", C.white)
+	p.title = UI.Text(p, label, "MeowyPack.Heading", C.text)
 	p.desc = description and UI.Text(p, description, "MeowyPack.Small", C.dim) or nil
-	p.sw, p.sh = S(46), S(26)
+	p.sw, p.sh, p.pad = S(42), S(24), S(18)
 	function p:Fit(width)
-		local textW = width - self.sw - S(20)
+		local textW = width - self.pad * 2 - self.sw - S(24)
 		local h = self.title:Fit(textW)
-		self.title:SetPos(0, 0)
+		self.title:SetPos(self.pad, self.pad)
 		if self.desc then
-			self.desc:SetPos(0, h + S(4))
+			self.desc:SetPos(self.pad, self.pad + h + S(4))
 			h = h + S(4) + self.desc:Fit(textW)
 		end
-		self.h = math.max(h, self.sh)
+		self.h = math.max(h, self.sh) + self.pad * 2
 		self:SetSize(width, self.h)
 		return self.h
 	end
@@ -204,12 +305,12 @@ function UI.Toggle(parent, label, description, on, onChange)
 		if onChange then onChange(self.on) end
 	end
 	p.DoClick = function(self) self:SetOn(not self.on) end
-	p.Paint = function(self, w)
-		self.knob = lerp(self.knob, self.on and 1 or 0, math.min(stepTime(self, "meowyKnobT") * 16, 1))
+	p.Paint = function(self, w, h)
 		local t = hover(self, self:IsHovered())
-		local x, y = w - self.sw, 0
-		local track = mix(mix(C.border, C.cardHi, t), C.accent, self.knob)
-		draw.RoundedBox(self.sh / 2, x, y, self.sw, self.sh, track)
+		UI.box(S(10), 0, 0, w, h, mix(C.surface, Color(31, 32, 37), t), C.border)
+		self.knob = lerp(self.knob, self.on and 1 or 0, math.min(stepTime(self, "meowyKnobT") * 16, 1))
+		local x, y = w - self.pad - self.sw, math.floor((h - self.sh) / 2)
+		draw.RoundedBox(self.sh / 2, x, y, self.sw, self.sh, mix(Color(58, 60, 68), C.accent, self.knob))
 		local k = self.sh - S(6)
 		draw.RoundedBox(k / 2, x + S(3) + (self.sw - k - S(6)) * self.knob, y + S(3), k, k, C.white)
 		return true
@@ -242,39 +343,57 @@ function UI.row(buttons, x, y, width)
 	return h
 end
 
--- A card: #1f2023 with a 1px border, optional coloured left bar. Children are
--- added to .blocks; :Fit(width) stacks them inside the padding -> height.
-function UI.Card(parent, bar)
+-- A card on the surface colour. Children go in with :Add(block, gapBefore);
+-- :Fit(width) stacks them inside the padding and returns the height.
+-- card.badge = { kind, tone } draws an icon badge at the top left.
+function UI.Card(parent)
 	local p = vgui.Create("DPanel", parent)
-	p.blocks, p.bar, p.pad = {}, bar, S(18)
-	p.indent = 0   -- room on the left for an icon
+	p.blocks, p.pad = {}, S(18)
 	function p:Add(block, gapBefore)
 		block.gapBefore = gapBefore
 		self.blocks[#self.blocks + 1] = block
 		return block
 	end
 	function p:Fit(width)
-		local x = self.pad + (self.bar and S(4) or 0) + self.indent
-		local y = UI.stack(self.blocks, x, self.pad, width - x - self.pad, S(8))
-		self.h = y + self.pad
+		local x = self.pad + (self.badge and S(52) or 0)
+		local y = UI.stack(self.blocks, x, self.pad, width - x - self.pad, S(6))
+		self.h = math.max(y + self.pad, self.badge and S(38) + self.pad * 2 or 0)
 		self:SetSize(width, self.h)
 		return self.h
 	end
 	p.Paint = function(self, w, h)
-		UI.box(S(10), 0, 0, w, h, C.card, C.border)
-		if self.bar then draw.RoundedBoxEx(S(10), 0, 0, S(4), h, self.bar, true, false, true, false) end
-		if self.icon then
-			local r = S(13)
-			local cx, cy = self.pad + S(4) + r, self.pad + r
-			draw.RoundedBox(r, cx - r, cy - r, r * 2, r * 2, self.icon.color)
-			if self.icon.check then   -- a tick, drawn (fonts may not have the glyph)
-				surface.SetDrawColor(255, 255, 255, 255)
-				for o = -1, 1 do
-					surface.DrawLine(cx - r * 0.45, cy + o, cx - r * 0.1, cy + r * 0.35 + o)
-					surface.DrawLine(cx - r * 0.1, cy + r * 0.35 + o, cx + r * 0.5, cy - r * 0.35 + o)
-				end
-			else
-				draw.SimpleText(self.icon.glyph or "!", "MeowyPack.Button", cx, cy, C.white, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+		UI.box(S(10), 0, 0, w, h, C.surface, C.border)
+		if self.badge then UI.badge(self.pad + S(19), self.pad + S(19), S(19), self.badge[1], self.badge[2]) end
+		return true
+	end
+	return p
+end
+
+-- Key/value rows ("GPU   NVIDIA GeForce ..."), as one block. :Fit(width) -> height.
+function UI.Details(parent, rows)
+	local p = vgui.Create("DPanel", parent)
+	p:SetMouseInputEnabled(false)
+	p.rows = rows
+	function p:Fit(width)
+		self.keyW = 0
+		for _, r in ipairs(self.rows) do self.keyW = math.max(self.keyW, UI.textW(r[1], "MeowyPack.Small")) end
+		self.keyW = self.keyW + S(24)
+		self.lh = lineHeight("MeowyPack.Small")
+		self.items, self.h = {}, 0
+		for _, r in ipairs(self.rows) do
+			local lines = UI.wrap(r[2], "MeowyPack.Small", width - self.keyW)
+			self.items[#self.items + 1] = { key = r[1], lines = lines, y = self.h }
+			self.h = self.h + #lines * self.lh + S(10)
+		end
+		self.h = math.max(self.h - S(10), 0)
+		self:SetSize(width, self.h)
+		return self.h
+	end
+	p.Paint = function(self)
+		for _, it in ipairs(self.items or {}) do
+			draw.SimpleText(it.key, "MeowyPack.Small", 0, it.y, C.dim)
+			for i, line in ipairs(it.lines) do
+				draw.SimpleText(line, "MeowyPack.Small", self.keyW, it.y + (i - 1) * self.lh, C.text)
 			end
 		end
 		return true
@@ -282,19 +401,22 @@ function UI.Card(parent, bar)
 	return p
 end
 
--- A full-screen dim backdrop with a centred card. Returns backdrop, card.
--- Escape (and the "x", when closable) call onDismiss.
+-- A full-screen dim backdrop with a centred window. Returns backdrop, window.
+-- Escape (and the "x", when there is one) call onDismiss.
 function UI.Modal(width, onDismiss)
 	UI.fonts()
 	local back = vgui.Create("EditablePanel")
 	back:SetSize(ScrW(), ScrH())
 	back:SetPos(0, 0)
-	back.Paint = function(self, w, h) draw.RoundedBox(0, 0, 0, w, h, C.backdrop) end
 	local card = vgui.Create("EditablePanel", back)
-	card.w = S(width)
-	card.Paint = function(self, w, h)
-		UI.box(S(12), 0, 0, w, h, C.bg, C.border)
-		draw.RoundedBoxEx(S(12), 0, 0, S(5), h, C.accent, true, false, true, false)
+	card.w, card.r = S(width), S(14)
+	card.Paint = function(self, w, h) UI.box(self.r, 0, 0, w, h, C.window, C.border) end
+	back.Paint = function(self, w, h)
+		draw.RoundedBox(0, 0, 0, w, h, C.backdrop)
+		if IsValid(card) then
+			local x, y = card:GetPos()
+			UI.shadow(card.r, x, y, card:GetWide(), card:GetTall())
+		end
 	end
 	function back:Dismiss()
 		if self.dismissed then return end
@@ -303,7 +425,7 @@ function UI.Modal(width, onDismiss)
 		self:Remove()
 	end
 	back.OnKeyCodePressed = function(self, key) if KEY_ESCAPE and key == KEY_ESCAPE then self:Dismiss() end end
-	-- Size the card to its contents (call after adding them), centre it, show.
+	-- Size the window to its contents (call after adding them), centre it, show.
 	function back:Open(height)
 		card:SetSize(card.w, height)
 		card:SetPos(math.floor((ScrW() - card.w) / 2), math.floor((ScrH() - height) / 2))
@@ -315,38 +437,47 @@ function UI.Modal(width, onDismiss)
 	return back, card
 end
 
--- A prompt: title, body, optional note, buttons { { text, kind, fn } }.
--- Buttons close it after running fn. closable adds the "x" (it and Escape
--- run onDismiss).
+-- A prompt: an icon badge, title, body, optional note, buttons
+-- { { text, kind, fn } }. Buttons close it after running fn. closable adds
+-- the "x" (it and Escape run onDismiss). icon = { kind, tone }.
 function UI.Prompt(opts)
-	local back, card = UI.Modal(opts.width or 520, opts.onDismiss)
+	local back, card = UI.Modal(opts.width or 480, opts.onDismiss)
 	local pad = S(28)
 	local inner = card.w - pad * 2
-	local blocks = { UI.Text(card, opts.title, "MeowyPack.Title", C.white) }
-	local body = UI.Text(card, opts.body, "MeowyPack.Body", C.text)
-	body.gapBefore = S(10)
+	local top = pad
+	if opts.icon then
+		local r, icon = S(22), opts.icon
+		local badge = vgui.Create("DPanel", card)
+		badge:SetMouseInputEnabled(false)
+		badge:SetPos(pad, pad)
+		badge:SetSize(r * 2, r * 2)
+		badge.Paint = function() UI.badge(r, r, r, icon[1], icon[2]) return true end
+		top = pad + r * 2 + S(18)
+	end
+	local blocks = { UI.Text(card, opts.title, "MeowyPack.Title", C.text) }
+	local body = UI.Text(card, opts.body, "MeowyPack.Body", C.body)
+	body.gapBefore = S(8)
 	blocks[#blocks + 1] = body
 	if opts.note then
 		local note = UI.Text(card, opts.note, "MeowyPack.Small", C.dim)
-		note.gapBefore = S(12)
+		note.gapBefore = S(14)
 		blocks[#blocks + 1] = note
 	end
-	local y = UI.stack(blocks, pad, pad, opts.closable and inner - S(36) or inner)
+	local y = UI.stack(blocks, pad, top, inner)
 	if opts.closable then
 		local x = UI.Close(card, function() back:Dismiss() end)
-		x:SetPos(card.w - S(14) - x.w, S(14))
+		x:SetPos(card.w - S(16) - x.w, S(16))
 	end
 	local buttons = {}
 	for _, spec in ipairs(opts.buttons or {}) do
 		local fn = spec[3]
-		local b = UI.Button(card, spec[1], spec[2], function()
+		buttons[#buttons + 1] = UI.Button(card, spec[1], spec[2], function()
 			back.dismissed = true   -- answered: not a dismissal
 			back:Remove()
 			if fn then fn() end
 		end)
-		buttons[#buttons + 1] = b
 	end
-	y = y + S(24)
+	y = y + S(26)
 	y = y + UI.row(buttons, pad, y, inner) + pad
 	back:Open(y)
 	return back

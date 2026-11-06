@@ -89,6 +89,12 @@ check("queue 2 fine", ids((M.diagnose(laptop(1, 0), { mcore = "1", queue = "2" }
 _, report = M.diagnose(laptop(1, 0), {})
 local mc = false
 for _, l in ipairs(report) do if l == "Multicore: gmod_mcore_test unknown, mat_queue_mode unknown" then mc = true end end
+do
+	local _, r = M.diagnose({ arch = "x64", adapters = {} }, { mcore = "1", queue = "-1.00" })
+	local plain = false
+	for _, l in ipairs(r) do if l == "Multicore: gmod_mcore_test 1, mat_queue_mode -1" then plain = true end end
+	check("cvars shown as typed", plain, true)
+end
 check("cvars unknown: reported, no tip", mc, true)
 
 -- Branch ----------------------------------------------------------------------------

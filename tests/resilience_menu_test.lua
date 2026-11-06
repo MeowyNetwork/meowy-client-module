@@ -34,7 +34,8 @@ local function world(opts)
 	-- Globals the menu state doesn't have: touching one fails the test, the way
 	-- it fails in game ("attempt to call global 'RealTime' (a nil value)").
 	local NOT_IN_MENU = { RealTime = true, CurTime = true, FrameTime = true, RealFrameTime = true,
-		LocalPlayer = true, player = true, ents = true, net = true, timer = true, engine = true }
+		LocalPlayer = true, player = true, ents = true, net = true, timer = true, engine = true,
+		TEXT_ALIGN_LEFT = true, TEXT_ALIGN_CENTER = true, TEXT_ALIGN_RIGHT = true, TEXT_ALIGN_TOP = true, TEXT_ALIGN_BOTTOM = true }
 	local env = setmetatable({}, { __index = function(_, k)
 		if NOT_IN_MENU[k] then error("menu state has no global '" .. k .. "'", 2) end
 		return _G[k]
@@ -62,7 +63,8 @@ local function world(opts)
 		IsOurServer = function(a) return type(a) == "string" and a:match("^138%.201%.62%.52:%d+$") ~= nil end,
 	}
 	-- The jitter at its middle, so timings in these tests are the same every run.
-	env.math = setmetatable({ random = function() return 0.5 end }, { __index = math })
+	env.math = setmetatable({ random = function() return 0.5 end,
+		Clamp = function(v, lo, hi) return v < lo and lo or (v > hi and hi or v) end }, { __index = math })
 	env.SysTime = function() return w.now end
 	env.IsInGame = function() return w.inGame end
 	env.IsInLoading = function() return w.loading end
@@ -88,7 +90,6 @@ local function world(opts)
 	}
 	env.ScrW = function() return 1920 end
 	env.ScrH = function() return 1080 end
-	env.TEXT_ALIGN_CENTER = 1
 	if opts.menu then
 		env.pnlMainMenu = { Call = function(self, js) w.jsCalls = w.jsCalls + 1 w.js = js end }
 	end
@@ -107,6 +108,15 @@ local function world(opts)
 			if k == "Remove" or k == "Close" then return function(self) self.removed = true end end
 			if k == "SetValue" then return function(self, v) self.value = v end end
 			if k == "GetText" then return function(self) return self.text end end
+			-- Position and size, as real panels keep them (the layout reads them back).
+			if k == "SetPos" then return function(self, x, y) self.px, self.py = x, y end end
+			if k == "GetPos" then return function(self) return self.px or 0, self.py or 0 end end
+			if k == "SetSize" then return function(self, x, y) self.sw, self.sh = x, y end end
+			if k == "SetWide" then return function(self, x) self.sw = x end end
+			if k == "SetTall" then return function(self, y) self.sh = y end end
+			if k == "GetWide" then return function(self) return self.sw or 0 end end
+			if k == "GetTall" then return function(self) return self.sh or 0 end end
+			if k == "GetSize" then return function(self) return self.sw or 0, self.sh or 0 end end
 			if k == "SetVisible" then return function(self, v) self.visible = v end end
 			if k == "Add" then return function(self, child) if type(child) == "string" then return env.vgui.Create(child) end return child end end
 			if type(k) == "string" and k:match("^%u") then return function() end end
@@ -180,18 +190,18 @@ end
 -- Opt-in: asked once, Yes sets cl_timeout 60 and remembers the old value
 w = world({})
 w.run(4)
-check("asked at start", w.click("Yes, stay connected"), true)
+check("asked at start", w.click("Stay connected"), true)
 check("cl_timeout set", w.cl_timeout, "60")
 check("saved", w.settingsText, "asked=1\r\nenabled=1\r\nsaved_cl_timeout=30\r\n")
 check("fonts made", (w.fonts or 0) > 0, true)
 local w2 = world({ settings = w.settingsText })
 w2.run(4)
-check("not asked twice", w2.click("Yes, stay connected"), false)
+check("not asked twice", w2.click("Stay connected"), false)
 
 -- No changes nothing
 w = world({})
 w.run(4)
-w.click("No thanks")
+w.click("Not now")
 check("No: cl_timeout untouched", w.cl_timeout, "30")
 check("No: remembered", w.settingsText, "asked=1\r\nenabled=0\r\n")
 
@@ -372,7 +382,7 @@ local function overlayTitle()
 	local o = find(function(p) return p.meowyOverlay end)
 	return o and o.title and o.title.text
 end
-check("Steam offline: waiting card", overlayTitle(), "Waiting for Steam to reconnect...")
+check("Steam offline: waiting card", overlayTitle(), "Waiting for Steam to reconnect")
 check("Steam offline: logged", (w.logs or ""):find("waiting for Steam to reconnect", 1, true) ~= nil, true)
 w.run(200)
 check("Steam offline 3+ min: still waiting, no join", w.connects() == 0 and (w.logs or ""):find("reconnect: stopped", 1, true) == nil, true)

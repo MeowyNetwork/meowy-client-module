@@ -106,7 +106,13 @@ function M.diagnose(facts, cvars)
 
 	-- Multicore
 	local mcore, queue = tonumber(cvars.mcore), tonumber(cvars.queue)
-	report[#report + 1] = ("Multicore: gmod_mcore_test %s, mat_queue_mode %s"):format(cvars.mcore or "unknown", cvars.queue or "unknown")
+	-- Cvars read back as "-1.00"; show whole numbers as typed ("-1").
+	local function plain(v)
+		local n = tonumber(v)
+		if n and n == math.floor(n) then return ("%d"):format(n) end
+		return v or "unknown"
+	end
+	report[#report + 1] = ("Multicore: gmod_mcore_test %s, mat_queue_mode %s"):format(plain(cvars.mcore), plain(cvars.queue))
 	if mcore == 0 then
 		tips[#tips + 1] = { id = "mcore", title = "Multicore rendering is off.",
 			text = "Type gmod_mcore_test 1 in the console, then rejoin. It's much faster on most PCs. If the game "
