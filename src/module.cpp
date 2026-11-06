@@ -911,21 +911,36 @@ end)
 
 -- Players' reports (who was really connected) beat everything; then this PC's
 -- own fresh check; the crawler's verdict only for servers not checked here.
+-- A clean check here doesn't hide what the observer learned by joining: that
+-- it saw nothing fake (verified) or that the server refused it (unverified).
 local function verdictOf(address)
 	local r = rep[address]
 	if r and r.source == "players" then return r end
 	local m = mine[address]
-	if m and SysTime() - m.at < RECHECK then return m.verdict ~= "ok" and m or nil end
+	if m and SysTime() - m.at < RECHECK then
+		if m.verdict ~= "ok" then return m end
+		if r and (r.verdict == "verified" or (r.verdict == "unverified" and r.source == "observer")) then return r end
+		return nil
+	end
 	return r
 end
 
 local function tagFor(v)
 	if v.verdict == "fake" then return "[FAKE - " .. tostring(v.real) .. " real] " end
+	if v.verdict == "verified" then return "[VERIFIED] " end -- the observer joined and saw nothing fake
 	if v.verdict == "unverified" then
 		-- A hidden list is a fact, not an accusation: big servers block the query against floods.
+		-- Neither is a server that refuses the observer ("blocks automated checks": VPN/hosting blocks).
 		local why = istable(v.reasons) and tostring(v.reasons[1] or "") or ""
 		return why:find("hidden", 1, true) and "[LIST HIDDEN] " or "[UNVERIFIED] "
 	end
+end
+
+-- Unverified servers (either kind) sit a little lower than otherwise-equal
+-- ones, never hidden: added to the browser's rank, where lower is better.
+local UNVERIFIED_RANK = 40
+local function rankPenalty(v)
+	return v and v.verdict == "unverified" and UNVERIFIED_RANK or 0
 end
 
 -- Separate from the verdicts: plenty of honest DarkRP servers are mostly AFK,
@@ -948,7 +963,7 @@ local function tagOf(address)
 end
 
 local MARK_JS = [[
-if (!window.MeowyMark) window.MeowyMark = function (addr, real, tag) {
+if (!window.MeowyMark) window.MeowyMark = function (addr, real, tag, penalty) {
 	for (var t in ServerTypes) { var g = ServerTypes[t].gamemodes;
 	for (var k in g) { var gm = g[k];
 	for (var i = 0; i < gm.servers.length; i++) { var s = gm.servers[i];
@@ -959,10 +974,35 @@ if (!window.MeowyMark) window.MeowyMark = function (addr, real, tag) {
 			gm.num_players -= d; if (!s.isAnon) gm.sort_players -= d; gm.order = gm.sort_players;
 			s.recommended = CalculateRank(s);
 		}
+		if (penalty > 0 && !s.meowyRankAdj) { s.meowyRankAdj = true; s.recommended += penalty; }
 	} } }
 	UpdateDigest(RootScope, 50);
 };
 ]]
+
+-- For a server tagged as it arrived: the browser adds it to its list only
+-- after the callback returns, so the rank is moved a moment later.
+local RANK_JS = [[
+if (!window.MeowyRank) window.MeowyRank = function (addr, penalty) {
+	var found = false;
+	for (var t in ServerTypes) { var g = ServerTypes[t].gamemodes;
+	for (var k in g) { var gm = g[k];
+	for (var i = 0; i < gm.servers.length; i++) { var s = gm.servers[i];
+		if (s.address != addr || s.meowyRankAdj) continue;
+		s.meowyRankAdj = true; s.recommended += penalty; found = true;
+	} } }
+	if (found) UpdateDigest(RootScope, 50);
+};
+]]
+
+local function rankLater(address, penalty)
+	if penalty <= 0 then return end
+	local js = RANK_JS .. string.format("MeowyRank('%s', %d);", address:JavascriptSafe(), penalty)
+	-- Twice: a busy browser may not have the server yet; the flag stops a double penalty.
+	for _, delay in ipairs({ 0.5, 3 }) do
+		after(delay, function() if pnlMainMenu then pnlMainMenu:Call(js) end end)
+	end
+end
 
 -- Shows a verdict that arrived after the server was already listed.
 local function mark(address)
@@ -971,8 +1011,8 @@ local function mark(address)
 	local tag, v = tagOf(address)
 	if not tag then return end
 	tagged[s.type .. address] = true
-	pnlMainMenu:Call(MARK_JS .. string.format("MeowyMark('%s', %d, '%s');",
-		address:JavascriptSafe(), v and v.verdict == "fake" and (v.real or -1) or -1, tag:JavascriptSafe()))
+	pnlMainMenu:Call(MARK_JS .. string.format("MeowyMark('%s', %d, '%s', %d);",
+		address:JavascriptSafe(), v and v.verdict == "fake" and (v.real or -1) or -1, tag:JavascriptSafe(), rankPenalty(v)))
 end
 
 local function fetchRep()
@@ -1192,6 +1232,7 @@ serverlist.Query = function(data)
 				-- The browser shows players minus bots: count the fakes as bots.
 				local fake = v and v.verdict == "fake" and v.real and math.max(0, (players - botplayers) - v.real) or 0
 				botplayers, maxplayers = botplayers + fake, maxplayers + fake
+				rankLater(address, rankPenalty(v))
 			end
 			return callback(ping, name, desc, map, players, maxplayers, botplayers, pass, lastplayed, address, ...)
 		end
