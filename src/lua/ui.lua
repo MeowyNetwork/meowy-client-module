@@ -48,7 +48,16 @@ local function lerp(a, b, t) return a + (b - a) * t end
 local function mix(c1, c2, t)
 	return Color(lerp(c1.r, c2.r, t), lerp(c1.g, c2.g, t), lerp(c1.b, c2.b, t), lerp(c1.a or 255, c2.a or 255, t))
 end
-local function frameTime() return RealFrameTime and RealFrameTime() or 0.016 end
+-- Seconds since this panel's `key` animation last stepped, from SysTime (the
+-- menu state has no RealTime, RealFrameTime or FrameTime). Per panel, so
+-- several calls in one frame don't shrink each other's step; clamped so a
+-- stall doesn't jump an animation.
+local function stepTime(p, key)
+	local now = SysTime()
+	local before = p[key] or now
+	p[key] = now
+	return math.min(math.max(now - before, 0), 0.1)
+end
 
 -- A 1px-bordered rounded box: the border colour, then the fill inset by 1px.
 function UI.box(r, x, y, w, h, fill, border)
@@ -62,7 +71,7 @@ end
 
 -- Hover amount 0..1, eased, kept on the panel.
 local function hover(p, on)
-	p.meowyHover = lerp(p.meowyHover or 0, on and 1 or 0, math.min(frameTime() * 14, 1))
+	p.meowyHover = lerp(p.meowyHover or 0, on and 1 or 0, math.min(stepTime(p, "meowyHoverT") * 14, 1))
 	return p.meowyHover
 end
 UI.hover = hover
@@ -196,7 +205,7 @@ function UI.Toggle(parent, label, description, on, onChange)
 	end
 	p.DoClick = function(self) self:SetOn(not self.on) end
 	p.Paint = function(self, w)
-		self.knob = lerp(self.knob, self.on and 1 or 0, math.min(frameTime() * 16, 1))
+		self.knob = lerp(self.knob, self.on and 1 or 0, math.min(stepTime(self, "meowyKnobT") * 16, 1))
 		local t = hover(self, self:IsHovered())
 		local x, y = w - self.sw, 0
 		local track = mix(mix(C.border, C.cardHi, t), C.accent, self.knob)
