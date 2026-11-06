@@ -300,7 +300,7 @@ local function showOverlay(titleText, subText, buttonText, onButton, busy)
 			draw.RoundedBoxEx(S(12), 0, 0, S(5), h, C.accent, true, false, true, false)
 			if self.busy then   -- three dots, one after another
 				for i = 0, 2 do
-					local a = 0.35 + 0.65 * math.max(0, math.sin(RealTime() * 5 - i * 0.9))
+					local a = 0.35 + 0.65 * math.max(0, math.sin(SysTime() * 5 - i * 0.9))
 					local d = S(7)
 					draw.RoundedBox(d / 2, S(26) + i * S(12), math.floor(h / 2) - d / 2, d, d, Color(194, 64, 122, 255 * a))
 				end
@@ -386,12 +386,12 @@ local function probe(now)
 		log("reconnect: attempt %d, server %s%s -> %s", episode.s.attempt,
 			answered and "answered" or "didn't answer", offline and ", Steam offline" or "",
 			act == "wait" and ("next try in " .. fmtNum(episode.s.nextAt - t) .. " s") or act)
-		if act == "join" and IsInLoading() then
-			-- A join is already under way (the player's own): don't cut across it.
-			-- If it reaches a server, the state check ends this rejoin.
-			episode.phase, episode.s.nextAt = "waiting", t + 2
-			log("reconnect: a join is already under way; checking again in 2 s")
-		elseif act == "join" then
+		-- No "is a join already under way?" check here: IsInLoading()/IsInGame()
+		-- stay true through GMod's disconnect dialog and teardown, and fooled
+		-- that check into waiting forever. A join of the player's own that
+		-- already has a connection ends this rejoin through the engine state
+		-- (tickEpisode); one that doesn't is replaced by this connect.
+		if act == "join" then
 			episode.phase, episode.joinAt, episode.sawLoading, episode.reachedOurs = "joining", t, false, false
 			log("reconnect: joining %s", episode.address)
 			RunConsoleCommand("connect", episode.address)   -- never a password

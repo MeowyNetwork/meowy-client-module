@@ -31,7 +31,14 @@ local function world(opts)
 		restartUntil = nil, commands = {}, settingsText = opts.settings or "", crashed = opts.crashed,
 		cl_timeout = "30", pingAnswer = true, pingPass = false, buttons = {}, think = nil, jsCalls = 0,
 	}
-	local env = setmetatable({}, { __index = _G })
+	-- Globals the menu state doesn't have: touching one fails the test, the way
+	-- it fails in game ("attempt to call global 'RealTime' (a nil value)").
+	local NOT_IN_MENU = { RealTime = true, CurTime = true, FrameTime = true, RealFrameTime = true,
+		LocalPlayer = true, player = true, ents = true, net = true, timer = true, engine = true }
+	local env = setmetatable({}, { __index = function(_, k)
+		if NOT_IN_MENU[k] then error("menu state has no global '" .. k .. "'", 2) end
+		return _G[k]
+	end })
 	env.meowy = {
 		ResilienceWatch = function()
 			if w.state == "ours" then return "ours", w.address, w.timingOut, w.silence end
@@ -81,7 +88,6 @@ local function world(opts)
 	}
 	env.ScrW = function() return 1920 end
 	env.ScrH = function() return 1080 end
-	env.RealTime = function() return w.now end
 	env.TEXT_ALIGN_CENTER = 1
 	if opts.menu then
 		env.pnlMainMenu = { Call = function(self, js) w.jsCalls = w.jsCalls + 1 w.js = js end }
@@ -125,6 +131,7 @@ local function world(opts)
 		for _, p in ipairs(w.panels or {}) do
 			if not p.removed and rawget(p, "Paint") then
 				local ok, err = pcall(p.Paint, p, 300, 60)
+				if ok and p.meowyOverlay then p.busy = true ok, err = pcall(p.Paint, p, 300, 60) end
 				if not ok then errs[#errs + 1] = (p.class or "?") .. ": " .. tostring(err) end
 			end
 		end
@@ -333,16 +340,22 @@ w.state, w.address, w.timingOut, w.silence = "ours", OURS, false, 0.02
 w.run(1)
 check("rejoined by hand: stopped", (w.logs or ""):find("reconnect: stopped (back on our server)", 1, true) ~= nil, true)
 
--- A join of the player's own is loading when ours would start: ours waits
-w = world({ settings = ON })
+-- The second live test: after the drop GMod's disconnect dialog keeps
+-- IsInLoading()/IsInGame() true; when the server answers, it still connects
+-- (it used to wait "for a join already under way" forever)
+w = world({ settings = ON, native = true })
 w.play(10)
+w.steam = true
+w.pingAnswer = false
 w.drop(60)
-w.loading = true
-w.run(10)
-check("player's join loading: we don't connect over it", w.connects(), 0)
-w.loading = false
-w.run(5)
-check("then ours goes ahead", w.lastConnect(), "connect " .. OURS)
+w.loading, w.inGame = true, true
+w.run(20)
+check("dialog up, server down: no join yet", w.connects(), 0)
+w.pingAnswer = true
+w.run(35)
+check("dialog up, server answers: connects", w.lastConnect(), "connect " .. OURS)
+check("no 'already under way' loop", (w.logs or ""):find("already under way", 1, true) == nil, true)
+check("no menu-state errors", w.errors, nil)
 
 -- Silent only briefly (under 10 s) when it ended: not a drop
 w = world({ settings = ON })
