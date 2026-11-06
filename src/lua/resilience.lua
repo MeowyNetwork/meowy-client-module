@@ -289,12 +289,13 @@ local function hideOverlay()
 	if IsValid(overlay) then overlay:Remove() end
 	overlay = nil
 end
-local function showOverlay(titleText, subText, buttonText, onButton, busy)
+-- buttons: { { text, kind, fn }, ... }, right-aligned; busy shows the dots.
+local function showOverlay(titleText, subText, buttons, busy)
 	if not IsValid(overlay) then
 		UI.fonts()
 		overlay = vgui.Create("DPanel")
 		overlay.meowyOverlay = true
-		overlay.w = S(500)
+		overlay.w = S(540)
 		overlay.Paint = function(self, w, h)
 			UI.box(S(12), 0, 0, w, h, C.bg, C.border)
 			draw.RoundedBoxEx(S(12), 0, 0, S(5), h, C.accent, true, false, true, false)
@@ -309,26 +310,37 @@ local function showOverlay(titleText, subText, buttonText, onButton, busy)
 		end
 		overlay.title = UI.Text(overlay, "", "MeowyPack.Heading", C.white)
 		overlay.sub = UI.Text(overlay, "", "MeowyPack.Small", C.dim)
-		overlay.button = UI.Button(overlay, "Cancel", "secondary")
+		overlay.buttons = {}
 		overlay:MakePopup()
 		overlay:SetKeyboardInputEnabled(false)
 		UI.fadeIn(overlay)
 	end
-	overlay.busy = busy
-	if overlay.title.text ~= titleText or overlay.sub.text ~= subText or overlay.button:GetText() ~= buttonText then
+	local key = titleText .. "|" .. subText .. "|" .. tostring(busy)
+	for _, spec in ipairs(buttons) do key = key .. "|" .. spec[1] end
+	if overlay.key ~= key then
+		overlay.key, overlay.busy = key, busy
 		overlay.title.text, overlay.sub.text = titleText, subText
-		overlay.button:SetText(buttonText)
-		surface.SetFont("MeowyPack.Button")
-		overlay.button.w = surface.GetTextSize(buttonText) + S(36)
-		overlay.button:SetSize(overlay.button.w, overlay.button.h)
+		for _, b in ipairs(overlay.buttons) do b:Remove() end
+		overlay.buttons = {}
+		local buttonsW = 0
+		for _, spec in ipairs(buttons) do
+			local b = UI.Button(overlay, spec[1], spec[2], spec[3])
+			overlay.buttons[#overlay.buttons + 1] = b
+			buttonsW = buttonsW + b.w + S(10)
+		end
 		local left = busy and S(70) or S(26)
-		local textW = overlay.w - left - overlay.button.w - S(40)
+		local textW = overlay.w - left - buttonsW - S(30)
 		local y = UI.stack({ overlay.title, overlay.sub }, left, S(16), textW, S(2))
-		local h = math.max(y + S(16), overlay.button.h + S(28))
+		local h = math.max(y + S(16), S(40) + S(28))
 		overlay:SetSize(overlay.w, h)
-		overlay.button:SetPos(overlay.w - overlay.button.w - S(18), math.floor((h - overlay.button.h) / 2))
+		UI.row(overlay.buttons, 0, math.floor((h - S(40)) / 2), overlay.w - S(18))
+	else
+		-- Same buttons, maybe new handlers.
+		for i, spec in ipairs(buttons) do
+			local fn = spec[3]
+			if overlay.buttons[i] then overlay.buttons[i].DoClick = function() if fn then fn() end end end
+		end
 	end
-	overlay.button.DoClick = onButton
 	overlay:SetPos(math.floor((ScrW() - overlay.w) / 2), S(28))
 	-- Above GMod's own "Disconnected" dialog, which the engine opens after the drop.
 	overlay:MoveToFront()
@@ -349,20 +361,49 @@ local episode            -- { s, address, phase = "waiting" | "probing" | "joini
 local stoppedUntil = 0   -- how long the "couldn't reconnect" note stays
 local probeId = 0
 
+local function closeNote()
+	stoppedUntil = 0
+	hideOverlay()
+end
+
 local function finish(why, show)
-	if episode then log("reconnect: stopped (%s)", why or "no longer needed") end
+	local e = episode
+	if e then log("reconnect: stopped (%s)", why or "no longer needed") end
 	episode = nil
 	if show and why then
-		showOverlay("Couldn't reconnect to Meowy Network", why:sub(1, 1):upper() .. why:sub(2) .. ".", "Close", hideOverlay, false)
-		stoppedUntil = SysTime() + 10
+		local text = why:sub(1, 1):upper() .. why:sub(2) .. "."
+		if e and Logic.offerRejoin(e.s) then
+			-- Gave up (not a kick, ban, password or the player cancelling): the
+			-- card stays, with one click to try once more.
+			local address = e.address
+			showOverlay("Couldn't reconnect to Meowy Network", text, {
+				{ "Close", "secondary", closeNote },
+				{ "Rejoin now", "primary", function()
+					closeNote()
+					if isstring(address) and meowy.IsOurServer(address) then
+						log("reconnect: Rejoin now -> joining %s", address)
+						RunConsoleCommand("connect", address)   -- never a password
+					end
+				end },
+			}, false)
+			stoppedUntil = math.huge   -- until Close, or the player is on a server again
+		else
+			showOverlay("Couldn't reconnect to Meowy Network", text, { { "Close", "secondary", closeNote } }, false)
+			stoppedUntil = SysTime() + 10
+		end
 	else
 		hideOverlay()
 	end
 end
 
 local function cancel()
-	if episode then Logic.stop(episode.s, "cancelled") end
+	if episode then Logic.stop(episode.s, "cancelled", "cancelled") end
 	finish("cancelled", false)
+end
+
+local function steamOnline()
+	if not meowy.ResilienceSteamOnline then return nil end
+	return meowy.ResilienceSteamOnline()
 end
 
 local function steamOffline()
@@ -397,6 +438,11 @@ local function probe(now)
 			RunConsoleCommand("connect", episode.address)   -- never a password
 		elseif act == "wait" then
 			episode.phase = "waiting"
+		elseif act == "steam" then
+			-- The server is up; only Steam is still logging back on. Check it every
+			-- second (no server query, not a try) and join as soon as it's back.
+			episode.phase, episode.nextSteam = "steam", t + 1
+			log("reconnect: waiting for Steam to reconnect (up to %d s from the drop)", Logic.capFor(episode.s))
 		else
 			finish(episode.s.stopped, true)
 		end
@@ -425,8 +471,21 @@ local function tickEpisode(now, state)
 		if e.s.stopped then return finish(e.s.stopped, true) end
 		showOverlay("Reconnecting to Meowy Network...",
 			("Attempt %d  ·  %s"):format(e.s.attempt, e.s.mode == "restart" and "waiting for the server to restart" or "waiting for the server"),
-			"Cancel", cancel, true)
+			{ { "Cancel", "secondary", cancel } }, true)
 		if now >= e.s.nextAt then probe(now) end
+	elseif e.phase == "steam" then
+		showOverlay("Waiting for Steam to reconnect...",
+			"The server is up. Rejoining as soon as Steam is back.", { { "Cancel", "secondary", cancel } }, true)
+		if now >= e.nextSteam then
+			e.nextSteam = now + 1
+			local act = Logic.onSteamCheck(e.s, steamOnline(), now)
+			if act == "probe" then
+				log("reconnect: Steam is back; checking the server once more")
+				probe(now)
+			elseif act == "stop" then
+				return finish(e.s.stopped, true)
+			end
+		end
 	elseif e.phase == "probing" then
 		if e.native then
 			local answered, locked = meowy.ResilienceProbeResult()
@@ -576,9 +635,8 @@ hook.Add("Think", "MeowyClientPack.Resilience", function()
 			ErrorNoHalt("[Meowy Client Pack] reconnect: " .. tostring(err) .. "\n")
 			finish(nil, false)
 		end
-	elseif IsValid(overlay) and stoppedUntil > 0 and now > stoppedUntil then
-		stoppedUntil = 0
-		hideOverlay()
+	elseif IsValid(overlay) and stoppedUntil > 0 and (now > stoppedUntil or state == "ours" or state == "other") then
+		closeNote()   -- the note's time is up, or the player is on a server again
 	end
 end)
 
@@ -598,7 +656,7 @@ if concommand then
 			local s = episode.s
 			log("debug: rejoin %s to %s: phase=%s, attempt=%d, failed joins=%d, next try in %s s, waiting for %s, %s s of %d",
 				s.mode, show(episode.address), episode.phase, s.attempt, s.failedJoins, fmtNum(s.nextAt - SysTime()),
-				show(s.waitingFor), fmtNum(SysTime() - s.startedAt), Logic.CAP[s.mode] or 0)
+				show(s.waitingFor), fmtNum(SysTime() - s.startedAt), Logic.capFor(s))
 		else
 			log("debug: no rejoin running")
 		end

@@ -84,16 +84,50 @@ check("restart polling never past 5 min", t <= 300, true)
 s = M.start("restart", 0, 0.5)
 check("restart that answers at once -> join", M.onProbe(s, true, false, 2, 0.5), "join")
 
--- Steam offline (it went down with the same drop): wait for it, don't join
+-- Steam offline (it went down with the same drop): wait for Steam, checked
+-- every second, up to 5 min from the drop, then re-check the server and join
 s = M.start("timeout", 0, 0.5)
-check("server up, Steam offline -> wait", M.onProbe(s, true, false, 2, 0.5, true), "wait")
+check("server up, Steam offline -> steam", M.onProbe(s, true, false, 2, 0.5, true), "steam")
 check("waiting for Steam", s.waitingFor, "steam")
-check("Steam back -> join", M.onProbe(s, true, false, s.nextAt, 0.5, false), "join")
-check("Steam unknown (nil) doesn't block", M.onProbe(M.start("timeout", 0, 0.5), true, false, 2, 0.5, nil), "join")
+local attempts = s.attempt
+t = 2
+for _ = 1, 200 do t = t + 1 check("steam check while offline", M.onSteamCheck(s, false, t), "wait") end
+check("Steam checks aren't tries", s.attempt, attempts)
+check("still waiting at 202 s (past the timeout cap)", s.stopped, nil)
+check("Steam back -> probe the server once more", M.onSteamCheck(s, true, 203), "probe")
+check("and it's due now", s.nextAt, 203)
+check("server answers, Steam on -> join (past 180 s)", M.onProbe(s, true, false, 204, 0.5, false), "join")
+s = M.start("timeout", 0, 0.5)
+M.onProbe(s, true, false, 2, 0.5, true)
+t = 2
+local act
+repeat t = t + 1 act = M.onSteamCheck(s, false, t) until act ~= "wait"
+check("Steam never back: stops", act, "stop")
+check("at 5 min from the drop", t > 300 and t <= 302, true)
+check("says why", s.stopped:find("Steam didn't reconnect", 1, true) ~= nil, true)
+check("offers Rejoin now", M.offerRejoin(s), true)
+check("Steam unknown (nil) doesn't hold the join", M.onProbe(M.start("timeout", 0, 0.5), true, false, 2, 0.5, nil), "join")
+check("Steam check, unknown -> probe", M.onSteamCheck(M.start("timeout", 0, 0.5), nil, 3), "probe")
+
+-- Which stops offer "Rejoin now"
+s = M.start("timeout", 0, 0.5)
+M.onProbe(s, true, true, 2, 0.5)
+check("password: no offer", M.offerRejoin(s), false)
+s = M.start("timeout", 0, 0.5)
+M.onJoinFailed(s, "final", 3, 0.5)
+check("turned down: no offer", M.offerRejoin(s), false)
+s = M.start("timeout", 0, 0.5)
+M.stop(s, "cancelled", "cancelled")
+check("cancelled: no offer", M.offerRejoin(s), false)
+s = M.start("timeout", 0, 0.5)
+for i = 1, 3 do M.onJoinFailed(s, "retry", i, 0.5) end
+check("3 failed joins: offer", M.offerRejoin(s), true)
 s = M.start("timeout", 0, 0.999)
 t = 0
-while not s.stopped do t = s.nextAt M.onProbe(s, true, false, t, 0.999, true) end
-check("Steam never back: stops within the cap", t <= 180, true)
+while not s.stopped do t = s.nextAt M.onProbe(s, false, false, t, 0.999) end
+check("cap reached: offer", M.offerRejoin(s), true)
+check("running: no offer", M.offerRejoin(M.start("timeout", 0, 0.5)), false)
+
 -- Network down for a while, then back within the cap: still joins
 s = M.start("timeout", 0, 0.5)
 t = 0

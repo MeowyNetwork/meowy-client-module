@@ -152,6 +152,11 @@ the game closes while the pack is starting, the next start skips it once by itse
     at about 2, 4, 8, 15 and 30 seconds (+-30%), then every 30; it gives up after 3 minutes (5 when the
     server is restarting) or after 3 joins in a row that failed, and doesn't try again until you've been
     back in the game. It never stores or sends a server password.
+  - The server check is the pack's own query, not Steam's, so it works while Steam is still logging back on
+    after the same drop. If the server is up but Steam isn't yet, the card says "Waiting for Steam to
+    reconnect" and it joins the moment Steam is back (up to 5 minutes from the drop).
+  - If it gives up (no answer in time, or joins that kept failing), the card stays with **Rejoin now** for one
+    more try by hand. Not after a kick, a ban, a password or your own Cancel.
   - After a crash while you were on Meowy Network, the next start shows "Rejoin Meowy Network?". It
     only joins when you click **Rejoin**.
   - **Meowy settings** in the main menu's list, after Options (or `meowy_settings` in the console)
