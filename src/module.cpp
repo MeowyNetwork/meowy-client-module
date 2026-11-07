@@ -1414,9 +1414,38 @@ namespace
 		std::string homeGlue = ResourceText(IDR_HOME_LUA);
 		std::string home;
 		if (!homeLogic.empty() && !homeGlue.empty())
-			home = "\nlocal Home = (function(...)\n" + homeLogic + "\nend)(Logic);\n(function()\n" + homeGlue + "\nend)()\n";
+		{
+			home = "\nlocal Home = (function(...)\n" + homeLogic + "\nend)(Logic);\n(function()\n" + homeGlue + "\nend)();\n";
+			// Our own main menu page (preview, menu_page.lua), in a function of its own too.
+			std::string menuPage = ResourceText(IDR_MENU_PAGE_LUA);
+			if (!menuPage.empty())
+				home += "(function()\n" + menuPage + "\nend)()\n";
+		}
 		return "local UI = (function()\n" + ui + "\nend)()\n"
 			"local Logic = (function()\n" + logic + "\nend)()\n" + doctor + glue + home;
+	}
+
+	// MenuPageUrl() -> the asset:// address of our main menu page, or nil. The
+	// page (src/menu/home.html, in this DLL) is written to garrysmod/html/meowy/
+	// when it isn't there or differs: the menu's browser gives its bindings
+	// (lua, meowy) to asset:// pages like the stock menu.html, not to a page set
+	// from a string. Garry's Mod's own files there are never touched.
+	int MenuPageUrl(lua_State* L)
+	{
+		const std::string html = ResourceText(IDR_MENU_HTML);
+		const std::wstring dir = GarrysModDir() + L"\\html\\meowy";
+		const std::wstring file = dir + L"\\home.html";
+		bool ok = !html.empty();
+		if (ok && file_util::ReadSmall(file, 1024 * 1024) != html)
+		{
+			CreateDirectoryW(dir.c_str(), nullptr);
+			ok = file_util::WriteAtomic(file, html);
+		}
+		if (ok)
+			L->luabase->PushString("asset://garrysmod/html/meowy/home.html");
+		else
+			L->luabase->PushNil();
+		return 1;
 	}
 #endif
 
@@ -2204,6 +2233,7 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	SetFunction(LUA, "IsOurServer", Guarded<IsOurServer>);
 	SetFunction(LUA, "OurServerAddress", Guarded<OurServerAddress>);
 	SetFunction(LUA, "ServerNow", Guarded<ServerNow>);
+	SetFunction(LUA, "MenuPageUrl", Guarded<MenuPageUrl>);
 	SetFunction(LUA, "OtherServerAddress", Guarded<OtherServerAddress>);
 	SetFunction(LUA, "StatusCaptureBegin", Guarded<StatusCaptureBegin>);
 	SetFunction(LUA, "StatusCaptureEnd", Guarded<StatusCaptureEnd>);

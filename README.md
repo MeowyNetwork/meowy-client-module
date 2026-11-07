@@ -245,6 +245,26 @@ the game closes while the pack is starting, the next start skips it once by itse
   - **Safety:** names are only ever shown as text; a click sends the page's row number, and the
     address comes from the pack's own list.
   - **Turning it off:** in Meowy settings, or `meowy_menu_home 0`.
+- **Meowy home screen (preview, off by default).** `meowy_menu 1`, or "Meowy home screen (preview)" in
+  Meowy settings, replaces Garry's Mod's main menu page with the pack's own. It has:
+  - **Continue**, and your servers with search, as on the card below;
+  - **the usual links:** Find servers, Start new game, Addons, Dupes, Saves and Demos open Garry's Mod's
+    own screens, and its main screen brings the pack's page back. Options, Meowy settings and Quit work
+    as usual.
+
+  How it works:
+  - **Where the page lives:** the module writes it to `garrysmod\html\meowy\home.html` (opened as
+    `asset://`, like Garry's Mod's `menu.html`); uninstalling removes it.
+  - **What it can do:** it fetches nothing (a strict content policy), shows every server's text as text,
+    and talks to the pack only through `meowy.post(kind, value)`. That's a fixed list of message types,
+    each with its value checked; Garry's Mod's own `lua.Run` is switched off while the page is up.
+  - **If it fails:** if the page doesn't report ready within 3 seconds, Garry's Mod's page comes back;
+    after two failures it stays for that start.
+  - **In game:** the Escape menu is always Garry's Mod's page, refilled with what its Lua sent at start
+    (version, language, gamemodes, maps), so Resume Game and the favourite button work.
+
+  **Use Garry's Mod's menu** at the bottom of the page switches back for the rest of that start;
+  `meowy_menu 0` turns it off. `meowy_menu_status` says which page is showing, and why.
 - **Server card in the Escape menu.** In game, the same spot in the Escape menu shows the server you're
   on, any server, plus three quick settings:
   - **The server:** its name, map and players (its own answer, asked at most every 30 seconds while

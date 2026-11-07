@@ -51,6 +51,12 @@ class El {
 	get textContent() { return this._text + this.children.map(c => c.textContent).join(''); }
 	matches(sel) {
 		let m;
+		if (sel.includes(',')) return sel.split(',').some(s => this.matches(s.trim()));
+		if ((m = sel.match(/^#([\w-]+) a\[data-act\]$/))) {
+			let p = this.parentNode;
+			while (p && p.id !== m[1]) p = p.parentNode;
+			return this.tagName === 'A' && 'data-act' in this.attrs && !!p;
+		}
 		if ((m = sel.match(/^\.page\[ng-controller="(\w+)"\]$/))) return this.className === 'page' && this.attrs['ng-controller'] === m[1];
 		if ((m = sel.match(/^\.([\w-]+)$/))) return this.className.split(' ').includes(m[1]);
 		if ((m = sel.match(/^#([\w-]+)$/))) return this.id === m[1];
@@ -81,6 +87,7 @@ function fresh() {
 		createTextNode: t => new Text(t),
 		getElementById: id => [head, body].map(r => r.all().find(e => e.id === id)).find(Boolean) || null,
 		querySelector: sel => body.querySelector(sel),
+		querySelectorAll: sel => body.querySelectorAll(sel),
 		addEventListener: (type, fn) => listeners.push({ type, fn }),
 	};
 	const win = {};
@@ -232,6 +239,70 @@ win.MeowyEsc({ server: null, settings: [] }, 3);
 check('redrawn once let go', box.children.length, 0);
 win.MeowyEsc(null, 4);
 check('null removes the escape card', doc.getElementById('meowy-esc'), null);
+
+// ---------------------------------------------------------------------------
+// Our own menu page (src/menu/home.html): its script against the same small DOM.
+const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'menu', 'home.html'), 'utf8');
+const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
+check('page: a CSP that fetches nothing', /connect-src 'none'/.test(html) && /default-src 'none'/.test(html), true);
+function pageDom() {
+	fresh();
+	const nav = new El('div'); nav.id = 'nav';
+	const foot = new El('div'); foot.id = 'foot';
+	const cont = new El('a'); cont.id = 'continue';
+	for (const c of ['c-title', 'c-server', 'c-when']) { const s = new El('span'); s.className = c; cont.appendChild(s); }
+	nav.appendChild(cont);
+	const acts = [['open', 'servers', 'Find servers'], ['open', 'addons', 'Addons'], ['options', '', 'Options'], ['settings', '', 'Meowy settings'], ['quit', '', 'Quit']];
+	for (const [act, arg, text] of acts) {
+		const a = new El('a'); a.setAttribute('data-act', act); if (arg) a.setAttribute('data-arg', arg); a.textContent = text; nav.appendChild(a);
+	}
+	const stock = new El('a'); stock.id = 'stock'; stock.setAttribute('data-act', 'stock'); foot.appendChild(stock);
+	const search = new El('input'); search.id = 'search';
+	const lists = new El('div'); lists.id = 'lists';
+	for (const e of [nav, foot, search, lists]) doc.body.appendChild(e);
+	const posts = [];
+	const w = { meowy: { post: (k, v) => posts.push([k, v]) } };
+	new Function('window', 'document', 'lua', script)(w, doc, { Run: s => luaRuns.push(s) });
+	return { w, posts, nav, cont, search, lists };
+}
+let P = pageDom();
+check('page: says ready', JSON.stringify(P.posts[0]), '["ready",""]');
+check('page: Garry\'s Mod\'s page functions exist as no-ops', ['UpdateVersion', 'SetInGame', 'AddServer', 'UpdateNewsList', 'SetProblemCount'].every(n => typeof P.w[n] === 'function') && typeof P.w.subscriptions.Update === 'function' && typeof P.w.dupe.ReceiveLocal === 'function', true);
+check('page: calling them does nothing', (P.w.UpdateVersion('x'), P.w.SetInGame(true), P.posts.length), 1);
+const navLinks = P.nav.children.filter(c => c.attrs['data-act']);
+navLinks[0].onclick();
+check('page: Find servers posts open servers', JSON.stringify(P.posts.pop()), '["open","servers"]');
+navLinks[2].onclick();
+check('page: Options', JSON.stringify(P.posts.pop()), '["options",""]');
+navLinks[4].onkeydown({ keyCode: 13, preventDefault() {} });
+check('page: Enter on a link', JSON.stringify(P.posts.pop()), '["quit",""]');
+doc.getElementById('stock').onclick();
+check('page: the escape hatch', JSON.stringify(P.posts.pop()), '["stock",""]');
+check('page: never lua.Run', luaRuns.length, 0);
+// Continue, from the stock entry's data.
+P.w.MeowyEntry();
+check('page: no Continue without a server', P.cont.className, '');
+P.w.MeowyContinue = ['Continue', 'Meowy Network', ' · 2 h ago'];
+P.w.MeowyEntry();
+check('page: Continue shown', P.cont.className, 'on');
+check('page: its server as text', P.cont.querySelector('.c-server').textContent, 'Meowy Network');
+P.cont.onclick();
+check('page: Continue posts', JSON.stringify(P.posts.pop()), '["continue",""]');
+// The lists and search.
+P.w.MeowyHome(data, 1);
+check('page: lists drawn', P.lists.querySelectorAll('.name').length >= 8, true);
+P.lists.querySelectorAll('.row')[1].onclick();
+check('page: a row posts its number', JSON.stringify(P.posts.pop()), '["join",2]');
+P.search.value = 'server 1';
+P.search.oninput();
+check('page: search', P.lists.querySelectorAll('.name').map(e => e.textContent).join(','), 'Server 1,Server 10,Server 11');
+P.search.focus();
+P.search.onkeydown(key(P.search, 40));
+P.search.onkeydown(key(P.search, 13));
+check('page: arrows and Enter (one down from Server 1 is Server 10)', JSON.stringify(P.posts.pop()), '["join",20]');
+P.w.MeowyHome(null, 2);
+check('page: no data, no lists', P.lists.children.length, 0);
+check('page: still never lua.Run', luaRuns.length, 0);
 
 console.log(`${count} checks, ${failures} failed`);
 process.exit(failures ? 1 : 0);

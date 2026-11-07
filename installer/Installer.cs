@@ -103,6 +103,8 @@ namespace MeowyInstaller
 					AddStartupHook(garrysmod);
 				else
 					RemoveStartupHook(garrysmod);
+				if (!install)
+					RemoveMenuPage(garrysmod);
 				if (install)
 					SetStartupChoice(startup);
 				Console.WriteLine("start with the game: " + (StartupHookPresent(garrysmod) ? "on" : "off"));
@@ -194,6 +196,20 @@ namespace MeowyInstaller
 			if (text.Length > 0 && !text.EndsWith("\n"))
 				text += "\r\n";
 			WriteReplacing(file, text + HookLine + "\r\n");
+		}
+
+		// The pack's own main menu page, which the module writes to
+		// garrysmod\html\meowy\home.html when the preview is used: the file, then
+		// the folder if nothing else is in it. Garry's Mod's own html files are
+		// never touched.
+		public static void RemoveMenuPage(string garrysmod)
+		{
+			string dir = Path.Combine(garrysmod, @"html\meowy");
+			string file = Path.Combine(dir, "home.html");
+			if (File.Exists(file))
+				File.Delete(file);
+			if (Directory.Exists(dir) && Directory.GetFileSystemEntries(dir).Length == 0)
+				Directory.Delete(dir, false);
 		}
 
 		// Removes every line with the marker from both host files, and the line
@@ -1072,6 +1088,7 @@ namespace MeowyInstaller
 						File.Delete(file);
 				}
 				Program.RemoveStartupHook(garrysmod);
+				Program.RemoveMenuPage(garrysmod);
 				Program.UninstallShortcut();
 				RefreshStatus();
 				MessageBox.Show(this, "Uninstalled.\r\n\r\n" + files, Text, MessageBoxButtons.OK, MessageBoxIcon.Information);

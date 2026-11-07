@@ -1,0 +1,202 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<!-- Nothing is fetched or framed; only this page's own script and style run.
+     Game code reaches it only through the browser's own calls (menu_page.lua). -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src asset: data:; connect-src 'none'; frame-src 'none'; form-action 'none'">
+<title>Meowy home</title>
+<style>
+html, body { margin: 0; padding: 0; height: 100%; background: transparent; overflow: hidden; }
+body { font-family: Helvetica, Arial, sans-serif; color: #fff; text-shadow: 1px 1px 2px rgba(0,0,0,0.8); -webkit-user-select: none; }
+#nav { position: absolute; left: 56px; top: 64px; bottom: 80px; width: 380px; }
+#nav .brand { font-size: 44px; font-weight: bold; letter-spacing: -1px; }
+#nav .tag { font-size: 14px; opacity: 0.7; margin: 2px 0 28px 2px; }
+#nav a { display: block; font-size: 26px; font-weight: bold; padding: 5px 12px; margin: 0 0 2px -12px; border-radius: 6px; cursor: pointer; outline: none; text-decoration: none; color: #fff; }
+#nav a:hover, #nav a:focus { background: rgba(255,255,255,0.14); }
+#nav .gap { height: 18px; }
+#continue { display: none; }
+#continue.on { display: block; }
+#continue .c-sub { display: block; font-size: 15px; font-weight: normal; opacity: 0.85; white-space: nowrap; }
+#continue .c-server { display: inline-block; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+#home { position: absolute; right: 56px; top: 64px; bottom: 80px; width: 520px; background: rgba(0,0,0,0.55); border-radius: 8px; padding: 12px 10px; box-sizing: border-box; overflow-y: auto; }
+#search { display: block; width: 100%; box-sizing: border-box; padding: 8px 12px; font-size: 16px; border: 0; border-radius: 5px; background: rgba(255,255,255,0.12); color: #fff; outline: none; }
+#search:focus { background: rgba(255,255,255,0.2); }
+#search::-webkit-input-placeholder { color: rgba(255,255,255,0.55); }
+.title { font-size: 13px; font-weight: bold; letter-spacing: 1px; text-transform: uppercase; opacity: 0.7; margin: 14px 12px 4px 12px; }
+.note { font-size: 14px; opacity: 0.6; margin: 3px 12px 6px 12px; }
+.row { cursor: pointer; padding: 6px 12px; border-radius: 5px; overflow: hidden; }
+.row:hover, .row.sel { background: rgba(255,255,255,0.16); }
+.row.dim { opacity: 0.5; }
+.stats { float: right; font-size: 14px; margin-left: 12px; opacity: 0.85; line-height: 22px; }
+.name { font-size: 18px; font-weight: bold; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 22px; }
+.detail { font-size: 14px; opacity: 0.75; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#foot { position: absolute; left: 56px; bottom: 28px; font-size: 13px; opacity: 0.7; }
+#foot a { cursor: pointer; text-decoration: underline; }
+</style>
+</head>
+<body>
+<div id="nav">
+	<div class="brand">Garry's Mod</div>
+	<div class="tag">Meowy home (preview)</div>
+	<a id="continue" tabindex="0"><span class="c-title">Continue</span><span class="c-sub"><span class="c-server"></span><span class="c-when"></span></span></a>
+	<a data-act="open" data-arg="servers" tabindex="0">Find servers</a>
+	<a data-act="open" data-arg="newgame" tabindex="0">Start new game</a>
+	<div class="gap"></div>
+	<a data-act="open" data-arg="addons" tabindex="0">Addons</a>
+	<a data-act="open" data-arg="dupes" tabindex="0">Dupes</a>
+	<a data-act="open" data-arg="saves" tabindex="0">Saves</a>
+	<a data-act="open" data-arg="demos" tabindex="0">Demos</a>
+	<div class="gap"></div>
+	<a data-act="options" tabindex="0">Options</a>
+	<a data-act="settings" tabindex="0">Meowy settings</a>
+	<div class="gap"></div>
+	<a data-act="quit" tabindex="0">Quit</a>
+</div>
+<div id="home">
+	<input id="search" type="text" maxlength="64" placeholder="Search your servers   ( / )">
+	<div id="lists"></div>
+</div>
+<div id="foot"><a id="stock" data-act="stock" tabindex="0">Use Garry's Mod's menu</a></div>
+<script>
+(function () {
+	// Garry's Mod's own menu code calls these on whatever page is loaded; here they do nothing.
+	var noop = function () {};
+	['AddServer', 'FinishedServers', 'OnImportPresetFailed', 'OnReceivePresetList', 'ReceivedChildAddonInfo',
+		'ReceiveFoundServers', 'SetInGame', 'SetLastMap', 'SetPlayerList', 'SetProblemCount', 'SetShowFavButton',
+		'UpdateAddonDisabledState', 'UpdateAddonMaps', 'UpdateCurrentGamemode', 'UpdateGamemodes', 'UpdateGames',
+		'UpdateLanguage', 'UpdateLanguages', 'UpdateMaps', 'UpdateNewsList', 'UpdateServer', 'UpdateServerSettings',
+		'UpdateVersion'].forEach(function (n) { window[n] = noop; });
+	window.subscriptions = { Update: noop, UpdateUGC: noop };
+	window.demo = { ReceiveLocal: noop };
+	window.dupe = { ReceiveLocal: noop };
+	window.save = { ReceiveLocal: noop };
+
+	// The only way back to the game: a message type and one number or short word.
+	function post(kind, value) {
+		if (window.meowy && typeof window.meowy.post === 'function') window.meowy.post(kind, value === undefined ? '' : value);
+	}
+	window.MeowyPost = post;
+
+	function node(tag, cls, text) {
+		var e = document.createElement(tag);
+		if (cls) e.className = cls;
+		if (text) e.textContent = text;
+		return e;
+	}
+
+	// The nav: each link names a fixed action.
+	var links = document.querySelectorAll('#nav a[data-act], #foot a[data-act]');
+	for (var i = 0; i < links.length; i++) {
+		(function (a) {
+			var act = function () { post(a.getAttribute('data-act'), a.getAttribute('data-arg') || ''); };
+			a.onclick = act;
+			a.onkeydown = function (e) { if (e.keyCode === 13) { act(); e.preventDefault(); } };
+		})(links[i]);
+	}
+
+	// Continue: the same data the stock list's entry gets (window.MeowyContinue = [title, server, when]).
+	var cont = document.getElementById('continue');
+	cont.onclick = function () { post('continue'); };
+	cont.onkeydown = function (e) { if (e.keyCode === 13) { post('continue'); e.preventDefault(); } };
+	window.MeowyEntry = function () {
+		var d = window.MeowyContinue;
+		cont.className = d ? 'on' : '';
+		if (!d) return;
+		cont.querySelector('.c-title').textContent = d[0];
+		var s = cont.querySelector('.c-server');
+		s.textContent = d[1];
+		s.title = d[1];
+		cont.querySelector('.c-when').textContent = d[2];
+	};
+
+	// The server lists: the same model as the stock page's Home card.
+	var MAX_MATCHES = 10;
+	var search = document.getElementById('search'), list = document.getElementById('lists');
+	var query = '', selected = 0, rows = [], focused = false, version = null;
+	function mark() {
+		for (var i = 0; i < rows.length; i++) {
+			var on = focused && i === selected;
+			rows[i].el.className = rows[i].cls + (on ? ' sel' : '');
+			if (on && rows[i].el.scrollIntoView) rows[i].el.scrollIntoView(false);
+		}
+	}
+	function render() {
+		var data = window.MeowyHomeData, q = query.toLowerCase();
+		while (list.firstChild) list.removeChild(list.firstChild);
+		rows = [];
+		if (!data) return;
+		for (var i = 0; i < data.sections.length; i++) {
+			var sec = data.sections[i], picked = [];
+			for (var j = 0; j < sec.rows.length; j++) {
+				var r = sec.rows[j];
+				if (q && (r.name + ' ' + r.detail).toLowerCase().indexOf(q) < 0) continue;
+				picked.push(r);
+				if (picked.length >= (q ? MAX_MATCHES : Math.max(sec.show, 8))) break;
+			}
+			if (q && !picked.length) continue;
+			list.appendChild(node('div', 'title', sec.title));
+			for (var k = 0; k < picked.length; k++) {
+				var p = picked[k], cls = 'row' + (p.dim ? ' dim' : '');
+				var el = node('div', cls);
+				if (p.stats) el.appendChild(node('span', 'stats', p.stats));
+				el.appendChild(node('div', 'name', p.name));
+				if (p.detail) el.appendChild(node('div', 'detail', p.detail));
+				el.title = p.name;
+				el.onclick = (function (id) { return function () { post('join', Number(id)); }; })(p.id);
+				list.appendChild(el);
+				rows.push({ id: p.id, el: el, cls: cls });
+			}
+			if (!q && sec.note) list.appendChild(node('div', 'note', sec.note));
+		}
+		if (q && !rows.length) list.appendChild(node('div', 'note', 'No server matches'));
+		if (selected >= rows.length) selected = rows.length - 1;
+		if (selected < 0) selected = 0;
+		mark();
+	}
+	window.MeowyHome = function (data, v) {
+		if (v === version && data) return;
+		version = v;
+		window.MeowyHomeData = data;
+		render();
+	};
+	search.oninput = function () { query = search.value; selected = 0; render(); };
+	search.onfocus = function () { focused = true; mark(); };
+	search.onblur = function () { focused = false; mark(); };
+	search.onkeydown = function (e) {
+		var k = e.keyCode;
+		if (k === 40 || k === 38) {
+			selected = Math.max(0, Math.min(rows.length - 1, selected + (k === 40 ? 1 : -1)));
+			mark();
+		} else if (k === 13) {
+			if (rows[selected]) post('join', Number(rows[selected].id));
+		} else if (k === 27) {
+			search.value = '';
+			query = '';
+			selected = 0;
+			render();
+			search.blur();
+		} else {
+			return;
+		}
+		e.preventDefault();
+		e.stopPropagation();
+	};
+	document.addEventListener('keydown', function (e) {
+		var t = e.target && e.target.tagName;
+		if (t === 'INPUT' || t === 'TEXTAREA') return;
+		if (e.key === '/' || e.keyCode === 191) { search.focus(); e.preventDefault(); }
+	}, true);
+
+	// Links never leave the page; anything that tries is ignored.
+	document.addEventListener('click', function (e) {
+		var t = e.target;
+		while (t && t.tagName !== 'A') t = t.parentNode;
+		if (t && t.getAttribute && t.getAttribute('href')) e.preventDefault();
+	}, true);
+
+	post('ready');
+})();
+</script>
+</body>
+</html>
