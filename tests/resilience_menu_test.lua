@@ -1528,7 +1528,7 @@ w = world({ settings = ON, menu = true, convars = PAGE_ON, joinServer = true })
 w.run(1)
 w.post("browse")
 check("browse: Steam asked for servers with players", table.concat(w.sqArgs or {}, " "), "internet gamedir garrysmod hasplayers 1")
-check("browse: the page reset", (w.browseJS or ""):find("MeowyBrowse.reset(1, true)", 1, true) ~= nil, true)
+check("browse: the page reset", (w.browseJS or ""):find('MeowyBrowse.reset(1, true, "internet", "")', 1, true) ~= nil, true)
 w.sq = {
 	{ address = "1.2.3.4:27015", name = "A\1 server", map = "rp_x", tags = " gm:darkrp gmws:1 gmc:rp loc:gb ", desc = "DarkRP", players = 12, max = 64, bots = 2, ping = 30, pass = false },
 	{ address = "10.0.0.1:27015", name = "LAN box", map = "gm_l", tags = "", desc = "Sandbox", players = 1, max = 2, bots = 0, ping = 1, pass = false },
@@ -1556,7 +1556,7 @@ w.post("browse_join", "x")
 check("browse: unknown rows join nothing", w.joinServer, 1)
 -- Complete; a new list replaces the old; leaving or a join stops it.
 w.post("browse")
-check("browse: a refresh starts a new list", (w.browseJS or ""):find("MeowyBrowse.reset(2, true)", 1, true) ~= nil, true)
+check("browse: a refresh starts a new list", (w.browseJS or ""):find('MeowyBrowse.reset(2, true, "internet", "")', 1, true) ~= nil, true)
 w.sqDone = true
 w.browseCalls = {}
 w.run(0.3)
@@ -1564,7 +1564,7 @@ check("browse: with players done, the empty ones asked for", table.concat(w.sqAr
 check("browse: not complete yet, stage 2", (w.browseCalls[1] or ""):find("MeowyBrowse.add(2, [], false", 1, true) ~= nil and (w.browseCalls[1] or ""):find(", 2);", 1, true) ~= nil, true)
 w.run(0.3)
 check("browse: complete", (w.browseJS or ""):find("MeowyBrowse.add(2, [], true", 1, true) ~= nil, true)
-check("browse: logged", (w.logs or ""):find("browse: 0 servers in", 1, true) ~= nil, true)
+check("browse: logged", (w.logs or ""):find("browse: 0 internet servers in", 1, true) ~= nil, true)
 check("browse: each stage let go", w.sqCancels, 3)
 w.sqDone = false
 w.post("browse")
@@ -1609,12 +1609,80 @@ w.post("browse_install", "123")
 check("browse: Install only for a gamemode a server named", subscribed, nil)
 w.post("browse_install", "777")
 check("browse: Install subscribes", subscribed, "777")
+-- The other lists, a picked server, its password, finding by address, the
+-- browser's settings, and the honest list's tags.
+w = world({ settings = ON, menu = true, convars = PAGE_ON, joinServer = true })
+local stockRun
+w.env.meowy.StockServerQuery = function(data) stockRun = data end
+local asked = {}
+w.env.GetPlayerList = function(a) asked[#asked + 1] = "players " .. a end
+w.env.PingServer = function(a) asked[#asked + 1] = "ping " .. a end
+local cookies = {}
+w.env.cookie = { GetString = function(k, d) return cookies[k] or d end, Set = function(k, v) cookies[k] = v end }
+w.env.meowy.ServerTag = function(a) if a == "4.4.4.4:27015" then return "[FAKE - 2 real] ", { verdict = "fake", real = 2 } end end
+w.run(1)
+w.post("browse", "favorite")
+check("lists: Favourites from the game's own query", stockRun and stockRun.Type, "favorite")
+check("lists: the page told which list", (w.browseJS or ""):find('MeowyBrowse.reset(1, true, "favorite", "")', 1, true) ~= nil, true)
+stockRun.Callback(20, "Fav", "Sandbox", "gm_x", 12, 16, 0, false, 1700000000, "4.4.4.4:27015", "sandbox", "0", false, 20260429, 260917, "de", "other")
+stockRun.Finished()
+w.run(0.3)
+batch = w.browseJS or ""
+check("lists: a favourite sent, complete", batch:find("MeowyBrowse.add(1, [", 1, true) ~= nil and batch:find("true, ", 1, true) ~= nil, true)
+check("lists: the honest tag, the real count", batch:find('"h":"FAKE - 2 real"', 1, true) ~= nil and batch:find('"p":2', 1, true) ~= nil, true)
+check("lists: its fields", batch:find('"f":"de"', 1, true) ~= nil and batch:find('"c":"other"', 1, true) ~= nil and batch:find('"v":20260429', 1, true) ~= nil, true)
+local fav = tonumber(batch:match('"i":(%d+)'))
+w.post("browse_select", fav)
+check("picked: its players and numbers asked for", table.concat(asked, ","), "players 4.4.4.4:27015,ping 4.4.4.4:27015")
+w.post("browse_select", fav)
+check("picked: not again within 2 seconds", #asked, 2)
+w.post("browse_pass", fav .. ":hunter2")
+w.post("browse_join", fav)
+check("password: set before the join", table.concat(w.commands, "|"):find("password|hunter2", 1, true) ~= nil or table.concat(w.commands, "|"):find("password hunter2", 1, true) ~= nil, true)
+check("password: joined", w.joinedVia, "4.4.4.4:27015")
+local cmds = #w.commands
+w.post("browse_join", fav)
+check("password: only for that one join", #w.commands, cmds)
+w.post("browse_pass", fav .. ':bad"quote')
+w.post("browse_pass", fav .. ":" .. string.rep("x", 80))
+w.post("browse_join", fav)
+check("password: refused when odd or too long", #w.commands, cmds)
+-- Local network: private addresses, joined only from that list.
+w.post("browse", "lan")
+stockRun.Callback(1, "LAN game", "Sandbox", "gm_x", 1, 8, 0, false, 0, "192.168.1.5:27015", "sandbox", "0", false, 0, 0, "", "")
+stockRun.Finished()
+w.run(0.3)
+batch = w.browseJS or ""
+check("lan: a private address listed", batch:find("LAN game", 1, true) ~= nil, true)
+w.post("browse_join", tonumber(batch:match('"i":(%d+)')))
+check("lan: joined", w.joinedVia, "192.168.1.5:27015")
+-- Settings, kept as they came (JSON the page reads back), and sent with a list.
+w.post("browse_prefs", '{"s":"name"}')
+check("settings: kept", cookies.meowy_browser_prefs, '{"s":"name"}')
+w.post("browse_prefs", "not json")
+w.post("browse_prefs", "{" .. string.rep("x", 700) .. "}")
+check("settings: only JSON, not too long", cookies.meowy_browser_prefs, '{"s":"name"}')
+w.post("browse", "internet")
+check("settings: sent with the list", (w.browseJS or ""):find('"internet", "{\\x22s\\x22:\\x22name\\x22}");', 1, true) ~= nil, true)
+-- Find by address: the usual ports of a host, or the one given.
+local pinged = {}
+w.env.serverlist = { PingServer = function(a, cb) pinged[#pinged + 1] = { a, cb } end, IsServerFavorite = function() return false end }
+w.post("browse_find", "5.6.7.8")
+check("find: the usual ports", #pinged .. " " .. pinged[1][1], "12 5.6.7.8:27015")
+pinged = {}
+w.post("browse_find", "5.6.7.8:27999")
+check("find: the port given", #pinged .. " " .. pinged[1][1], "1 5.6.7.8:27999")
+pinged[1][2](30, "Found", "Sandbox", "gm_x", 3, 10, 0, false, 0, "5.6.7.8:27999", "sandbox", "0", false, 20260429, 0, "", "")
+check("find: the answer sent", (w.browseCalls[#w.browseCalls] or ""):find("MeowyBrowse.found(2, [", 1, true) ~= nil and (w.browseCalls[#w.browseCalls] or ""):find('"n":"Found"', 1, true) ~= nil, true)
+pinged = {}
+w.post("browse_find", "bad host!")
+check("find: nothing asked for odd text", #pinged, 0)
 -- Without Steam's lists: the page is told.
 w = world({ settings = ON, menu = true, convars = PAGE_ON })
 w.env.meowy.ServerQueryStart = nil
 w.run(1)
 w.post("browse")
-check("browse: no Steam list, the page is told", (w.browseJS or ""):find("MeowyBrowse.reset(1, false)", 1, true) ~= nil, true)
+check("browse: no Steam list, the page is told", (w.browseJS or ""):find("MeowyBrowse.reset(1, false, ", 1, true) ~= nil, true)
 -- Pointing at a row: that server is got ready (if it was ever joined).
 w = world({ settings = ON, menu = true, convars = PAGE_ON })
 w.recorded = { ["1.2.3.4:27015"] = true }

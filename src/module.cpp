@@ -2203,6 +2203,13 @@ local stockQuery = serverlist.Query
 -- The game's own query, for lists that aren't the browser's (the main menu's
 -- Home card): no count checks, no backend calls.
 meowy.StockServerQuery = stockQuery
+-- For the pack's own Find servers (menu_page.lua): a server's tag ([VERIFIED],
+-- [FAKE - 12 real], ...) and verdict, as this list marks it, and the verdicts fetched.
+meowy.ServerTag = function(address)
+	if not enabled:GetBool() or not isstring(address) then return nil end
+	return tagOf(address)
+end
+meowy.FetchServerRep = function() if enabled:GetBool() then fetchRep() end end
 
 -- Find servers, faster (U6 N1, server_query.h): the browser's Internet list
 -- straight from Steam, whose master server leaves out empty servers before
