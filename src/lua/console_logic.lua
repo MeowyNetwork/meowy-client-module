@@ -94,6 +94,98 @@ function M.color(line)
 	return math.floor(c / 65536) % 256, math.floor(c / 256) % 256, c % 256
 end
 
+-- One line of the engine's `cvarlist`: "name   : value   : , "a", "cl"   : help"
+-- -> { name, value, flags = { "a", "cl" }, help, cmd } (cmd: a command, whose
+-- value column says "cmd"), or nil for anything else.
+function M.parseCvar(text)
+	if type(text) ~= "string" then return nil end
+	local name, value, flags, help = string.match(text, "^([%w_%.%-%+]+)%s+:%s(.-)%s*:%s(.-)%s*:%s?(.*)$")
+	if not name then return nil end
+	local list = {}
+	for f in string.gmatch(flags, '"([^"]+)"') do list[#list + 1] = f end
+	return { name = name, value = value, flags = list, help = help or "", cmd = value == "cmd" }
+end
+
+-- Flags as words (the engine's short names in cvarlist).
+M.FLAG_WORDS = {
+	a = "saved", cl = "client", sv = "server", cheat = "cheat", rep = "replicated", nf = "not while connected",
+	user = "user info", prot = "protected", sp = "single player", demo = "demo", norecord = "not in demos",
+	ss = "split screen", ss_added = "split screen", clientcmd_can_execute = "server can run", server_can_execute = "server can run",
+	nolog = "not logged", numeric = "number",
+}
+function M.flagWords(flags)
+	local out = {}
+	for _, f in ipairs(flags or {}) do out[#out + 1] = M.FLAG_WORDS[f] or f end
+	return out
+end
+
+-- Suggestions for the word being typed, from the catalog (cvarlist entries):
+-- names starting with it first (shortest first), then names containing it,
+-- then names with its letters in order; at most `max`. Case doesn't matter.
+function M.suggest(catalog, word, max)
+	word = string.lower(type(word) == "string" and word or "")
+	if word == "" then return {} end
+	local starts, contains, loose = {}, {}, {}
+	local pattern = word:gsub("[%^%$%(%)%%%.%[%]%*%+%-%?]", "%%%0"):gsub("(%%?.)", "%1.-")
+	for _, e in ipairs(catalog or {}) do
+		local n = string.lower(e.name)
+		if string.sub(n, 1, #word) == word then starts[#starts + 1] = e
+		elseif string.find(n, word, 1, true) then contains[#contains + 1] = e
+		elseif #word >= 3 and string.find(n, pattern) then loose[#loose + 1] = e end
+	end
+	local function byLength(a, b) if #a.name ~= #b.name then return #a.name < #b.name end return a.name < b.name end
+	table.sort(starts, byLength)
+	table.sort(contains, byLength)
+	table.sort(loose, byLength)
+	local out = {}
+	for _, group in ipairs({ starts, contains, loose }) do
+		for _, e in ipairs(group) do
+			if #out >= (max or 8) then return out end
+			out[#out + 1] = e
+		end
+	end
+	return out
+end
+
+-- The first word of a typed line, and whether more follows it.
+function M.firstWord(line)
+	local word, rest = string.match(type(line) == "string" and line or "", "^%s*([^%s;]*)(.*)$")
+	return word or "", (rest or "") ~= ""
+end
+
+-- Saved lists (history, pinned commands) as text and back: one per line,
+-- blank and over-long lines dropped, at most `max`, the newest last.
+function M.parseList(text, max)
+	local out = {}
+	for line in string.gmatch((type(text) == "string" and text or "") .. "\n", "([^\r\n]*)\r?\n") do
+		if line ~= "" and #line <= 1024 then out[#out + 1] = line end
+	end
+	while #out > (max or 200) do table.remove(out, 1) end
+	return out
+end
+function M.formatList(list, max)
+	local out, first = {}, math.max(1, #list - (max or 200) + 1)
+	for i = first, #list do
+		local s = tostring(list[i]):gsub("[\r\n]", " ")
+		if s ~= "" then out[#out + 1] = s end
+	end
+	return table.concat(out, "\n")
+end
+
+-- History lines with `text` in them, newest first, each once.
+function M.searchHistory(history, text, max)
+	local q, seen, out = string.lower(text or ""), {}, {}
+	for i = #history, 1, -1 do
+		local h = history[i]
+		if not seen[h] and (q == "" or string.find(string.lower(h), q, 1, true)) then
+			seen[h] = true
+			out[#out + 1] = h
+			if #out >= (max or 8) then break end
+		end
+	end
+	return out
+end
+
 -- Up/down through the typed history: `at` 0 is "nothing recalled"; returns the
 -- new position and the line to show.
 function M.recall(history, at, dir)
