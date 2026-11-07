@@ -270,4 +270,39 @@ function M.reapplyTimeout(current, saved)
 	return (M.validTimeout(saved) and n == tonumber(saved)) or n == tonumber(M.DEFAULT_CL_TIMEOUT)
 end
 
+-- The main menu's "Continue" ---------------------------------------------------
+
+-- How long ago, for the entry's second line. nil for a time ahead of now (the
+-- clock was moved) or not a number.
+function M.ago(seconds)
+	if type(seconds) ~= "number" or seconds ~= seconds or seconds < 0 then return nil end
+	if seconds < 60 then return "just now" end
+	if seconds < 3600 then return math.floor(seconds / 60) .. " min ago" end
+	if seconds < 86400 then return math.floor(seconds / 3600) .. " h ago" end
+	local days = math.floor(seconds / 86400)
+	return days == 1 and "1 day ago" or (days .. " days ago")
+end
+
+-- Any text as a JavaScript string literal for the menu page: quotes,
+-- backslashes, control characters, < > & and U+2028/U+2029 escaped, so a
+-- server's name can never end the literal or the script around it.
+function M.jsString(s)
+	s = string.gsub(tostring(s == nil and "" or s), "[%c\"'\\<>&]", function(c) return string.format("\\x%02x", string.byte(c)) end)
+	s = string.gsub(s, "\226\128\168", "\\u2028")
+	s = string.gsub(s, "\226\128\169", "\\u2029")
+	return '"' .. s .. '"'
+end
+
+-- The entry for the last server the player was in the game on, or nil for
+-- none: its title, the server (shortened on the page when long) and when ("" if
+-- unknown), kept apart so a long name never hides the time. address: the
+-- engine's (checked natively); name: the server's own (cleaned natively, may
+-- be empty); since, now: unix times.
+function M.continueEntry(address, name, since, now)
+	if type(address) ~= "string" or address == "" then return nil end
+	local label = (type(name) == "string" and string.find(name, "%S")) and name or address
+	local ago = type(since) == "number" and type(now) == "number" and M.ago(now - since) or nil
+	return { title = "Continue", name = label, ago = ago and (" \194\183 " .. ago) or "" }
+end
+
 return M

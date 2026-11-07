@@ -1302,6 +1302,44 @@ namespace
 		return 2;
 	}
 
+	// LastServerMark(name) -> ok: the player is in the game on a server now; kept
+	// for the main menu's "Continue" when it's ours or a public one (the engine's
+	// address, read here; the name is the server's, only ever shown as text).
+	int LastServerMark(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		std::string address;
+		const server_gate::Result r = server_gate::Check(&address);
+		const bool ok = (r == server_gate::Result::Allowed || r == server_gate::Result::OtherServer) && RejoinableAddress(address);
+		if (ok)
+			resilience::MarkLastServer(DataDir(), address, LUA->IsType(1, Type::String) ? LUA->GetString(1) : "");
+		LUA->PushBool(ok);
+		return 1;
+	}
+
+	// LastServer() -> address, name, unix time; or nil.
+	int LastServer(lua_State* L)
+	{
+		std::string name;
+		long long since = 0;
+		const std::string address = resilience::LastServer(DataDir(), &name, &since);
+		if (address.empty() || !RejoinableAddress(address))
+		{
+			L->luabase->PushNil();
+			return 1;
+		}
+		L->luabase->PushString(address.c_str());
+		L->luabase->PushString(name.c_str());
+		L->luabase->PushNumber(static_cast<double>(since));
+		return 3;
+	}
+
+	int LastServerForget(lua_State*)
+	{
+		resilience::ForgetLastServer(DataDir());
+		return 0;
+	}
+
 	// src/lua/resilience_logic.lua, doctor_logic.lua, doctor.lua and
 	// resilience.lua (meowy.rc), as one chunk: the rules become the locals
 	// `Logic` and `Doctor`, and doctor.lua's `DoctorUI` is a tab of
@@ -2135,6 +2173,9 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	SetFunction(LUA, "MenuSettingsWrite", Guarded<MenuSettingsWrite>);
 	SetFunction(LUA, "ResilienceSession", Guarded<ResilienceSession>);
 	SetFunction(LUA, "ResilienceCrashedSession", Guarded<ResilienceCrashedSession>);
+	SetFunction(LUA, "LastServerMark", Guarded<LastServerMark>);
+	SetFunction(LUA, "LastServer", Guarded<LastServer>);
+	SetFunction(LUA, "LastServerForget", Guarded<LastServerForget>);
 	SetFunction(LUA, "DoctorFacts", Guarded<DoctorFacts>);
 	SetFunction(LUA, "DoctorOpen", Guarded<DoctorOpen>);
 	SetFunction(LUA, "FastLuaLookup", Guarded<FastLuaLookup>);

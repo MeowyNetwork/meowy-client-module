@@ -59,6 +59,31 @@ int main(int argc, char** argv)
 	ClearSession(dir);
 	Check("cleared on leaving", GetFileAttributesW(file.c_str()) == INVALID_FILE_ATTRIBUTES);
 
+	// The main menu's Continue: last_server.txt, kept until the next server.
+	const std::wstring last = dir + L"\\last_server.txt";
+	std::string lastName = "unchanged";
+	long long since = -1;
+	Check("continue: none kept yet", LastServer(dir, &lastName, &since).empty() && lastName == "unchanged" && since == -1);
+	MarkLastServer(dir, "1.2.3.4:27015", "Foo\tRP");
+	Check("continue: kept", LastServer(dir, &lastName, &since) == "1.2.3.4:27015");
+	Check("continue: cleaned name", lastName == "FooRP");
+	Check("continue: its time", since > 1700000000);
+	Check("continue: read again, still there", LastServer(dir) == "1.2.3.4:27015");
+	ClearSession(dir);
+	Check("continue: leaving a server doesn't forget it", LastServer(dir) == "1.2.3.4:27015");
+	MarkLastServer(dir, "5.6.7.8:27016", "");
+	Check("continue: the next server replaces it", LastServer(dir, &lastName) == "5.6.7.8:27016" && lastName.empty());
+	MarkLastServer(dir, "", "x");
+	MarkLastServer(dir, "9.9.9.9:1\r\nevil", "x");
+	Check("continue: an empty or broken address isn't written", LastServer(dir) == "5.6.7.8:27016");
+	{
+		std::ofstream junk(last, std::ios::binary | std::ios::trunc);
+		junk << "garbage";
+	}
+	Check("continue: a damaged file offers nothing", LastServer(dir).empty());
+	ForgetLastServer(dir);
+	Check("continue: forgotten", GetFileAttributesW(last.c_str()) == INVALID_FILE_ATTRIBUTES && LastServer(dir).empty());
+
 	std::printf("%d/%d checks passed\n", g_count - g_failures, g_count);
 	return g_failures == 0 ? 0 : 1;
 }

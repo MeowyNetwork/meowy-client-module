@@ -151,8 +151,9 @@ the game closes while the pack is starting, the next start skips it once by itse
   loading screen `join_times.txt`, how long each stage of your last join took, `last_join.txt`,
   what that join went through, and `css_scale.txt`; for notifications `notify.txt`, your on/off
   switch, and `notify_icon.png`; for staying connected `resilience.txt`, your answer and the
-  `cl_timeout` you had before, and `on_server.txt`, which Meowy Network server you're on, so a crash can
-  offer a rejoin; and WebView2's profile). Nothing goes in
+  `cl_timeout` you had before, and `on_server.txt`, which server you're on, so a crash can
+  offer a rejoin; for the main menu's Continue `last_server.txt`, the last server you played on; and
+  WebView2's profile). Nothing goes in
   `garrysmod/data`, which any server's Lua can read, so the pack leaves no files there for other servers to
   find. (Like any binary module, a server's Lua can still ask whether it's installed.)
   Before 1.4.1 these files were in `garrysmod/data/meowy/`; the pack moves them on first start.
@@ -217,6 +218,13 @@ the game closes while the pack is starting, the next start skips it once by itse
     on that server. Automatic rejoin stays for Meowy Network.
   - **Meowy settings** in the main menu's list, after Options (or `meowy_settings` in the console)
     opens the pack's settings to change your answer.
+- **Continue where you left off.** The main menu's list gets **Continue** above Start New Game, with the
+  last server you got into the game on (any server) and how long ago. One click joins it (or
+  `meowy_continue` in the console); nothing joins on its own, and it isn't shown while you're in a game.
+  The address is the game's own connection, kept only for a public `a.b.c.d:port` (never a LAN,
+  loopback or Steam P2P one), in `%LOCALAPPDATA%\MeowyClientPack\last_server.txt`; the server's name is
+  only ever shown as text. Turning it off in Meowy settings (or `meowy_menu_continue 0`) also forgets the
+  server, and none is kept while it's off.
 - **PC doctor** (1.6+). A tab in the pack's settings (and `meowy_doctor` in the console) with tips for
   the usual reasons the game runs slowly. It only reads; it changes no Windows or game setting, and
   nothing it finds leaves your PC.
