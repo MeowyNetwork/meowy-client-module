@@ -172,6 +172,26 @@ int wmain(int argc, wchar_t** argv)
 	Check(Text(data + L"\\menu_file.txt") == "menu", "menu: back");
 	Check(data_sandbox::Describe().find("links to menu") != std::string::npos, "describe: links to menu");
 
+	// A start that died right after linking (or failed to write the marker):
+	// the next start's Recover puts "linked" back, which older uninstallers read.
+	DeleteFileW((vault + L"\\active").c_str());
+	data_sandbox::Recover();
+	Check(Text(vault + L"\\active") == "linked", "recover: a missing marker is written again");
+	Put(vault + L"\\active", "menu");
+	data_sandbox::Recover();
+	Check(Text(vault + L"\\active") == "linked", "recover: a wrong marker is put right");
+
+	// A staging folder an earlier start left behind is merged into its owner's folder.
+	Put(vault + L"\\menu.incoming\\staged.txt", "staged");
+	Put(vault + L"\\menu.incoming-2\\staged2.txt", "staged2");
+	Put(vault + L"\\menu.incomingX\\not_staging.txt", "x");
+	data_sandbox::Recover();
+	Check(Text(data + L"\\staged.txt") == "staged" && Text(data + L"\\staged2.txt") == "staged2",
+		"recover: leftover staging folders merged into the menu's files");
+	Check(!Exists(vault + L"\\menu.incoming") && !Exists(vault + L"\\menu.incoming-2"), "recover: staging folders gone");
+	Check(Exists(vault + L"\\menu.incomingX\\not_staging.txt"), "recover: a folder that only looks like one is left alone");
+	Wipe(vault + L"\\menu.incomingX");
+
 	// --- Pre-1.6.1 layouts ----------------------------------------------------------
 	// After a crash on A with the old pack: data/ holds A's files, the vault the rest.
 	fresh();

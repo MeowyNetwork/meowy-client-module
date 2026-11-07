@@ -503,9 +503,44 @@ namespace
 		g.problem = "couldn't link garrysmod/data to " + Narrow(key) + " (error " + std::to_string(error) + ")";
 	}
 
+	// Whether the drive `path` is on can hold links at all (NTFS can; FAT32 and
+	// exFAT can't). Unknown counts as yes: only a drive that says no gives up
+	// the sandbox.
+	bool DriveHoldsLinks(const std::wstring& path)
+	{
+		wchar_t root[MAX_PATH];
+		DWORD flags = 0;
+		if (!GetVolumePathNameW(path.c_str(), root, MAX_PATH) ||
+			!GetVolumeInformationW(root, nullptr, 0, nullptr, nullptr, &flags, nullptr, 0))
+			return true;
+		return (flags & FILE_SUPPORTS_REPARSE_POINTS) != 0;
+	}
+
+	// A "<key>.incoming[-n]" staging folder a start that died left in the vault
+	// goes into <key>'s folder (on a clash both are kept, the staged copy, from
+	// data/, keeping the name).
+	void SweepStaging(const std::wstring& vault)
+	{
+		for (const std::wstring& name : Entries(vault))
+		{
+			const size_t at = name.find(L".incoming");
+			if (at == std::wstring::npos || at == 0)
+				continue;
+			const std::wstring key = name.substr(0, at), tail = name.substr(at + 9);
+			if (!IsSafeKey(key) || !(tail.empty() || (tail[0] == L'-' && tail.size() > 1 &&
+				tail.find_first_not_of(L"0123456789", 1) == std::wstring::npos)))
+				continue;
+			const std::wstring staged = vault + L"\\" + name, home = vault + L"\\" + key;
+			if (IsPlainDir(staged) && EnsureDir(home) && MergeInto(staged, home, L"older", true))
+				RemoveDirectoryW(staged.c_str());
+		}
+	}
+
 	// Links don't work on this drive (FAT32 or exFAT, say): no sandbox. data/
 	// gets the player's own files back, as without the pack (on a clash both are
 	// kept); each server's folder stays in the vault, out of every server's reach.
+	// "active" says linked: if the game later moves to a drive that holds links,
+	// what's in data/ then goes with the menu's files, where the player sees it.
 	std::string Unsandboxed(const std::wstring& data, const std::wstring& vault, const std::wstring& owner, DWORD error)
 	{
 		if (owner != kMenu && owner != kBefore)
@@ -515,8 +550,7 @@ namespace
 			RemoveDirectoryW(menu.c_str());
 		if (IsPlainDir(before) && MergeInto(before, data, L"before-pack", false))
 			RemoveDirectoryW(before.c_str());
-		DeleteFileW((vault + L"\\active").c_str());
-		RemoveDirectoryW(vault.c_str());   // only if nothing is left in it
+		file_util::WriteAtomic(vault + L"\\active", kLinked);
 		return "garrysmod/data: links can't be made on this drive (error " + std::to_string(error) +
 			"), so every server shares one garrysmod/data";
 	}
@@ -542,7 +576,13 @@ namespace
 		if (Exists(link))
 			return "garrysmod/data: \"" + Narrow(Leaf(link)) + "\" is in the way; every server shares one garrysmod/data this session";
 		if (!MakeLink(link, menu, &error))
-			return Unsandboxed(data, vault, owner, error);
+		{
+			if (!DriveHoldsLinks(data))
+				return Unsandboxed(data, vault, owner, error);
+			// Some other failure (access denied, say): nothing has moved, try again next start.
+			return "garrysmod/data: couldn't make a link (error " + std::to_string(error) +
+				"); every server shares one garrysmod/data this session";
+		}
 
 		// 2. data/, as it is, into the vault in one rename. A file in it that's
 		//    open somewhere stops the rename, and then nothing has changed.
@@ -570,12 +610,14 @@ namespace
 				"); every server shares one garrysmod/data this session";
 		}
 
+		// The marker older installers read, at once: data/ is a link from here on.
+		// Should the write fail, the next start's Recover writes it.
+		file_util::WriteAtomic(activeFile, kLinked);
+
 		// 4. Some of the owner's files were already in the vault (a switch that
 		//    stopped half-way): merged, data/'s copy (the newer) keeping the name.
-		if (staging != home && MergeInto(staging, home, L"older", true))
-			RemoveDirectoryW(staging.c_str());
-
-		file_util::WriteAtomic(activeFile, kLinked);
+		//    The sweep also picks up any staging folder an earlier start left.
+		SweepStaging(vault);
 		return "garrysmod/data is now a link into the pack's vault: every server sees only its own files "
 			"(the files that were in it are kept with " + Narrow(owner) + "'s)";
 	}
@@ -600,7 +642,7 @@ namespace data_sandbox
 			}
 			// Ours: back to the menu's folder (after a crash on a server it still
 			// points there), which is made again if it was deleted by hand.
-			const std::wstring menu = Parent(target) + L"\\" + kMenu;
+			const std::wstring vault = Parent(target), menu = vault + L"\\" + kMenu;
 			DWORD error = ERROR_SUCCESS;
 			if (!EnsureDir(menu) || (!SameText(target, menu) && !SetLink(data, menu, &error)))
 			{
@@ -608,6 +650,12 @@ namespace data_sandbox
 				return "garrysmod/data: couldn't link it back to the main menu's files (error " +
 					std::to_string(error ? error : GetLastError()) + ")";
 			}
+			// The marker older installers read must say linked whenever data/ is
+			// one (a start that died right after linking, or a failed write).
+			const std::wstring activeFile = vault + L"\\active";
+			if (ReadSmallFile(activeFile) != kLinked)
+				file_util::WriteAtomic(activeFile, kLinked);
+			SweepStaging(vault);
 			Load();
 			return std::string();
 		}
