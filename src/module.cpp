@@ -936,10 +936,21 @@ namespace
 		return 0;
 	}
 
+	// Menu: load the screen's page (WebView2) now, hidden, so a join shows it at once.
 	int LoadingPrewarm(lua_State*)
 	{
 #ifdef _WIN32
 		loading_screen::Prewarm(DataDir());
+#endif
+		return 0;
+	}
+
+	// Menu: unload it once no join is on screen (in game, or a menu left in the
+	// background); the next LoadingPrewarm or join starts it again.
+	int LoadingPark(lua_State*)
+	{
+#ifdef _WIN32
+		loading_screen::Park();
 #endif
 		return 0;
 	}
@@ -1393,15 +1404,126 @@ namespace
 		return 0;
 	}
 
+	// --- Convars the pack changes for a while -----------------------------------------
+	// fps_max_nofocus while a join loads, fps_max_menu at a menu left in the
+	// background (home.lua): the player's own value is kept in cvar_restore.txt
+	// ("name value" lines) while it's changed, so a crash or a quit in between
+	// (the game saves config.cfg at quit) is put right at the next start. Only
+	// these names, and only numbers, since the values are run as commands.
+	const char* const kHeldCvars[] = { "fps_max_nofocus", "fps_max_menu" };
+	std::wstring HeldCvarFile() { return DataDir() + L"\\cvar_restore.txt"; }
+
+	bool HeldCvarName(const std::string& name)
+	{
+		for (const char* n : kHeldCvars)
+			if (name == n)
+				return true;
+		return false;
+	}
+
+	bool NumberText(const std::string& v)
+	{
+		return !v.empty() && v.size() <= 12 && v.find_first_not_of("0123456789.") == std::string::npos;
+	}
+
+	using HeldCvars = std::vector<std::pair<std::string, std::string>>;
+
+	HeldCvars ReadHeldCvars()
+	{
+		HeldCvars held;
+		const std::string text = file_util::ReadSmall(HeldCvarFile(), 1024);
+		size_t at = 0;
+		while (at < text.size())
+		{
+			size_t end = text.find('\n', at);
+			if (end == std::string::npos)
+				end = text.size();
+			std::string line = text.substr(at, end - at);
+			at = end + 1;
+			if (!line.empty() && line.back() == '\r')
+				line.pop_back();
+			const size_t space = line.find(' ');
+			if (space == std::string::npos)
+				continue;
+			std::string name = line.substr(0, space), value = line.substr(space + 1);
+			bool dup = false;
+			for (const auto& h : held)
+				dup = dup || h.first == name;
+			if (!dup && HeldCvarName(name) && NumberText(value))
+				held.emplace_back(std::move(name), std::move(value));
+		}
+		return held;
+	}
+
+	void WriteHeldCvars(const HeldCvars& held)
+	{
+		if (held.empty())
+		{
+			DeleteFileW(HeldCvarFile().c_str());
+			return;
+		}
+		std::string text;
+		for (const auto& h : held)
+			text += h.first + " " + h.second + "\n";
+		file_util::WriteAtomic(HeldCvarFile(), text);
+	}
+
+	// meowy.CvarHold(name, value) -> whether it's kept: the player's own value,
+	// before the pack changes it. A name already kept keeps its first value.
+	int CvarHold(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		const std::string name = LUA->CheckString(1), value = LUA->CheckString(2);
+		if (!HeldCvarName(name) || !NumberText(value))
+		{
+			LUA->PushBool(false);
+			return 1;
+		}
+		HeldCvars held = ReadHeldCvars();
+		bool there = false;
+		for (const auto& h : held)
+			there = there || h.first == name;
+		if (!there)
+		{
+			held.emplace_back(name, value);
+			WriteHeldCvars(held);
+		}
+		LUA->PushBool(true);
+		return 1;
+	}
+
+	// meowy.CvarRelease(name): the caller put it back; no longer kept.
+	int CvarRelease(lua_State* L)
+	{
+		const std::string name = L->luabase->CheckString(1);
+		HeldCvars held = ReadHeldCvars();
+		const size_t before = held.size();
+		held.erase(std::remove_if(held.begin(), held.end(),
+			[&](const std::pair<std::string, std::string>& h) { return h.first == name; }), held.end());
+		if (held.size() != before)
+			WriteHeldCvars(held);
+		return 0;
+	}
+
+	// meowy.CvarHeld() -> { name = value }: values a quit or a crash left to put back.
+	int CvarHeld(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		LUA->CreateTable();
+		for (const auto& h : ReadHeldCvars())
+		{
+			LUA->PushString(h.second.c_str());
+			LUA->SetField(-2, h.first.c_str());
+		}
+		return 1;
+	}
+
 	// --- Join priority guard ---------------------------------------------------------
 	// While a join loads, the game asks Windows for full speed: its own QoS tag
 	// (otherwise Windows lowers an unfocused or minimised game to Medium or Low:
 	// efficiency clocks or cores on battery, and its 1 ms timer ignored once
-	// occluded). Its fps_max_nofocus (20 by default) is lifted in Lua. The
-	// value to put back is kept in join_boost.txt while the guard is on, so a
-	// join cut short by a crash or a quit is put right at the next start.
-	std::wstring JoinBoostFile() { return DataDir() + L"\\join_boost.txt"; }
-
+	// occluded). Its fps_max_nofocus (20 by default) is lifted in Lua and kept
+	// with CvarHold. The tag belongs to the process: it ends with it.
 	bool SetJoinQoS(bool on)
 	{
 		using SetInfoFn = BOOL(WINAPI*)(HANDLE, PROCESS_INFORMATION_CLASS, LPVOID, DWORD);
@@ -1423,35 +1545,10 @@ namespace
 		return set(GetCurrentProcess(), ProcessPowerThrottling, &s, sizeof(s)) != FALSE;
 	}
 
-	// meowy.JoinBoost(on[, nofocus]) -> whether Windows took the QoS tag. With
-	// on and a fps_max_nofocus value, that value is kept to put back later.
+	// meowy.JoinBoost(on) -> whether Windows took the QoS tag.
 	int JoinBoost(lua_State* L)
 	{
-		ILuaBase* LUA = L->luabase;
-		const bool on = LUA->GetBool(1);
-		const bool ok = SetJoinQoS(on);
-		if (on && LUA->IsType(2, Type::String))
-		{
-			const std::string v = LUA->GetString(2);
-			if (!v.empty() && v.size() <= 12 && v.find_first_not_of("0123456789.") == std::string::npos)
-				file_util::WriteAtomic(JoinBoostFile(), v);
-		}
-		else if (!on)
-		{
-			DeleteFileW(JoinBoostFile().c_str());
-		}
-		LUA->PushBool(ok);
-		return 1;
-	}
-
-	// meowy.JoinBoostPending() -> the fps_max_nofocus a join cut short left to put back, or nil.
-	int JoinBoostPending(lua_State* L)
-	{
-		const std::string v = file_util::ReadSmall(JoinBoostFile(), 64);
-		if (v.empty() || v.size() > 12 || v.find_first_not_of("0123456789.") != std::string::npos)
-			L->luabase->PushNil();
-		else
-			L->luabase->PushString(v.c_str());
+		L->luabase->PushBool(SetJoinQoS(L->luabase->GetBool(1)));
 		return 1;
 	}
 
@@ -2539,8 +2636,8 @@ local enabled = meowy.Setting("meowy_loadingscreen", "1",
 	"Meowy Client Pack: our own loading screen when joining Meowy Network (0 = Garry's Mod's)")
 local active, sure, lastStatus, details = false, false, nil, nil
 
--- Load the screen's page now, hidden, so a join shows it at once.
-if enabled:GetBool() and system.IsWindowed() then meowy.LoadingPrewarm() end
+-- The screen's page is loaded ahead (hidden, so a join shows it at once) and
+-- unloaded while you play or the game sits in the background: home.lua.
 local panelSince -- SysTime when GMod's loading panel opened, for how long it showed before ours
 
 -- A separate garrysmod/data for each server (data_sandbox.h): a server's Lua
@@ -2798,6 +2895,7 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	SetFunction(LUA, "LoadingInGame", Guarded<LoadingInGame>);
 	SetFunction(LUA, "LoadingEnd", Guarded<LoadingEnd>);
 	SetFunction(LUA, "LoadingPrewarm", Guarded<LoadingPrewarm>);
+	SetFunction(LUA, "LoadingPark", Guarded<LoadingPark>);
 	SetFunction(LUA, "ServerRepFetch", Guarded<ServerRepFetch>);
 	SetFunction(LUA, "ServerRepTake", Guarded<ServerRepTake>);
 	SetFunction(LUA, "ServerRepReport", Guarded<ServerRepReport>);
@@ -2849,7 +2947,9 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	SetFunction(LUA, "PakCache", Guarded<PakCache>);
 	SetFunction(LUA, "PakCacheState", Guarded<PakCacheState>);
 	SetFunction(LUA, "JoinBoost", Guarded<JoinBoost>);
-	SetFunction(LUA, "JoinBoostPending", Guarded<JoinBoostPending>);
+	SetFunction(LUA, "CvarHold", Guarded<CvarHold>);
+	SetFunction(LUA, "CvarRelease", Guarded<CvarRelease>);
+	SetFunction(LUA, "CvarHeld", Guarded<CvarHeld>);
 	SetFunction(LUA, "JoinBoostState", Guarded<JoinBoostState>);
 	SetFunction(LUA, "LastServerMark", Guarded<LastServerMark>);
 	SetFunction(LUA, "LastServer", Guarded<LastServer>);

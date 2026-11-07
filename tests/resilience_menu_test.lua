@@ -121,8 +121,22 @@ local function world(opts)
 		end,
 		ConsoleState = function() return "spew function; 3 lines kept" end,
 		ConsoleRun = function(line) w.consoleRuns = w.consoleRuns or {} w.consoleRuns[#w.consoleRuns + 1] = line return not w.noEngine end,
-		JoinBoost = function(on, kept) w.boost = on w.boostKept = kept return true end,
-		JoinBoostPending = function() return opts.boostPending end,
+		JoinBoost = function(on) w.boost = on return true end,
+		-- cvar_restore.txt: the player's own values while the pack has them changed
+		-- (opts.held: what the last session left).
+		CvarHold = function(name, v)
+			w.held = w.held or {}
+			if w.held[name] == nil then w.held[name] = v end
+			return true
+		end,
+		CvarRelease = function(name) if w.held then w.held[name] = nil end end,
+		CvarHeld = function()
+			if w.held == nil then w.held = {} for k, v in pairs(opts.held or {}) do w.held[k] = v end end
+			local t = {} for k, v in pairs(w.held) do t[k] = v end return t
+		end,
+		-- The loading screen's page: kept loaded (true) or parked (false).
+		LoadingPrewarm = function() w.web = true w.webCalls = (w.webCalls or 0) + 1 end,
+		LoadingPark = function() w.web = false w.webCalls = (w.webCalls or 0) + 1 end,
 		ConsoleFileRead = function(kind) return (w.consoleFiles or opts.consoleFiles or {})[kind] or "" end,
 		ConsoleFileWrite = function(kind, text) w.consoleFiles = w.consoleFiles or {} w.consoleFiles[kind] = text return true end,
 		MaskPaths = function(text) return (text:gsub("%a:[\\/][^\n:]*", "<path>")) end,
@@ -178,6 +192,8 @@ local function world(opts)
 	env.os = setmetatable({ time = function() return w.osTime end }, { __index = os })
 	env.IsInGame = function() return w.inGame end
 	env.IsInLoading = function() return w.loading end
+	-- The game window: focused unless w.focus is false; windowed unless w.fullscreen.
+	env.system = { HasFocus = function() return w.focus ~= false end, IsWindowed = function() return not w.fullscreen end }
 	-- Convars other parts of the pack own (module.cpp's chunks), only when a test asks.
 	env.GetConVar = opts.engineConVars and function(n)
 		local value = function() if w.cvars[n] ~= nil then return w.cvars[n] end return w.convars and w.convars[n] end
@@ -1396,27 +1412,92 @@ w.cvars.fps_max_nofocus, w.cvars.fps_max = "20", "300"
 w.state, w.address, w.loading = "ours", OURS, true
 w.consoleRuns = {}
 w.run(1)
-check("join boost: on while loading, the old cap kept", tostring(w.boost) .. " " .. tostring(w.boostKept), "true 20")
+check("join boost: on while loading, the old cap kept", tostring(w.boost) .. " " .. tostring(w.held and w.held.fps_max_nofocus), "true 20")
 check("join boost: fps_max_nofocus lifted to fps_max", table.concat(w.consoleRuns, "|"):find("fps_max_nofocus 300", 1, true) ~= nil, true)
 w.play(3)
 check("join boost: off in game", w.boost, false)
 check("join boost: fps_max_nofocus put back", w.consoleRuns[#w.consoleRuns], "fps_max_nofocus 20")
+check("join boost: no longer kept once put back", w.held.fps_max_nofocus, nil)
 w.cut()
 w.cvars.fps_max_nofocus = "0"
 w.loading = true
 w.consoleRuns = {}
 w.run(1)
-check("join boost: no cap to lift (0), nothing set", w.boost == true and #w.consoleRuns == 0 and w.boostKept == nil, true)
+check("join boost: no cap to lift (0), nothing set", w.boost == true and #w.consoleRuns == 0 and w.held.fps_max_nofocus == nil, true)
 w.loading = false
 w.run(1)
 check("join boost: a join that didn't get in turns it off", w.boost, false)
-w = world({ settings = ON, menu = true, boostPending = "20" })
-check("join boost: a value left by a cut-short join put back at start", table.concat(w.consoleRuns or {}, "|"):find("fps_max_nofocus 20", 1, true) ~= nil and w.boost == false, true)
+w = world({ settings = ON, menu = true, held = { fps_max_nofocus = "20", fps_max_menu = "60" } })
+local startRuns = table.concat(w.consoleRuns or {}, "|")
+check("held convars: a value left by a cut-short join put back at start", startRuns:find("fps_max_nofocus 20", 1, true) ~= nil, true)
+check("held convars: a menu cap left by a quit put back at start", startRuns:find("fps_max_menu 60", 1, true) ~= nil, true)
+check("held convars: none kept once put back", next(w.held), nil)
 w = world({ settings = ON, menu = true, convars = { meowy_join_boost = "0" } })
 w.cvars.fps_max_nofocus, w.cvars.fps_max = "20", "300"
 w.state, w.address, w.loading = "ours", OURS, true
 w.run(1)
 check("join boost: off by the setting", w.boost, nil)
+-- Idle savings: the loading screen's page loaded a few seconds after start-up
+-- and kept while the menu has focus (or lost it under two minutes ago);
+-- unloaded in game and at a menu left in the background. A menu in the
+-- background held to 15 fps when fps_max_nofocus is 0, put back on focus or a join.
+w = world({ settings = ON, menu = true, engineConVars = true })
+w.cvars.meowy_loadingscreen, w.cvars.fps_max_nofocus, w.cvars.fps_max_menu = "1", "0", "60"
+w.run(1)
+check("idle: page not loaded during start-up", w.web, false)
+w.run(5)
+check("idle: page loaded a few seconds after start-up", w.web, true)
+w.focus = false
+w.consoleRuns = {}
+w.run(1)
+check("idle: menu in the background held to 15 fps", table.concat(w.consoleRuns, "|"):find("fps_max_menu 15", 1, true) ~= nil, true)
+check("idle: the menu's own frame rate kept", w.held and w.held.fps_max_menu, "60")
+w.run(60)
+check("idle: page still loaded a minute later", w.web, true)
+w.run(70)
+check("idle: page unloaded after two minutes in the background", w.web, false)
+w.focus = true
+w.consoleRuns = {}
+w.run(1)
+check("idle: focus puts the menu's frame rate back", table.concat(w.consoleRuns, "|"):find("fps_max_menu 60", 1, true) ~= nil, true)
+check("idle: and no longer keeps it", w.held.fps_max_menu, nil)
+check("idle: focus loads the page again", w.web, true)
+-- A join from the background: the cap put back as it starts; the page left to the join.
+w.focus = false
+w.run(1)
+w.consoleRuns = {}
+w.state, w.address, w.loading = "ours", OURS, true
+w.run(1)
+check("idle: a join puts the menu's frame rate back", table.concat(w.consoleRuns, "|"):find("fps_max_menu 60", 1, true) ~= nil, true)
+local webCalls = w.webCalls
+w.run(2)
+check("idle: the page left alone while a join loads", w.webCalls, webCalls)
+w.play(3)
+check("idle: page unloaded in game", w.web, false)
+w.cut()
+w.focus = true
+w.run(1)
+check("idle: back at the menu, page loaded again", w.web, true)
+-- fps_max_nofocus caps the background itself: the menu's left alone.
+w.cvars.fps_max_nofocus = "20"
+w.focus = false
+w.consoleRuns = {}
+w.run(2)
+check("idle: fps_max_nofocus set, no menu cap", table.concat(w.consoleRuns, "|"):find("fps_max_menu", 1, true), nil)
+-- Off: the page loaded for the whole session, nothing capped.
+w = world({ settings = ON, menu = true, engineConVars = true, convars = { meowy_idle_savings = "0" } })
+w.cvars.meowy_loadingscreen, w.cvars.fps_max_nofocus, w.cvars.fps_max_menu = "1", "0", "60"
+w.focus = false
+w.run(1)
+check("idle off: page loaded at once", w.web, true)
+w.play(3)
+check("idle off: kept loaded in game", w.web, true)
+check("idle off: nothing capped", (w.held or {}).fps_max_menu, nil)
+-- The loading screen off: the page never loaded.
+w = world({ settings = ON, menu = true, engineConVars = true })
+w.cvars.meowy_loadingscreen = "0"
+w.run(10)
+check("idle: loading screen off, page never loaded", w.web, false)
 -- Off: nothing warmed; the toggle cancels.
 w = world({ settings = ON, menu = true, convars = { meowy_prewarm = "0" } })
 w.recorded = { [OURS] = true }
