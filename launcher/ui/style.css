@@ -1,0 +1,72 @@
+:root {
+  --bg: #15161c;
+  --panel: #1e2029;
+  --line: #2c2f3b;
+  --text: #e9e9ef;
+  --muted: #9a9cab;
+  --accent: #ff9f43;
+  --accent-text: #1a1206;
+  --ok: #5fd38d;
+  --warn: #ffcc66;
+  --bad: #ff6b6b;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.45 "Segoe UI", system-ui, sans-serif;
+  user-select: none;
+}
+
+body { padding: 18px; }
+
+h1 { font-size: 18px; margin: 0 0 2px; }
+h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 18px 0 8px; }
+.sub { color: var(--muted); font-size: 12px; margin: 0; }
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.row { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; }
+.row .k { color: var(--muted); }
+.row .v { text-align: right; overflow-wrap: anywhere; }
+.ok { color: var(--ok); }
+.warn { color: var(--warn); }
+.bad { color: var(--bad); }
+
+.actions { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+
+button {
+  font: inherit;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 8px 14px;
+  cursor: pointer;
+}
+button:hover { border-color: #444859; }
+button:disabled { opacity: .5; cursor: default; }
+button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 600; }
+button.ghost { background: transparent; }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+label.toggle { display: flex; gap: 10px; align-items: flex-start; padding: 6px 0; cursor: pointer; }
+label.toggle input { margin-top: 3px; accent-color: var(--accent); }
+label.toggle small { display: block; color: var(--muted); }
+
+#message { min-height: 20px; margin-top: 10px; color: var(--muted); }
+
+/* The card window */
+body.card { padding: 16px 18px; }
+.card h1 { font-size: 16px; }
+.card p { margin: 6px 0 0; color: var(--muted); overflow-wrap: anywhere; }
+.card .actions { position: fixed; left: 18px; right: 18px; bottom: 16px; justify-content: flex-end; margin: 0; }
