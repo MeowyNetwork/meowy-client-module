@@ -184,6 +184,82 @@ function M.model(st, now)
 	return { sections = sections, addresses = addresses }
 end
 
+-- The Escape menu's card -----------------------------------------------------------
+
+-- Quick settings: only these convars, only in these ranges. The page sends a
+-- row number and a number; nothing else crosses back.
+M.SETTINGS = {
+	{ key = "volume", label = "Master volume", min = 0, max = 1, step = 0.05, percent = true },
+	{ key = "voice_scale", label = "Voice volume", min = 0, max = 1, step = 0.05, percent = true },
+	{ key = "fov_desired", label = "Field of view", min = 75, max = 100, step = 1 },
+}
+
+-- Setting `i` with `value` clamped and snapped to its step, as the string to
+-- set; nil for an unknown row or a value that isn't a number.
+function M.settingValue(i, value)
+	local s = M.SETTINGS[tonumber(i) or 0]
+	value = tonumber(value)
+	if not s or not value or value ~= value then return nil end
+	value = math.max(s.min, math.min(s.max, value))
+	value = s.min + math.floor((value - s.min) / s.step + 0.5) * s.step
+	value = math.max(s.min, math.min(s.max, value))
+	return s.key, s.step < 1 and string.format("%.2f", value) or string.format("%d", value)
+end
+
+-- "45 s", "12 min", "1 h 12 min".
+function M.duration(seconds)
+	seconds = tonumber(seconds)
+	if not seconds or seconds ~= seconds or seconds < 0 then return nil end
+	if seconds < 60 then return math.floor(seconds) .. " s" end
+	local minutes = math.floor(seconds / 60)
+	if minutes < 60 then return minutes .. " min" end
+	return math.floor(minutes / 60) .. " h " .. (minutes % 60) .. " min"
+end
+
+-- What the card shows. info = { address (public or ours, else nil), name, map,
+-- players, max (from the server's answer, may be nil), latency (ms), loss
+-- (0..1), connected (s), values = { [key] = number } }.
+function M.escapeModel(info)
+	local out = { settings = {} }
+	if M.validAddress(info.address) then
+		local name = M.clean(info.name)
+		local line1 = {}
+		local map = M.clean(info.map)
+		if map ~= "" then line1[#line1 + 1] = map end
+		if tonumber(info.players) and tonumber(info.max) then
+			line1[#line1 + 1] = count(info.players) .. "/" .. count(info.max) .. " players"
+		end
+		local line2 = {}
+		local latency = tonumber(info.latency)
+		if latency then
+			-- As net_graph shows it: less half an update interval (cl_updaterate).
+			local rate = tonumber(info.updaterate)
+			if rate and rate > 0 then latency = math.max(0, latency - 500 / rate) end
+			line2[#line2 + 1] = "ping " .. math.floor(latency + 0.5) .. " ms"
+		end
+		if tonumber(info.loss) then line2[#line2 + 1] = "loss " .. math.floor(tonumber(info.loss) * 100 + 0.5) .. "%" end
+		local here = M.duration(info.connected)
+		if here then line2[#line2 + 1] = here .. " here" end
+		out.server = {
+			name = name ~= "" and name or info.address,
+			line1 = table.concat(line1, " \194\183 "),
+			line2 = table.concat(line2, " \194\183 "),
+			address = info.address,
+		}
+	end
+	for i, s in ipairs(M.SETTINGS) do
+		local v = tonumber(info.values and info.values[s.key])
+		if v and v == v then
+			v = math.max(s.min, math.min(s.max, v))
+			out.settings[#out.settings + 1] = {
+				id = i, label = s.label, min = s.min, max = s.max, step = s.step, value = v,
+				percent = s.percent == true,
+			}
+		end
+	end
+	return out
+end
+
 -- A Lua value as a JavaScript literal: strings through Logic.jsString, numbers,
 -- booleans, nil as null; a table with [1] as an array, otherwise an object
 -- (keys sorted, so the same model always reads the same).

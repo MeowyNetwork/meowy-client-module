@@ -25,8 +25,12 @@ namespace
 	// GetDataRate 5, IsLoopback 6, IsTimingOut 7, ... GetStreamProgress 20,
 	// GetTimeSinceLastReceived 21.
 	constexpr int kGetAddress = 1;
+	constexpr int kGetTimeConnected = 3;
 	constexpr int kIsTimingOut = 7;
+	constexpr int kGetAvgLatency = 10;   // (int flow)
+	constexpr int kGetAvgLoss = 11;      // (int flow)
 	constexpr int kGetTimeSinceLastReceived = 21;
+	constexpr int kFlowOutgoing = 0, kFlowIncoming = 1;
 
 	constexpr size_t kMaxAddress = 64;
 
@@ -60,6 +64,16 @@ namespace
 	using GetAddressFn = const char* (__fastcall*)(void* self, void* unused);
 	using GetFloatFn = float (__fastcall*)(void* self, void* unused);
 	using GetBoolFn = bool (__fastcall*)(void* self, void* unused);
+	// A method taking one int (the flow). x86: `this` in ecx, the int on the
+	// stack, which __fastcall's unused edx slot leaves in the same place. x64:
+	// the int is the second argument (rdx), so no unused slot.
+#ifdef _WIN64
+	using GetFlowFloatFn = float (*)(void* self, int flow);
+	float CallFlow(void* fn, void* self, int flow) { return reinterpret_cast<GetFlowFloatFn>(fn)(self, flow); }
+#else
+	using GetFlowFloatFn = float (__fastcall*)(void* self, void* unused, int flow);
+	float CallFlow(void* fn, void* self, int flow) { return reinterpret_cast<GetFlowFloatFn>(fn)(self, nullptr, flow); }
+#endif
 
 	enum RawStatus { kRawOk, kRawNotConnected, kRawFailed };
 
@@ -123,6 +137,36 @@ namespace
 				return kRawFailed;
 			timingOut = reinterpret_cast<GetBoolFn>(isTimingOut)(nci, nullptr);
 			silence = reinterpret_cast<GetFloatFn>(sinceReceived)(nci, nullptr);
+			return kRawOk;
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			return kRawFailed;
+		}
+	}
+
+	// Same guards, for GetAvgLatency (outgoing: the round trip, as net_graph
+	// shows it), GetAvgLoss (incoming) and GetTimeConnected.
+	RawStatus ReadStats(HMODULE engine, void* client, float& latency, float& loss, float& connected)
+	{
+		__try
+		{
+			void** vtable = *reinterpret_cast<void***>(client);
+			void* getNci = vtable[kGetNetChannelInfo];
+			if (!InCode(engine, getNci))
+				return kRawFailed;
+			void* nci = reinterpret_cast<GetNetChannelInfoFn>(getNci)(client, nullptr);
+			if (!nci)
+				return kRawNotConnected;
+			void** nciVtable = *reinterpret_cast<void***>(nci);
+			void* avgLatency = nciVtable[kGetAvgLatency];
+			void* avgLoss = nciVtable[kGetAvgLoss];
+			void* timeConnected = nciVtable[kGetTimeConnected];
+			if (!InCode(engine, avgLatency) || !InCode(engine, avgLoss) || !InCode(engine, timeConnected))
+				return kRawFailed;
+			latency = CallFlow(avgLatency, nci, kFlowOutgoing);
+			loss = CallFlow(avgLoss, nci, kFlowIncoming);
+			connected = reinterpret_cast<GetFloatFn>(timeConnected)(nci, nullptr);
 			return kRawOk;
 		}
 		__except (EXCEPTION_EXECUTE_HANDLER)
@@ -262,6 +306,31 @@ namespace server_gate
 #else
 		(void)timingOut;
 		(void)silence;
+		return false;
+#endif
+	}
+
+	bool NetStats(double& latency, double& loss, double& connected)
+	{
+#ifdef _WIN32
+		HMODULE engine = nullptr;
+		void* client = EngineClient(engine);
+		if (!client)
+			return false;
+		float lat = -1.0f, ls = -1.0f, conn = -1.0f;
+		if (ReadStats(engine, client, lat, ls, conn) != kRawOk)
+			return false;
+		// Outside these, the layout isn't what we expect: say nothing.
+		if (!(lat >= 0.0f && lat <= 10.0f) || !(ls >= 0.0f && ls <= 1.0f) || !(conn >= 0.0f && conn <= 31.0f * 86400.0f))
+			return false;
+		latency = lat;
+		loss = ls;
+		connected = conn;
+		return true;
+#else
+		(void)latency;
+		(void)loss;
+		(void)connected;
 		return false;
 #endif
 	}

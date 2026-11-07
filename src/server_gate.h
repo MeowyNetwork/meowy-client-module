@@ -43,4 +43,9 @@ namespace server_gate
 	// Connection resilience uses it to tell a real drop (the server went
 	// silent) from a kick, ban, quit or map change (packets still flowing).
 	bool NetHealth(bool& timingOut, double& silence);
+
+	// The connection as net_graph sees it, for the Escape menu's server card:
+	// average round trip (seconds), incoming packet loss (0..1) and time
+	// connected (seconds). False when not connected or it couldn't be read safely.
+	bool NetStats(double& latency, double& loss, double& connected);
 }

@@ -65,6 +65,12 @@ local function world(opts)
 		LastServer = function() if w.last then return w.last[1], w.last[2], w.last[3] end end,
 		-- The Home card: our address, and the game's own query over w.lists[type].
 		OurServerAddress = function() return OURS end,
+		-- The engine's connection now: our address while on ours, w.otherNow elsewhere.
+		ServerNow = function()
+			if w.state == "ours" then return OURS, w.latency, w.loss, w.connected end
+			if w.state == "other" then return w.otherNow, w.latency, w.loss, w.connected end
+			return nil
+		end,
 		StockServerQuery = function(data)
 			w.queried = w.queried or {}
 			w.queried[data.Type] = (w.queried[data.Type] or 0) + 1
@@ -114,11 +120,17 @@ local function world(opts)
 	env.IsInGame = function() return w.inGame end
 	env.IsInLoading = function() return w.loading end
 	env.GetConVar = nil
-	env.GetConVarString = function(n) return n == "cl_timeout" and w.cl_timeout or "" end
+	-- Engine convars the Escape card reads and sets.
+	w.cvars = { volume = "0.7", voice_scale = "1", fov_desired = "90" }
+	env.GetConVarString = function(n) if n == "cl_timeout" then return w.cl_timeout end return w.cvars[n] or "" end
 	env.RunConsoleCommand = function(cmd, ...)
 		w.commands[#w.commands + 1] = table.concat({ cmd, ... }, " ")
 		if cmd == "cl_timeout" then w.cl_timeout = (...) end
+		if w.cvars[cmd] ~= nil then w.cvars[cmd] = (...) end
 	end
+	env.SetClipboardText = function(t) w.clipboard = t end
+	-- The Escape menu is open (in game, the menu shows only then).
+	env.gui = { IsGameUIVisible = function() return w.escOpen == true end }
 	-- Every Think hook runs each frame, in the order added (resilience, then the Home card).
 	local thinks, order = {}, {}
 	env.hook = { Add = function(event, id, fn)
@@ -150,6 +162,7 @@ local function world(opts)
 		env.pnlMainMenu = { Call = function(self, js)
 			w.jsCalls = w.jsCalls + 1
 			if js:find("window.MeowyHome(", 1, true) then w.homeJS = js w.homeCalls = (w.homeCalls or 0) + 1
+			elseif js:find("window.MeowyEsc(", 1, true) then w.escJS = js
 			else w.js = js end
 		end }
 	end
@@ -1005,6 +1018,73 @@ w = world({ settings = ON })
 w.lists = LISTS
 w.run(5)
 check("home: no menu page, nothing asked", w.queried, nil)
+
+-- The Escape menu's card: the server you're on, Reconnect, Copy, quick sliders.
+local function escData(w) return (w.escJS or ""):match("window%.MeowyEsc%((.*),%d+%);\n$") end
+w = world({ settings = ON, menu = true })
+w.latency, w.loss, w.connected = 45.6, 0.013, 4320
+w.play(3)
+check("escape: nothing while the Escape menu is closed", escData(w), nil)
+w.escOpen = true
+w.run(1)
+data = escData(w) or ""
+check("escape: shown when opened", data ~= "" and data ~= "null", true)
+check("escape: the server's own name", data:find('"name":"Meowy"', 1, true) ~= nil, true)
+check("escape: map and players from its answer", data:find('"line1":"map \194\183 10/64 players"', 1, true) ~= nil, true)
+check("escape: the engine's ping, loss, time here", data:find('"line2":"ping 46 ms \194\183 loss 1% \194\183 1 h 12 min here"', 1, true) ~= nil, true)
+check("escape: the address", data:find('"address":"' .. OURS .. '"', 1, true) ~= nil, true)
+check("escape: quick settings with current values", data:find('"label":"Master volume"', 1, true) ~= nil and data:find('"value":0.7', 1, true) ~= nil, true)
+check("escape: the Home card isn't shown in game", (homeData(w) or "null"), "null")
+w.env.MeowyClientPackEscAction("reconnect")
+check("escape: Reconnect retries", w.ran("retry"), 1)
+w.env.MeowyClientPackEscAction("copy")
+check("escape: Copy puts the address on the clipboard", w.clipboard, OURS)
+local before = #w.commands
+w.env.MeowyClientPackEscAction("quit")
+w.env.MeowyClientPackEscAction(nil)
+check("escape: other actions do nothing", #w.commands, before)
+w.env.MeowyClientPackEscSet(1, 0.42)
+check("escape: volume set, snapped", w.cvars.volume, "0.40")
+w.env.MeowyClientPackEscSet(3, 999)
+check("escape: FOV clamped", w.cvars.fov_desired, "100")
+local n = #w.commands
+w.env.MeowyClientPackEscSet(7, 1)
+w.env.MeowyClientPackEscSet("1); RunConsoleCommand('quit'", 1)
+w.env.MeowyClientPackEscSet(2, "loud")
+check("escape: unknown rows and junk set nothing", #w.commands, n)
+w.run(1)
+check("escape: new value shown", (escData(w) or ""):find('"value":0.4', 1, true) ~= nil, true)
+w.escOpen = false
+w.run(1)
+check("escape: closed, card gone", escData(w), "null")
+-- Not on a public server (LAN, P2P, singleplayer): no server section, sliders still.
+w = world({ settings = ON, menu = true })
+w.state, w.inGame, w.escOpen, w.otherNow = "other", true, true, nil
+w.run(1)
+data = escData(w) or ""
+check("escape: no public address: no server section", data:find('"server"', 1, true) == nil and data:find('"settings":[{', 1, true) ~= nil, true)
+w.env.MeowyClientPackEscAction("copy")
+check("escape: nothing to copy", w.clipboard, nil)
+-- At the main menu the buttons do nothing.
+w = world({ settings = ON, menu = true })
+w.run(1)
+w.env.MeowyClientPackEscAction("reconnect")
+w.env.MeowyClientPackEscSet(1, 0.1)
+check("escape: out of game, nothing runs", #w.commands, 0)
+-- Off in settings.
+w = world({ settings = ON, menu = true })
+w.play(2)
+w.escOpen = true
+w.run(1)
+w.concommands.meowy_settings()
+local et = find(function(p) return p.meowyToggle == "menu_escape" end)
+check("escape: a toggle in settings, on", et and et.on, true)
+if et then et:SetOn(false) end
+w.run(1)
+check("escape: off removes the card", escData(w), "null")
+w.env.MeowyClientPackEscAction("reconnect")
+check("escape: off, buttons do nothing", w.ran("retry"), 0)
+check("escape: settings window paints", w.paintAll(), "")
 
 check("no Lua errors", w.errors, nil)
 print(("%d checks, %d failed"):format(count, failures))

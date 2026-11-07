@@ -1,7 +1,8 @@
 -- The main menu's Home card (first part of the new Home): on the main page,
 -- out of game, our server's live status, then the player's favourites and
 -- recent servers (the game's own lists, asked with the game's own query, not
--- the honest-count wrapper), each joined with one click.
+-- the honest-count wrapper), each joined with one click. In game, the same
+-- spot in the Escape menu has the server card instead (below).
 --
 -- Runs in its own function at the end of resilience.lua's chunk (module.cpp),
 -- with `Home` (home_logic.lua) and resilience.lua's locals in scope: join, log,
@@ -17,6 +18,7 @@ local st = { oursAddress = meowy.OurServerAddress and meowy.OurServerAddress() o
 local pending = {}            -- kind -> SysTime it was asked
 local addresses = {}          -- row number -> address, from the model last sent
 local nextLook, nextRefresh, shown = 0, 0, false
+local tickEsc                 -- the Escape menu's card, below
 local sentText, sentAt, version = nil, 0, 0
 
 local HOME_JS = [==[
@@ -181,6 +183,193 @@ local function tick()
 		send("null")   -- in game (the Escape menu is the same page) or turned off
 	end
 	shown = visible
+	tickEsc(now)
+end
+
+-- The Escape menu's card ------------------------------------------------------------
+-- In game, the Escape menu is the same page with "Resume Game": the server
+-- you're on (its name and map as it answers, the engine's own ping, loss and
+-- time connected), Reconnect, Copy address, and three quick sliders.
+local ESC_JS = [==[
+(function () {
+	if (window.MeowyEsc) return;
+	var STYLE = '#meowy-esc{position:absolute;right:24px;bottom:16px;width:460px;overflow:hidden;'
+		+ 'background:rgba(0,0,0,0.6);border-radius:6px;padding:6px 16px 12px 16px;box-sizing:border-box;'
+		+ 'color:#fff;text-shadow:1px 1px 1px #000;z-index:5;}'
+		+ '#meowy-esc .me-title{font-size:12px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;opacity:0.7;margin:10px 0 4px 0;}'
+		+ '#meowy-esc .me-name{font-size:17px;font-weight:bold;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:24px;}'
+		+ '#meowy-esc .me-line{font-size:13px;opacity:0.8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:18px;}'
+		+ '#meowy-esc .me-btn{float:right;margin-left:8px;font-size:13px;font-weight:bold;padding:2px 10px;border-radius:4px;'
+		+ 'background:rgba(255,255,255,0.16);cursor:pointer;line-height:20px;}'
+		+ '#meowy-esc .me-btn:hover{background:rgba(255,255,255,0.3);}'
+		+ '#meowy-esc .me-set{overflow:hidden;font-size:13px;line-height:24px;}'
+		+ '#meowy-esc .me-set span{float:left;width:120px;}'
+		+ '#meowy-esc .me-set b{float:right;width:44px;text-align:right;font-weight:normal;opacity:0.85;}'
+		+ '#meowy-esc input{width:240px;margin:6px 0 0 8px;float:left;}';
+	function node(tag, cls, text) {
+		var e = document.createElement(tag);
+		if (cls) e.className = cls;
+		if (text) e.textContent = text;
+		return e;
+	}
+	function shown(s, v) { return s.percent ? Math.round(v * 100) + '%' : String(Math.round(v)); }
+	var dragging = false, lastSent = 0;
+	function send(id, v) { lua.Run('MeowyClientPackEscSet(' + Number(id) + ',' + Number(v) + ')'); }
+	function slider(s) {
+		var row = node('div', 'me-set');
+		row.appendChild(node('span', null, s.label));
+		var val = node('b', null, shown(s, s.value));
+		var input = node('input');
+		input.type = 'range';
+		input.min = s.min; input.max = s.max; input.step = s.step; input.value = s.value;
+		input.setAttribute('data-id', s.id);
+		input.onmousedown = function () { dragging = true; };
+		input.onmouseup = function () { dragging = false; };
+		input.oninput = function () {
+			val.textContent = shown(s, Number(input.value));
+			var now = Date.now();
+			if (now - lastSent > 100) { lastSent = now; send(s.id, input.value); }
+		};
+		input.onchange = function () { dragging = false; val.textContent = shown(s, Number(input.value)); send(s.id, input.value); };
+		row.appendChild(input);
+		row.appendChild(val);
+		return row;
+	}
+	function draw() {
+		var data = window.MeowyEscData;
+		var page = document.querySelector('.page[ng-controller="ControllerMain"]');
+		var box = document.getElementById('meowy-esc');
+		if (!data || !page) { if (box) box.parentNode.removeChild(box); return; }
+		if (!document.getElementById('meowy-esc-style')) {
+			var css = node('style');
+			css.id = 'meowy-esc-style';
+			css.textContent = STYLE;
+			(document.head || document.body).appendChild(css);
+		}
+		if (box && box.parentNode !== page) { box.parentNode.removeChild(box); box = null; }
+		var v = String(window.MeowyEscVersion);
+		if (box && box.getAttribute('data-v') === v) return;
+		if (box && dragging) return;   // not while a slider is held; the next push catches up
+		if (!box) { box = node('div'); box.id = 'meowy-esc'; page.appendChild(box); }
+		box.setAttribute('data-v', v);
+		while (box.firstChild) box.removeChild(box.firstChild);
+		if (data.server) {
+			box.appendChild(node('div', 'me-title', 'Server'));
+			var name = node('div', 'me-name');
+			var re = node('span', 'me-btn', 'Reconnect');
+			re.onclick = function () { lua.Run('MeowyClientPackEscAction("reconnect")'); };
+			name.appendChild(re);
+			name.appendChild(document.createTextNode(data.server.name));
+			name.title = data.server.name;
+			box.appendChild(name);
+			if (data.server.line1) box.appendChild(node('div', 'me-line', data.server.line1));
+			if (data.server.line2) box.appendChild(node('div', 'me-line', data.server.line2));
+			var addr = node('div', 'me-line');
+			var copy = node('span', 'me-btn', 'Copy');
+			copy.onclick = function () {
+				lua.Run('MeowyClientPackEscAction("copy")');
+				copy.textContent = 'Copied';
+				setTimeout(function () { copy.textContent = 'Copy'; }, 1500);
+			};
+			addr.appendChild(copy);
+			addr.appendChild(document.createTextNode(data.server.address));
+			addr.style.lineHeight = '24px';
+			box.appendChild(addr);
+		}
+		if (data.settings.length) {
+			box.appendChild(node('div', 'me-title', 'Quick settings'));
+			for (var i = 0; i < data.settings.length; i++) box.appendChild(slider(data.settings[i]));
+		}
+	}
+	window.MeowyEsc = function (data, version) {
+		window.MeowyEscData = data;
+		window.MeowyEscVersion = version;
+		draw();
+	};
+	document.addEventListener('mouseup', function () { dragging = false; }, true);
+	var MO = window.MutationObserver || window.WebKitMutationObserver;
+	if (MO && document.body) new MO(draw).observe(document.body, { childList: true, subtree: true });
+})();
+]==]
+
+local esc = { info = {}, nextAsk = 0, sentText = nil, sentAt = 0, version = 0, shown = false, askedFor = nil }
+
+local function convarNumber(name)
+	local cv = GetConVar and GetConVar(name)
+	if cv and cv.GetFloat then return cv:GetFloat() end
+	return tonumber(GetConVarString and GetConVarString(name))
+end
+
+-- The card's buttons: only these two, only in game.
+function MeowyClientPackEscAction(what)
+	if not IsInGame() or not escapeOn() then return end
+	if what == "reconnect" then
+		log("escape menu: reconnect")
+		RunConsoleCommand("retry")
+	elseif what == "copy" then
+		local address = meowy.ServerNow and meowy.ServerNow()
+		if Home.validAddress(address) and SetClipboardText then SetClipboardText(address) end
+	end
+end
+
+-- A slider: its row number and a number; the convar and range are this side's.
+function MeowyClientPackEscSet(id, value)
+	if not IsInGame() or not escapeOn() then return end
+	local key, text = Home.settingValue(id, value)
+	if not key then return end
+	RunConsoleCommand(key, text)
+	esc.info.values = esc.info.values or {}
+	esc.info.values[key] = tonumber(text)
+end
+
+local function sendEsc(text)
+	if not (IsValid(pnlMainMenu) and pnlMainMenu.Call) then return end
+	if text ~= esc.sentText then esc.version = esc.version + 1 end
+	esc.sentText, esc.sentAt = text, SysTime()
+	pnlMainMenu:Call(ESC_JS .. "window.MeowyEsc(" .. text .. "," .. esc.version .. ");\n")
+end
+
+function tickEsc(now)
+	local visible = escapeOn() and IsInGame() and not IsInLoading() and menuVisible()
+		and IsValid(pnlMainMenu) and pnlMainMenu.Call ~= nil and meowy.ServerNow ~= nil
+	if not visible then
+		if esc.shown then sendEsc("null") end
+		esc.shown = false
+		return
+	end
+	local info = esc.info
+	local address, latency, loss, connected = meowy.ServerNow()
+	if address ~= esc.askedFor then   -- another server: what we knew is about the last one
+		esc.askedFor, esc.nextAsk = address, 0
+		info.map, info.players, info.max, info.answerName = nil, nil, nil, nil
+	end
+	info.address, info.latency, info.loss, info.connected = address, latency, loss, connected
+	info.updaterate = convarNumber("cl_updaterate")
+	info.name = info.answerName or meowy.JoiningName
+	info.values = {}
+	for _, s in ipairs(Home.SETTINGS) do info.values[s.key] = convarNumber(s.key) end
+	-- The server's own answer (map, players) at most every 30 s while the card shows.
+	if Home.validAddress(address) and now >= esc.nextAsk and serverlist and serverlist.PingServer then
+		esc.nextAsk = now + 30
+		pcall(serverlist.PingServer, address, function(ping, name, desc, map, players, maxplayers, botplayers)
+			if not name or address ~= esc.askedFor then return end
+			local s = Home.server(ping, name, desc, map, players, maxplayers, botplayers, false, 0, address)
+			if s then info.answerName, info.map, info.players, info.max = s.name, s.map, s.players, s.max end
+		end)
+	end
+	local text = Home.encode(Home.escapeModel(info))
+	if text ~= esc.sentText or now - esc.sentAt >= RESEND then sendEsc(text) end
+	esc.shown = true
+end
+
+if concommand then
+	-- The engine's reading of the connection, to check the card's numbers against net_graph.
+	concommand.Add("meowy_server_now", function()
+		if not meowy.ServerNow then return end
+		local address, latency, loss, connected = meowy.ServerNow()
+		MsgN(string.format("[Meowy Client Pack] server now: address=%s, ping=%s ms, loss=%s, connected=%s s",
+			tostring(address), tostring(latency), tostring(loss), tostring(connected)))
+	end, nil, "Meowy Client Pack: the connection as the Escape menu's card reads it")
 end
 
 local failed = false
