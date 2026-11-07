@@ -49,8 +49,8 @@ local function world(opts)
 		ResilienceClearRestart = function() w.restartUntil = nil end,
 		ResilienceSettingsRead = function() return w.settingsText end,
 		ResilienceSettingsWrite = function(t) w.settingsText = t return true end,
-		ResilienceSession = function(on) w.session = on end,
-		ResilienceCrashedSession = function() return w.crashed end,
+		ResilienceSession = function(on, name) w.session = on w.sessionName = name w.marks = (w.marks or 0) + 1 end,
+		ResilienceCrashedSession = function() return w.crashed, w.crashedName end,
 		DoctorFacts = function() return opts.facts or { arch = "x64", gpu_time_known = false, adapters = {} } end,
 		DoctorOpen = function(id) w.opened = id return true end,
 		ResilienceProbe = opts.native and function(a) w.pinged = a w.probeAsked = true return true end or nil,
@@ -755,9 +755,33 @@ check("crash: no join on its own", w.connects(), 0)
 check("crash card paints", w.paintAll(), "")
 check("crash: card", w.click("Rejoin"), true)
 check("crash: joins on click", w.lastConnect(), "connect " .. OURS)
+-- Another server: a card with its name, one click connects, nothing on its own.
 w = world({ settings = ON, crashed = "1.2.3.4:27015" })
+w.crashedName = "Foo RP | 24/7"
 w.run(10)
-check("crash card only for our server", w.click("Rejoin"), false)
+check("other server's crash: no join on its own", w.connects(), 0)
+check("other server's crash card paints", w.paintAll(), "")
+check("other server's crash: card", w.click("Rejoin"), true)
+check("other server's crash: joins that server on click", w.lastConnect(), "connect 1.2.3.4:27015")
+-- No name stored: the address stands in for it, still a card.
+w = world({ settings = ON, crashed = "5.6.7.8:27015" })
+w.run(10)
+check("unnamed server's crash: card", w.click("Rejoin"), true)
+
+-- On another server: marked (with the name once it's known), cleared on leaving.
+w = world({ settings = ON })
+w.state = "other"
+w.run(2)
+check("other server: marked", w.session, true)
+w.env.meowy.JoiningName = "Bar TTT"
+w.run(2)
+check("other server: marked again with its name", w.sessionName, "Bar TTT")
+local marks = w.marks
+w.run(5)
+check("other server: not marked every frame", w.marks, marks)
+w.state = "none"
+w.run(2)
+check("left the other server: cleared", w.session, false)
 
 check("no Lua errors", w.errors, nil)
 print(("%d checks, %d failed"):format(count, failures))

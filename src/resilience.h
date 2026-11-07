@@ -42,10 +42,16 @@ namespace resilience
 	std::string ReadSettings(const std::wstring& dir);
 	bool WriteSettings(const std::wstring& dir, const std::string& text);
 
-	// on_server.txt: written with our server's address, or removed.
-	void MarkSession(const std::wstring& dir, const std::string& address);
+	// on_server.txt: the server the player is on (the engine's address, which
+	// the caller has checked is ours or a public one) and its name, or removed.
+	void MarkSession(const std::wstring& dir, const std::string& address, const std::string& name);
 	void ClearSession(const std::wstring& dir);
-	// Once per start: the address in a leftover on_server.txt when it's one of
-	// ours and the game wrote a crash report after it; "" otherwise. Removes the file.
-	std::string CrashedSession(const std::wstring& dir);
+	// Once per start: the address (and name) in a leftover on_server.txt when the
+	// game wrote a crash report after it; "" otherwise. Removes the file. The
+	// caller checks the address again before offering anything.
+	std::string CrashedSession(const std::wstring& dir, std::string* name = nullptr);
+
+	// A server name to keep in on_server.txt: no control characters or line
+	// breaks, at most 64 bytes, cut at a UTF-8 character boundary.
+	std::string CleanName(const std::string& name);
 }

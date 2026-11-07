@@ -16,7 +16,9 @@
 --   whether it's up (A2S, serverlist.PingServer) before each join. A small
 --   window shows each try and has Cancel.
 -- * After a crash while on our server, the next start offers "Rejoin Meowy
---   Network?". It never joins without the click.
+--   Network?"; after a crash on any other public server, "Rejoin the server?"
+--   with its name (the engine's address; the name only as text). Neither ever
+--   joins without the click; automatic rejoin stays Meowy-only.
 local meowy, Logic = meowy, Logic
 
 local settings = Logic.parseSettings(meowy.ResilienceSettingsRead())
@@ -416,6 +418,7 @@ local function join(address)
 end
 
 local onOurs, ourAddress = false, nil
+local onOther, markedName = false, nil   -- on another (public) server, and the name it was marked with
 local armed = false      -- got into the game on our server since the last rejoin try
 local last               -- { timingOut, silence, at }: the engine's latest sample of our connection
 local episode            -- { s, address, phase = "waiting" | "probing" | "joining", ... }
@@ -612,8 +615,8 @@ local function joinEnded(now, facts)
 	e.phase = "waiting"
 end
 
--- Shown once at start-up (after a crash on our server), then the opt-in question.
-local crashed = meowy.ResilienceCrashedSession()
+-- Shown once at start-up (after a crash on a server), then the opt-in question.
+local crashed, crashedName = meowy.ResilienceCrashedSession()
 local startAt, startupDone, timeoutChecked = SysTime(), false, false
 
 -- Once, a few seconds after start (config.cfg has run by then): staying
@@ -648,6 +651,24 @@ local function startup()
 		})
 		return
 	end
+	if crashed then
+		-- Another server (native checked it's a public a.b.c.d:port): one click
+		-- connects; nothing automatic.
+		local address = crashed
+		local name = isstring(crashedName) and crashedName ~= "" and crashedName or address
+		UI.Prompt({
+			icon = { "signal", "accent" },
+			title = "Rejoin the server?",
+			body = "Garry's Mod closed unexpectedly while you were on " .. name .. " (" .. address .. "). Jump back in?",
+			closable = true,
+			buttons = {
+				{ "Not now", "ghost", optIn },
+				{ "Rejoin", "primary", function() RunConsoleCommand("connect", address) end },
+			},
+			onDismiss = optIn,
+		})
+		return
+	end
 	optIn()
 end
 
@@ -660,7 +681,7 @@ hook.Add("Think", "MeowyClientPack.Resilience", function()
 	local ended
 	if state == "ours" then
 		if not onOurs then
-			meowy.ResilienceSession(true)
+			meowy.ResilienceSession(true, meowy.JoiningName or "")
 			log("connected to our server %s; connection reading: timingOut=%s, silence=%s%s", show(address), show(timingOut),
 				fmtNum(quiet), timingOut == nil and " (couldn't read it: a drop won't be recognised)" or "")
 		end
@@ -679,6 +700,20 @@ hook.Add("Think", "MeowyClientPack.Resilience", function()
 		meowy.ResilienceClearRestart()   -- used (or not): either way it's spent
 		ended.fresh, ended.state, ended.sampleAge = fresh, state, last and (now - last.at) or nil
 		last = nil
+	end
+
+	-- Any other server: remembered too (the address is the engine's, and only a
+	-- public one is kept), so a crash there can offer a rejoin. Marked again
+	-- when its name arrives during the join.
+	if state == "other" then
+		local name = meowy.JoiningName or ""
+		if not onOther or name ~= markedName then
+			onOther, markedName = true, name
+			meowy.ResilienceSession(true, name)
+		end
+	elseif onOther then
+		onOther, markedName = false, nil
+		if state == "none" then meowy.ResilienceSession(false) end
 	end
 
 	if ended then

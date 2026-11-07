@@ -169,6 +169,13 @@ if(MEOWY_BUILD_TESTS)
 		set_property(TARGET timeline_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 		target_compile_options(timeline_smoke PRIVATE /W4 /utf-8)
 	endif()
+	# The rejoin-after-a-crash session file and server-name cleaning, no game:
+	#   session_smoke <scratch folder>
+	add_executable(session_smoke tests/session_smoke.cpp src/resilience.cpp src/crash_reports.cpp src/hardware.cpp src/server_gate.cpp src/file_util.cpp)
+	if(MSVC)
+		set_property(TARGET session_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+		target_compile_options(session_smoke PRIVATE /W4 /utf-8)
+	endif()
 	# The fast client Lua lookup: same answers as the game's scan on a fake string
 	# table, and the patch site found in the installed client.dll, no game running:
 	#   lua_lookup_smoke [GarrysMod folder] [file to write the stub to]

@@ -84,11 +84,15 @@ namespace resilience
 		return WriteSmallFile(dir + L"\\resilience.txt", text);
 	}
 
-	void MarkSession(const std::wstring& dir, const std::string& address)
+	// "<address> <unix time>\r\n<name>\r\n". The address is the engine's, checked
+	// by the caller (ours, or a public a.b.c.d:port); the name is the server's
+	// own text, cleaned, and only ever shown as text.
+	void MarkSession(const std::wstring& dir, const std::string& address, const std::string& name)
 	{
-		if (!server_gate::IsOurAddress(address))
+		if (address.empty() || address.find_first_of(" \r\n") != std::string::npos)
 			return;
-		WriteSmallFile(dir + L"\\on_server.txt", address + " " + std::to_string(static_cast<long long>(std::time(nullptr))) + "\r\n");
+		WriteSmallFile(dir + L"\\on_server.txt", address + " " + std::to_string(static_cast<long long>(std::time(nullptr))) +
+			"\r\n" + CleanName(name) + "\r\n");
 	}
 
 	void ClearSession(const std::wstring& dir)
@@ -96,28 +100,53 @@ namespace resilience
 		DeleteFileW((dir + L"\\on_server.txt").c_str());
 	}
 
-	std::string CrashedSession(const std::wstring& dir)
+	std::string CrashedSession(const std::wstring& dir, std::string* name)
 	{
 		const std::wstring file = dir + L"\\on_server.txt";
-		std::string text = ReadSmallFile(file, 128);
+		std::string text = ReadSmallFile(file, 256);
 		DeleteFileW(file.c_str());
-		size_t space = text.find(' ');
+		const size_t space = text.find(' ');
 		if (space == std::string::npos)
 			return std::string();
 		std::string address = text.substr(0, space);
 		long long since = std::atoll(text.c_str() + space + 1);
-		if (since <= 0 || !server_gate::IsOurAddress(address))
+		if (since <= 0 || address.empty())
 			return std::string();
 		// Only a crash: closing the game on a server leaves the file too, but no report.
 		if (crashes::Since(since, 1).empty())
 			return std::string();
+		if (name)
+		{
+			const size_t line = text.find('\n');
+			const size_t end = line == std::string::npos ? std::string::npos : text.find_first_of("\r\n", line + 1);
+			*name = line == std::string::npos ? std::string() : CleanName(text.substr(line + 1, end == std::string::npos ? std::string::npos : end - line - 1));
+		}
 		return address;
 	}
 #else
 	std::string ReadSettings(const std::wstring&) { return std::string(); }
 	bool WriteSettings(const std::wstring&, const std::string&) { return false; }
-	void MarkSession(const std::wstring&, const std::string&) {}
+	void MarkSession(const std::wstring&, const std::string&, const std::string&) {}
 	void ClearSession(const std::wstring&) {}
-	std::string CrashedSession(const std::wstring&) { return std::string(); }
+	std::string CrashedSession(const std::wstring&, std::string*) { return std::string(); }
 #endif
+
+	std::string CleanName(const std::string& name)
+	{
+		std::string out;
+		for (unsigned char c : name)
+		{
+			if (c < 0x20 || c == 0x7F)
+				continue;
+			out += static_cast<char>(c);
+		}
+		if (out.size() > 64)
+		{
+			size_t cut = 64;
+			while (cut > 0 && (static_cast<unsigned char>(out[cut]) & 0xC0) == 0x80)
+				--cut;   // don't split a UTF-8 character
+			out.resize(cut);
+		}
+		return out;
+	}
 }
