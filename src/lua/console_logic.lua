@@ -149,8 +149,8 @@ end
 
 -- The rows as text: "21:04:12  text" (" (x3)" when collapsed), the newest
 -- MAX_COPY at most.
-function M.copyText(rows)
-	local out, first = {}, math.max(1, #rows - M.MAX_COPY + 1)
+function M.copyText(rows, max)
+	local out, first = {}, math.max(1, #rows - (max or M.MAX_COPY) + 1)
 	for i = first, #rows do
 		local r = rows[i]
 		out[#out + 1] = M.clock(r.line.t) .. "  " .. (r.line.x or "") .. (r.count > 1 and (" (x" .. r.count .. ")") or "")
@@ -298,6 +298,97 @@ function M.searchHistory(history, text, max)
 		end
 	end
 	return out
+end
+
+-- Lua errors, as OnLuaError gives them (message, realm, stack, addon title,
+-- Workshop ID), grouped by addon and then by message: { [addon key] = { title,
+-- id, last, count, errors = { [message] = { message, count, first, last, realm,
+-- stack, server } } } }. `now` is unix seconds. At most 200 messages an addon.
+function M.recordError(groups, message, realm, stack, title, id, now, server)
+	message = tostring(message or "?")
+	local wsid = (id ~= nil and tostring(id) ~= "0" and tostring(id) ~= "") and tostring(id) or nil
+	local key = wsid or (type(title) == "string" and title) or "unknown"
+	local g = groups[key]
+	if not g then
+		g = { key = key, title = type(title) == "string" and title or nil, id = wsid, count = 0, errors = {}, n = 0 }
+		groups[key] = g
+	end
+	local e = g.errors[message]
+	if not e then
+		if g.n >= 200 then return g end
+		e = { message = message, count = 0, first = now, realm = realm, stack = type(stack) == "table" and stack or {} }
+		g.errors[message] = e
+		g.n = g.n + 1
+	end
+	e.count, e.last, e.server = e.count + 1, now, server or e.server
+	e.realm = realm or e.realm
+	g.count, g.last = g.count + 1, now
+	return g
+end
+
+-- The groups, newest first, each with its errors newest first: a list of
+-- { group, errors = { ... } }.
+function M.errorList(groups)
+	local out = {}
+	for _, g in pairs(groups) do
+		local errs = {}
+		for _, e in pairs(g.errors) do errs[#errs + 1] = e end
+		table.sort(errs, function(a, b) if a.last ~= b.last then return a.last > b.last end return a.message < b.message end)
+		out[#out + 1] = { group = g, errors = errs }
+	end
+	table.sort(out, function(a, b) if a.group.last ~= b.group.last then return a.group.last > b.group.last end return a.group.key < b.group.key end)
+	return out
+end
+
+-- How many errors in all.
+function M.errorCount(groups)
+	local n = 0
+	for _, g in pairs(groups) do n = n + g.count end
+	return n
+end
+
+-- A stack as lines: "1. Draw - addons/foo/lua/autorun/cl_foo.lua:12".
+function M.stackLines(stack, max)
+	local out = {}
+	for i, s in ipairs(type(stack) == "table" and stack or {}) do
+		if #out >= (max or 8) then break end
+		local fn = (type(s.Function) == "string" and s.Function ~= "") and s.Function or "unknown"
+		out[#out + 1] = i .. ". " .. fn .. " - " .. tostring(s.File or "?") .. ":" .. tostring(s.Line or "?")
+	end
+	return out
+end
+
+-- An error as a Markdown report: the error and its stack, the addon (and when
+-- it was last updated), how often and where, and the game and pack versions.
+-- Paths are masked by the caller (meowy.MaskPaths).
+function M.report(group, e, info)
+	info = info or {}
+	local addon = group.title or "an unknown addon"
+	if group.id then addon = addon .. " (Workshop " .. group.id .. (info.updated and (", updated " .. info.updated) or "") .. ")" end
+	local where = e.server and ("on " .. e.server) or "at the main menu"
+	local out = {
+		"**Lua error** in " .. addon,
+		e.count .. "x, first " .. M.clock((e.first or 0) * 1000) .. ", last " .. M.clock((e.last or 0) * 1000)
+			.. ", " .. tostring(e.realm or "?") .. " realm, " .. where,
+		"```",
+		e.message,
+	}
+	for _, line in ipairs(M.stackLines(e.stack, 12)) do out[#out + 1] = line end
+	out[#out + 1] = "```"
+	if info.game then out[#out + 1] = info.game end
+	return table.concat(out, "\n")
+end
+
+-- The badge's text: "3 Lua errors in Foo HUD" / "… in 2 addons".
+function M.badgeText(groups)
+	local n, addons, only = 0, 0, nil
+	for _, g in pairs(groups) do
+		n, addons = n + g.count, addons + 1
+		only = g.title or "an unknown addon"
+	end
+	if n == 0 then return nil end
+	local what = n == 1 and "1 Lua error" or (n .. " Lua errors")
+	return addons == 1 and (what .. " in " .. only) or (what .. " in " .. addons .. " addons")
 end
 
 -- Up/down through the typed history: `at` 0 is "nothing recalled"; returns the

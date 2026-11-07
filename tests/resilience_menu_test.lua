@@ -123,6 +123,8 @@ local function world(opts)
 		ConsoleRun = function(line) w.consoleRuns = w.consoleRuns or {} w.consoleRuns[#w.consoleRuns + 1] = line return not w.noEngine end,
 		ConsoleFileRead = function(kind) return (w.consoleFiles or opts.consoleFiles or {})[kind] or "" end,
 		ConsoleFileWrite = function(kind, text) w.consoleFiles = w.consoleFiles or {} w.consoleFiles[kind] = text return true end,
+		MaskPaths = function(text) return (text:gsub("%a:[\\/][^\n:]*", "<path>")) end,
+		ConsoleSaveLog = function(text) w.savedLog = text return "<path>\\logs\\console_2026-11-07_16-00-00.txt" end,
 		PrewarmWorkshop = function(a) local ids = {} for i, id in ipairs((w.workshop or {})[a] or {}) do ids[i] = id end return ids end,
 		-- Steam's view of an item: installed, needsUpdate, busy, legacy, updated
 		-- (w.wsState[id] = false: Steam can't say; default: installed, the version of 1600000000).
@@ -1755,6 +1757,34 @@ w.ctrl = true
 logP:OnKeyCodePressed(13)   -- C
 w.ctrl = false
 check("select: two lines copied", select(2, (w.clipboard or ""):gsub("\n", "")) + 1, 2)
+-- Errors: OnLuaError recorded by addon; the Errors tab lists them; a report is
+-- copied with paths hidden; an addon can be disabled at the menu (asked first).
+w = world({ settings = ON, menu = true })
+w.env.steamworks.SetShouldMountAddon = function(id, on) w.mounted = { id, on } end
+w.env.steamworks.ApplyAddons = function() w.applied = true end
+w.fire("OnLuaError", "lua/autorun/cl_foo.lua:12: attempt to index a nil value", "client",
+	{ { File = "C:\\Users\\Jane\\gm\\lua\\autorun\\cl_foo.lua", Line = 12, Function = "Draw" } }, "Foo HUD", "123456")
+w.fire("OnLuaError", "lua/autorun/cl_foo.lua:12: attempt to index a nil value", "client", {}, "Foo HUD", "123456")
+w.concommands.meowy_console()
+local errTab
+for _, p in ipairs(w.panels or {}) do if rawget(p, "meowyTab") == "errors" then errTab = p end end
+check("errors: a tab", errTab ~= nil, true)
+errTab.DoClick()
+local reportButton, disableButton
+for _, p in ipairs(w.panels or {}) do
+	if rawget(p, "meowyReport") then reportButton = p end
+	if rawget(p, "meowyDisable") == "123456" then disableButton = p end
+end
+check("errors: one card for the repeated error", reportButton ~= nil, true)
+reportButton.DoClick()
+local report = w.clipboard or ""
+check("errors: the report names the addon", report:find("Foo HUD (Workshop 123456", 1, true) ~= nil, true)
+check("errors: counted twice", report:find("2x, first", 1, true) ~= nil, true)
+check("errors: the stack", report:find("1. Draw - ", 1, true) ~= nil, true)
+check("errors: paths hidden", report:find("Jane", 1, true) == nil and report:find("<path>", 1, true) ~= nil, true)
+check("errors: disable offered at the menu", disableButton ~= nil, true)
+if disableButton then disableButton.DoClick() end
+check("errors: disabling asks first", w.mounted, nil)
 check("no Lua errors", w.errors, nil)
 print(("%d checks, %d failed"):format(count, failures))
 os.exit(failures == 0 and 0 or 1)

@@ -105,6 +105,7 @@
 #include <cstdio>
 #include <exception>
 #include <string>
+#include <algorithm>
 #include <vector>
 
 #ifdef _WIN32
@@ -1566,6 +1567,64 @@ namespace
 		return 1;
 	}
 
+	// MaskPaths(text) -> text with absolute paths (which carry the Windows user
+	// name) replaced by "<path>": crash_reports.h's masker, for the console's
+	// error reports.
+	int MaskPathsLua(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		unsigned int size = 0;
+		const char* text = LUA->IsType(1, Type::String) ? LUA->GetString(1, &size) : "";
+		const std::string masked = crashes::MaskPaths(std::string(text, size));
+		LUA->PushString(masked.c_str(), static_cast<unsigned int>(masked.size()));
+		return 1;
+	}
+
+	// ConsoleSaveLog(text) -> path | nil: the console's lines, paths masked, in
+	// %LOCALAPPDATA%\MeowyClientPack\logs\console_YYYY-MM-DD_HH-MM-SS.txt (8 MB at
+	// most; the newest 20 kept).
+	int ConsoleSaveLog(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		unsigned int size = 0;
+		const char* text = LUA->IsType(1, Type::String) ? LUA->GetString(1, &size) : nullptr;
+		if (!text || size > 8u * 1024 * 1024)
+		{
+			LUA->PushNil();
+			return 1;
+		}
+		const std::wstring dir = DataDir() + L"\\logs";
+		CreateDirectoryW(dir.c_str(), nullptr);
+		SYSTEMTIME st;
+		GetLocalTime(&st);
+		wchar_t name[64];
+		swprintf_s(name, L"\\console_%04u-%02u-%02u_%02u-%02u-%02u.txt", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+		const std::wstring path = dir + name;
+		if (!file_util::WriteAtomic(path, crashes::MaskPaths(std::string(text, size))))
+		{
+			LUA->PushNil();
+			return 1;
+		}
+		// The newest 20 kept (the names sort by time).
+		std::vector<std::wstring> logs;
+		WIN32_FIND_DATAW fd;
+		HANDLE h = FindFirstFileW((dir + L"\\console_*.txt").c_str(), &fd);
+		if (h != INVALID_HANDLE_VALUE)
+		{
+			do logs.push_back(fd.cFileName); while (FindNextFileW(h, &fd));
+			FindClose(h);
+		}
+		std::sort(logs.begin(), logs.end());
+		for (size_t i = 0; i + 20 < logs.size(); ++i)
+			DeleteFileW((dir + L"\\" + logs[i]).c_str());
+		const int n = WideCharToMultiByte(CP_UTF8, 0, path.c_str(), -1, nullptr, 0, nullptr, nullptr);
+		std::string utf8(n > 0 ? n - 1 : 0, '\0');
+		if (n > 1)
+			WideCharToMultiByte(CP_UTF8, 0, path.c_str(), -1, &utf8[0], n, nullptr, nullptr);
+		LUA->PushString(crashes::MaskPaths(utf8).c_str());
+		return 1;
+	}
+
 	// ConsoleRun(line) -> ok: the line run as if typed into the console (the
 	// player's own line, from the pack's console window).
 	int ConsoleRun(lua_State* L)
@@ -2655,6 +2714,8 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	SetFunction(LUA, "ConsoleRun", Guarded<ConsoleRun>);
 	SetFunction(LUA, "ConsoleFileRead", Guarded<ConsoleFileRead>);
 	SetFunction(LUA, "ConsoleFileWrite", Guarded<ConsoleFileWrite>);
+	SetFunction(LUA, "MaskPaths", Guarded<MaskPathsLua>);
+	SetFunction(LUA, "ConsoleSaveLog", Guarded<ConsoleSaveLog>);
 	SetFunction(LUA, "ServerQueryStart", Guarded<ServerQueryStart>);
 	SetFunction(LUA, "ServerQueryTake", Guarded<ServerQueryTake>);
 	SetFunction(LUA, "ServerQueryCancel", Guarded<ServerQueryCancel>);
