@@ -42,6 +42,10 @@ local HOME_JS = [==[
 		+ '#meowy-home .mh-search:focus{background:rgba(255,255,255,0.2);}'
 		+ '#meowy-home .mh-search::-webkit-input-placeholder{color:rgba(255,255,255,0.55);}'
 		+ '#meowy-home .mh-sel{background:rgba(255,255,255,0.2);}'
+		+ '#meowy-home .mh-prep{font-size:12px;opacity:0.85;margin-top:2px;}'
+		+ '#meowy-home .mh-prep-ask{display:inline-block;font-weight:bold;padding:1px 8px;border-radius:4px;'
+		+ 'background:rgba(255,255,255,0.16);cursor:pointer;opacity:1;}'
+		+ '#meowy-home .mh-prep-ask:hover{background:rgba(255,255,255,0.3);}'
 		+ '#meowy-home{overflow-y:auto;}';
 	var MAX_MATCHES = 8;   // rows per section while searching
 	var query = '', selected = 0, rows = [], focused = false;
@@ -89,6 +93,18 @@ local HOME_JS = [==[
 				if (p.stats) el.appendChild(node('span', 'mh-stats', p.stats));
 				el.appendChild(node('div', 'mh-name', p.name));
 				if (p.detail) el.appendChild(node('div', 'mh-detail', p.detail));
+				// The server's content (docs/CONTENT_PLATFORM.md): progress, or the
+				// "Get ready" button, which doesn't join.
+				if (p.prep) {
+					var pr = el.appendChild(node('div', 'mh-prep'));
+					var label = pr.appendChild(node('span', p.prepAsk ? 'mh-prep-ask' : '', p.prep));
+					if (p.prepAsk) {
+						label.title = 'Download this server\'s Workshop content now, so joining it is quick';
+						label.onclick = (function (id) {
+							return function (e) { e.stopPropagation(); lua.Run('MeowyClientPackHomePrepare(' + Number(id) + ')'); };
+						})(p.id);
+					}
+				}
 				el.title = p.name;
 				el.onclick = (function (id) { return function () { join(id); }; })(p.id);
 				intent(el, p.id);
@@ -236,80 +252,189 @@ end
 -- few seconds at the main menu, or for a row the pointer rests on.
 local pw = { joining = false, warmedFor = nil, menuSince = nil }
 
--- Workshop items (prewarm.h, second part): of the items the server's last join
--- mounted, only those that need it are handed to Steam (steamworks.DownloadUGC,
--- the menu's own, which shows Garry's Mod's download box), one at a time, so an
--- update or a missing item downloads (or unpacks) now instead of on the loading
--- screen. An item needs it when Steam says so (meowy.WorkshopItemState: not
--- installed, an update known, mid-download), when the game's unpacked copy of
--- a legacy item is gone, or when the Workshop's version (steamworks.FileInfo)
--- is newer than the one installed. Nothing new is asked once a join starts:
--- the join asks for itself, and Steam carries on with anything downloading.
-local WS_GIVE_UP = 120   -- seconds: Steam never answered
-local WS_TIME_SLACK = 256   -- seconds: FileInfo's float rounding (below)
-local ws = { gen = 0, result = "idle" }
+-- Workshop items, prepared before the join (prewarm.h, second part, and the
+-- content platform, docs/CONTENT_PLATFORM.md). A server's list is what its
+-- advert says (the `meowy_content` rule in its A2S_RULES answer, read with
+-- meowy.ContentAsk) plus what its last join here mounted. Of those, only the
+-- items that need it are handed to Steam (steamworks.DownloadUGC, the menu's
+-- own, which shows Garry's Mod's download box), one at a time, so a missing
+-- item, an update or an unpack happens now instead of on the loading screen.
+-- An item needs it when Steam says so (meowy.WorkshopItemState: not installed,
+-- an update known, mid-download), when the game's unpacked copy of a legacy
+-- item is gone, or when the Workshop's version (steamworks.FileInfo) is newer
+-- than the one installed (Content.needs / Content.newer).
+--
+-- Consent (Content.consent): automatic for our servers and servers joined
+-- before here; any other server's row shows "Get ready · <size>" instead, and
+-- nothing downloads until it's clicked. Over 4 GB always waits for the click.
+--
+-- One queue for every server, one item at a time (the menu's DownloadUGC does
+-- one at a time). Nothing new is asked once a join starts: the join asks for
+-- itself, and Steam carries on with anything downloading.
+local WS_STALL = 120        -- seconds without a byte or an item: Steam isn't answering, stop asking
+local WS_CHECK = 20         -- seconds to check a server's items before going on with what's known
+local WS_TIME_SLACK = 256   -- seconds: FileInfo's float rounding (Content.newer)
+local plans = {}            -- address -> what its content needs (below)
+local allowed = {}          -- address -> true: "Get ready" clicked (this game start)
+local run = { queue = {}, gen = 0, result = "idle" }
+local adverts = {}          -- address -> { at, ids (nil: no advert) }
+local asking = {}           -- address -> SysTime it was asked
 
-local function wsFinish(stopped)
-	if not ws.address then return end
-	ws.result = string.format("%s %s: %d Workshop items, %d needed an update or unpack, %d done, %d failed, %.1f s",
-		stopped and "stopped checking" or "checked", ws.address, ws.total, ws.stale, ws.done, ws.failed, SysTime() - ws.started)
-	log("prewarm: %s", ws.result)
-	ws.address, ws.queue = nil, nil
+local function planLine(address, p)
+	return string.format("%s: %d Workshop items, %d needed an update, download or unpack (%s), %d done, %d failed, %.1f s",
+		address, p.total, p.items or 0, Content.size(p.bytes), p.ok or 0, p.failed or 0, SysTime() - p.started)
 end
 
-local function wsPump()
-	if not ws.queue then return end
-	if IsInLoading() or IsInGame() then wsFinish(true) return end
-	if not ws.inFlight and #ws.queue > 0 then
-		local id = table.remove(ws.queue, 1)
-		local gen = ws.gen
-		ws.inFlight = id
-		steamworks.DownloadUGC(id, function(path, f)
-			if f and f.Close then f:Close() end
-			if gen ~= ws.gen then return end
-			ws.inFlight = nil
-			if path then ws.done = ws.done + 1 else ws.failed = ws.failed + 1 end
-			wsPump()
-		end)
+local function planEnd(address, p, state)
+	p.state = state
+	run.result = (state == "stopped" and "stopped preparing " or "checked ") .. planLine(address, p)
+	log("content: %s", run.result)
+end
+
+local function pump()
+	if run.inFlight or IsInLoading() or IsInGame() then return end
+	local job = table.remove(run.queue, 1)
+	if not job then return end
+	local p = plans[job.address]
+	if not p or p.state ~= "going" then return pump() end
+	run.inFlight, run.last, run.lastBytes = job, SysTime(), nil
+	local gen = run.gen
+	steamworks.DownloadUGC(job.id, function(path, f)
+		if f and f.Close then f:Close() end
+		if gen ~= run.gen then return end
+		run.inFlight, run.last = nil, SysTime()
+		local q = plans[job.address]
+		if q == p and p.state == "going" then
+			if path then
+				p.ok = (p.ok or 0) + 1
+				p.done = p.done + (p.need[job.id] or 0)
+			else
+				p.failed = (p.failed or 0) + 1
+			end
+			p.left = p.left - 1
+			if p.left <= 0 then planEnd(job.address, p, "ready") end
+		end
+		pump()
+	end)
+end
+
+-- Stop asking for anything new (a join started, or Steam stopped answering).
+local function stopAll()
+	run.gen = run.gen + 1
+	run.queue, run.inFlight = {}, nil
+	for address, p in pairs(plans) do
+		if p.state == "going" or p.state == "checking" then planEnd(address, p, "stopped") end
 	end
-	if not ws.inFlight and #ws.queue == 0 and ws.pending == 0 then wsFinish(false) end
 end
 
-local function wsDecide(gen, id, needs)
-	if gen ~= ws.gen or not ws.queue then return end
-	ws.pending = ws.pending - 1
-	if needs then
-		ws.stale = ws.stale + 1
-		ws.queue[#ws.queue + 1] = id
+local function enqueue(address, p, first)
+	-- A click goes before what was queued without one (after the item in flight).
+	-- An item two servers share is asked for twice; the second ask finds it there.
+	for i, id in ipairs(p.ids) do
+		table.insert(run.queue, first and i or #run.queue + 1, { address = address, id = id })
 	end
-	wsPump()
+	pump()
 end
 
-local function wsStart(address)
-	if not (prewarmWorkshopOn() and meowy.PrewarmWorkshop and meowy.WorkshopItemState and steamworks and steamworks.DownloadUGC) then return end
-	if ws.address == address then return end
-	local ids = meowy.PrewarmWorkshop(address)
-	if not istable(ids) or #ids == 0 then return end
-	ws.gen = ws.gen + 1
-	local gen = ws.gen
-	ws.address, ws.queue, ws.total, ws.pending = address, {}, #ids, #ids
-	ws.inFlight, ws.stale, ws.done, ws.failed, ws.started = nil, 0, 0, 0, SysTime()
-	for _, id in ipairs(ids) do
+local function planDecided(address, p)
+	if plans[address] ~= p or p.state ~= "checking" then return end
+	p.ids = {}
+	for _, id in ipairs(p.order) do
+		if p.need[id] then p.ids[#p.ids + 1] = id end
+	end
+	p.items, p.left = #p.ids, #p.ids
+	if p.items == 0 then
+		planEnd(address, p, "ready")
+		return
+	end
+	if Content.consent({ ours = p.ours, known = p.known, bytes = p.bytes, asked = allowed[address] }) ~= "go" then
+		p.state = "ask"
+		log("content: %s needs %d of %d Workshop items (%s): waiting for Get ready", address, p.items, p.total, Content.size(p.bytes))
+		return
+	end
+	p.state = "going"
+	log("content: preparing %s: %d of %d Workshop items, %s", address, p.items, p.total, Content.size(p.bytes))
+	enqueue(address, p, allowed[address])
+end
+
+local function decide(address, p, id, needs, size)
+	if plans[address] ~= p or p.state ~= "checking" then return end
+	p.pending = p.pending - 1
+	if needs and not p.need[id] then
+		p.need[id] = math.max(0, tonumber(size) or 0)
+		p.bytes = p.bytes + p.need[id]
+	end
+	if p.pending <= 0 then planDecided(address, p) end
+end
+
+-- Check `address`'s items (the advert's `ids`, plus what its last join mounted).
+local function planStart(address, ids)
+	if not (prewarmWorkshopOn() and meowy.WorkshopItemState and steamworks and steamworks.DownloadUGC) then return end
+	if IsInGame() or IsInLoading() then return end
+	local learned = meowy.PrewarmWorkshop and meowy.PrewarmWorkshop(address)
+	local order = Content.merge(ids, istable(learned) and learned or nil)
+	if #order == 0 then return end
+	local old = plans[address]
+	if old and (old.state == "checking" or old.state == "going") then return end
+	local p = {
+		state = "checking", order = order, need = {}, bytes = 0, done = 0, total = #order, pending = #order,
+		started = SysTime(),
+		ours = meowy.IsOurServer and meowy.IsOurServer(address) == true,
+		known = meowy.PrewarmRecorded and meowy.PrewarmRecorded(address) == true,
+	}
+	plans[address] = p
+	for _, id in ipairs(order) do
 		local installed, needsUpdate, busy, legacy, updated = meowy.WorkshopItemState(id)
-		if installed == nil then
-			wsDecide(gen, id, false)   -- Steam can't say: leave it to the join
-		elseif not installed or needsUpdate or busy
-			or (legacy and file and file.Exists and not file.Exists("cache/workshop/" .. id .. ".gma", "MOD")) then
-			wsDecide(gen, id, true)
+		local unpacked = nil
+		if legacy and file and file.Exists then unpacked = file.Exists("cache/workshop/" .. id .. ".gma", "MOD") end
+		local needs = Content.needs(installed, needsUpdate, busy, legacy, unpacked)
+		if needs == nil then
+			decide(address, p, id, false)   -- Steam can't say: leave it to the join
 		elseif steamworks.FileInfo then
+			-- The size of what's needed, and for what's there, whether the Workshop has newer.
 			steamworks.FileInfo(id, function(info)
-				-- FileInfo's time comes through a float: today's unix times are
-				-- rounded to 128 s, either way. Newer means newer by more than that.
-				local now = istable(info) and tonumber(info.updated)
-				wsDecide(gen, id, now ~= nil and now > (tonumber(updated) or 0) + WS_TIME_SLACK)
+				local remote = istable(info) and info or {}
+				decide(address, p, id, needs or Content.newer(remote.updated, updated, WS_TIME_SLACK), remote.size)
 			end)
 		else
-			wsDecide(gen, id, false)
+			decide(address, p, id, needs)
+		end
+	end
+end
+
+-- The advert: a recent answer, or ask (planStart runs when it comes, in Think).
+local function contentFor(address)
+	if not prewarmWorkshopOn() then return end
+	local a = adverts[address]
+	if a and SysTime() - a.at < Content.TTL then planStart(address, a.ids) return end
+	if asking[address] then return end
+	if meowy.ContentAsk and Home.publicAddress(address) and meowy.ContentAsk(address) then
+		asking[address] = SysTime()
+		return
+	end
+	planStart(address, nil)   -- not asked (not public, or too many in flight): what the last join learned
+end
+
+local function takeAdverts(now)
+	if meowy.ContentTake then
+		for _, a in ipairs(meowy.ContentTake() or {}) do
+			local entry = { at = now }
+			if a.value then
+				local parsed, why = Content.parseAdvert(a.value)
+				if parsed then entry.ids = parsed.ids else log("content: %s's advert isn't usable (%s)", a.address, why) end
+			end
+			adverts[a.address] = entry
+			if asking[a.address] then
+				asking[a.address] = nil
+				planStart(a.address, entry.ids)
+			end
+		end
+	end
+	for address, at in pairs(asking) do   -- the worker always answers; this is only a backstop
+		if now - at > 15 then
+			asking[address] = nil
+			adverts[address] = { at = now }
+			planStart(address, nil)
 		end
 	end
 end
@@ -317,10 +442,12 @@ end
 local function warm(address, why)
 	if not (Home.validAddress(address) and (prewarmOn() or prewarmWorkshopOn())) then return end
 	if IsInGame() or IsInLoading() or address == pw.warmedFor then return end
-	if not (meowy.PrewarmRecorded and meowy.PrewarmRecorded(address)) then return end
+	local recorded = meowy.PrewarmRecorded and meowy.PrewarmRecorded(address)
+	-- A server never joined here: only its advert can say what it needs.
+	if not recorded and not (prewarmWorkshopOn() and meowy.ContentAsk and Home.publicAddress(address)) then return end
 	pw.warmedFor = address
-	wsStart(address)
-	if not (prewarmOn() and meowy.PrewarmStart) then return end
+	contentFor(address)
+	if not (recorded and prewarmOn() and meowy.PrewarmStart) then return end
 	local ok, reason = meowy.PrewarmStart(address)
 	log("prewarm: %s %s%s", ok and "warming" or "not warming", address, ok and (" (" .. why .. ")") or (": " .. tostring(reason)))
 end
@@ -331,17 +458,163 @@ function MeowyClientPackWarm(address, why)
 	if isstring(address) and isstring(why) then warm(address, why) end
 end
 
+-- "Get ready" clicked (the home card's row, or Find servers' picked server).
+function MeowyClientPackPrepare(address)
+	if not isstring(address) or not (Home.publicAddress(address) or (meowy.IsOurServer and meowy.IsOurServer(address))) then return end
+	if IsInGame() or IsInLoading() or not prewarmWorkshopOn() then return end
+	allowed[address] = true
+	local p = plans[address]
+	log("content: Get ready clicked for %s", address)
+	if p and p.state == "ask" then
+		p.state = "going"
+		log("content: preparing %s: %d of %d Workshop items, %s", address, p.items, p.total, Content.size(p.bytes))
+		enqueue(address, p, true)
+	elseif not p or p.state == "stopped" then
+		plans[address] = nil
+		contentFor(address)
+	end
+end
+
+-- What a server's row shows for its content (Content.label): text, isButton; nil for nothing.
+function MeowyClientPackPrepLabel(address)
+	local p = isstring(address) and plans[address]
+	if not p then return nil end
+	if p.state == "going" and run.inFlight and run.inFlight.address == address and meowy.WorkshopItemProgress then
+		local done = meowy.WorkshopItemProgress(run.inFlight.id)
+		local view = { state = p.state, items = p.items, bytes = p.bytes, done = p.done + math.min(tonumber(done) or 0, p.need[run.inFlight.id] or 0) }
+		return Content.label(view)
+	end
+	return Content.label(p)
+end
+
 function MeowyClientPackHomeIntent(id)
 	if not (homeOn() or menuPage.ours) then return end
 	warm(addresses[math.floor(tonumber(id) or 0)], "pointer on its row")
 end
 
+-- Engine convars the pack changes for a while (fps_max_nofocus during a join,
+-- fps_max_menu at a menu in the background): the player's own value is kept
+-- with meowy.CvarHold until it's put back, so one a crash or a quit left
+-- changed (the game saves config.cfg at quit) is put back at the next start.
+local function numberText(v) return isstring(v) and v:match("^%d+%.?%d*$") ~= nil end
+local function cvarText(name) return GetConVarString and GetConVarString(name) end
+local function cvarChange(name, value, own)
+	if not (meowy.ConsoleRun and numberText(own)) then return false end
+	if meowy.CvarHold and not meowy.CvarHold(name, own) then return false end
+	meowy.ConsoleRun(name .. " " .. value)
+	return true
+end
+local function cvarPutBack(name, own)
+	if meowy.ConsoleRun then meowy.ConsoleRun(name .. " " .. own) end
+	if meowy.CvarRelease then meowy.CvarRelease(name) end
+end
+do
+	for name, own in pairs(meowy.CvarHeld and meowy.CvarHeld() or {}) do
+		cvarPutBack(name, own)
+		log("%s put back to %s (the game closed while the pack had it changed)", name, own)
+	end
+end
+
+-- The join priority guard: while a join loads, Windows' own QoS tag at full
+-- speed (meowy.JoinBoost) and fps_max_nofocus lifted to fps_max, both put back
+-- once in game or when the join ends.
+local function boostOn()
+	if not (joinBoostOn() and meowy.JoinBoost) then return end
+	local nofocus, fpsMax = cvarText("fps_max_nofocus"), cvarText("fps_max")
+	meowy.JoinBoost(true)
+	pw.boosted = true
+	if numberText(nofocus) and numberText(fpsMax) and tonumber(nofocus) > 0
+		and cvarChange("fps_max_nofocus", fpsMax, nofocus) then
+		pw.nofocus = nofocus
+	end
+end
+local function boostOff()
+	if not pw.boosted then return end
+	pw.boosted = false
+	if pw.nofocus then cvarPutBack("fps_max_nofocus", pw.nofocus) end
+	pw.nofocus = nil
+	if meowy.JoinBoost then meowy.JoinBoost(false) end
+end
+
+-- Idle savings (meowy_idle_savings).
+-- The loading screen's page (WebView2: six processes, ~150 MB private, ~310 MB
+-- working set) is kept loaded only while a join can come from the menu: from a
+-- few seconds after start-up (not competing with it), while the game has focus
+-- and for two minutes after it loses it. In game, and at a menu left in the
+-- background longer, it's unloaded; a join starts it on its own, the native
+-- drawing showing for the second that takes.
+-- With fps_max_nofocus at 0 (no cap of its own in the background), a menu in
+-- the background runs at fps_max_menu (60 by default): held to 15 fps there,
+-- put back on focus or when a join starts.
+local idleSetting = meowy.Setting and meowy.Setting("meowy_idle_savings", "1",
+	"Meowy Client Pack: unload the loading screen's browser while you play, and slow the menu down while the game is in the background (0 = off)")
+local function idleOn() return idleSetting == nil or idleSetting:GetBool() end
+local MENU_BACKGROUND_FPS, WEB_AFTER_START, WEB_AWAY_KEEP = 15, 5, 120
+local idle = { started = SysTime(), next = 0 }
+local function hasFocus() return not (system and system.HasFocus) or system.HasFocus() end
+local function loadingScreenOn()
+	local c = GetConVar and GetConVar("meowy_loadingscreen")
+	return c ~= nil and c:GetBool() and not (system and system.IsWindowed and not system.IsWindowed())
+end
+local function menuCap(on)
+	if on and not idle.capped then
+		local own = cvarText("fps_max_menu")
+		local n = tonumber(own)
+		if n and (n == 0 or n > MENU_BACKGROUND_FPS) and cvarChange("fps_max_menu", MENU_BACKGROUND_FPS, own) then
+			idle.capped = own
+		end
+	elseif not on and idle.capped then
+		cvarPutBack("fps_max_menu", idle.capped)
+		idle.capped = nil
+	end
+end
+local function loadingPage(want)
+	if want == idle.web then return end
+	idle.web = want
+	if want and meowy.LoadingPrewarm then meowy.LoadingPrewarm()
+	elseif not want and meowy.LoadingPark then meowy.LoadingPark() end
+end
+hook.Add("Think", "MeowyClientPack.IdleSavings", function()
+	local now = SysTime()
+	if now < idle.next then return end
+	idle.next = now + 0.25
+	local loading, inGame, focus = IsInLoading(), IsInGame(), hasFocus()
+	local atMenu = not loading and not inGame
+	if focus or not atMenu then idle.awaySince = nil else idle.awaySince = idle.awaySince or now end
+	local on = idleOn()
+	menuCap(on and atMenu and not focus and cvarText("fps_max_nofocus") == "0")
+	if loading then return end   -- a join keeps the page it has, or starts it
+	if not loadingScreenOn() then loadingPage(false)
+	elseif not on then loadingPage(true)
+	else
+		loadingPage(atMenu and now - idle.started >= WEB_AFTER_START
+			and (idle.awaySince == nil or now - idle.awaySince < WEB_AWAY_KEEP))
+	end
+end)
+
+function MeowyClientPackHomePrepare(id)
+	if not (homeOn() or menuPage.ours) then return end
+	MeowyClientPackPrepare(addresses[math.floor(tonumber(id) or 0)])
+end
+
 hook.Add("Think", "MeowyClientPack.Prewarm", function()
 	if not meowy.PrewarmBeginJoin then return end
+	local now = SysTime()
 	local loading = IsInLoading()
-	if ws.queue and (loading or SysTime() - ws.started > WS_GIVE_UP) then wsFinish(true) end
+	takeAdverts(now)
+	-- Steam answering means bytes moving: a big item may take minutes.
+	if run.inFlight and meowy.WorkshopItemProgress then
+		local bytes = meowy.WorkshopItemProgress(run.inFlight.id)
+		if bytes and bytes ~= run.lastBytes then run.lastBytes, run.last = bytes, now end
+	end
+	if (run.inFlight and now - run.last > WS_STALL) or (loading and (run.inFlight or #run.queue > 0)) then stopAll() end
+	for address, p in pairs(plans) do   -- FileInfo that never answered: go on with what's known
+		if p.state == "checking" and now - p.started > WS_CHECK then p.pending = 0 planDecided(address, p) end
+	end
 	if loading and not pw.joining then
 		pw.joining = true
+		boostOn()
+		stopAll()
 		if pakCacheOn() and meowy.PakCache then
 			local ok, why = meowy.PakCache(true)
 			if not ok and not pw.pakWhyLogged then pw.pakWhyLogged = true log("pak cache: off (%s)", tostring(why)) end
@@ -349,6 +622,7 @@ hook.Add("Think", "MeowyClientPack.Prewarm", function()
 		meowy.PrewarmBeginJoin()   -- also stops any warming: the join's reads come first
 	elseif pw.joining and IsInGame() and not loading then
 		pw.joining = false
+		boostOff()
 		if meowy.PakCacheState and meowy.PakCache then
 			log("pak cache: %s", meowy.PakCacheState())
 			meowy.PakCache(false)
@@ -358,16 +632,20 @@ hook.Add("Think", "MeowyClientPack.Prewarm", function()
 		if kept > 0 then log("prewarm: kept %d files for this server", kept) end
 	elseif not loading and not IsInGame() then
 		if pw.joining and meowy.PakCache then meowy.PakCache(false) end
+		if pw.joining then boostOff() end
 		pw.joining = false   -- a join that didn't get in: nothing to keep
 	end
 	-- A few seconds at the main menu: the Continue server, once per visit (a
-	-- row the pointer rests on afterwards takes over).
+	-- row the pointer rests on afterwards takes over); and our server's
+	-- content, which is prepared without asking (Content.consent).
 	if menuVisible() and not IsInGame() and not loading then
-		pw.menuSince = pw.menuSince or SysTime()
-		if not pw.continueDone and SysTime() - pw.menuSince > 3 and meowy.LastServer then
+		pw.menuSince = pw.menuSince or now
+		if not pw.continueDone and now - pw.menuSince > 3 then
 			pw.continueDone = true
-			local address = meowy.LastServer()
+			local address = meowy.LastServer and meowy.LastServer()
 			if isstring(address) then warm(address, "your Continue server") end
+			local ours = st.oursAddress
+			if (homeOn() or menuPage.ours) and Home.validAddress(ours) and ours ~= address then contentFor(ours) end
 		end
 	else
 		pw.menuSince, pw.continueDone = nil, false
@@ -377,11 +655,23 @@ end)
 if concommand then
 	concommand.Add("meowy_prewarm_status", function()
 		MsgN("[Meowy Client Pack] prewarm: " .. (meowy.PrewarmState and meowy.PrewarmState() or "unavailable"))
-		local wsLine = ws.address and string.format("checking %s: %d Workshop items, %d still to check, %d needed an update or unpack, %d done",
-			ws.address, ws.total, ws.pending, ws.stale, ws.done) or ws.result
-		MsgN("[Meowy Client Pack] prewarm workshop: " .. wsLine)
+		MsgN("[Meowy Client Pack] prewarm workshop: " .. run.result .. string.format(" (%d queued%s)", #run.queue,
+			run.inFlight and (", downloading " .. run.inFlight.id .. " for " .. run.inFlight.address) or ""))
+		for address, p in pairs(plans) do
+			MsgN(string.format("[Meowy Client Pack]   %s: %s, %s", address, p.state, (Content.label(p)) or planLine(address, p)))
+		end
+		MsgN("[Meowy Client Pack] content adverts: " .. (meowy.ContentState and meowy.ContentState() or "unavailable"))
 		MsgN("[Meowy Client Pack] pak cache: " .. (meowy.PakCacheState and meowy.PakCacheState() or "unavailable"))
+		MsgN("[Meowy Client Pack] join boost: " .. (joinBoostOn() and "on during joins" or "off") .. "; Windows has the game at " ..
+			(meowy.JoinBoostState and (meowy.JoinBoostState() == "on" and "full speed" or "its own policy") or "unknown"))
+		MsgN("[Meowy Client Pack] idle savings: " .. (idleOn() and "on" or "off") .. "; loading screen page " ..
+			(idle.web and "kept loaded" or "unloaded") .. "; menu frame rate " .. (idle.capped and ("held to " .. MENU_BACKGROUND_FPS .. " in the background") or "as set"))
 	end, nil, "Meowy Client Pack: what join pre-warm is doing")
+	-- meowy_content_get_ready <address>: "Get ready" for a server, from the console.
+	-- (The whole argument string: the console splits "a.b.c.d:port" at the colon.)
+	concommand.Add("meowy_content_get_ready", function(_, _, _, argStr)
+		MeowyClientPackPrepare(isstring(argStr) and (argStr:gsub("%s", "")) or nil)
+	end, nil, "Meowy Client Pack: download a server's Workshop content now (its advert and last join's list)")
 end
 
 -- The same from the console: meowy_home lists the rows, meowy_home_join <n> joins one.
@@ -429,6 +719,13 @@ local function tick()
 		end
 		local model = Home.model(st, os.time())
 		addresses, lastModel = model.addresses, model
+		-- Each row's content line (Content.label): "Get ready · 1.3 GB" (a button) or progress.
+		for _, sec in ipairs(model.sections) do
+			for _, r in ipairs(sec.rows) do
+				local text, button = MeowyClientPackPrepLabel(model.addresses[r.id])
+				if text then r.prep, r.prepAsk = text, button or nil end
+			end
+		end
 		local text = Home.encode({ sections = model.sections })
 		if text ~= sentText or now - sentAt >= RESEND then send(text) end
 	elseif shown then

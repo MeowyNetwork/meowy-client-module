@@ -22,9 +22,20 @@ namespace loading_screen
 	// `dataDir` is %LOCALAPPDATA%\MeowyClientPack (for the last join's stage times);
 	// `panelOpenMs` is how long GMod's own loading panel was up before this (logged).
 	void Begin(const std::wstring& dataDir, double panelOpenMs = -1);
-	// At game start: load the screen's web page now, hidden, so a join can show
+	// Another server's join (a server without a loading page of its own): the
+	// same screen, drawn natively and neutral (no Meowy brand, games or web
+	// page), with that server's name and map; the ETA from this PC's earlier
+	// joins there (by address, join_times_servers.txt), none the first time.
+	// It fades out a moment after the game is in (no Done from that server).
+	void BeginOther(const std::wstring& dataDir, double panelOpenMs, const std::string& serverName, const std::string& map,
+		const std::string& address);
+	// At the menu: load the screen's web page now, hidden, so a join can show
 	// it straight away instead of the native drawing while it loads.
 	void Prewarm(const std::wstring& dataDir);
+	// In game, or at a menu left in the background: unload the page (WebView2's
+	// processes) once no join is on screen. A join still starts it on its own
+	// (the native drawing shows until it's up); Prewarm loads it again.
+	void Park();
 	// From GameDetails; the SteamID64 lets the web page greet the player.
 	void Details(const std::string& serverName, const std::string& map, const std::string& steamid);
 	void Status(const std::string& status);

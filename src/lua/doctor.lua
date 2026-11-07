@@ -15,12 +15,43 @@ local function cvarString(name)
 	return nil
 end
 
+-- Sound that follows Windows' default output (audio_watch.h): the game opens
+-- its sound device once, so headphones plugged in later stay silent until a
+-- restart (Facepunch issue #6388). When the default output changes, the
+-- game's sound is restarted (snd_restart) 1.5 s later, not while a join
+-- loads, at most once every 10 s. snd_restart stops every sound for a moment,
+-- so it runs only on a real change, never on a timer.
+local followSetting = meowy.Setting and meowy.Setting("meowy_audio_follow", "1",
+	"Meowy Client Pack: when Windows' default sound device changes (headphones plugged in), restart the game's sound so it follows (0 = off)")
+local function followOn() return followSetting == nil or followSetting:GetBool() end
+local audio = { next = 0, lastRestart = -math.huge }
+hook.Add("Think", "MeowyClientPack.AudioFollow", function()
+	local now = SysTime()
+	if now < audio.next then return end
+	audio.next = now + 0.25
+	local n = meowy.AudioChanges and meowy.AudioChanges()
+	if n == nil then audio.next = math.huge return end   -- can't watch: stop asking
+	if audio.seen == nil then audio.seen = n return end
+	if n ~= audio.seen then audio.seen, audio.changedAt = n, now end
+	if not audio.changedAt or now - audio.changedAt < 1.5 or IsInLoading() or now - audio.lastRestart < 10 then return end
+	audio.changedAt = nil
+	if not followOn() then return end
+	audio.lastRestart = now
+	if meowy.ConsoleRun then meowy.ConsoleRun("snd_restart") else RunConsoleCommand("snd_restart") end
+	MsgN("[Meowy Client Pack] sound: Windows' default output changed; restarted the game's sound to follow it")
+end)
+
 local DoctorUI = {}
 
 function DoctorUI.diagnose()
 	local ok, facts = pcall(meowy.DoctorFacts)
 	if not ok or type(facts) ~= "table" then facts = {} end
-	return Doctor.diagnose(facts, { mcore = cvarString("gmod_mcore_test"), queue = cvarString("mat_queue_mode") })
+	local tips, report = Doctor.diagnose(facts, { mcore = cvarString("gmod_mcore_test"), queue = cvarString("mat_queue_mode") })
+	if type(facts.audio) == "table" then
+		report[#report + 1] = "Sound device changes: " .. (not followOn() and "not followed (meowy_audio_follow 0)"
+			or audio.next == math.huge and "can't be watched" or "followed")
+	end
+	return tips, report
 end
 
 -- "GPU: NVIDIA ... (8017 MB), drawing the game" -> { "GPU", "NVIDIA ... drawing the game" }

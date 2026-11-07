@@ -27,7 +27,9 @@ add_library(meowy SHARED
 	src/pak_cache.cpp
 	src/console_capture.cpp
 	src/server_query.cpp
+	src/server_index.cpp
 	src/steam_ugc.cpp
+	src/content_advert.cpp
 	src/server_gate.cpp
 	src/discord_ipc.cpp
 	src/loading_screen.cpp
@@ -44,7 +46,10 @@ add_library(meowy SHARED
 	src/timeline_steam.cpp
 	src/resilience.cpp
 	src/resilience_net.cpp
+	src/config_backup.cpp
 	src/doctor.cpp
+	src/mouse_confine.cpp
+	src/audio_watch.cpp
 	src/startup_hook.cpp)
 target_include_directories(meowy PRIVATE ${gmod_module_base_SOURCE_DIR}/include)
 if(WIN32)
@@ -173,6 +178,20 @@ if(MEOWY_BUILD_TESTS)
 	endif()
 	# PC doctor's native facts (adapters, GPU time per adapter, power), no game:
 	#   doctor_smoke
+	# Holding the mouse inside the game: when it clips (no real clipping):
+	#   mouse_confine_smoke
+	add_executable(mouse_confine_smoke tests/mouse_confine_smoke.cpp src/mouse_confine.cpp)
+	if(MSVC)
+		set_property(TARGET mouse_confine_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+		target_compile_options(mouse_confine_smoke PRIVATE /W4 /utf-8)
+	endif()
+	# Sound devices: the default output and mics as the PC doctor shows them, and the watch:
+	#   audio_watch_smoke [seconds to watch]
+	add_executable(audio_watch_smoke tests/audio_watch_smoke.cpp src/audio_watch.cpp)
+	if(MSVC)
+		set_property(TARGET audio_watch_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+		target_compile_options(audio_watch_smoke PRIVATE /W4 /utf-8)
+	endif()
 	add_executable(doctor_smoke tests/doctor_smoke.cpp src/doctor.cpp)
 	target_link_libraries(doctor_smoke PRIVATE shell32)
 	if(MSVC)
@@ -222,6 +241,13 @@ if(MEOWY_BUILD_TESTS)
 		set_property(TARGET pak_cache_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 		target_compile_options(pak_cache_smoke PRIVATE /W4 /utf-8)
 	endif()
+	# Copies of config.cfg: one per change, the newest 10, written back for exec:
+	#   config_backup_smoke <scratch folder>
+	add_executable(config_backup_smoke tests/config_backup_smoke.cpp src/config_backup.cpp src/file_util.cpp)
+	if(MSVC)
+		set_property(TARGET config_backup_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+		target_compile_options(config_backup_smoke PRIVATE /W4 /utf-8)
+	endif()
 	# The fast file.Find on "LUA": the walk visits every entry the game's matcher
 	# accepts, in order, on a fake table; and the loop found in the installed client.dll:
 	#   lua_find_smoke [GarrysMod folder] [file to write the stubs to]
@@ -241,6 +267,15 @@ if(MEOWY_BUILD_TESTS)
 	if(MSVC)
 		set_property(TARGET server_query_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 		target_compile_options(server_query_smoke PRIVATE /W4 /utf-8)
+	endif()
+	# Content platform adverts (the meowy_content rule in A2S_RULES), no game:
+	#   content_advert_smoke [a.b.c.d:port to ask for real]
+	add_executable(content_advert_smoke tests/content_advert_smoke.cpp src/content_advert.cpp src/server_rep.cpp)
+	target_link_libraries(content_advert_smoke PRIVATE winhttp ws2_32)
+	target_compile_definitions(content_advert_smoke PRIVATE _CRT_SECURE_NO_WARNINGS)   # server_rep.cpp's _wfopen
+	if(MSVC)
+		set_property(TARGET content_advert_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+		target_compile_options(content_advert_smoke PRIVATE /W4 /utf-8)
 	endif()
 	# The missing-file cache's rules against real folders, no game:
 	#   fs_cache_smoke <scratch folder>
