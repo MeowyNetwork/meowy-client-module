@@ -3,6 +3,7 @@
 
 pub mod a2s;
 pub mod address;
+pub mod fonts;
 #[cfg(windows)]
 pub mod http;
 pub mod index;

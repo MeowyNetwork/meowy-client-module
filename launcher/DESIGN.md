@@ -216,6 +216,31 @@ here that would touch the game, so it's kept apart:
 - Nothing in the MVP depends on this, and nothing in the MVP opens the game with more than
   `SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION`.
 
+**Update 2026-11-07: half of #9 needs no early entry.**
+- *Measured:* with `garrysmod\cache\workshop\resource\fonts` (344 stale extracted fonts, 117 MB) moved
+  aside, game → pack start-up was **1.23 s faster** (median of 5 interleaved pairs, −0.5 to −3.3 s) and
+  much steadier (3.8–4.1 s vs 4.6–7.4 s).
+- *Lazy fonts by folder swap (agreed, `core/src/fonts.rs`):* for a launch the launcher starts with Faster
+  start on and the start-up line in place, the folder is renamed aside and put back as soon as the pack's
+  stub makes its first file-name change in `%LOCALAPPDATA%\MeowyClientPack` (it always writes
+  `recover.lock` first, even in safe mode, and runs after the start-up font pass). Fallbacks: 45 s, the
+  game's exit, the launcher's next start. GMod registers those fonts again at every map load, so servers
+  still get them. File operations only: no game memory, never a link.
+- *What's left for injection:* a missing-file cache from the first instruction, estimated at 0.5–1.5 s,
+  under the 2 s gate. Agreed to still prototype it (direct, suspended launch as a measurement harness)
+  and decide on the measurement.
+
+**Live, 2026-11-08 (this PC):**
+- *Lazy fonts:* Play from the tray set the folder aside; the game process appeared at 3.8 s and the fonts
+  were back at 7.7 s on the stub's signal ("the pack started after 8.7 s"), not the 45 s fallback. After a
+  join to dev, `meowy_fast_fonts_status` reported "last font pass 424 files", so servers get the fonts.
+- *Start-up* (`measure_startup.ps1`, 5 rounds, medians): game → pack 3.67 s with Faster start on, 5.11 s
+  off, 5.15 s from Steam; click → pack 5.47 s vs 7.16 s from Steam (about 1.7 s, −24%). Same-round pairs,
+  on minus off: −1.34 s median.
+- *Injection (branch `proto/early-entry`):* −0.86 s more (median of 4 pairs) on top of lazy fonts and
+  `-disableluarefresh`, and 1 of 5 early starts never reached the menu. **Shelved**; results in that branch's
+  `launcher/tools/early_entry_results.md`.
+
 ## 10. v2
 
 Agreed order (2026-11-07): servers while GMod is closed → discovery from the index → the pipe. Then the
