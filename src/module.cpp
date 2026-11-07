@@ -1425,26 +1425,12 @@ namespace
 			"local Logic = (function()\n" + logic + "\nend)()\n" + doctor + glue + home;
 	}
 
-	// MenuPageUrl() -> the asset:// address of our main menu page, or nil. The
-	// page (src/menu/home.html, in this DLL) is written to garrysmod/html/meowy/
-	// when it isn't there or differs: the menu's browser gives its bindings
-	// (lua, meowy) to asset:// pages like the stock menu.html, not to a page set
-	// from a string. Garry's Mod's own files there are never touched.
-	int MenuPageUrl(lua_State* L)
+	// MenuShellJs() -> the Meowy home screen's script (src/menu/shell.js), which
+	// menu_page.lua puts into the stock menu page; "" if missing.
+	int MenuShellJs(lua_State* L)
 	{
-		const std::string html = ResourceText(IDR_MENU_HTML);
-		const std::wstring dir = GarrysModDir() + L"\\html\\meowy";
-		const std::wstring file = dir + L"\\home.html";
-		bool ok = !html.empty();
-		if (ok && file_util::ReadSmall(file, 1024 * 1024) != html)
-		{
-			CreateDirectoryW(dir.c_str(), nullptr);
-			ok = file_util::WriteAtomic(file, html);
-		}
-		if (ok)
-			L->luabase->PushString("asset://garrysmod/html/meowy/home.html");
-		else
-			L->luabase->PushNil();
+		const std::string js = ResourceText(IDR_MENU_SHELL_JS);
+		L->luabase->PushString(js.c_str(), static_cast<unsigned int>(js.size()));
 		return 1;
 	}
 #endif
@@ -2233,7 +2219,7 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	SetFunction(LUA, "IsOurServer", Guarded<IsOurServer>);
 	SetFunction(LUA, "OurServerAddress", Guarded<OurServerAddress>);
 	SetFunction(LUA, "ServerNow", Guarded<ServerNow>);
-	SetFunction(LUA, "MenuPageUrl", Guarded<MenuPageUrl>);
+	SetFunction(LUA, "MenuShellJs", Guarded<MenuShellJs>);
 	SetFunction(LUA, "OtherServerAddress", Guarded<OtherServerAddress>);
 	SetFunction(LUA, "StatusCaptureBegin", Guarded<StatusCaptureBegin>);
 	SetFunction(LUA, "StatusCaptureEnd", Guarded<StatusCaptureEnd>);

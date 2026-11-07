@@ -75,7 +75,7 @@ local function world(opts)
 		LastServer = function() if w.last then return w.last[1], w.last[2], w.last[3] end end,
 		-- The Home card: our address, and the game's own query over w.lists[type].
 		OurServerAddress = function() return OURS end,
-		MenuPageUrl = function() if not opts.noPage then return "asset://garrysmod/html/meowy/home.html" end end,
+		MenuShellJs = function() return opts.noPage and "" or "/*shell*/" end,
 		-- The engine's connection now: our address while on ours, w.otherNow elsewhere.
 		ServerNow = function()
 			if w.state == "ours" then return OURS, w.latency, w.loss, w.connected end
@@ -98,9 +98,11 @@ local function world(opts)
 		Setting = function(name, default)
 			w.convars = w.convars or {}
 			if w.convars[name] == nil then w.convars[name] = (opts.convars and opts.convars[name]) or default end
+			-- As in game: SetBool on these is refused ("not created by Lua"); the
+			-- console sets them (RunConsoleCommand below).
 			return {
 				GetBool = function() return w.convars[name] == "1" end,
-				SetBool = function(_, on) w.convars[name] = on and "1" or "0" end,
+				SetBool = function() error("calling 'SetBool' on bad self (attempted to modify ConVar not created by Lua)", 2) end,
 			}
 		end,
 		DoctorFacts = function() return opts.facts or { arch = "x64", gpu_time_known = false, adapters = {} } end,
@@ -138,6 +140,7 @@ local function world(opts)
 		w.commands[#w.commands + 1] = table.concat({ cmd, ... }, " ")
 		if cmd == "cl_timeout" then w.cl_timeout = (...) end
 		if w.cvars[cmd] ~= nil then w.cvars[cmd] = (...) end
+		if w.convars and w.convars[cmd] ~= nil then w.convars[cmd] = (...) end
 	end
 	env.SetClipboardText = function(t) w.clipboard = t end
 	env.RunGameUICommand = function(c) w.gameUI = c end
@@ -182,7 +185,7 @@ local function world(opts)
 			w.jsCalls = w.jsCalls + 1
 			if js:find("window.MeowyHome(", 1, true) then w.homeJS = js w.homeCalls = (w.homeCalls or 0) + 1
 			elseif js:find("window.MeowyEsc(", 1, true) then w.escJS = js
-			elseif js:find("MeowyClientPackStockHome", 1, true) then w.stockHomeAsks = (w.stockHomeAsks or 0) + 1
+			elseif js:find("window.MeowyShell(", 1, true) then w.shellJS = js w.shellSends = (w.shellSends or 0) + 1
 			else w.js = js end
 		end }
 		-- The menu's browser (DHTML): its callbacks, the bridge, what it loads.
@@ -962,7 +965,7 @@ check("continue: toggled off, none shown", continueJS(w), "null")
 check("continue: settings window paints", w.paintAll(), "")
 
 -- The Home card: our server, favourites and recent, live, on the main page.
-local function homeData(w) return (w.homeJS or ""):match("window%.MeowyHome%((.*),%d+%);\n$") end
+local function homeData(w) return (w.homeJS or ""):match("window%.MeowyHome%((.*),%d+%);\nif %(window%.MeowyShellLists%)") end
 local LISTS = {
 	favorite = {
 		{ address = "1.1.1.1:27015", name = "Small", players = 2, max = 16 },
@@ -1125,103 +1128,86 @@ w.env.MeowyClientPackEscAction("reconnect")
 check("escape: off, buttons do nothing", w.ran("retry"), 0)
 check("escape: settings window paints", w.paintAll(), "")
 
--- Our own menu page (meowy_menu): off by default.
+-- The Meowy home screen (meowy_menu): our home inside the stock page, off by default.
+local function shellState(w) return w.shellJS and w.shellJS:match("window%.MeowyShell%((%a+)%);\n$") end
 w = world({ settings = ON, menu = true })
 w.run(3)
-check("page: off by default, nothing loaded", w.loads, nil)
-check("page: the bridge is on the browser anyway", w.bridges, 1)
-check("page: a post while the stock page shows is ignored", (function() w.post("quit") return w.gameUI end)(), nil)
--- On: our page is loaded, lua.Run is switched off until it's gone.
+check("shell: off by default, nothing sent", w.shellJS, nil)
+check("shell: the bridge is on the browser anyway", w.bridges, 1)
+check("shell: a post while it's off is ignored", (function() w.post("quit") return w.gameUI end)(), nil)
+check("shell: the stock page is never reloaded", w.loads, nil)
+-- On: the script and MeowyShell(true), again every second; nothing reloaded.
 local PAGE_ON = { meowy_menu = "1" }
 w = world({ settings = ON, menu = true, convars = PAGE_ON })
 w.lists = LISTS
 w.run(1)
-check("page: ours loaded", w.page == "ours" and w.url, "asset://garrysmod/html/meowy/home.html")
-check("page: lua.Run swapped out", w.env.pnlMainMenu.HTML.Callbacks["lua.Run"] ~= w.stockRun, true)
-w.env.pnlMainMenu.HTML.Callbacks["lua.Run"]("RunConsoleCommand('quit')")
-check("page: a lua.Run call on our page does nothing", w.stockRuns, nil)
-w.post("ready")
-w.run(10)
-check("page: up after ready", #w.loads, 1)
-check("page: no settings pill over our page", (function() local p = find(function(p) return p.text == "Meowy settings" end) return p == nil or p.visible == false end)(), true)
-check("page: the lists are sent to it", (homeData(w) or ""):find('"Meowy Network"', 1, true) ~= nil, true)
+check("shell: on, sent with its script", shellState(w) == "true" and w.shellJS:find("/*shell*/", 1, true) ~= nil, true)
+local sends = w.shellSends
+w.run(3)
+check("shell: sent again each second (the page may be rebuilt)", w.shellSends - sends >= 2, true)
+check("shell: never a reload", w.loads, nil)
+check("shell: lua.Run left alone (it's the stock page's)", w.env.pnlMainMenu.HTML.Callbacks["lua.Run"], w.stockRun)
+check("shell: the lists reach it", (w.homeJS or ""):find("MeowyShellLists", 1, true) ~= nil and (homeData(w) or ""):find('"Meowy Network"', 1, true) ~= nil, true)
+check("shell: Continue reaches it", (w.js or ""):find("MeowyShellContinue", 1, true) ~= nil, true)
+check("shell: no settings pill", (function() local p = find(function(p) return p.text == "Meowy settings" end) return p == nil or p.visible == false end)(), true)
 -- Its messages: a fixed table, each value checked.
 w.post("join", 1)
-check("page: join by row number", w.lastConnect(), "connect " .. OURS)
+check("shell: join by row number", w.lastConnect(), "connect " .. OURS)
 w.post("options")
-check("page: Options", w.gameUI, "OpenOptionsDialog")
+check("shell: Options", w.gameUI, "OpenOptionsDialog")
 w.post("quit")
-check("page: Quit", w.gameUI, "QuitNoConfirm")
+check("shell: Quit", w.gameUI, "QuitNoConfirm")
 w.gameUI = nil
+local n = #w.commands
 w.post("RunString", "x")
 w.post("join", string.rep("9", 40))
 w.post(nil)
-w.post("open", "../../evil")
-check("page: unknown, junk or bad values do nothing", w.gameUI == nil and #w.loads == 1, true)
+w.post("open", "servers")
+w.post("settings", { "table" })
+check("shell: unknown, junk or bad values do nothing", w.gameUI == nil and #w.commands == n, true)
 w.last = { "1.2.3.4:27015", "Foo", w.osTime }
 w.post("continue")
-check("page: Continue", w.lastConnect(), "connect 1.2.3.4:27015")
--- A stock screen: the stock page opens there, with lua.Run back; its main screen brings ours back.
-w.post("open", "servers")
-check("page: a stock screen opens on the stock page", w.url, "asset://garrysmod/html/menu.html#/servers/")
-check("page: lua.Run back for the stock page", w.env.pnlMainMenu.HTML.Callbacks["lua.Run"], w.stockRun)
-check("page: the stock page refilled (version)", (w.js or ""):find("UpdateVersion( '2026.09.16', '2026.09.16', 'x86-64' )", 1, true) ~= nil, true)
-check("page: the stock page refilled (language, content)", w.languageReplays == 1 and w.hookRuns and w.hookRuns[1], "GameContentChanged")
-check("page: the stock panel will send SetInGame again", w.env.pnlMainMenu.IsInGame, nil)
-w.run(2)
-check("page: stays on the stock screen", w.page, "stock")
-check("page: asks the stock page whether it's back on its main screen", (w.stockHomeAsks or 0) > 0, true)
-w.env.MeowyClientPackStockHome()
-w.run(1)
-check("page: back on the main screen, ours again", w.page, "ours")
-w.post("ready")
--- In game: the stock page (with the Escape card); back at the menu: ours.
-w.play(3)
-check("page: in game, the stock page", w.page == "stock" and w.url, "asset://garrysmod/html/menu.html")
+check("shell: Continue", w.lastConnect(), "connect 1.2.3.4:27015")
+w.concommands.meowy_menu_status()
+check("shell: meowy_menu_status", (w.logs or ""):find("menu page: our home, switch on", 1, true) ~= nil, true)
+-- In game: off (the Escape menu is the stock one); back at the menu: on again.
+w.play(2)
+check("shell: in game, off", shellState(w), "false")
+w.post("quit")
+check("shell: in game, posts ignored", w.gameUI, nil)
 w.cut()
 w.run(1)
-check("page: back at the menu, ours", w.page, "ours")
-w.post("ready")
--- "Use Garry's Mod's menu": the stock page for the rest of this start.
+check("shell: back at the menu, on", shellState(w), "true")
+check("shell: still never a reload", w.loads, nil)
+-- "Use Garry's Mod's menu": off for the rest of this start; turning the switch off and on again brings it back.
 w.post("stock")
-w.run(5)
-check("page: the escape hatch sticks", w.page, "stock")
-w.env.MeowyClientPackStockHome()
-w.run(2)
-check("page: even on the stock main screen", w.page, "stock")
--- Watchdog: no ready in 3 s, the stock page; twice, it stays there.
-w = world({ settings = ON, menu = true, convars = PAGE_ON })
-w.run(1)
-check("watchdog: ours loaded", w.page, "ours")
-w.run(3.5)
-check("watchdog: no ready, the stock page back", w.loads[2], "asset://garrysmod/html/menu.html")
-check("watchdog: logged", (w.logs or ""):find("didn't say it was ready", 1, true) ~= nil, true)
-check("watchdog: one more try", w.loads[3], "asset://garrysmod/html/meowy/home.html")
-w.run(3.5)
-w.run(10)
-check("watchdog: twice, stays on the stock page", w.page == "stock" and #w.loads, 4)
--- Turned off while ours shows: the stock page.
-w = world({ settings = ON, menu = true, convars = PAGE_ON })
-w.run(1)
-w.post("ready")
+w.run(3)
+check("shell: the escape hatch", shellState(w), "false")
 w.convars.meowy_menu = "0"
 w.run(1)
-check("page: off puts the stock page back", w.page == "stock" and w.env.pnlMainMenu.HTML.Callbacks["lua.Run"] == w.stockRun, true)
--- No page in the DLL: nothing changes.
+w.convars.meowy_menu = "1"
+w.run(1)
+check("shell: switched off and on, back", shellState(w), "true")
+-- Off while it shows: taken out.
+w.convars.meowy_menu = "0"
+w.run(1)
+check("shell: off takes it out", shellState(w), "false")
+local before = w.shellSends
+w.run(5)
+check("shell: off, not sent every second", w.shellSends, before)
+-- No script in the DLL: nothing sent.
 w = world({ settings = ON, menu = true, convars = PAGE_ON, noPage = true })
 w.run(3)
-check("page: none built in, nothing loaded", w.loads, nil)
+check("shell: none built in, nothing sent", w.shellJS, nil)
 -- The toggle in settings.
 w = world({ settings = ON, menu = true })
 w.run(1)
 w.concommands.meowy_settings()
 local mt = find(function(p) return p.meowyToggle == "menu_page" end)
-check("page: a toggle in settings, off", mt ~= nil and mt.on, false)
+check("shell: a toggle in settings, off", mt ~= nil and mt.on, false)
 if mt then mt:SetOn(true) end
 w.run(1)
-check("page: turned on, ours loads", w.page, "ours")
-w.concommands.meowy_menu_status()
-check("page: meowy_menu_status", (w.logs or ""):find("menu page: loading", 1, true) ~= nil, true)
+check("shell: turned on from settings (through the console)", shellState(w), "true")
 
 check("no Lua errors", w.errors, nil)
 print(("%d checks, %d failed"):format(count, failures))

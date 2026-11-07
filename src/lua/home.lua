@@ -242,7 +242,8 @@ local function send(text)
 	if not (IsValid(pnlMainMenu) and pnlMainMenu.Call) then return end
 	if text ~= sentText then version = version + 1 end
 	sentText, sentAt = text, SysTime()
-	pnlMainMenu:Call(HOME_JS .. "window.MeowyHome(" .. text .. "," .. version .. ");\n")
+	pnlMainMenu:Call(HOME_JS .. "window.MeowyHome(" .. text .. "," .. version .. ");\n"
+		.. "if (window.MeowyShellLists) window.MeowyShellLists();\n")   -- the Meowy home screen's lists (shell.js)
 end
 
 local function tick()

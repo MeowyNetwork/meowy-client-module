@@ -56,8 +56,8 @@ local continueSetting = meowy.Setting and meowy.Setting("meowy_menu_continue", "
 	"Meowy Client Pack: a Continue entry in the main menu that joins the last server you played on (0 = none, and none kept)")
 local function continueOn() return continueSetting == nil or continueSetting:GetBool() end
 local function setContinue(on)
-	if continueSetting and continueSetting.SetBool then continueSetting:SetBool(on)
-	else RunConsoleCommand("meowy_menu_continue", on and "1" or "0") end
+	-- Through the console: Garry's Mod refuses ConVar:SetBool on these menu convars.
+	RunConsoleCommand("meowy_menu_continue", on and "1" or "0")
 	if not on and meowy.LastServerForget then meowy.LastServerForget() end
 end
 
@@ -66,8 +66,8 @@ local homeSetting = meowy.Setting and meowy.Setting("meowy_menu_home", "1",
 	"Meowy Client Pack: a card on the main menu with Meowy Network, your favourites and recent servers (0 = none)")
 local function homeOn() return homeSetting == nil or homeSetting:GetBool() end
 local function setHome(on)
-	if homeSetting and homeSetting.SetBool then homeSetting:SetBool(on)
-	else RunConsoleCommand("meowy_menu_home", on and "1" or "0") end
+	-- Through the console: Garry's Mod refuses ConVar:SetBool on these menu convars.
+	RunConsoleCommand("meowy_menu_home", on and "1" or "0")
 end
 
 -- Our own main menu page (menu_page.lua), a preview: off unless turned on.
@@ -75,11 +75,11 @@ local menuSetting = meowy.Setting and meowy.Setting("meowy_menu", "0",
 	"Meowy Client Pack: our own main menu page instead of Garry's Mod's (preview; 0 = Garry's Mod's)")
 local function menuOn() return menuSetting ~= nil and menuSetting:GetBool() end
 local function setMenu(on)
-	if menuSetting and menuSetting.SetBool then menuSetting:SetBool(on)
-	else RunConsoleCommand("meowy_menu", on and "1" or "0") end
+	-- Through the console: Garry's Mod refuses ConVar:SetBool on these menu convars.
+	RunConsoleCommand("meowy_menu", on and "1" or "0")
 end
--- Set by menu_page.lua while our page is the one showing (no stock list, so no
--- settings entry to wait for).
+-- Set by menu_page.lua while our home shows on the stock page (its list, with
+-- the settings entry, is hidden then).
 local menuPage = { ours = false }
 
 -- The Escape menu's card (home.lua): the server you're on, Reconnect, quick volume and FOV.
@@ -87,8 +87,8 @@ local escapeSetting = meowy.Setting and meowy.Setting("meowy_menu_escape", "1",
 	"Meowy Client Pack: a card in the Escape menu with the server you're on and quick settings (0 = none)")
 local function escapeOn() return escapeSetting == nil or escapeSetting:GetBool() end
 local function setEscape(on)
-	if escapeSetting and escapeSetting.SetBool then escapeSetting:SetBool(on)
-	else RunConsoleCommand("meowy_menu_escape", on and "1" or "0") end
+	-- Through the console: Garry's Mod refuses ConVar:SetBool on these menu convars.
+	RunConsoleCommand("meowy_menu_escape", on and "1" or "0")
 end
 
 -- UI (ui.lua's kit) ----------------------------------------------------------------
@@ -190,11 +190,11 @@ local function openSettings(startTab)
 			et.gapBefore = S(10)
 			blocks[#blocks + 1] = et
 		end
-		if meowy.MenuPageUrl then
+		if meowy.MenuShellJs then
 			local mt = UI.Toggle(nil, "Meowy home screen (preview)",
-				"Replaces Garry's Mod's main menu page with ours: Continue, your servers with search, and the usual "
-				.. "links (servers, addons and the rest open Garry's Mod's own screens). \"Use Garry's Mod's menu\" at "
-				.. "the bottom, or turning this off, puts the usual menu back.",
+				"Our home in place of Garry's Mod's main screen: Continue, your servers with search, and the usual "
+				.. "links (servers, addons and the rest are Garry's Mod's own screens, as before). \"Use Garry's Mod's "
+				.. "menu\" at the bottom, or turning this off, puts the usual main screen back.",
 				menuOn(), function(on) setMenu(on) end)
 			mt.meowyToggle = "menu_page"
 			mt.gapBefore = S(10)
@@ -375,6 +375,7 @@ local ENTRY_JS = [==[
 -- data, then the entries put in.
 local function entryJS(continueData)
 	return ENTRY_JS .. "window.MeowyContinue = " .. continueData .. ";\nwindow.MeowyEntry();\n"
+		.. "if (window.MeowyShellContinue) window.MeowyShellContinue();\n"   -- the Meowy home screen's Continue (shell.js)
 end
 
 -- What Continue shows now, as a JS value: [title, second line] or null.
