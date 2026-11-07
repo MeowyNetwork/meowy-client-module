@@ -1,11 +1,17 @@
 #include "pak_cache.h"
 
+#include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <cstring>
 #include <list>
+#include <memory>
 #include <mutex>
+#include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #ifdef _WIN32
@@ -37,8 +43,16 @@ namespace
 	size_t g_cap = 64u << 20;
 #endif
 	size_t g_perEntry = g_cap / 4;
-	uint64_t g_hits = 0, g_misses = 0, g_saved = 0;
+	uint64_t g_hits = 0, g_misses = 0, g_saved = 0, g_prefetched = 0, g_waited = 0;
 	std::atomic<bool> g_active{ false };
+	// Entries being decompressed right now (under g_mutex): a second asker
+	// waits for the first instead of doing the same work.
+	std::condition_variable g_cv;
+	std::unordered_set<uint64_t> g_inflight;
+	// Moves on with every SetActive: workers of an earlier join stop.
+	std::atomic<unsigned> g_gen{ 0 };
+	std::atomic<bool> g_prefillStarted{ false };
+	std::string g_prefillNote;                    // under g_mutex
 
 	void ClearLocked()
 	{
@@ -105,10 +119,15 @@ namespace
 	Decoder g_original = nullptr;
 	std::string g_why;
 
+	void StartPrefill(unsigned gen);
+
 	int MEOWY_LZMA_CALL Cached(uint8_t* dest, size_t* destLen, const uint8_t* src, size_t* srcLen, const uint8_t* props, size_t propsSize)
 	{
 		if (!g_active.load(std::memory_order_relaxed) || !srcLen || *srcLen < 9)
 			return g_original(dest, destLen, src, srcLen, props, propsSize);
+		// The map's pak is being read: decompress the rest of it ahead, on workers.
+		if (!g_prefillStarted.exchange(true))
+			StartPrefill(g_gen.load());
 		// src is the entry's buffer + 9 (header and props) and *srcLen the buffer's
 		// size, so *srcLen - 9 bytes can be read at src (the call site's own shape).
 		return pak_cache::detail::Decode(g_original, dest, destLen, src, srcLen, props, propsSize, *srcLen - 9);
@@ -188,16 +207,20 @@ namespace pak_cache
 			return Mix(h ^ tail);
 		}
 
-		int Decode(Decoder original, uint8_t* dest, size_t* destLen, const uint8_t* src, size_t* srcLen,
-			const uint8_t* props, size_t propsSize, size_t srcBytes)
+		// background: a prefill worker's own decompression (kept only while the
+		// join that started it is still loading; nothing waits on it).
+		static int DecodeImpl(Decoder original, uint8_t* dest, size_t* destLen, const uint8_t* src, size_t* srcLen,
+			const uint8_t* props, size_t propsSize, size_t srcBytes, bool background, unsigned gen)
 		{
 			if (!dest || !destLen || !src || !srcLen || !props || srcBytes == 0)
 				return original(dest, destLen, src, srcLen, props, propsSize);
 			const size_t destIn = *destLen, srcIn = *srcLen;
 			const uint64_t key = Hash(src, srcBytes, Hash(props, propsSize, (static_cast<uint64_t>(destIn) << 32) ^ srcIn));
 			const size_t headLen = srcBytes < sizeof(Entry::head) ? srcBytes : sizeof(Entry::head);
+			std::unique_lock<std::mutex> lock(g_mutex);
+			bool mine = false;
+			for (;;)
 			{
-				std::lock_guard<std::mutex> lock(g_mutex);
 				auto it = g_byKey.find(key);
 				if (it != g_byKey.end())
 				{
@@ -205,6 +228,8 @@ namespace pak_cache
 					if (e.destIn == destIn && e.srcIn == srcIn && e.srcBytes == srcBytes && e.out <= destIn &&
 						std::memcmp(e.head, src, headLen) == 0)
 					{
+						if (background)
+							return 0;   // already kept: nothing to do
 						std::memcpy(dest, e.data.data(), e.out);
 						*destLen = e.out;
 						*srcLen = e.used;
@@ -214,15 +239,36 @@ namespace pak_cache
 						return 0;
 					}
 				}
-				++g_misses;
+				if (!g_inflight.count(key))
+				{
+					g_inflight.insert(key);
+					mine = true;
+					break;
+				}
+				if (background)
+					return 0;   // someone is on it already
+				// A worker is decompressing this one: wait for it rather than do it twice.
+				++g_waited;
+				if (!g_cv.wait_for(lock, std::chrono::seconds(3), [&] { return !g_inflight.count(key); }))
+					break;      // too long: decompress it here after all
 			}
+			if (background)
+				++g_prefetched;
+			else
+				++g_misses;
+			lock.unlock();
 			const int result = original(dest, destLen, src, srcLen, props, propsSize);
+			lock.lock();
+			if (mine)
+				g_inflight.erase(key);
+			g_cv.notify_all();
 			if (result != 0 || *destLen > destIn)
 				return result;
 			const size_t out = *destLen;
-			std::lock_guard<std::mutex> lock(g_mutex);
 			if (out == 0 || out > g_perEntry || g_byKey.count(key))
 				return result;
+			if (background && (!g_active.load() || g_gen.load() != gen || g_held + out > g_cap - g_cap / 8))
+				return result;   // that join is over, or the cap's nearly full: the game's own reads come first
 			Entry e;
 			e.key = key;
 			e.destIn = destIn;
@@ -252,6 +298,174 @@ namespace pak_cache
 			return result;
 		}
 
+		int Decode(Decoder original, uint8_t* dest, size_t* destLen, const uint8_t* src, size_t* srcLen,
+			const uint8_t* props, size_t propsSize, size_t srcBytes)
+		{
+			return DecodeImpl(original, dest, destLen, src, srcLen, props, propsSize, srcBytes, false, 0);
+		}
+
+#ifdef _WIN32
+		// A BSP's pakfile (lump 40, a zip whose offsets count from the lump) or a
+		// plain zip: its LZMA entries (method 14) as where their local header is,
+		// their compressed and their uncompressed size.
+		bool PakEntries(const std::wstring& path, std::vector<PakEntry>& out, std::string& why)
+		{
+			HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+				nullptr, OPEN_EXISTING, 0, nullptr);
+			if (f == INVALID_HANDLE_VALUE)
+			{
+				why = "no map pak";
+				return false;
+			}
+			const auto readAt = [&](uint64_t at, void* buf, DWORD n) {
+				LARGE_INTEGER pos;
+				pos.QuadPart = static_cast<LONGLONG>(at);
+				DWORD got = 0;
+				return SetFilePointerEx(f, pos, nullptr, FILE_BEGIN) && ReadFile(f, buf, n, &got, nullptr) && got == n;
+			};
+			LARGE_INTEGER size;
+			uint8_t head[8 + 64 * 16];
+			bool ok = GetFileSizeEx(f, &size) && size.QuadPart > 22 && readAt(0, head, 4);
+			uint64_t lump = 0, lumpLen = 0;
+			if (ok && std::memcmp(head, "VBSP", 4) == 0)
+			{
+				ok = readAt(0, head, sizeof(head));
+				int32_t off = 0, len = 0;
+				std::memcpy(&off, head + 8 + 40 * 16, 4);
+				std::memcpy(&len, head + 8 + 40 * 16 + 4, 4);
+				ok = ok && off > 0 && len > 22 && static_cast<uint64_t>(off) + static_cast<uint64_t>(len) <= static_cast<uint64_t>(size.QuadPart);
+				lump = static_cast<uint64_t>(off);
+				lumpLen = static_cast<uint64_t>(len);
+			}
+			else if (ok && std::memcmp(head, "PK\x03\x04", 4) == 0)
+			{
+				lumpLen = static_cast<uint64_t>(size.QuadPart);
+			}
+			else
+			{
+				ok = false;
+			}
+			// The end-of-directory record: in the last 22 + 65535 bytes (a comment can follow it).
+			std::vector<uint8_t> tail;
+			uint32_t entries = 0, cdSize = 0, cdOffset = 0;
+			if (ok)
+			{
+				const uint64_t want = std::min<uint64_t>(lumpLen, 22 + 65535);
+				tail.resize(static_cast<size_t>(want));
+				ok = readAt(lump + lumpLen - want, tail.data(), static_cast<DWORD>(want));
+				bool found = false;
+				for (size_t k = 0; ok && k + 22 <= tail.size(); ++k)
+				{
+					const size_t i = tail.size() - 22 - k;   // from the end back
+					if (tail[i] == 'P' && tail[i + 1] == 'K' && tail[i + 2] == 5 && tail[i + 3] == 6)
+					{
+						uint16_t n16;
+						std::memcpy(&n16, &tail[i + 10], 2);
+						std::memcpy(&cdSize, &tail[i + 12], 4);
+						std::memcpy(&cdOffset, &tail[i + 16], 4);
+						entries = n16;
+						found = true;
+						break;
+					}
+				}
+				ok = ok && found && cdSize > 0 && cdSize <= (16u << 20) && static_cast<uint64_t>(cdOffset) + cdSize <= lumpLen;
+			}
+			std::vector<uint8_t> cd;
+			if (ok)
+			{
+				cd.resize(cdSize);
+				ok = readAt(lump + cdOffset, cd.data(), cdSize);
+			}
+			CloseHandle(f);
+			if (!ok)
+			{
+				why = "not a pak this can read";
+				return false;
+			}
+			size_t pos = 0;
+			for (uint32_t i = 0; i < entries && pos + 46 <= cd.size(); ++i)
+			{
+				uint32_t sig, csize, usize, local;
+				uint16_t method, nameLen, extraLen, commentLen;
+				std::memcpy(&sig, &cd[pos], 4);
+				if (sig != 0x02014B50)
+					break;
+				std::memcpy(&method, &cd[pos + 10], 2);
+				std::memcpy(&csize, &cd[pos + 20], 4);
+				std::memcpy(&usize, &cd[pos + 24], 4);
+				std::memcpy(&nameLen, &cd[pos + 28], 2);
+				std::memcpy(&extraLen, &cd[pos + 30], 2);
+				std::memcpy(&commentLen, &cd[pos + 32], 2);
+				std::memcpy(&local, &cd[pos + 42], 4);
+				if (method == 14 && csize > 9 && usize > 0 && static_cast<uint64_t>(local) + 30 + csize <= lumpLen)
+					out.push_back({ lump + local, csize, usize });
+				pos += 46u + nameLen + extraLen + commentLen;
+			}
+			return true;
+		}
+
+		size_t PrefillFile(const std::wstring& path, Decoder original, unsigned threads, unsigned gen, std::string& why)
+		{
+			std::vector<PakEntry> entries;
+			if (!original || !PakEntries(path, entries, why))
+				return 0;
+			std::atomic<size_t> next{ 0 }, done{ 0 };
+			const auto work = [&]() {
+				HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+					nullptr, OPEN_EXISTING, FILE_FLAG_RANDOM_ACCESS, nullptr);
+				if (f == INVALID_HANDLE_VALUE)
+					return;
+				std::vector<uint8_t> src, dest;
+				for (;;)
+				{
+					const size_t i = next++;
+					if (i >= entries.size() || !g_active.load() || g_gen.load() != gen)
+						break;
+					const PakEntry& e = entries[i];
+					if (e.usize > g_perEntry)
+						continue;
+					uint8_t local[30];
+					LARGE_INTEGER pos;
+					pos.QuadPart = static_cast<LONGLONG>(e.local);
+					DWORD got = 0;
+					if (!SetFilePointerEx(f, pos, nullptr, FILE_BEGIN) || !ReadFile(f, local, 30, &got, nullptr) || got != 30 ||
+						local[0] != 'P' || local[1] != 'K' || local[2] != 3 || local[3] != 4)
+						continue;
+					uint16_t nameLen, extraLen;
+					std::memcpy(&nameLen, local + 26, 2);
+					std::memcpy(&extraLen, local + 28, 2);
+					pos.QuadPart = static_cast<LONGLONG>(e.local + 30 + nameLen + extraLen);
+					src.resize(e.csize);
+					if (!SetFilePointerEx(f, pos, nullptr, FILE_BEGIN) || !ReadFile(f, src.data(), static_cast<DWORD>(e.csize), &got, nullptr) ||
+						got != e.csize)
+						continue;
+					// The zip-LZMA header ReadFromPack checks: version 2609h, props size 5.
+					if (src[0] != 0x09 || src[1] != 0x26 || src[2] != 5 || src[3] != 0)
+						continue;
+					dest.resize(e.usize);
+					size_t destLen = e.usize, srcLen = e.csize;
+					DecodeImpl(original, dest.data(), &destLen, src.data() + 9, &srcLen, src.data() + 4, 5, e.csize - 9, true, gen);
+					++done;
+				}
+				CloseHandle(f);
+			};
+			std::vector<std::thread> pool;
+			try
+			{
+				for (unsigned t = 0; t < threads; ++t)
+					pool.emplace_back(work);
+			}
+			catch (...)
+			{
+			}
+			if (pool.empty())
+				work();
+			for (std::thread& t : pool)
+				t.join();
+			return done.load();
+		}
+#endif
+
 		void SetCap(size_t total, size_t perEntry)
 		{
 			std::lock_guard<std::mutex> lock(g_mutex);
@@ -267,11 +481,12 @@ namespace pak_cache
 		}
 
 		void SetActiveForTest(bool on) { g_active = on; }
+		unsigned GenerationForTest() { return g_gen.load(); }
 
 		Stats Get()
 		{
 			std::lock_guard<std::mutex> lock(g_mutex);
-			return { g_hits, g_misses, g_saved, g_held, g_byKey.size() };
+			return { g_hits, g_misses, g_saved, g_held, g_byKey.size(), g_prefetched, g_waited };
 		}
 	}
 
@@ -355,18 +570,29 @@ namespace pak_cache
 
 	void SetActive(bool on)
 	{
+		++g_gen;                  // an earlier join's workers stop
+		g_prefillStarted = false;
 		g_active = on;
 		if (!on)
-			detail::Clear();
+		{
+			std::lock_guard<std::mutex> lock(g_mutex);
+			ClearLocked();
+			g_cv.notify_all();
+		}
+		else
+		{
+			std::lock_guard<std::mutex> lock(g_mutex);
+			g_prefillNote.clear();
+		}
 	}
 
 	std::string Describe()
 	{
 		const detail::Stats s = detail::Get();
 		char line[256];
-		std::snprintf(line, sizeof(line), "%u hits, %u misses, %.0f MB not decompressed again, %.0f MB kept (%u entries)",
-			static_cast<unsigned>(s.hits), static_cast<unsigned>(s.misses), s.savedBytes / 1048576.0, s.heldBytes / 1048576.0,
-			static_cast<unsigned>(s.entries));
+		std::snprintf(line, sizeof(line), "%u hits (%u waited for a worker), %u misses, %u done ahead, %.0f MB not decompressed again, %.0f MB kept (%u entries)",
+			static_cast<unsigned>(s.hits), static_cast<unsigned>(s.waited), static_cast<unsigned>(s.misses), static_cast<unsigned>(s.prefetched),
+			s.savedBytes / 1048576.0, s.heldBytes / 1048576.0, static_cast<unsigned>(s.entries));
 		std::string state;
 #ifdef _WIN32
 		{
@@ -376,6 +602,73 @@ namespace pak_cache
 #else
 		state = "unsupported";
 #endif
-		return state + ": " + line;
+		std::string note;
+		{
+			std::lock_guard<std::mutex> lock(g_mutex);
+			note = g_prefillNote;
+		}
+		return state + ": " + line + (note.empty() ? "" : "; " + note);
 	}
 }
+
+#ifdef _WIN32
+namespace
+{
+	// garrysmod\cache\map_pack.bsp: the map the game is loading, copied out by
+	// the game itself (the read trace showed its pak read from there).
+	std::wstring MapPakPath()
+	{
+		wchar_t buf[MAX_PATH];
+		HMODULE fs = GetModuleHandleW(L"filesystem_stdio.dll");
+		const DWORD n = fs ? GetModuleFileNameW(fs, buf, MAX_PATH) : 0;
+		if (n == 0 || n >= MAX_PATH)
+			return std::wstring();
+		std::wstring dir(buf, n);
+		dir = dir.substr(0, dir.find_last_of(L'\\'));                  // ...\bin or ...\bin\win64
+		const auto endsWith = [&](const wchar_t* tail) {
+			const size_t len = std::wcslen(tail);
+			return dir.size() >= len && _wcsicmp(dir.c_str() + dir.size() - len, tail) == 0;
+		};
+		if (endsWith(L"\\win64"))
+			dir = dir.substr(0, dir.size() - 6);
+		if (!endsWith(L"\\bin"))
+			return std::wstring();
+		return dir.substr(0, dir.size() - 4) + L"\\garrysmod\\cache\\map_pack.bsp";
+	}
+
+	void StartPrefill(unsigned gen)
+	{
+		const std::wstring path = MapPakPath();
+		if (path.empty())
+			return;
+		unsigned threads = std::thread::hardware_concurrency();
+		threads = threads > 2 ? threads - 2 : 1;
+#ifdef _WIN64
+		threads = (std::min)(threads, 6u);
+#else
+		threads = (std::min)(threads, 3u);   // 32-bit: a buffer each, and the address space is tight
+#endif
+		try
+		{
+			std::thread([path, threads, gen]() {
+				SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+				const auto t0 = std::chrono::steady_clock::now();
+				std::string why;
+				const size_t n = pak_cache::detail::PrefillFile(path, g_original, threads, gen, why);
+				const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+				char line[160];
+				if (n || why.empty())
+					std::snprintf(line, sizeof(line), "%u entries ahead on %u threads in %.1f s", static_cast<unsigned>(n), threads, secs);
+				else
+					std::snprintf(line, sizeof(line), "nothing ahead (%s)", why.c_str());
+				std::lock_guard<std::mutex> lock(g_mutex);
+				if (g_gen.load() == gen)
+					g_prefillNote = line;
+			}).detach();
+		}
+		catch (...)
+		{
+		}
+	}
+}
+#endif
