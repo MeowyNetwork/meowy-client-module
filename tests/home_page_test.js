@@ -292,7 +292,11 @@ check('shell: sent again, still one', S.main.querySelectorAll('#meowy-shell').le
 const navs = shellEl().querySelectorAll('.ms-link').filter(a => a.textContent && !a.className.includes('ms-cont'));
 const byText = t => navs.find(a => a.textContent === t);
 byText('Find servers').onclick();
-check('shell: Find servers opens the browse view', shellEl().className, 'ms-browsing');
+check("shell: Find servers opens Garry's Mod's browser", S.loc.hash, '#/servers/');
+check('shell: not the browse view', shellEl().className, '');
+S.loc.hash = '#/';
+S.win.MeowyBrowse.open();
+check('shell: the browse view opens', shellEl().className, 'ms-browsing');
 check('shell: and asks for the list', JSON.stringify(S.posts.pop()), '["browse",""]');
 // The list arrives in batches; filtered, sorted, at most 200 drawn; rows joined by number.
 const bview = () => shellEl().querySelector('.ms-browse');
@@ -337,13 +341,13 @@ check('browse: complete', bview().querySelector('.mb-status').textContent, '3 se
 bfilter.onkeydown(key(bfilter, 27));
 check('browse: Esc again goes back', shellEl().className, '');
 check('browse: and stops asking', JSON.stringify(S.posts.pop()), '["browse_stop",""]');
-byText('Find servers').onclick();
+S.win.MeowyBrowse.open();
 check('browse: reopened soon after, the list is kept', S.posts.length === 0 || S.posts[S.posts.length - 1][0] !== 'browse', true);
 chipBy("Garry's Mod's list").onclick();
 check('browse: Garry\'s Mod\'s list is still there', S.loc.hash, '#/servers/');
 check('browse: leaving it stops asking', JSON.stringify(S.posts.pop()), '["browse_stop",""]');
 S.win.MeowyBrowse.reset(2, false);
-byText('Find servers').onclick();
+S.win.MeowyBrowse.open();
 check('browse: without Steam\'s list, says where to go', bview().querySelector('.mb-status').textContent, "Steam's server list isn't available here: use Garry's Mod's list.");
 chipBy('Back').onclick();
 S.loc.hash = '#/';
