@@ -70,6 +70,15 @@ local function setHome(on)
 	else RunConsoleCommand("meowy_menu_home", on and "1" or "0") end
 end
 
+-- The Escape menu's card (home.lua): the server you're on, Reconnect, quick volume and FOV.
+local escapeSetting = meowy.Setting and meowy.Setting("meowy_menu_escape", "1",
+	"Meowy Client Pack: a card in the Escape menu with the server you're on and quick settings (0 = none)")
+local function escapeOn() return escapeSetting == nil or escapeSetting:GetBool() end
+local function setEscape(on)
+	if escapeSetting and escapeSetting.SetBool then escapeSetting:SetBool(on)
+	else RunConsoleCommand("meowy_menu_escape", on and "1" or "0") end
+end
+
 -- UI (ui.lua's kit) ----------------------------------------------------------------
 local C, S = UI.C, UI.S
 
@@ -137,7 +146,7 @@ local function openSettings(startTab)
 			st.gapBefore = S(10)
 			blocks[#blocks + 1] = st
 		end
-		if meowy.LastServer or meowy.OurServerAddress then
+		if meowy.LastServer or meowy.OurServerAddress or meowy.ServerNow then
 			local label = UI.Label(nil, "Main menu")
 			label.gapBefore = S(22)
 			blocks[#blocks + 1] = label
@@ -159,6 +168,15 @@ local function openSettings(startTab)
 			ht.meowyToggle = "menu_home"
 			ht.gapBefore = S(10)
 			blocks[#blocks + 1] = ht
+		end
+		if meowy.ServerNow then
+			local et = UI.Toggle(nil, "Server card in the Escape menu",
+				"In game, the Escape menu shows the server you're on (players, ping, loss, time here), Reconnect, "
+				.. "Copy address, and sliders for master volume, voice volume and field of view.",
+				escapeOn(), function(on) setEscape(on) end)
+			et.meowyToggle = "menu_escape"
+			et.gapBefore = S(10)
+			blocks[#blocks + 1] = et
 		end
 		return blocks
 	end

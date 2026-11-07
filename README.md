@@ -239,6 +239,20 @@ the game closes while the pack is starting, the next start skips it once by itse
   - **Safety:** names are only ever shown as text; a click sends the page's row number, and the
     address comes from the pack's own list.
   - **Turning it off:** in Meowy settings, or `meowy_menu_home 0`.
+- **Server card in the Escape menu.** In game, the same spot in the Escape menu shows the server you're
+  on, any server, plus three quick settings:
+  - **The server:** its name, map and players (its own answer, asked at most every 30 seconds while
+    the menu is open).
+  - **The connection:** ping, packet loss and time here, read from the game engine's own connection.
+    Ping is shown the way `net_graph` shows it.
+  - **Buttons:** **Reconnect** (`retry`), and **Copy** for the address.
+  - **Quick settings:** sliders for master volume (`volume`), voice volume (`voice_scale`) and field of
+    view (`fov_desired`, 75 to 100).
+
+  The address and the server section show only for ours or a public `a.b.c.d:port` (LAN, Steam P2P and
+  singleplayer get the sliders alone). The page can only send a slider's row number and a number back;
+  which convar, and its range, is the pack's own list. `meowy_server_now` prints the engine's reading.
+  Off in Meowy settings, or `meowy_menu_escape 0`.
 - **PC doctor** (1.6+). A tab in the pack's settings (and `meowy_doctor` in the console) with tips for
   the usual reasons the game runs slowly. It only reads; it changes no Windows or game setting, and
   nothing it finds leaves your PC.

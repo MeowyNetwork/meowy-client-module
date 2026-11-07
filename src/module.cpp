@@ -985,6 +985,37 @@ namespace
 		return 1;
 	}
 
+	bool RejoinableAddress(const std::string& address);
+
+	// ServerNow() -> address or nil, round trip ms, loss 0..1, seconds connected
+	// (each nil when unreadable). The address is the engine's own connection,
+	// given only when it's ours or a public a.b.c.d:port (never LAN, loopback or P2P).
+	int ServerNow(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		std::string address;
+		const server_gate::Result r = server_gate::Check(&address);
+		const bool connected = r == server_gate::Result::Allowed || r == server_gate::Result::OtherServer;
+		if (connected && RejoinableAddress(address))
+			LUA->PushString(address.c_str());
+		else
+			LUA->PushNil();
+		double latency = 0, loss = 0, since = 0;
+		if (connected && server_gate::NetStats(latency, loss, since))
+		{
+			LUA->PushNumber(latency * 1000.0);
+			LUA->PushNumber(loss);
+			LUA->PushNumber(since);
+		}
+		else
+		{
+			LUA->PushNil();
+			LUA->PushNil();
+			LUA->PushNil();
+		}
+		return 4;
+	}
+
 	// DataSandbox(onServer): data/ belongs to the server being joined or played
 	// (onServer true), or to the menu (false). See data_sandbox.h. Called every
 	// frame; a switch only happens when the owner changes.
@@ -2172,6 +2203,7 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	SetFunction(LUA, "TakePlayers", Guarded<TakePlayers>);
 	SetFunction(LUA, "IsOurServer", Guarded<IsOurServer>);
 	SetFunction(LUA, "OurServerAddress", Guarded<OurServerAddress>);
+	SetFunction(LUA, "ServerNow", Guarded<ServerNow>);
 	SetFunction(LUA, "OtherServerAddress", Guarded<OtherServerAddress>);
 	SetFunction(LUA, "StatusCaptureBegin", Guarded<StatusCaptureBegin>);
 	SetFunction(LUA, "StatusCaptureEnd", Guarded<StatusCaptureEnd>);
