@@ -207,6 +207,17 @@ here that would touch the game, so it's kept apart:
   under the 2 s gate. Agreed to still prototype it (direct, suspended launch as a measurement harness)
   and decide on the measurement.
 
+**Live, 2026-11-08 (this PC):**
+- *Lazy fonts:* Play from the tray set the folder aside; the game process appeared at 3.8 s and the fonts
+  were back at 7.7 s on the stub's signal ("the pack started after 8.7 s"), not the 45 s fallback. After a
+  join to dev, `meowy_fast_fonts_status` reported "last font pass 424 files", so servers get the fonts.
+- *Start-up* (`measure_startup.ps1`, 5 rounds, medians): game → pack 3.67 s with Faster start on, 5.11 s
+  off, 5.15 s from Steam; click → pack 5.47 s vs 7.16 s from Steam (about 1.7 s, −24%). Same-round pairs,
+  on minus off: −1.34 s median.
+- *Injection (branch `proto/early-entry`):* −0.86 s more (median of 4 pairs) on top of lazy fonts and
+  `-disableluarefresh`, and 1 of 5 early starts never reached the menu. **Shelved**; results in that branch's
+  `launcher/tools/early_entry_results.md`.
+
 ## 10. v2
 
 Agreed order (2026-11-07): servers while GMod is closed → discovery from the index → the pipe. Then the
