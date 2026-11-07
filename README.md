@@ -80,6 +80,14 @@ the game closes while the pack is starting, the next start skips it once by itse
     otherwise the game's own search runs.
   - Turn it off with `meowy_fast_lua_lookup 0` (it switches back at your next disconnect).
     `meowy_fast_lua_lookup_status` shows how many files it found.
+- With "Start with the game" on, the font pass on every join is about twice as fast, on any
+  server. At each map load Garry's Mod registers all ~400 custom font files again, and loads
+  and frees `gdi32.dll` (through the Steam overlay) for every single one, although it's loaded
+  the whole time. The pack hands it the `gdi32.dll` that's already loaded instead: 739-803 ms
+  became 384-386 ms here. Every font is still registered exactly as before.
+  - It changes two entries in `vguimatsurface.dll`'s import table, in memory. No code changes.
+  - Turn it off with `meowy_fast_fonts 0`. `meowy_fast_fonts_status` shows the loads saved and
+    how long the last font pass took.
 - With "Start with the game" on, joins to a Meowy Network server get the pack's own loading
   screen instead of Garry's Mod's. It's a separate window over the game, drawn on its own thread,
   so it keeps moving while the game is busy (Garry's Mod's own screen freezes for most of a join).
@@ -273,9 +281,10 @@ installer/build.ps1 -Win32 build32/Release/gmcl_meowy_win32.dll -Win64 build64/R
 `-DMEOWY_BUILD_TESTS=ON` adds `ipc_smoke`, which checks the Discord connection without the game:
 `ipc_smoke <discord application id> [seconds]`. It also adds `notify_smoke <scratch folder>` (the
 notification rules), `notify_manual` (a real notification on this PC; see `tests/NOTIFY_MANUAL.md`),
-`timeline_smoke` (the Steam Timeline marker rules) and `lua_lookup_smoke [GarrysMod folder] [stub file]`
+`timeline_smoke` (the Steam Timeline marker rules), `lua_lookup_smoke [GarrysMod folder] [stub file]`
 (the fast Lua lookup gives the game's answers on a fake string table, and finds its patch site in the
-installed `client.dll` of the same bitness).
+installed `client.dll` of the same bitness) and `font_loads_smoke <scratch folder>` (the font pass's
+gdi32 loads, on the test's own imports and a real font file).
 
 Staying connected's and the PC doctor's menu Lua is in `src/lua/` (built into the DLL as resources). Their rules and menu
 glue have offline tests, run by CI with Lua 5.1:

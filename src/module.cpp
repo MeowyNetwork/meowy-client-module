@@ -79,6 +79,7 @@
 #include "discord_ipc.h"
 #include "engine_patches.h"
 #include "lua_lookup.h"
+#include "font_loads.h"
 #include "hardware.h"
 #include "connect_watch.h"
 #include "loading_screen.h"
@@ -436,6 +437,32 @@ namespace
 	int FastLuaLookupState(lua_State* L)
 	{
 		L->luabase->PushString(lua_lookup::Describe().c_str());
+		return 1;
+	}
+
+	// meowy.FastFonts(on) -> true | false, reason (font_loads.h). Menu realm
+	// only, like FastLuaLookup.
+	int FastFonts(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		if (!LUA->GetBool(1))
+		{
+			font_loads::Uninstall();
+			LUA->PushBool(true);
+			return 1;
+		}
+		std::string why;
+		const bool ok = font_loads::Install(why);
+		LUA->PushBool(ok);
+		if (ok)
+			return 1;
+		LUA->PushString(why.c_str());
+		return 2;
+	}
+
+	int FastFontsState(lua_State* L)
+	{
+		L->luabase->PushString(font_loads::Describe().c_str());
 		return 1;
 	}
 
@@ -1754,6 +1781,23 @@ concommand.Add("meowy_fast_lua_lookup_status", function()
 	print("[Meowy Client Pack] fast Lua lookup: " .. meowy.FastLuaLookupState())
 end)
 
+-- At every map load the game registers all ~400 custom font files again, and
+-- loads and frees gdi32.dll for each one; the gdi32 that's already loaded is
+-- used instead (font_loads.h).
+local fastFonts = CreateConVar("meowy_fast_fonts", "1", FCVAR_ARCHIVE,
+	"Meowy Client Pack: don't load gdi32.dll again for every font file on each join (0 = the game's own way)")
+local fastFontsApplied
+hook.Add("Think", "MeowyClientPack.FastFonts", function()
+	local want = fastFonts:GetBool()
+	if want == fastFontsApplied or IsInLoading() or IsInGame() then return end
+	fastFontsApplied = want
+	local ok, why = meowy.FastFonts(want)
+	if not ok then print("[Meowy Client Pack] fast fonts: " .. tostring(why)) end
+end)
+concommand.Add("meowy_fast_fonts_status", function()
+	print("[Meowy Client Pack] fast fonts: " .. meowy.FastFontsState())
+end)
+
 local stockGameDetails = GameDetails
 if isfunction(stockGameDetails) then
 	GameDetails = function(name, url, map, maxplayers, visible, steamid, ...)
@@ -1922,6 +1966,8 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	SetFunction(LUA, "DoctorOpen", Guarded<DoctorOpen>);
 	SetFunction(LUA, "FastLuaLookup", Guarded<FastLuaLookup>);
 	SetFunction(LUA, "FastLuaLookupState", Guarded<FastLuaLookupState>);
+	SetFunction(LUA, "FastFonts", Guarded<FastFonts>);
+	SetFunction(LUA, "FastFontsState", Guarded<FastFontsState>);
 	LUA->SetField(-2, "meowy");
 
 	// data/ was put right by the start-up stub (data_sandbox::Recover, under its
