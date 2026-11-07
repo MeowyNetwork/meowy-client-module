@@ -1025,6 +1025,23 @@ namespace
 		return 0;
 	}
 
+	// LoadingBeginOther(ms, name, map): another server's join (meowy_loadingscreen_everywhere),
+	// only once the engine's connection is to it and not one of ours. Its address
+	// (for its own stage times) is the engine's, read here.
+	int LoadingBeginOther(lua_State* L)
+	{
+		std::string address;
+		if (server_gate::Check(&address) != server_gate::Result::OtherServer)
+			return 0;
+#ifdef _WIN32
+		ILuaBase* LUA = L->luabase;
+		loading_screen::BeginOther(DataDir(), LUA->IsType(1, Type::Number) ? LUA->GetNumber(1) : -1,
+			LUA->IsType(2, Type::String) ? LUA->GetString(2) : "", LUA->IsType(3, Type::String) ? LUA->GetString(3) : "", address);
+#endif
+		TimelineLoading(true);
+		return 0;
+	}
+
 	// The server's name, the map and the player's SteamID go to the page only
 	// once the real connection is to one of our servers.
 	int LoadingDetails(lua_State* L)
@@ -2986,6 +3003,10 @@ end
 
 local enabled = meowy.Setting("meowy_loadingscreen", "1",
 	"Meowy Client Pack: our own loading screen when joining Meowy Network (0 = Garry's Mod's)")
+-- Other servers get the same screen, neutral (loading_screen.h BeginOther),
+-- unless they show a loading page of their own: theirs stays.
+local everywhere = meowy.Setting("meowy_loadingscreen_everywhere", "1",
+	"Meowy Client Pack: the pack's loading screen on other servers too: 1 = on servers without a loading page of their own, 2 = on every server, 0 = only on Meowy Network")
 local active, sure, lastStatus, details = false, false, nil, nil
 
 -- The screen's page is loaded ahead (hidden, so a join shows it at once) and
@@ -3124,7 +3145,11 @@ end)
 local stockGameDetails = GameDetails
 if isfunction(stockGameDetails) then
 	GameDetails = function(name, url, map, maxplayers, visible, steamid, ...)
-		details = { tostring(name or ""), tostring(map or ""), tostring(steamid or "") }
+		-- details[4]: the server shows a loading page of its own (as loading.lua decides).
+		local page = isstring(url) and tonumber(maxplayers) and tonumber(maxplayers) > 1
+			and (url:sub(1, 4) == "http" or url:sub(1, 8) == "asset://")
+			and GetConVar("cl_enable_loadingurl") and GetConVar("cl_enable_loadingurl"):GetBool()
+		details = { tostring(name or ""), tostring(map or ""), tostring(steamid or ""), page and true or false }
 		-- The server's name, for the rejoin-after-a-crash card (resilience.lua).
 		meowy.JoiningName = details[1]
 		-- Our own SteamID64, so the server-list reports can leave our row out.
@@ -3143,7 +3168,15 @@ hook.Add("Think", "MeowyClientPack.Loading", function()
 		-- Start as soon as the engine says it's connecting to one of ours; the
 		-- real connection confirms it a moment later (or ends it).
 		local confirmed = meowy.LoadingTarget()
-		if not confirmed and not meowy.LoadingHeadsUp() then return end
+		if not confirmed and not meowy.LoadingHeadsUp() then
+			-- Another server: once the connection says so and its details are in.
+			local mode = everywhere:GetInt()
+			if mode > 0 and details and (mode == 2 or not details[4]) and meowy.LoadingTargetState() == "other" then
+				active, sure, lastStatus = true, true, GetLoadStatus()
+				meowy.LoadingBeginOther((SysTime() - panelSince) * 1000, details[1], details[2])
+			end
+			return
+		end
 		-- Whatever status is showing now is left over from the last join (a retry
 		-- starts on "Ready to play!"), so only changes from here on count.
 		active, sure, lastStatus = true, confirmed, GetLoadStatus()
@@ -3259,6 +3292,7 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	SetFunction(LUA, "LoadingHeadsUp", Guarded<LoadingHeadsUp>);
 	SetFunction(LUA, "LoadingTargetState", Guarded<LoadingTargetState>);
 	SetFunction(LUA, "LoadingBegin", Guarded<LoadingBegin>);
+	SetFunction(LUA, "LoadingBeginOther", Guarded<LoadingBeginOther>);
 	SetFunction(LUA, "LoadingDetails", Guarded<LoadingDetails>);
 	SetFunction(LUA, "LoadingStatus", Guarded<LoadingStatus>);
 	SetFunction(LUA, "LoadingCancelRequested", Guarded<LoadingCancelRequested>);
