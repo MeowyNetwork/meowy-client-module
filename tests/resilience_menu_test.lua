@@ -1192,6 +1192,19 @@ check("shell: on, sent with its script", shellState(w) == "true" and w.shellJS:f
 local sends = w.shellSends
 w.run(3)
 check("shell: sent again each second (the page may be rebuilt)", w.shellSends - sends >= 2, true)
+-- A page that's just loaded (the game starting, a language change) gets the
+-- script on the next frame, not up to a second later; the stock callback still runs.
+local readyCalls = 0
+w.env.pnlMainMenu.HTML.OnDocumentReady = function() readyCalls = readyCalls + 1 end
+w.env.pnlMainMenu.HTML = setmetatable({}, { __index = w.env.pnlMainMenu.HTML })   -- a new browser panel
+w.env.pnlMainMenu.HTML.Callbacks = { ["lua.Run"] = w.stockRun }
+w.run(0.9)   -- bridged and wrapped, and a send since
+sends = w.shellSends
+w.env.pnlMainMenu.HTML:OnDocumentReady("asset://garrysmod/html/menu.html")
+check("shell: the stock page's ready callback still runs", readyCalls, 1)
+w.run(0.1)
+check("shell: a page just loaded gets it on the next frame", w.shellSends - sends, 1)
+check("shell: the new panel bridged too", w.env.pnlMainMenu.HTML.Callbacks["meowy.post"] ~= nil, true)
 check("shell: never a reload", w.loads, nil)
 check("shell: lua.Run left alone (it's the stock page's)", w.env.pnlMainMenu.HTML.Callbacks["lua.Run"], w.stockRun)
 check("shell: the lists reach it", (w.homeJS or ""):find("MeowyShellLists", 1, true) ~= nil and (homeData(w) or ""):find('"Meowy Network"', 1, true) ~= nil, true)

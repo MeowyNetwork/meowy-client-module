@@ -297,7 +297,10 @@ the game closes while the pack is starting, the next start skips it once by itse
   Addons and the rest). The pack's own windows already scale with the screen.
 - **Meowy home screen (preview, off by default).** `meowy_menu 1`, or "Meowy home screen (preview)" in
   Meowy settings, puts the pack's home in place of Garry's Mod's main screen. It has:
-  - **Continue**, and your servers with search, as on the card below;
+  - **Continue**, and your servers, as on the card below;
+  - **one search box** (`/` to get to it) for your servers and your installed maps. A map opens Start new
+    game with that map chosen;
+  - **Garry's Mod's news**, the latest three, from its own feed, opened the way Garry's Mod opens them;
   - **the usual links:** Find servers, Start new game, Addons, Dupes, Saves and Demos are Garry's Mod's own
     screens. Options, Meowy settings and Quit work as usual, and Garry's Mod's bottom bar (Problems,
     games, language, gamemode) stays.
@@ -305,7 +308,8 @@ the game closes while the pack is starting, the next start skips it once by itse
   How it works:
   - **Inside Garry's Mod's own menu page:** nothing is reloaded. While it's on, a style rule hides the
     main screen's list and news, the pack's home takes their place, and the links are the page's own
-    screens, so going there and back is instant.
+    screens, so going there and back is instant. When the page has just loaded (the game starting, a
+    language change), the home goes in on the next frame, so Garry's Mod's own list doesn't flash first.
   - **In game:** the Escape menu is Garry's Mod's, with the server card.
   - **What it can do:** every server's text is shown as text. The home asks the pack for anything only
     through `meowy.post(kind, value)`, a fixed list of message types (join a row, Continue, Options,

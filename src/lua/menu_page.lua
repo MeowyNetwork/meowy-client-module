@@ -70,6 +70,14 @@ local function tick()
 	if html and html ~= bridged and IsValid(html) and html.AddFunction then
 		bridged = html   -- a new menu panel: the bridge goes on it once
 		html:AddFunction("meowy", "post", post)
+		-- A page that's just (re)loaded (the game starting, a language change) is
+		-- Garry's Mod's own until the script arrives: send it on the next frame,
+		-- not up to a second later, so the stock list and news don't flash.
+		local ready = html.OnDocumentReady
+		html.OnDocumentReady = function(self, url, ...)
+			sent, zoomSent, nextLook = nil, nil, 0
+			if ready then return ready(self, url, ...) end
+		end
 	end
 	-- Turned on again: try again, even after "Use Garry's Mod's menu".
 	local on = menuOn()
