@@ -80,6 +80,7 @@
 #include "engine_patches.h"
 #include "lua_lookup.h"
 #include "font_loads.h"
+#include "fs_cache.h"
 #include "file_util.h"
 #include "hardware.h"
 #include "connect_watch.h"
@@ -485,6 +486,38 @@ namespace
 	int FastFontsState(lua_State* L)
 	{
 		L->luabase->PushString(font_loads::Describe().c_str());
+		return 1;
+	}
+
+	// meowy.FastFileChecks(on) -> true | false, reason (fs_cache.h). Menu realm only.
+	int FastFileChecks(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		if (!LUA->GetBool(1))
+		{
+			fs_cache::Uninstall();
+			LUA->PushBool(true);
+			return 1;
+		}
+		std::string why;
+		const bool ok = fs_cache::Install(why);
+		LUA->PushBool(ok);
+		if (ok)
+			return 1;
+		LUA->PushString(why.c_str());
+		return 2;
+	}
+
+	// meowy.FastFileChecksActive(on): the join window.
+	int FastFileChecksActive(lua_State* L)
+	{
+		fs_cache::SetActive(L->luabase->GetBool(1));
+		return 0;
+	}
+
+	int FastFileChecksState(lua_State* L)
+	{
+		L->luabase->PushString(fs_cache::Describe().c_str());
 		return 1;
 	}
 
@@ -1874,6 +1907,31 @@ concommand.Add("meowy_fast_fonts_status", function()
 	print("[Meowy Client Pack] fast fonts: " .. meowy.FastFontsState())
 end)
 
+-- While a join loads, the game looks for each model and material in every
+-- search folder in turn; a folder already read once answers "not there"
+-- without trying to open the file (fs_cache.h). Installed between servers,
+-- active only while a join loads.
+local fastFiles = meowy.Setting("meowy_fast_file_checks", "1",
+	"Meowy Client Pack: answer missing-file checks from folder listings while a server loads (0 = the game's own way)")
+local fastFilesApplied, fastFilesActive
+hook.Add("Think", "MeowyClientPack.FastFileChecks", function()
+	local loading = IsInLoading() and not IsInGame()
+	local want = fastFiles:GetBool()
+	if want ~= fastFilesApplied and not IsInLoading() and not IsInGame() then
+		fastFilesApplied = want
+		local ok, why = meowy.FastFileChecks(want)
+		if not ok then print("[Meowy Client Pack] fast file checks: " .. tostring(why)) end
+	end
+	local active = loading and fastFilesApplied == true
+	if active ~= fastFilesActive then
+		fastFilesActive = active
+		meowy.FastFileChecksActive(active)
+	end
+end)
+concommand.Add("meowy_fast_file_checks_status", function()
+	print("[Meowy Client Pack] fast file checks: " .. meowy.FastFileChecksState())
+end)
+
 -- At the end of a server's Lua start-up the game throws every material away and
 -- loads them all again (5-17 s on a big map). On our servers the server asks the
 -- pack to skip that; this lets a player opt in for every server. Off by default:
@@ -2068,6 +2126,9 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	SetFunction(LUA, "FastLuaLookupNewJoin", Guarded<FastLuaLookupNewJoin>);
 	SetFunction(LUA, "FastFonts", Guarded<FastFonts>);
 	SetFunction(LUA, "FastFontsState", Guarded<FastFontsState>);
+	SetFunction(LUA, "FastFileChecks", Guarded<FastFileChecks>);
+	SetFunction(LUA, "FastFileChecksActive", Guarded<FastFileChecksActive>);
+	SetFunction(LUA, "FastFileChecksState", Guarded<FastFileChecksState>);
 	SetFunction(LUA, "SkipMaterialReloadAnyServer", Guarded<SkipMaterialReloadAnyServer>);
 	SetFunction(LUA, "RestoreMaterialReload", Guarded<RestoreMaterialReload>);
 	SetFunction(LUA, "MaterialReloadState", Guarded<MaterialReloadState>);

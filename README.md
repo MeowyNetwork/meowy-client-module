@@ -72,6 +72,16 @@ the game closes while the pack is starting, the next start skips it once by itse
   - With "Start with the game" on, `meowy_skipmatreload_anyserver 1` skips it on every server you
     join (off by default). On our map that's ~14 s of every join. The catch: a server whose
     downloads replace a material that's already loaded shows the old one until the next map.
+- With "Start with the game" on, the first join of a session is much faster, on any server. While
+  a server loads, Garry's Mod looks for each model and material in every search folder in turn, and
+  most of those looks are for files that aren't there (91% of ~110,000 on our server). The pack reads
+  each folder's list of files once and answers "not there" from it, without asking Windows to open the
+  file. On our server the first join went from 70.6 s to 29-32 s; later joins are unchanged.
+  - It changes the file system's table of functions in memory (one entry), only while a join loads.
+    Folders other things write to during a join (`data`, `download`, `cache`, `cfg`, Steam's workshop
+    folder) are never listed, a write drops that folder's list, and a list kept from an earlier join
+    is used again only if the folder hasn't changed since.
+  - Turn it off with `meowy_fast_file_checks 0`. `meowy_fast_file_checks_status` shows the counts.
 - The pack's own settings (`meowy_loadingscreen`, `meowy_data_sandbox`, `meowy_honest_serverlist`,
   `meowy_serverlist_reports`, `meowy_fast_lua_lookup`, `meowy_fast_fonts`,
   `meowy_skipmatreload_anyserver`) are kept in `%LOCALAPPDATA%\MeowyClientPack\menu_settings.txt`.
@@ -291,8 +301,9 @@ installer/build.ps1 -Win32 build32/Release/gmcl_meowy_win32.dll -Win64 build64/R
 notification rules), `notify_manual` (a real notification on this PC; see `tests/NOTIFY_MANUAL.md`),
 `timeline_smoke` (the Steam Timeline marker rules), `lua_lookup_smoke [GarrysMod folder] [stub file]`
 (the fast Lua lookup gives the game's answers on a fake string table, and finds its patch site in the
-installed `client.dll` of the same bitness) and `font_loads_smoke <scratch folder>` (the font pass's
-gdi32 loads, on the test's own imports and a real font file).
+installed `client.dll` of the same bitness) `font_loads_smoke <scratch folder>` (the font pass's
+gdi32 loads, on the test's own imports and a real font file) and `fs_cache_smoke <scratch folder>` (which
+paths the missing-file cache answers for, and its answers against real folders).
 
 Staying connected's and the PC doctor's menu Lua is in `src/lua/` (built into the DLL as resources). Their rules and menu
 glue have offline tests, run by CI with Lua 5.1:
