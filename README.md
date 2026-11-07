@@ -137,6 +137,20 @@ the game closes while the pack is starting, the next start skips it once by itse
   - It needs the fast file checks (`meowy_fast_file_checks`, on by default) to see which files a join
     opens. Turn it off in Meowy settings ("Get servers ready before you join") or with `meowy_prewarm 0`.
     `meowy_prewarm_status` shows what it has written down and read.
+  - **Workshop items, too.** The same join notes which Workshop items the server had you mount (from the
+    `.gma` files it opens, any size). At the same moments, the menu checks them, and an item that needs it
+    downloads or unpacks on the main menu instead of on the loading screen.
+    - **What needs it:** an item Steam says isn't installed, has an update or is mid-download (read
+      through the game's own `steam_api`), a legacy item whose unpacked copy in `cache\workshop` is gone,
+      or an item whose Workshop version (`steamworks.FileInfo`) is newer than the one installed.
+    - **What happens:** only those go to the menu's own `steamworks.DownloadUGC`, one at a time, so Garry's
+      Mod's download box shows only for real work. It stops asking when a join starts; anything already
+      downloading carries on, and the join uses it. Only for servers you've joined before.
+    - **Measured** on our dev server, fresh start, with one 94 MB legacy item's unpacked copy deleted: the
+      loading screen's Workshop step took 4.7 s without the check and 2.1 s with it (it unpacked the item
+      at the menu; checking all 29 items took 3.0 s). An update day's downloads move the same way.
+    - **Switch:** its own, in Meowy settings ("Update a server's Workshop items before you join",
+      `meowy_prewarm_workshop`, on by default). `meowy_prewarm_status` shows the last check.
 - With "Start with the game" on, joins to a Meowy Network server get the pack's own loading
   screen instead of Garry's Mod's. It's a separate window over the game, drawn on its own thread,
   so it keeps moving while the game is busy (Garry's Mod's own screen freezes for most of a join).

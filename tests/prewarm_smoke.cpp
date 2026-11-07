@@ -94,6 +94,38 @@ int main(int argc, char** argv)
 	Check("the newest kept", prewarm::Recorded(dir, "10.0.0.64:1"));
 	Check("the oldest dropped", !prewarm::Recorded(dir, "10.0.0.0:1"));
 
+	// Workshop items: the item behind a path, in Steam's content folder or the game's cache.
+	Check("workshop id: Steam's content folder",
+		WorkshopId("C:\\Program Files (x86)\\Steam\\steamapps\\workshop\\content\\4000\\3791005669\\meowy_models.gma") == 3791005669ull);
+	Check("workshop id: forward slashes, any case", WorkshopId("d:/SteamLibrary/steamapps/Workshop/Content/4000/248302805/out.gma") == 248302805ull);
+	Check("workshop id: a legacy item's .bin", WorkshopId("c:\\s\\workshop\\content\\4000\\104479467\\x_legacy.bin") == 104479467ull);
+	Check("workshop id: the game's cache", WorkshopId("C:\\gm\\garrysmod\\cache\\workshop\\1311178246.gma") == 1311178246ull);
+	Check("workshop id: not another app's items", WorkshopId("c:\\s\\workshop\\content\\440\\123\\x.gma") == 0);
+	Check("workshop id: not a cache file that isn't a .gma", WorkshopId("c:\\gm\\cache\\workshop\\123.cache") == 0);
+	Check("workshop id: not a folder name without digits", WorkshopId("c:\\s\\workshop\\content\\4000\\abc\\x.gma") == 0);
+	Check("workshop id: not an ordinary file", WorkshopId("c:\\gm\\garrysmod\\maps\\rp_x.bsp") == 0);
+	// Recorded at any size, once each, and kept with the files.
+	const std::string ws1 = "c:\\s\\workshop\\content\\4000\\111\\small.gma";
+	const std::string ws2 = "c:\\gm\\cache\\workshop\\222.gma";
+	prewarm::Opened(ws1.c_str(), 1000);   // not recording yet
+	prewarm::BeginJoin();
+	prewarm::Opened(ws2.c_str(), 5 << 20);
+	prewarm::Opened(ws1.c_str(), 1000);
+	prewarm::Opened(ws1.c_str(), -1);
+	prewarm::Opened("c:\\maps\\m.bsp", 50 << 20);
+	Check("workshop: recording shows in the status", prewarm::Describe().find("2 files, 2 Workshop items") != std::string::npos);
+	Check("workshop: kept with the files", prewarm::EndJoin(dir, "7.7.7.7:27015") == 2);
+	const std::vector<uint64_t> wsItems = prewarm::WorkshopItems(dir, "7.7.7.7:27015");
+	Check("workshop: both items, in the order opened", wsItems.size() == 2 && wsItems[0] == 222 && wsItems[1] == 111);
+	bytes = 0;
+	Check("workshop: the file list's size leaves them out", prewarm::Recorded(dir, "7.7.7.7:27015", &bytes) && bytes == (55ull << 20));
+	Check("workshop: none for another server", prewarm::WorkshopItems(dir, "8.8.8.8:27015").empty());
+	std::vector<uint64_t> wsBack;
+	items.clear();
+	Check("workshop: parse keeps files and items apart",
+		Parse(Format({ { "c:\\a.gma", 2 << 20 } }, { 5, 6 }) + "workshop\tx\r\nworkshop\t\r\n", items, &wsBack)
+		&& items.size() == 1 && wsBack.size() == 2 && wsBack[1] == 6);
+
 	// A warm run over real files on this drive.
 	const std::string f1 = root + "\\w1.gma", f2 = root + "\\w2.gma", f3 = root + "\\gone.gma";
 	Put(f1, 3 << 20);

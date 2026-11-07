@@ -27,10 +27,14 @@ namespace
 	constexpr size_t kKeepServers = 60;            // lists kept; the oldest go first
 	constexpr DWORD kChunk = 1 << 20;              // read size
 
+	constexpr size_t kMaxWorkshop = 2000;          // Workshop items per server
+
 	std::mutex g_mutex;
 	std::vector<Item> g_join;                      // this join's files, in the order opened
 	std::unordered_set<std::string> g_seen;
-	bool g_recording = false;
+	std::vector<uint64_t> g_joinWorkshop;          // this join's Workshop items, in the order opened
+	std::unordered_set<uint64_t> g_seenWorkshop;
+	std::atomic<bool> g_recording{ false };        // written under g_mutex; read without it first
 
 	// The warming thread: one at a time; a new Start (or Cancel) moves the
 	// generation on and the old thread stops at its next read.
@@ -151,10 +155,10 @@ namespace prewarm
 			return dir + L"\\joins\\" + name + L".txt";
 		}
 
-		bool Parse(const std::string& text, std::vector<Item>& out)
+		bool Parse(const std::string& text, std::vector<Item>& out, std::vector<uint64_t>* workshop)
 		{
 			size_t pos = 0;
-			while (pos < text.size() && out.size() < kMaxItems)
+			while (pos < text.size())
 			{
 				size_t end = text.find('\n', pos);
 				if (end == std::string::npos)
@@ -166,18 +170,30 @@ namespace prewarm
 				const size_t tab = line.rfind('\t');
 				if (tab == std::string::npos || tab == 0)
 					continue;
+				const char* value = line.c_str() + tab + 1;
+				if (line.compare(0, tab, "workshop") == 0)
+				{
+					char* stop = nullptr;
+					const unsigned long long id = std::strtoull(value, &stop, 10);
+					if (workshop && *value >= '0' && *value <= '9' && stop && !*stop && id && workshop->size() < kMaxWorkshop)
+						workshop->push_back(id);
+					continue;
+				}
 				char* stop = nullptr;
-				const long long size = std::strtoll(line.c_str() + tab + 1, &stop, 10);
-				if (!stop || *stop || size < kMinSize)
+				const long long size = std::strtoll(value, &stop, 10);
+				if (!stop || *stop || size < kMinSize || out.size() >= kMaxItems)
 					continue;
 				out.push_back({ line.substr(0, tab), static_cast<int64_t>(size) });
 			}
 			return !out.empty();
 		}
 
-		std::string Format(const std::vector<Item>& items)
+		std::string Format(const std::vector<Item>& items, const std::vector<uint64_t>& workshop)
 		{
+			// Workshop items first: they're few and short, so the byte cap never drops them.
 			std::string out;
+			for (uint64_t id : workshop)
+				out += "workshop\t" + std::to_string(static_cast<unsigned long long>(id)) + "\r\n";
 			for (const Item& it : items)
 			{
 				if (it.path.find_first_of("\t\r\n") != std::string::npos)
@@ -188,6 +204,41 @@ namespace prewarm
 				out += line;
 			}
 			return out;
+		}
+
+		uint64_t WorkshopId(const std::string& path)
+		{
+			std::string p = path;
+			for (char& c : p)
+			{
+				if (c == '/')
+					c = '\\';
+				else if (c >= 'A' && c <= 'Z')
+					c = static_cast<char>(c - 'A' + 'a');
+			}
+			const auto digitsAt = [&](size_t at, size_t& end) -> uint64_t {
+				end = at;
+				uint64_t id = 0;
+				while (end < p.size() && p[end] >= '0' && p[end] <= '9' && end - at < 19)
+					id = id * 10 + static_cast<uint64_t>(p[end++] - '0');
+				return end > at ? id : 0;
+			};
+			size_t end = 0;
+			static const std::string kContent = "\\workshop\\content\\4000\\";
+			size_t at = p.find(kContent);
+			if (at != std::string::npos)
+			{
+				const uint64_t id = digitsAt(at + kContent.size(), end);
+				return (id && end < p.size() && p[end] == '\\') ? id : 0;
+			}
+			static const std::string kCache = "\\cache\\workshop\\";
+			at = p.find(kCache);
+			if (at != std::string::npos)
+			{
+				const uint64_t id = digitsAt(at + kCache.size(), end);
+				return (id && p.compare(end, std::string::npos, ".gma") == 0) ? id : 0;
+			}
+			return 0;
 		}
 
 		int NoSeekPenalty(const std::wstring& path)
@@ -222,12 +273,17 @@ namespace prewarm
 
 	void Opened(const char* path, int64_t size)
 	{
-		if (!path || size < kMinSize)
+		if (!path || !g_recording.load(std::memory_order_relaxed))
+			return;
+		const uint64_t workshop = detail::WorkshopId(path);
+		if (size < kMinSize && !workshop)
 			return;
 		std::lock_guard<std::mutex> lock(g_mutex);
-		if (!g_recording || g_join.size() >= kMaxItems)
+		if (!g_recording)
 			return;
-		if (g_seen.insert(path).second)
+		if (workshop && g_joinWorkshop.size() < kMaxWorkshop && g_seenWorkshop.insert(workshop).second)
+			g_joinWorkshop.push_back(workshop);
+		if (size >= kMinSize && g_join.size() < kMaxItems && g_seen.insert(path).second)
 			g_join.push_back({ path, size });
 	}
 
@@ -237,6 +293,8 @@ namespace prewarm
 		std::lock_guard<std::mutex> lock(g_mutex);
 		g_join.clear();
 		g_seen.clear();
+		g_joinWorkshop.clear();
+		g_seenWorkshop.clear();
 		g_recording = true;
 	}
 
@@ -244,20 +302,23 @@ namespace prewarm
 	{
 #ifdef _WIN32
 		std::vector<Item> items;
+		std::vector<uint64_t> workshop;
 		{
 			std::lock_guard<std::mutex> lock(g_mutex);
 			if (!g_recording)
 				return 0;
 			g_recording = false;
 			items.swap(g_join);
+			workshop.swap(g_joinWorkshop);
 			g_seen.clear();
+			g_seenWorkshop.clear();
 		}
 		const std::wstring file = detail::FileFor(dir, address);
 		if (items.empty() || file.empty())
 			return 0;
 		const std::wstring joins = dir + L"\\joins";
 		CreateDirectoryW(joins.c_str(), nullptr);
-		if (!file_util::WriteAtomic(file, detail::Format(items)))
+		if (!file_util::WriteAtomic(file, detail::Format(items, workshop)))
 			return 0;
 		Prune(joins);
 		return static_cast<int>(items.size());
@@ -283,6 +344,16 @@ namespace prewarm
 			*bytes = total;
 		}
 		return true;
+	}
+
+	std::vector<uint64_t> WorkshopItems(const std::wstring& dir, const std::string& address)
+	{
+		std::vector<Item> items;
+		std::vector<uint64_t> workshop;
+		const std::wstring file = detail::FileFor(dir, address);
+		if (!file.empty())
+			detail::Parse(file_util::ReadSmall(file, kMaxListBytes), items, &workshop);
+		return workshop;
 	}
 
 	bool Start(const std::wstring& dir, const std::string& address, uint64_t budget, std::string& why)
@@ -357,7 +428,8 @@ namespace prewarm
 			out = g_lastResult.empty() ? "idle" : g_lastResult;
 		}
 		if (g_recording)
-			out += "; recording this join: " + std::to_string(g_join.size()) + " files";
+			out += "; recording this join: " + std::to_string(g_join.size()) + " files, " +
+				std::to_string(g_joinWorkshop.size()) + " Workshop items";
 		return out;
 	}
 }
