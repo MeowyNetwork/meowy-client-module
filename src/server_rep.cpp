@@ -404,6 +404,48 @@ namespace server_rep
 		Log(line);
 	}
 
+	std::string Exchange(const std::string& address, char kind, bool& answered)
+	{
+		answered = false;
+		sockaddr_in to;
+		std::string reply;
+		SOCKET s = INVALID_SOCKET;
+		if (!ParsePublicAddress(address, to) || (s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) == INVALID_SOCKET)
+			return reply;
+		DWORD timeout = 1500;
+		setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
+		// Connected: datagrams from anyone but the server are dropped.
+		if (connect(s, (sockaddr*)&to, sizeof(to)) == 0)
+		{
+			char req[9] = { '\xff', '\xff', '\xff', '\xff', kind, '\xff', '\xff', '\xff', '\xff' };
+			// Up to two challenge rounds and one resend after a lost packet.
+			int challenges = 0, resends = 0;
+			while (challenges + resends < 4)
+			{
+				send(s, req, sizeof(req), 0);
+				reply = Receive(s);
+				if (reply.empty())
+				{
+					if (++resends > 1)
+						break;
+					continue;
+				}
+				answered = true;
+				if (reply.size() >= 9 && reply[4] == 'A' && ++challenges <= 2)
+				{
+					memcpy(req + 5, reply.data() + 5, 4); // the challenge, then ask again
+					reply.clear();
+					continue;
+				}
+				break;
+			}
+		}
+		closesocket(s);
+		if (reply.size() >= 5 && reply[4] == 'A')
+			reply.clear();   // still a challenge after two rounds
+		return reply;
+	}
+
 	void Capture(const char* message)
 	{
 		if (!g_capturing || !message)

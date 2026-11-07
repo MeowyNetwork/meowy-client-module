@@ -145,7 +145,21 @@ the game closes while the pack is starting, the next start skips it once by itse
       or an item whose Workshop version (`steamworks.FileInfo`) is newer than the one installed.
     - **What happens:** only those go to the menu's own `steamworks.DownloadUGC`, one at a time, so Garry's
       Mod's download box shows only for real work. It stops asking when a join starts; anything already
-      downloading carries on, and the join uses it. Only for servers you've joined before.
+      downloading carries on, and the join uses it.
+    - **Servers you've never joined** (the content platform, `docs/CONTENT_PLATFORM.md`): a server can say
+      which Workshop items its join will ask for, in a `meowy_content` rule the game's standard server query
+      returns (Meowy Network's servers do). The pack reads it at the same moments, for any server, and adds
+      what the last join learned.
+      - Meowy Network's servers and servers you've joined before are got ready without asking: a first join
+        then only checks the items instead of downloading them on the loading screen. Measured on our dev
+        server with ~600 MB of Workshop content this PC didn't have: in game after 27.2 s instead of ~51.9 s.
+        The content had downloaded at the main menu in 14.6 s, and each prepared item cost the join 0.03 s.
+      - Any other server's row (the home card, and the server picked in Find servers) shows **Get ready ·
+        1.3 GB** instead; nothing downloads until you click it. Over 4 GB always waits for the click.
+      - While it downloads, the row shows **Getting ready · 412 MB of 1.3 GB**. `meowy_content_get_ready
+        <address>` does the same from the console.
+      - The rule is only a list of Workshop IDs: all it can make the pack do is download Workshop items, which
+        Steam checks and the join checks again. The query is the one the server browser already makes.
     - **Measured** on our dev server, fresh start, with one 94 MB legacy item's unpacked copy deleted: the
       loading screen's Workshop step took 4.7 s without the check and 2.1 s with it (it unpacked the item
       at the menu; checking all 29 items took 3.0 s). An update day's downloads move the same way.

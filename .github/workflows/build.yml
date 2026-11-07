@@ -28,6 +28,7 @@ jobs:
           lua5.1 tests/doctor_logic_test.lua
           lua5.1 tests/home_logic_test.lua
           lua5.1 tests/console_logic_test.lua
+          lua5.1 tests/content_logic_test.lua
           node tests/home_page_test.js
 
   windows:
@@ -97,6 +98,13 @@ jobs:
           ./buildtest/Release/server_query_smoke.exe
           cmake --build buildtest32 --config Release --target server_query_smoke
           ./buildtest32/Release/server_query_smoke.exe
+
+      - name: Content platform adverts (content_advert_smoke, both bitnesses)
+        run: |
+          cmake --build buildtest --config Release --target content_advert_smoke
+          ./buildtest/Release/content_advert_smoke.exe
+          cmake --build buildtest32 --config Release --target content_advert_smoke
+          ./buildtest32/Release/content_advert_smoke.exe
 
       - name: Font pass gdi32 loads (font_loads_smoke, both bitnesses)
         run: |

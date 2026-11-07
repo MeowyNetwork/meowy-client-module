@@ -37,6 +37,13 @@ namespace server_rep
 	// (ok false: "answered" says whether the server replied at all)
 	std::string TakePlayers();
 
+	// One A2S request of `kind` ('V' rules, 'U' players) to a public
+	// "a.b.c.d:port", with the challenge rounds newer servers ask for: the
+	// reply with split packets joined, or "" (`answered` says whether the server
+	// replied at all). Blocks for up to ~8 s: call it on a worker thread, after
+	// WSAStartup.
+	std::string Exchange(const std::string& address, char kind, bool& answered);
+
 	// Console capture for `status`: Begin clears and starts, End returns what
 	// was printed in between (at most 64 KB) and stops.
 	void CaptureBegin();

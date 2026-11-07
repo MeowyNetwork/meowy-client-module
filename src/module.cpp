@@ -110,6 +110,7 @@
 #include "console_capture.h"
 #include "server_query.h"
 #include "steam_ugc.h"
+#include "content_advert.h"
 #include "resilience.h"
 #include "doctor.h"
 #include "startup_hook.h"
@@ -1576,22 +1577,26 @@ namespace
 		return 1;
 	}
 
+	// A Workshop ID passed as a decimal string (steamworks' way), or 0.
+	uint64_t WorkshopIdArg(ILuaBase* LUA, int at)
+	{
+		const char* s = LUA->IsType(at, Type::String) ? LUA->GetString(at) : nullptr;
+		uint64_t id = 0;
+		for (const char* p = s; p && *p; ++p)
+		{
+			if (*p < '0' || *p > '9' || id > 1000000000000000000ull)
+				return 0;
+			id = id * 10 + static_cast<uint64_t>(*p - '0');
+		}
+		return id;
+	}
+
 	// WorkshopItemState(id) -> installed, needsUpdate, busy, legacy, updated |
 	// nil: what Steam knows about a Workshop item here (steam_ugc.h). Read-only.
 	int WorkshopItemState(lua_State* L)
 	{
 		ILuaBase* LUA = L->luabase;
-		const char* s = LUA->IsType(1, Type::String) ? LUA->GetString(1) : nullptr;
-		uint64_t id = 0;
-		for (const char* p = s; p && *p; ++p)
-		{
-			if (*p < '0' || *p > '9' || id > 1000000000000000000ull)
-			{
-				id = 0;
-				break;
-			}
-			id = id * 10 + static_cast<uint64_t>(*p - '0');
-		}
+		const uint64_t id = WorkshopIdArg(LUA, 1);
 		steam_ugc::ItemState st;
 		if (!id || !steam_ugc::State(id, st))
 		{
@@ -1604,6 +1609,66 @@ namespace
 		LUA->PushBool(st.legacy);
 		LUA->PushNumber(static_cast<double>(st.updated));
 		return 5;
+	}
+
+	// WorkshopItemProgress(id) -> bytes done, bytes in all | nil: a download's
+	// progress, as Steam reports it (steam_ugc.h). Read-only.
+	int WorkshopItemProgress(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		const uint64_t id = WorkshopIdArg(LUA, 1);
+		uint64_t done = 0, total = 0;
+		if (!id || !steam_ugc::Progress(id, done, total))
+		{
+			LUA->PushNil();
+			return 1;
+		}
+		LUA->PushNumber(static_cast<double>(done));
+		LUA->PushNumber(static_cast<double>(total));
+		return 2;
+	}
+
+	// --- Content platform (content_advert.h, docs/CONTENT_PLATFORM.md) ------------
+	// ContentAsk(address) -> true | false: read a public server's `meowy_content`
+	// rule (A2S_RULES) on a worker thread.
+	int ContentAsk(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		LUA->PushBool(LUA->IsType(1, Type::String) && content_advert::Ask(LUA->GetString(1)));
+		return 1;
+	}
+
+	// ContentTake() -> { { address =, answered = bool, value = string | nil }, ... }:
+	// the answers since the last call. `value` is the server's own text
+	// (printable ASCII, at most 4 KB); content_logic.lua checks it.
+	int ContentTake(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		const std::vector<content_advert::Answer> answers = content_advert::Take();
+		LUA->CreateTable();
+		int i = 0;
+		for (const content_advert::Answer& a : answers)
+		{
+			LUA->PushNumber(++i);
+			LUA->CreateTable();
+			LUA->PushString(a.address.c_str());
+			LUA->SetField(-2, "address");
+			LUA->PushBool(a.answered);
+			LUA->SetField(-2, "answered");
+			if (a.found)
+			{
+				LUA->PushString(a.value.c_str(), static_cast<unsigned int>(a.value.size()));
+				LUA->SetField(-2, "value");
+			}
+			LUA->SetTable(-3);
+		}
+		return 1;
+	}
+
+	int ContentState(lua_State* L)
+	{
+		L->luabase->PushString(content_advert::Describe().c_str());
+		return 1;
 	}
 
 	int PrewarmCancel(lua_State*)
@@ -1962,10 +2027,15 @@ namespace
 		// home.lua in a function of its own, which sees resilience.lua's locals).
 		std::string homeLogic = ResourceText(IDR_HOME_LOGIC_LUA);
 		std::string homeGlue = ResourceText(IDR_HOME_LUA);
+		// The content platform's rules (content_logic.lua as `Content`), which
+		// home.lua uses to prepare a server's Workshop items before a join.
+		std::string contentLogic = ResourceText(IDR_CONTENT_LOGIC_LUA);
 		std::string home;
-		if (!homeLogic.empty() && !homeGlue.empty())
+		if (!homeLogic.empty() && !homeGlue.empty() && !contentLogic.empty())
 		{
-			home = "\nlocal Home = (function(...)\n" + homeLogic + "\nend)(Logic);\n(function()\n" + homeGlue + "\nend)();\n";
+			home = "\nlocal Home = (function(...)\n" + homeLogic + "\nend)(Logic);\n"
+				"local Content = (function()\n" + contentLogic + "\nend)();\n"
+				"(function()\n" + homeGlue + "\nend)();\n";
 			// Our own main menu page (preview, menu_page.lua), in a function of its own too.
 			std::string menuPage = ResourceText(IDR_MENU_PAGE_LUA);
 			if (!menuPage.empty())
@@ -2879,6 +2949,10 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	SetFunction(LUA, "PrewarmStart", Guarded<PrewarmStart>);
 	SetFunction(LUA, "PrewarmWorkshop", Guarded<PrewarmWorkshop>);
 	SetFunction(LUA, "WorkshopItemState", Guarded<WorkshopItemState>);
+	SetFunction(LUA, "WorkshopItemProgress", Guarded<WorkshopItemProgress>);
+	SetFunction(LUA, "ContentAsk", Guarded<ContentAsk>);
+	SetFunction(LUA, "ContentTake", Guarded<ContentTake>);
+	SetFunction(LUA, "ContentState", Guarded<ContentState>);
 	SetFunction(LUA, "PrewarmCancel", Guarded<PrewarmCancel>);
 	SetFunction(LUA, "ConsoleCaptureStart", Guarded<ConsoleCaptureStart>);
 	SetFunction(LUA, "ConsoleRead", Guarded<ConsoleRead>);
