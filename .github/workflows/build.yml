@@ -109,6 +109,12 @@ jobs:
           ./buildtest/Release/prewarm_smoke.exe "$env:RUNNER_TEMP"
           cmake --build buildtest32 --config Release --target prewarm_smoke
           ./buildtest32/Release/prewarm_smoke.exe "$env:RUNNER_TEMP"
+      - name: Mouse confine rules (mouse_confine_smoke, both bitnesses)
+        run: |
+          cmake --build buildtest --config Release --target mouse_confine_smoke
+          ./buildtest/Release/mouse_confine_smoke.exe
+          cmake --build buildtest32 --config Release --target mouse_confine_smoke
+          ./buildtest32/Release/mouse_confine_smoke.exe
       - name: LZMA pak cache (pak_cache_smoke, both bitnesses)
         run: |
           cmake --build buildtest --config Release --target pak_cache_smoke

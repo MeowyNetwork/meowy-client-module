@@ -47,6 +47,7 @@ add_library(meowy SHARED
 	src/resilience_net.cpp
 	src/config_backup.cpp
 	src/doctor.cpp
+	src/mouse_confine.cpp
 	src/audio_watch.cpp
 	src/startup_hook.cpp)
 target_include_directories(meowy PRIVATE ${gmod_module_base_SOURCE_DIR}/include)
@@ -168,6 +169,13 @@ if(MEOWY_BUILD_TESTS)
 	endif()
 	# PC doctor's native facts (adapters, GPU time per adapter, power), no game:
 	#   doctor_smoke
+	# Holding the mouse inside the game: when it clips (no real clipping):
+	#   mouse_confine_smoke
+	add_executable(mouse_confine_smoke tests/mouse_confine_smoke.cpp src/mouse_confine.cpp)
+	if(MSVC)
+		set_property(TARGET mouse_confine_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+		target_compile_options(mouse_confine_smoke PRIVATE /W4 /utf-8)
+	endif()
 	# Sound devices: the default output and mics as the PC doctor shows them, and the watch:
 	#   audio_watch_smoke [seconds to watch]
 	add_executable(audio_watch_smoke tests/audio_watch_smoke.cpp src/audio_watch.cpp)
