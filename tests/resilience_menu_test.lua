@@ -2122,6 +2122,17 @@ guardSession(w, { mat_specular = "0", r_3dsky = "0" }, { address = OURS, name = 
 w.run(5)
 check("settings guard: our own server, no prompt", promptTitle(w), nil)
 check("settings guard: our own server, nothing put back", #w.consoleRuns, 0)
+-- A join cut short while loading (never in game): the server is still named.
+w = world({ settings = ON, menu = true })
+w.cvars.cl_new_impact_effects = "0"
+w.otherNow, w.state, w.loading = "5.6.7.8:27015", "other", true
+w.env.meowy.JoiningName = "Bar RP"
+w.run(1)
+w.cvars.cl_new_impact_effects = "1"
+w.run(1)
+w.state, w.loading = "none", false
+w.run(5)
+check("settings guard: a join cut short still names the server", promptTitle(w), "Bar RP changed 1 of your settings")
 -- The copies' commands.
 w = world({ settings = ON, menu = true })
 w.backupList = { { name = "config-20261107-120000.cfg", when = "2026-11-07 12:00:00", size = 100 } }

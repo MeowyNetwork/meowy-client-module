@@ -77,9 +77,12 @@ hook.Add("Think", "MeowyClientPack.SettingsGuard", function()
 		if not session and guardOn() then session = { snap = Guard.snapshot(cvar) } end
 		if session then
 			session.menuSince = nil
-			if inGame and not loading then
-				local address = meowy.ServerNow and meowy.ServerNow()
-				if isstring(address) then session.address = address end
+			-- From the moment the connection is up, loading included: a join cut
+			-- short still names the server (measured: one left a setting changed
+			-- after 4 minutes of loading, never in game).
+			local address = meowy.ServerNow and meowy.ServerNow()
+			if isstring(address) then
+				session.address = address
 				if isstring(meowy.JoiningName) and meowy.JoiningName ~= "" then session.name = meowy.JoiningName end
 			end
 		end
