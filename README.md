@@ -83,7 +83,7 @@ the game closes while the pack is starting, the next start skips it once by itse
     is used again only if the folder hasn't changed since.
   - Turn it off with `meowy_fast_file_checks 0`. `meowy_fast_file_checks_status` shows the counts.
 - The pack's own settings (`meowy_loadingscreen`, `meowy_data_sandbox`, `meowy_honest_serverlist`,
-  `meowy_serverlist_reports`, `meowy_fast_lua_lookup`, `meowy_fast_fonts`,
+  `meowy_serverlist_reports`, `meowy_fast_lua_lookup`, `meowy_fast_lua_find`, `meowy_fast_fonts`,
   `meowy_skipmatreload_anyserver`) are kept in `%LOCALAPPDATA%\MeowyClientPack\menu_settings.txt`.
   The game doesn't save the main menu's settings itself, so before this they were back to their
   defaults at every start.
@@ -98,6 +98,21 @@ the game closes while the pack is starting, the next start skips it once by itse
     otherwise the game's own search runs.
   - Turn it off with `meowy_fast_lua_lookup 0` (it switches back at your next disconnect).
     `meowy_fast_lua_lookup_status` shows how many files it found.
+- With "Start with the game" on, `file.Find` on a server's Lua is 35–90 times faster, on any server.
+  Addon loaders call it a few hundred times while a server's Lua starts. For every search folder,
+  Garry's Mod copies each name in the server's file list into a new string, tests it against the
+  pattern and throws it away: 13–17 ms per call, even for a folder that doesn't exist. Only names that
+  start with the pattern's fixed part (everything before the first `*` or `?`) can pass that test. So
+  the pack hands the game's loop just those names, from a sorted copy of the list, in the same order,
+  and the game's own code does the rest.
+  - Measured on our dev server with its own Lua-find cache switched off (as on any other server): a
+    call went from 14.4 to 0.38 ms, and a join from 21.7–22.1 s to 13.1–15.5 s. The results of 30
+    patterns were identical byte for byte, with and without it.
+  - It changes 31 + 34 bytes (64-bit) or 23 + 29 bytes (32-bit) of `client.dll` in memory. It does
+    nothing unless the loop, its wildcard test and the matcher behind it are exactly the expected
+    code and the list is the engine's own; otherwise the game's own loop runs.
+  - Turn it off with `meowy_fast_lua_find 0` (it switches at your next disconnect).
+    `meowy_fast_lua_find_status` shows the walks and the names skipped.
 - With "Start with the game" on, the font pass on every join is about twice as fast, on any
   server. At each map load Garry's Mod registers all ~400 custom font files again, and loads
   and frees `gdi32.dll` (through the Steam overlay) for every single one, although it's loaded

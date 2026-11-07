@@ -20,6 +20,7 @@ add_library(meowy SHARED
 	src/hardware.cpp
 	src/engine_patches.cpp
 	src/lua_lookup.cpp
+	src/lua_find.cpp
 	src/font_loads.cpp
 	src/fs_cache.cpp
 	src/server_gate.cpp
@@ -183,6 +184,14 @@ if(MEOWY_BUILD_TESTS)
 	if(MSVC)
 		set_property(TARGET lua_lookup_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 		target_compile_options(lua_lookup_smoke PRIVATE /W4 /utf-8)
+	endif()
+	# The fast file.Find on "LUA": the walk visits every entry the game's matcher
+	# accepts, in order, on a fake table; and the loop found in the installed client.dll:
+	#   lua_find_smoke [GarrysMod folder] [file to write the stubs to]
+	add_executable(lua_find_smoke tests/lua_find_smoke.cpp src/lua_find.cpp)
+	if(MSVC)
+		set_property(TARGET lua_find_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+		target_compile_options(lua_find_smoke PRIVATE /W4 /utf-8)
 	endif()
 	# The missing-file cache's rules against real folders, no game:
 	#   fs_cache_smoke <scratch folder>
