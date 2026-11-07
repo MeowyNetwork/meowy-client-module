@@ -17,10 +17,16 @@
 // first, and emptied when the join ends. Outside a join it passes straight
 // through. The call site is found by its exact instructions (both builds);
 // anything else and nothing is changed.
+//
+// Ahead: on a join's first LZMA read, worker threads read the map's pak
+// (garrysmod\cache\map_pack.bsp, which the game writes as the map loads) and
+// decompress its entries into the cache, so the main thread finds them done; it
+// waits for one a worker is on rather than decompress it again.
 
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace pak_cache
 {
@@ -49,8 +55,19 @@ namespace pak_cache
 		void SetCap(size_t total, size_t perEntry);
 		void Clear();
 		void SetActiveForTest(bool on);
-		struct Stats { uint64_t hits, misses; uint64_t savedBytes; size_t heldBytes, entries; };
+		unsigned GenerationForTest();
+		struct Stats { uint64_t hits, misses; uint64_t savedBytes; size_t heldBytes, entries; uint64_t prefetched, waited; };
 		Stats Get();
+
+		// Ahead of the game (the map's pak, garrysmod\cache\map_pack.bsp): its
+		// LZMA entries, read from the zip directory of a BSP's pakfile lump (or a
+		// plain zip), decompressed by `threads` workers into the cache while join
+		// `gen` is still loading. A main-thread read of an entry a worker is on
+		// waits for it (3 s at most) instead of doing it again. Returns how many
+		// entries the workers decompressed.
+		struct PakEntry { uint64_t local; size_t csize, usize; };
+		bool PakEntries(const std::wstring& path, std::vector<PakEntry>& out, std::string& why);
+		size_t PrefillFile(const std::wstring& path, Decoder original, unsigned threads, unsigned gen, std::string& why);
 		uint64_t Hash(const uint8_t* p, size_t n, uint64_t seed = 0);
 	}
 }
