@@ -126,6 +126,12 @@ local function world(opts)
 		end,
 		ConsoleState = function() return "spew function; 3 lines kept" end,
 		ConsoleRun = function(line) w.consoleRuns = w.consoleRuns or {} w.consoleRuns[#w.consoleRuns + 1] = line return not w.noEngine end,
+		-- Windows' default output changes so far (w.audioChanges); nil when it can't be watched.
+		AudioChanges = function()
+			w.audioAsks = (w.audioAsks or 0) + 1
+			if opts.noAudio then return nil end
+			return w.audioChanges or 0
+		end,
 		-- Copies of config.cfg: made (w.backups counts), listed (w.backupList), put back (w.restored).
 		ConfigBackup = function() w.backups = (w.backups or 0) + 1 return true, "copied" end,
 		ConfigBackups = function() return w.backupList or {} end,
@@ -2240,6 +2246,38 @@ check("errors: disable offered at the menu", disableButton ~= nil, true)
 if disableButton then disableButton.DoClick() end
 check("errors: disabling asks first", w.mounted, nil)
 
+-- Sound follows Windows' default output: snd_restart 1.5 s after a change, not
+-- while a join loads, at most once every 10 s.
+local function restarts(w) local n = 0 for _, l in ipairs(w.consoleRuns or {}) do if l == "snd_restart" then n = n + 1 end end return n end
+w = world({ settings = ON, menu = true })
+w.run(2)
+check("audio: nothing changed, nothing run", restarts(w), 0)
+w.audioChanges = 1
+w.run(1)
+check("audio: not at once", restarts(w), 0)
+w.run(1)
+check("audio: restarted 1.5 s after the change", restarts(w), 1)
+w.audioChanges = 2
+w.run(3)
+check("audio: another change within 10 s waits", restarts(w), 1)
+w.run(8)
+check("audio: then restarted once more", restarts(w), 2)
+w.run(20)
+check("audio: once per change", restarts(w), 2)
+w.loading, w.audioChanges = true, 3
+w.run(3)
+check("audio: not while a join loads", restarts(w), 2)
+w.loading = false
+w.run(10)
+check("audio: after the join", restarts(w), 3)
+w = world({ settings = ON, menu = true, convars = { meowy_audio_follow = "0" } })
+w.run(1)
+w.audioChanges = 1
+w.run(15)
+check("audio: off, never restarted", restarts(w), 0)
+w = world({ settings = ON, menu = true, noAudio = true })
+w.run(5)
+check("audio: can't be watched, asked once", w.audioAsks, 1)
 -- The settings guard: a session from a join's start until a few seconds back
 -- at the menu (not reconnecting); what changed is listed, put back in one click.
 local function guardSession(w, changes, opts)
