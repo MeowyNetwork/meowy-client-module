@@ -107,7 +107,7 @@ set_target_properties(meowy PROPERTIES
 # DLL is what lua/includes/menu.lua requires; it loads gmcl_meowy (src/boot).
 if(WIN32)
 	# data_sandbox too: the stub puts garrysmod/data right even when the pack doesn't start.
-	add_library(meowy_boot SHARED src/boot/boot.cpp src/data_sandbox.cpp src/file_util.cpp src/pack_versions.cpp)
+	add_library(meowy_boot SHARED src/boot/boot.cpp src/boot/boot.rc src/data_sandbox.cpp src/file_util.cpp src/pack_versions.cpp)
 	target_link_libraries(meowy_boot PRIVATE bcrypt)
 	target_include_directories(meowy_boot PRIVATE ${gmod_module_base_SOURCE_DIR}/include)
 	if(MSVC)

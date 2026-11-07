@@ -1,0 +1,30 @@
+// The version resource both DLLs carry (version.h). Included by meowy.rc and
+// boot/boot.rc with MEOWY_FILE_DESCRIPTION defined first.
+#include <winver.h>
+#include "version.h"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION MEOWY_VERSION_MAJOR, MEOWY_VERSION_MINOR, MEOWY_VERSION_PATCH, 0
+ PRODUCTVERSION MEOWY_VERSION_MAJOR, MEOWY_VERSION_MINOR, MEOWY_VERSION_PATCH, 0
+ FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
+ FILEFLAGS 0x0L
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_DLL
+ FILESUBTYPE VFT2_UNKNOWN
+BEGIN
+	BLOCK "StringFileInfo"
+	BEGIN
+		BLOCK "040904b0"
+		BEGIN
+			VALUE "CompanyName", "Meowy Network"
+			VALUE "FileDescription", MEOWY_FILE_DESCRIPTION
+			VALUE "FileVersion", MEOWY_VERSION
+			VALUE "ProductName", "Meowy Client Pack"
+			VALUE "ProductVersion", MEOWY_VERSION
+		END
+	END
+	BLOCK "VarFileInfo"
+	BEGIN
+		VALUE "Translation", 0x409, 1200
+	END
+END

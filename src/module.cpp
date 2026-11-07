@@ -108,6 +108,7 @@
 #include "prewarm.h"
 #include "pak_cache.h"
 #include "policy.h"
+#include "version.h"
 #include "updater.h"
 #include "mouse_confine.h"
 #include "config_backup.h"
@@ -137,7 +138,7 @@ using namespace GarrysMod::Lua;
 
 namespace
 {
-	const char* const VERSION = "1.6.0";
+	const char* const VERSION = MEOWY_VERSION;   // version.h, also the DLL's version resource
 
 	// Discord's own limits; anything longer makes it reject the whole activity.
 	constexpr size_t MAX_TEXT = 128;
