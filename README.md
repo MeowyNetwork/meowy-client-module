@@ -216,7 +216,10 @@ the game closes while the pack is starting, the next start skips it once by itse
     right-click a chip to unpin it. Kept between starts.
   - **Commands:** a typed line runs exactly as if typed into the game's console, through the engine.
     The menu's `RunConsoleCommand` refuses some commands, the console doesn't. Up and Down go through what
-    you typed.
+    you typed. The commands for the game's console window act on this one: `clear` empties it (what ran
+    before it in the line goes, what runs after stays), `showconsole` leaves it open, and `hideconsole` and
+    `toggleconsole` close it. `con_filter_enable 1` with `con_filter_text` / `con_filter_text_out` filters
+    its lines as it does the game's console ("con_filter on" in the header).
   - **Window:** drag it by the title, resize it from the corner; the console key or Esc closes it. The header
     shows the frame rate and, in game, ping, loss and the server. Save writes the lines shown to
     `%LOCALAPPDATA%\MeowyClientPack\logs\console_<date>.txt` (paths hidden; the newest 20 kept).

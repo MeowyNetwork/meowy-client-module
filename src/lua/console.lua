@@ -20,8 +20,25 @@ local HISTORY_MAX, PINS_MAX = 200, 24
 local CATALOG_AGE = 120    -- seconds before the command list is read again
 local ERROR = Color(238, 104, 112)
 local lines, lastId = {}, 0
+local clears = 0           -- times the window was emptied (an open window starts over)
 local holder
 local errorGroups, errorsChanged, lastErrorAt = {}, 0, nil   -- Lua errors (OnLuaError, below)
+-- The console key opens this window (the hook at the end); typed console
+-- commands for the game's console window act on this one while it does.
+local keySetting = meowy.Setting and meowy.Setting("meowy_console_key", "1",
+	"Meowy Client Pack: the console key opens the Meowy console (0 = Garry's Mod's console)")
+
+local function clearLines()
+	for i = #lines, 1, -1 do lines[i] = nil end
+	clears = clears + 1
+end
+
+-- The game's con_filter settings, as ConsoleLogic.conFilter reads them.
+local function conFilterNow()
+	if not GetConVar then return nil end
+	local e, t, o = GetConVar("con_filter_enable"), GetConVar("con_filter_text"), GetConVar("con_filter_text_out")
+	return e and ConsoleLogic.conFilter(e:GetString(), t and t:GetString(), o and o:GetString()) or nil
+end
 
 -- What you typed (kept between starts) and the pinned commands.
 local function loadList(kind, max)
@@ -53,7 +70,10 @@ local function pull()
 	if istable(got) then
 		for _, l in ipairs(got) do
 			local x = string.match(l.x or "", "^%s*(.-)%s*$")   -- echo adds a space at the end
-			if x == BEGIN then
+			if x == ConsoleLogic.CLEAR_MARK then   -- a typed `clear` (run, below) got here
+				clearLines()
+				added = 0
+			elseif x == BEGIN then
 				collecting = {}
 			elseif collecting and x == FINISH then
 				if #collecting > 0 then catalog, catalogAt = collecting, SysTime() end
@@ -82,8 +102,15 @@ local function run(line)
 	recallAt = 0
 	-- Echoed like the game's console does, so the answer reads in context.
 	lines[#lines + 1] = { id = -1, t = os.time() * 1000, s = 0, c = 0x9A9EA8, x = "] " .. line }
-	if meowy.ConsoleRun and meowy.ConsoleRun(line) then return end
-	for _, words in ipairs(ConsoleLogic.commands(line)) do RunConsoleCommand(unpack(words)) end
+	local send, close = ConsoleLogic.prepare(line, keySetting and keySetting:GetBool())
+	if close and IsValid(holder) then holder:Remove() end
+	if send == "" then return end
+	if meowy.ConsoleRun and meowy.ConsoleRun(send) then return end
+	-- Without the engine's own command line: each command through
+	-- RunConsoleCommand, and `clear`'s mark empties the window here.
+	for _, words in ipairs(ConsoleLogic.commands(send)) do
+		if words[1] == "echo" and words[2] == ConsoleLogic.CLEAR_MARK then clearLines() else RunConsoleCommand(unpack(words)) end
+	end
 end
 
 local function pin(line)
@@ -167,7 +194,9 @@ local function open()
 	fonts()
 	local M, R, PAD = S(24), S(14), S(20)   -- shadow margin, corner radius, padding
 	local state = { query = "", kinds = {}, counts = {}, find = false, pattern = false, collapse = true, view = {},
-		offset = 0, follow = true, note = nil, noteUntil = 0, unseen = 0, cur = nil, selA = nil, selB = nil }
+		offset = 0, follow = true, note = nil, noteUntil = 0, unseen = 0, cur = nil, selA = nil, selB = nil,
+		clears = clears, filter = conFilterNow() }
+	state.filterKey = state.filter and (state.filter.text .. "\0" .. state.filter.out) or ""
 	surface.SetFont("MeowyPack.Mono")
 	local _, lh = surface.GetTextSize("Ag")
 	lh = lh + S(4)
@@ -229,7 +258,9 @@ local function open()
 				local n = ConsoleLogic.errorCount(errorGroups)
 				return (n == 1 and "1 Lua error" or (n .. " Lua errors")) .. " since the game started"
 			end)())
-			or (#state.view == #lines and (#lines .. " lines") or (#state.view .. " of " .. #lines .. " lines"))
+			or ((#state.view == #lines and (#lines .. (#lines == 1 and " line" or " lines"))
+					or (#state.view .. " of " .. #lines .. (#lines == 1 and " line" or " lines")))
+				.. (state.filter and "  \194\183  con_filter on" or ""))
 		draw.SimpleText(note, "MeowyPack.Small", self.textX or S(200), h / 2 + S(1), C.dim, UI.LEFT, UI.CENTER)
 		-- Live numbers.
 		local facts = {}
@@ -317,10 +348,7 @@ local function open()
 		local sel = selectedRows()
 		if sel then copyRows(sel, "selected lines") else copyRows(state.view, "lines") end
 	end)
-	local clear = UI.Button(holder, "Clear", "ghost", function()
-		for i = #lines, 1, -1 do lines[i] = nil end
-		rebuild()
-	end)
+	local clear = UI.Button(holder, "Clear", "ghost", function() clearLines() rebuild() end)
 	-- Save: the lines shown, paths masked, to a file of its own (logs\).
 	local save = UI.Button(holder, "Save", "ghost", function()
 		local path = meowy.ConsoleSaveLog and meowy.ConsoleSaveLog(ConsoleLogic.copyText(state.view, ConsoleLogic.MAX_KEEP))
@@ -591,7 +619,7 @@ local function open()
 	local function maxOffset() return math.max(0, #state.view * lh - (logPanel:GetTall() - S(12))) end
 	rebuild = function()
 		state.view = ConsoleLogic.rows(lines, { query = state.query, pattern = state.pattern, find = state.find,
-			kinds = state.kinds, collapse = state.collapse, flood = state.collapse })
+			kinds = state.kinds, collapse = state.collapse, flood = state.collapse, conFilter = state.filter })
 		state.counts = ConsoleLogic.counts(lines)
 		state.matches = ConsoleLogic.matchRows(state.view)
 		if state.follow then
@@ -958,7 +986,15 @@ local function open()
 		if state.tab == "errors" and builtFor ~= errorsChanged then buildErrors() end
 		local hadCatalog = catalogAt
 		local added = pull()
-		if added > 0 then
+		local filter = conFilterNow()
+		local filterKey = filter and (filter.text .. "\0" .. filter.out) or ""
+		if clears ~= state.clears then   -- emptied (Clear, or `clear` typed): back to the bottom
+			state.clears, state.follow, state.unseen, state.cur, state.selA, state.selB = clears, true, 0, nil, nil, nil
+			rebuild()
+		elseif filterKey ~= state.filterKey then
+			state.filterKey, state.filter = filterKey, filter
+			rebuild()
+		elseif added > 0 then
 			if not state.follow then state.unseen = state.unseen + added end
 			rebuild()
 		end
@@ -1096,8 +1132,6 @@ end)
 -- console: the moment the game's console shows, it's hidden again and this
 -- window opens, or closes if it's open, so the key toggles it. Off, the key
 -- opens the game's console as before (and meowy_console still opens this).
-local keySetting = meowy.Setting and meowy.Setting("meowy_console_key", "1",
-	"Meowy Client Pack: the console key opens the Meowy console (0 = Garry's Mod's console)")
 local stockShown = false
 hook.Add("Think", "MeowyClientPack.ConsoleKey", function()
 	if not (keySetting and keySetting:GetBool() and gui and gui.IsConsoleVisible and meowy.ConsoleRun) then return end
