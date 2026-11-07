@@ -56,8 +56,8 @@ local continueSetting = meowy.Setting and meowy.Setting("meowy_menu_continue", "
 	"Meowy Client Pack: a Continue entry in the main menu that joins the last server you played on (0 = none, and none kept)")
 local function continueOn() return continueSetting == nil or continueSetting:GetBool() end
 local function setContinue(on)
-	if continueSetting and continueSetting.SetBool then continueSetting:SetBool(on)
-	else RunConsoleCommand("meowy_menu_continue", on and "1" or "0") end
+	-- Through the console: Garry's Mod refuses ConVar:SetBool on these menu convars.
+	RunConsoleCommand("meowy_menu_continue", on and "1" or "0")
 	if not on and meowy.LastServerForget then meowy.LastServerForget() end
 end
 
@@ -66,8 +66,8 @@ local homeSetting = meowy.Setting and meowy.Setting("meowy_menu_home", "1",
 	"Meowy Client Pack: a card on the main menu with Meowy Network, your favourites and recent servers (0 = none)")
 local function homeOn() return homeSetting == nil or homeSetting:GetBool() end
 local function setHome(on)
-	if homeSetting and homeSetting.SetBool then homeSetting:SetBool(on)
-	else RunConsoleCommand("meowy_menu_home", on and "1" or "0") end
+	-- Through the console: Garry's Mod refuses ConVar:SetBool on these menu convars.
+	RunConsoleCommand("meowy_menu_home", on and "1" or "0")
 end
 
 -- The Escape menu's card (home.lua): the server you're on, Reconnect, quick volume and FOV.
@@ -75,8 +75,8 @@ local escapeSetting = meowy.Setting and meowy.Setting("meowy_menu_escape", "1",
 	"Meowy Client Pack: a card in the Escape menu with the server you're on and quick settings (0 = none)")
 local function escapeOn() return escapeSetting == nil or escapeSetting:GetBool() end
 local function setEscape(on)
-	if escapeSetting and escapeSetting.SetBool then escapeSetting:SetBool(on)
-	else RunConsoleCommand("meowy_menu_escape", on and "1" or "0") end
+	-- Through the console: Garry's Mod refuses ConVar:SetBool on these menu convars.
+	RunConsoleCommand("meowy_menu_escape", on and "1" or "0")
 end
 
 -- UI (ui.lua's kit) ----------------------------------------------------------------
