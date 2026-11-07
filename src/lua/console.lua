@@ -16,18 +16,54 @@ if not started then log("console: not capturing: %s", tostring(why)) end
 local C, S = UI.C, UI.S
 local PULL = 0.25          -- seconds between reads while the window is open
 local READ_MAX = 5000      -- lines per read
+local HISTORY_MAX, PINS_MAX = 200, 24
+local CATALOG_AGE = 120    -- seconds before the command list is read again
 local ERROR = Color(238, 104, 112)
 local lines, lastId = {}, 0
-local history, recallAt = {}, 0
 local holder
+
+-- What you typed (kept between starts) and the pinned commands.
+local function loadList(kind, max)
+	return ConsoleLogic.parseList(meowy.ConsoleFileRead and meowy.ConsoleFileRead(kind) or "", max)
+end
+local function saveList(kind, list, max)
+	if meowy.ConsoleFileWrite then meowy.ConsoleFileWrite(kind, ConsoleLogic.formatList(list, max)) end
+end
+local history, recallAt = loadList("history", HISTORY_MAX), 0
+local pins = loadList("pins", PINS_MAX)
+
+-- Every command and setting, with its value, flags and help: the engine's own
+-- `cvarlist`, run between two markers; its lines are read into the catalog and
+-- left out of the window.
+local BEGIN, FINISH = "__meowy_cvars_begin__", "__meowy_cvars_end__"
+local catalog, catalogAt, collecting, asked = {}, nil, nil, false
+local function askCatalog()
+	if asked or not meowy.ConsoleRun then return end
+	if catalogAt and SysTime() - catalogAt < CATALOG_AGE then return end
+	asked = true
+	meowy.ConsoleRun("echo " .. BEGIN)
+	meowy.ConsoleRun("cvarlist")
+	meowy.ConsoleRun("echo " .. FINISH)
+end
 
 local function pull()
 	local got, last = meowy.ConsoleRead(lastId, READ_MAX)
 	local added = 0
 	if istable(got) then
 		for _, l in ipairs(got) do
-			lines[#lines + 1] = l
-			added = added + 1
+			local x = string.match(l.x or "", "^%s*(.-)%s*$")   -- echo adds a space at the end
+			if x == BEGIN then
+				collecting = {}
+			elseif collecting and x == FINISH then
+				if #collecting > 0 then catalog, catalogAt = collecting, SysTime() end
+				collecting, asked = nil, false
+			elseif collecting then
+				local e = ConsoleLogic.parseCvar(x)
+				if e then collecting[#collecting + 1] = e end
+			else
+				lines[#lines + 1] = l
+				added = added + 1
+			end
 		end
 	end
 	if isnumber(last) then lastId = last end
@@ -37,13 +73,28 @@ end
 
 local function run(line)
 	if not isstring(line) or line:match("^%s*$") then return end
-	if history[#history] ~= line then history[#history + 1] = line end
-	while #history > 100 do table.remove(history, 1) end
+	if history[#history] ~= line then
+		history[#history + 1] = line
+		while #history > HISTORY_MAX do table.remove(history, 1) end
+		saveList("history", history, HISTORY_MAX)
+	end
 	recallAt = 0
 	-- Echoed like the game's console does, so the answer reads in context.
 	lines[#lines + 1] = { id = -1, t = os.time() * 1000, s = 0, c = 0x9A9EA8, x = "] " .. line }
 	if meowy.ConsoleRun and meowy.ConsoleRun(line) then return end
 	for _, words in ipairs(ConsoleLogic.commands(line)) do RunConsoleCommand(unpack(words)) end
+end
+
+local function pin(line)
+	if not isstring(line) or line:match("^%s*$") then return end
+	for i = #pins, 1, -1 do if pins[i] == line then table.remove(pins, i) end end
+	pins[#pins + 1] = line
+	while #pins > PINS_MAX do table.remove(pins, 1) end
+	saveList("pins", pins, PINS_MAX)
+end
+local function unpin(line)
+	for i = #pins, 1, -1 do if pins[i] == line then table.remove(pins, i) end end
+	saveList("pins", pins, PINS_MAX)
 end
 
 local monoFor
@@ -170,10 +221,165 @@ local function open()
 		rebuild()
 	end)
 
+	-- Pinned commands: one click runs one; right-click takes it off.
+	local pinsRow = vgui.Create("DPanel", holder)
+	pinsRow.Paint = function() end
+	local entry
+	local function refreshPins()
+		for _, c in ipairs(pinsRow:GetChildren() or {}) do c:Remove() end
+		local x = 0
+		local function chip(text, tip, primary, onClick, onRight)
+			local b = vgui.Create("DButton", pinsRow)
+			b:SetText("")
+			b:SetTooltip(tip)
+			local label = #text > 32 and (text:sub(1, 31) .. "\226\128\166") or text
+			local font = primary and "MeowyPack.Small" or "MeowyPack.Mono"
+			b:SetSize(UI.textW(label, font) + S(22), S(28))
+			b:SetPos(x, S(2))
+			x = x + b:GetWide() + S(6)
+			b.Paint = function(self, w, h)
+				local t = UI.hover(self, self:IsHovered())
+				UI.box(S(8), 0, 0, w, h, UI.mix(C.surface, C.raised, t), primary and C.border or UI.mix(C.border, C.accent, 0.5))
+				draw.SimpleText(label, font, w / 2, h / 2, primary and C.dim or C.text, UI.CENTER, UI.CENTER)
+				return true
+			end
+			b.DoClick = onClick
+			b.DoRightClick = onRight
+			b.meowyPin = primary and "+" or text
+		end
+		for _, cmd in ipairs(pins) do
+			chip(cmd, "Run it (right-click: unpin)", false, function() run(cmd) state.follow = true end,
+				function() unpin(cmd) refreshPins() end)
+		end
+		chip("+ Pin a command", "Pins what's typed below, or the last command you ran", true, function()
+			local text = entry:GetValue()
+			pin((text and text ~= "") and text or history[#history])
+			refreshPins()
+		end)
+	end
+
 	-- The log: a card, monospaced lines, a slim scrollbar.
 	local logPanel = vgui.Create("DPanel", holder)
-	local entry = field(holder, "Type a command and press Enter    (Up and Down: what you typed before)", S(30), "\226\128\186")
+	entry = field(holder, "Type a command and press Enter    (Tab completes, Up and Down: earlier ones, Ctrl+R: search them)", S(30), "\226\128\186")
 	entry:SetFont("MeowyPack.Mono")
+
+	-- Above the command line: what matches the word being typed (with values and
+	-- help), the setting or command once it's typed (its value, default, flags,
+	-- help, and a reset), or earlier commands (Ctrl+R).
+	local pop = vgui.Create("DPanel", holder)
+	pop:SetVisible(false)
+	local ROW = S(42)
+	local p = { mode = nil, items = {}, sel = 1, dismissed = false, history = false, entry = nil }
+	local reset = UI.Button(pop, "Reset to default", "secondary", function()
+		if p.entry then run(p.entry.name .. ' "' .. tostring(p.default or "") .. '"') end
+	end)
+	reset:SetVisible(false)
+	local function liveValue(e)
+		local cv = (not e.cmd) and GetConVar and GetConVar(e.name) or nil
+		if cv then return cv:GetString(), cv:GetDefault() end
+		return e.value, nil
+	end
+	local function layoutPop()
+		if not p.mode then pop:SetVisible(false) reset:SetVisible(false) return end
+		local w = math.min(entry.box:GetWide(), S(720))
+		local h
+		if p.mode == "inspect" then
+			h = S(92)
+		else
+			h = #p.items * ROW + S(12)
+		end
+		pop:SetSize(w, h)
+		local bx, by = entry.box:GetPos()
+		pop:SetPos(bx or 0, (by or 0) - h - S(6))
+		pop:SetVisible(true)
+		pop:MoveToFront()
+		local showReset = p.mode == "inspect" and p.value ~= nil and p.default ~= nil and p.value ~= p.default
+		reset:SetVisible(showReset)
+		if showReset then reset:SetPos(w - reset:GetWide() - S(12), h - reset:GetTall() - S(12)) end
+	end
+	local function updatePop()
+		local text = entry:GetValue() or ""
+		local word, more = ConsoleLogic.firstWord(text)
+		p.mode, p.items, p.entry = nil, {}, nil
+		if p.history then
+			p.items = ConsoleLogic.searchHistory(history, text, 8)
+			if #p.items > 0 then p.mode = "history" end
+		elseif not p.dismissed and word ~= "" then
+			local exact
+			for _, e in ipairs(catalog) do if string.lower(e.name) == string.lower(word) then exact = e break end end
+			if more or (exact and #ConsoleLogic.suggest(catalog, word, 2) == 1) then
+				if exact then
+					p.mode, p.entry = "inspect", exact
+					p.value, p.default = liveValue(exact)
+				end
+			else
+				p.items = ConsoleLogic.suggest(catalog, word, 8)
+				if #p.items > 0 then p.mode = "suggest" end
+			end
+		end
+		p.sel = math.min(math.max(p.sel, 1), math.max(#p.items, 1))
+		layoutPop()
+	end
+	local function accept(i)
+		local item = p.items[i or p.sel]
+		if not item then return end
+		local text = p.mode == "history" and item or (item.name .. " ")
+		p.history = false
+		entry:SetText(text)
+		entry:SetCaretPos(#text)
+		entry:RequestFocus()
+		updatePop()
+	end
+	pop.Paint = function(self, w, h)
+		UI.box(S(10), 0, 0, w, h, C.window, C.border)
+		if p.mode == "inspect" and p.entry then
+			local e = p.entry
+			draw.SimpleText(e.name, "MeowyPack.Mono", S(14), S(18), C.text, UI.LEFT, UI.CENTER)
+			local nw = UI.textW(e.name, "MeowyPack.Mono")
+			local fx = S(14) + nw + S(14)
+			if e.cmd then
+				draw.SimpleText("command", "MeowyPack.Mono", fx, S(18), C.dim, UI.LEFT, UI.CENTER)
+			else
+				local value = "= " .. tostring(p.value)
+				draw.SimpleText(value, "MeowyPack.Mono", fx, S(18), C.accentHi, UI.LEFT, UI.CENTER)
+				if p.default then
+					draw.SimpleText("default " .. p.default, "MeowyPack.Mono", fx + UI.textW(value, "MeowyPack.Mono") + S(18), S(18), C.dim, UI.LEFT, UI.CENTER)
+				end
+			end
+			local flags = table.concat(ConsoleLogic.flagWords(e.flags), " \194\183 ")
+			draw.SimpleText(flags, "MeowyPack.Small", S(14), S(42), C.dim, UI.LEFT, UI.CENTER)
+			local help = e.help ~= "" and e.help or "No description."
+			draw.SimpleText(#help > 120 and (help:sub(1, 119) .. "\226\128\166") or help, "MeowyPack.Small", S(14), S(66), C.body, UI.LEFT, UI.CENTER)
+			return true
+		end
+		for i, item in ipairs(p.items) do
+			local y = S(6) + (i - 1) * ROW
+			if i == p.sel then draw.RoundedBox(S(6), S(6), y, w - S(12), ROW, C.raised) end
+			if p.mode == "history" then
+				draw.SimpleText(item, "MeowyPack.Mono", S(16), y + ROW / 2, C.text, UI.LEFT, UI.CENTER)
+			else
+				draw.SimpleText(item.name, "MeowyPack.Mono", S(16), y + S(13), C.text, UI.LEFT, UI.CENTER)
+				local value = item.cmd and "command" or tostring((liveValue(item)))
+				draw.SimpleText(value, "MeowyPack.Mono", w - S(16), y + S(13), item.cmd and C.dim or C.accentHi, UI.RIGHT, UI.CENTER)
+				local help = item.help or ""
+				draw.SimpleText(#help > 90 and (help:sub(1, 89) .. "\226\128\166") or help, "MeowyPack.Small", S(16), y + S(30), C.dim, UI.LEFT, UI.CENTER)
+			end
+		end
+		return true
+	end
+	pop.OnMousePressed = function(self, code)
+		if code ~= MOUSE_LEFT or p.mode == "inspect" then return end
+		local _, my = self:CursorPos()
+		local i = math.floor((my - S(6)) / ROW) + 1
+		if p.items[i] then accept(i) end
+	end
+	entry.OnChange = function()
+		p.dismissed = false
+		recallAt = 0
+		askCatalog()
+		updatePop()
+	end
+	entry.OnGetFocus = function() askCatalog() end
 
 	local function maxOffset() return math.max(0, #state.view * lh - (logPanel:GetTall() - S(12))) end
 	rebuild = function()
@@ -252,18 +458,40 @@ local function open()
 		run(self:GetValue())
 		self:SetText("")
 		self:RequestFocus()
+		p.history, p.dismissed = false, false
+		updatePop()
 		state.follow = true
 		rebuild()
 	end
 	entry.OnKeyCodeTyped = function(self, code)
+		local listing = p.mode == "suggest" or p.mode == "history"
+		if code == KEY_TAB then
+			if listing then accept() elseif p.mode == nil then askCatalog() end
+			return true
+		end
 		if code == KEY_UP or code == KEY_DOWN then
+			if listing then
+				p.sel = math.Clamp(p.sel + (code == KEY_DOWN and 1 or -1), 1, #p.items)
+				return true
+			end
 			local text
 			recallAt, text = ConsoleLogic.recall(history, recallAt, code == KEY_UP and 1 or -1)
 			self:SetText(text)
 			self:SetCaretPos(#text)
+			p.dismissed = true   -- a recalled line runs as is; no list over it
+			updatePop()
 			return true
 		end
-		if code == KEY_ESCAPE then holder:Remove() return true end
+		if code == KEY_R and input and input.IsControlDown and input.IsControlDown() then
+			p.history = not p.history
+			p.sel = 1
+			updatePop()
+			return true
+		end
+		if code == KEY_ESCAPE then
+			if p.mode then p.dismissed, p.history = true, false updatePop() else holder:Remove() end
+			return true
+		end
 		if code == KEY_ENTER then self:OnEnter() return true end
 	end
 
@@ -296,7 +524,10 @@ local function open()
 		collapse:SetPos(bad.x + bad:GetWide() + S(8), y + S(3))
 		clear:SetPos(x + iw - clear:GetWide(), y - S(1))
 		copy:SetPos(clear.x - copy:GetWide() - S(8), y - S(1))
-		y = y + S(48)
+		y = y + S(46)
+		pinsRow:SetPos(x, y)
+		pinsRow:SetSize(iw, S(32))
+		y = y + S(40)
 		local entryH = S(40)
 		logPanel:SetPos(x, y)
 		logPanel:SetSize(iw, h - M - PAD - entryH - S(10) - y)
@@ -304,6 +535,7 @@ local function open()
 		entry.box:SetSize(iw, entryH)
 		grip:SetPos(w - M - S(20), h - M - S(20))
 		grip:SetSize(S(18), S(18))
+		layoutPop()
 		rebuild()
 	end
 	holder.OnKeyCodePressed = function(self, code) if code == KEY_ESCAPE then self:Remove() end end
@@ -313,11 +545,19 @@ local function open()
 		local now = SysTime()
 		if now < nextPull then return end
 		nextPull = now + PULL
+		local hadCatalog = catalogAt
 		if pull() > 0 then rebuild() end
+		if catalogAt ~= hadCatalog then updatePop() end   -- the list arrived while typing
+		if p.mode == "inspect" and p.entry then   -- the value as it is now (after a reset, say)
+			p.value, p.default = liveValue(p.entry)
+			layoutPop()
+		end
 	end
 	holder:MakePopup()
 	holder:SetKeyboardInputEnabled(true)
 	UI.fadeIn(holder)
+	refreshPins()
+	askCatalog()
 	rebuild()
 	entry:RequestFocus()
 end

@@ -1532,6 +1532,40 @@ namespace
 		return 1;
 	}
 
+	// The console's saved lists: ConsoleFileRead(kind) -> text, ConsoleFileWrite(kind,
+	// text) -> ok, for kind "history" or "pins" only, in
+	// %LOCALAPPDATA%\MeowyClientPack\console_<kind>.txt (64 KB at most).
+	constexpr size_t kMaxConsoleFile = 64 * 1024;
+	const wchar_t* ConsoleFileName(const char* kind)
+	{
+		if (!kind)
+			return nullptr;
+		if (std::strcmp(kind, "history") == 0)
+			return L"\\console_history.txt";
+		if (std::strcmp(kind, "pins") == 0)
+			return L"\\console_pins.txt";
+		return nullptr;
+	}
+
+	int ConsoleFileRead(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		const wchar_t* name = ConsoleFileName(LUA->IsType(1, Type::String) ? LUA->GetString(1) : nullptr);
+		const std::string text = name ? file_util::ReadSmall(DataDir() + name, kMaxConsoleFile) : std::string();
+		LUA->PushString(text.c_str(), static_cast<unsigned int>(text.size()));
+		return 1;
+	}
+
+	int ConsoleFileWrite(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		const wchar_t* name = ConsoleFileName(LUA->IsType(1, Type::String) ? LUA->GetString(1) : nullptr);
+		unsigned int size = 0;
+		const char* text = LUA->IsType(2, Type::String) ? LUA->GetString(2, &size) : nullptr;
+		LUA->PushBool(name && text && size <= kMaxConsoleFile && file_util::WriteAtomic(DataDir() + name, std::string(text, size)));
+		return 1;
+	}
+
 	// ConsoleRun(line) -> ok: the line run as if typed into the console (the
 	// player's own line, from the pack's console window).
 	int ConsoleRun(lua_State* L)
@@ -2619,6 +2653,8 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	SetFunction(LUA, "ConsoleRead", Guarded<ConsoleRead>);
 	SetFunction(LUA, "ConsoleState", Guarded<ConsoleState>);
 	SetFunction(LUA, "ConsoleRun", Guarded<ConsoleRun>);
+	SetFunction(LUA, "ConsoleFileRead", Guarded<ConsoleFileRead>);
+	SetFunction(LUA, "ConsoleFileWrite", Guarded<ConsoleFileWrite>);
 	SetFunction(LUA, "ServerQueryStart", Guarded<ServerQueryStart>);
 	SetFunction(LUA, "ServerQueryTake", Guarded<ServerQueryTake>);
 	SetFunction(LUA, "ServerQueryCancel", Guarded<ServerQueryCancel>);
