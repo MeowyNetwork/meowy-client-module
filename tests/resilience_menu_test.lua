@@ -121,6 +121,8 @@ local function world(opts)
 		end,
 		ConsoleState = function() return "spew function; 3 lines kept" end,
 		ConsoleRun = function(line) w.consoleRuns = w.consoleRuns or {} w.consoleRuns[#w.consoleRuns + 1] = line return not w.noEngine end,
+		JoinBoost = function(on, kept) w.boost = on w.boostKept = kept return true end,
+		JoinBoostPending = function() return opts.boostPending end,
 		ConsoleFileRead = function(kind) return (w.consoleFiles or opts.consoleFiles or {})[kind] or "" end,
 		ConsoleFileWrite = function(kind, text) w.consoleFiles = w.consoleFiles or {} w.consoleFiles[kind] = text return true end,
 		MaskPaths = function(text) return (text:gsub("%a:[\\/][^\n:]*", "<path>")) end,
@@ -1386,6 +1388,35 @@ w.run(1)
 w.loading = false
 w.run(1)
 check("prewarm: a join that didn't get in keeps nothing", w.pwBegins == 2 and w.pwEnds == 1, true)
+-- The join priority guard: full speed and fps_max_nofocus lifted while a join
+-- loads, both put back in game or when the join ends; a value left by a join
+-- cut short is put back at the next start.
+w = world({ settings = ON, menu = true })
+w.cvars.fps_max_nofocus, w.cvars.fps_max = "20", "300"
+w.state, w.address, w.loading = "ours", OURS, true
+w.consoleRuns = {}
+w.run(1)
+check("join boost: on while loading, the old cap kept", tostring(w.boost) .. " " .. tostring(w.boostKept), "true 20")
+check("join boost: fps_max_nofocus lifted to fps_max", table.concat(w.consoleRuns, "|"):find("fps_max_nofocus 300", 1, true) ~= nil, true)
+w.play(3)
+check("join boost: off in game", w.boost, false)
+check("join boost: fps_max_nofocus put back", w.consoleRuns[#w.consoleRuns], "fps_max_nofocus 20")
+w.cut()
+w.cvars.fps_max_nofocus = "0"
+w.loading = true
+w.consoleRuns = {}
+w.run(1)
+check("join boost: no cap to lift (0), nothing set", w.boost == true and #w.consoleRuns == 0 and w.boostKept == nil, true)
+w.loading = false
+w.run(1)
+check("join boost: a join that didn't get in turns it off", w.boost, false)
+w = world({ settings = ON, menu = true, boostPending = "20" })
+check("join boost: a value left by a cut-short join put back at start", table.concat(w.consoleRuns or {}, "|"):find("fps_max_nofocus 20", 1, true) ~= nil and w.boost == false, true)
+w = world({ settings = ON, menu = true, convars = { meowy_join_boost = "0" } })
+w.cvars.fps_max_nofocus, w.cvars.fps_max = "20", "300"
+w.state, w.address, w.loading = "ours", OURS, true
+w.run(1)
+check("join boost: off by the setting", w.boost, nil)
 -- Off: nothing warmed; the toggle cancels.
 w = world({ settings = ON, menu = true, convars = { meowy_prewarm = "0" } })
 w.recorded = { [OURS] = true }

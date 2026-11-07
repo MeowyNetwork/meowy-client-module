@@ -336,12 +336,45 @@ function MeowyClientPackHomeIntent(id)
 	warm(addresses[math.floor(tonumber(id) or 0)], "pointer on its row")
 end
 
+-- The join priority guard: while a join loads, Windows' own QoS tag at full
+-- speed (meowy.JoinBoost) and fps_max_nofocus lifted to fps_max, both put back
+-- once in game or when the join ends. A join cut short by a crash or a quit
+-- left its fps_max_nofocus in join_boost.txt: put back at the next start.
+local function numberText(v) return isstring(v) and v:match("^%d+%.?%d*$") ~= nil end
+local function boostOn()
+	if not (joinBoostOn() and meowy.JoinBoost) then return end
+	local nofocus, fpsMax = GetConVarString and GetConVarString("fps_max_nofocus"), GetConVarString and GetConVarString("fps_max")
+	local lift = numberText(nofocus) and numberText(fpsMax) and tonumber(nofocus) > 0 and meowy.ConsoleRun
+	meowy.JoinBoost(true, lift and nofocus or nil)
+	pw.boosted = true
+	if lift then
+		pw.nofocus = nofocus
+		meowy.ConsoleRun("fps_max_nofocus " .. fpsMax)
+	end
+end
+local function boostOff()
+	if not pw.boosted then return end
+	pw.boosted = false
+	if pw.nofocus and meowy.ConsoleRun then meowy.ConsoleRun("fps_max_nofocus " .. pw.nofocus) end
+	pw.nofocus = nil
+	if meowy.JoinBoost then meowy.JoinBoost(false) end
+end
+do
+	local pending = meowy.JoinBoostPending and meowy.JoinBoostPending()
+	if pending and meowy.ConsoleRun then
+		meowy.ConsoleRun("fps_max_nofocus " .. pending)
+		log("join boost: fps_max_nofocus put back to %s after a join that didn't finish", pending)
+	end
+	if pending and meowy.JoinBoost then meowy.JoinBoost(false) end
+end
+
 hook.Add("Think", "MeowyClientPack.Prewarm", function()
 	if not meowy.PrewarmBeginJoin then return end
 	local loading = IsInLoading()
 	if ws.queue and (loading or SysTime() - ws.started > WS_GIVE_UP) then wsFinish(true) end
 	if loading and not pw.joining then
 		pw.joining = true
+		boostOn()
 		if pakCacheOn() and meowy.PakCache then
 			local ok, why = meowy.PakCache(true)
 			if not ok and not pw.pakWhyLogged then pw.pakWhyLogged = true log("pak cache: off (%s)", tostring(why)) end
@@ -349,6 +382,7 @@ hook.Add("Think", "MeowyClientPack.Prewarm", function()
 		meowy.PrewarmBeginJoin()   -- also stops any warming: the join's reads come first
 	elseif pw.joining and IsInGame() and not loading then
 		pw.joining = false
+		boostOff()
 		if meowy.PakCacheState and meowy.PakCache then
 			log("pak cache: %s", meowy.PakCacheState())
 			meowy.PakCache(false)
@@ -358,6 +392,7 @@ hook.Add("Think", "MeowyClientPack.Prewarm", function()
 		if kept > 0 then log("prewarm: kept %d files for this server", kept) end
 	elseif not loading and not IsInGame() then
 		if pw.joining and meowy.PakCache then meowy.PakCache(false) end
+		if pw.joining then boostOff() end
 		pw.joining = false   -- a join that didn't get in: nothing to keep
 	end
 	-- A few seconds at the main menu: the Continue server, once per visit (a
@@ -381,6 +416,8 @@ if concommand then
 			ws.address, ws.total, ws.pending, ws.stale, ws.done) or ws.result
 		MsgN("[Meowy Client Pack] prewarm workshop: " .. wsLine)
 		MsgN("[Meowy Client Pack] pak cache: " .. (meowy.PakCacheState and meowy.PakCacheState() or "unavailable"))
+		MsgN("[Meowy Client Pack] join boost: " .. (joinBoostOn() and "on during joins" or "off") .. "; Windows has the game at " ..
+			(meowy.JoinBoostState and (meowy.JoinBoostState() == "on" and "full speed" or "its own policy") or "unknown"))
 	end, nil, "Meowy Client Pack: what join pre-warm is doing")
 end
 

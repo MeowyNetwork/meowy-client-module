@@ -1393,6 +1393,81 @@ namespace
 		return 0;
 	}
 
+	// --- Join priority guard ---------------------------------------------------------
+	// While a join loads, the game asks Windows for full speed: its own QoS tag
+	// (otherwise Windows lowers an unfocused or minimised game to Medium or Low:
+	// efficiency clocks or cores on battery, and its 1 ms timer ignored once
+	// occluded). Its fps_max_nofocus (20 by default) is lifted in Lua. The
+	// value to put back is kept in join_boost.txt while the guard is on, so a
+	// join cut short by a crash or a quit is put right at the next start.
+	std::wstring JoinBoostFile() { return DataDir() + L"\\join_boost.txt"; }
+
+	bool SetJoinQoS(bool on)
+	{
+		using SetInfoFn = BOOL(WINAPI*)(HANDLE, PROCESS_INFORMATION_CLASS, LPVOID, DWORD);
+		static const SetInfoFn set = reinterpret_cast<SetInfoFn>(
+			GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "SetProcessInformation"));
+		if (!set)
+			return false;
+		PROCESS_POWER_THROTTLING_STATE s = {};
+		s.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+		// EXECUTION_SPEED (1) | IGNORE_TIMER_RESOLUTION (4), state 0: never throttle,
+		// always honour the timer resolution. Off: both back to Windows' own policy.
+		s.ControlMask = on ? (PROCESS_POWER_THROTTLING_EXECUTION_SPEED | 0x4) : 0;
+		s.StateMask = 0;
+		if (set(GetCurrentProcess(), ProcessPowerThrottling, &s, sizeof(s)))
+			return true;
+		if (!on)
+			return false;
+		s.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;   // Windows 10: no timer flag
+		return set(GetCurrentProcess(), ProcessPowerThrottling, &s, sizeof(s)) != FALSE;
+	}
+
+	// meowy.JoinBoost(on[, nofocus]) -> whether Windows took the QoS tag. With
+	// on and a fps_max_nofocus value, that value is kept to put back later.
+	int JoinBoost(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		const bool on = LUA->GetBool(1);
+		const bool ok = SetJoinQoS(on);
+		if (on && LUA->IsType(2, Type::String))
+		{
+			const std::string v = LUA->GetString(2);
+			if (!v.empty() && v.size() <= 12 && v.find_first_not_of("0123456789.") == std::string::npos)
+				file_util::WriteAtomic(JoinBoostFile(), v);
+		}
+		else if (!on)
+		{
+			DeleteFileW(JoinBoostFile().c_str());
+		}
+		LUA->PushBool(ok);
+		return 1;
+	}
+
+	// meowy.JoinBoostPending() -> the fps_max_nofocus a join cut short left to put back, or nil.
+	int JoinBoostPending(lua_State* L)
+	{
+		const std::string v = file_util::ReadSmall(JoinBoostFile(), 64);
+		if (v.empty() || v.size() > 12 || v.find_first_not_of("0123456789.") != std::string::npos)
+			L->luabase->PushNil();
+		else
+			L->luabase->PushString(v.c_str());
+		return 1;
+	}
+
+	// meowy.JoinBoostState() -> "on" / "off": what Windows has for the game now.
+	int JoinBoostState(lua_State* L)
+	{
+		using GetInfoFn = BOOL(WINAPI*)(HANDLE, PROCESS_INFORMATION_CLASS, LPVOID, DWORD);
+		static const GetInfoFn get = reinterpret_cast<GetInfoFn>(
+			GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "GetProcessInformation"));
+		PROCESS_POWER_THROTTLING_STATE s = {};
+		s.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+		const bool ok = get && get(GetCurrentProcess(), ProcessPowerThrottling, &s, sizeof(s));
+		L->luabase->PushString(!ok ? "unknown" : (s.ControlMask & PROCESS_POWER_THROTTLING_EXECUTION_SPEED) && !(s.StateMask & PROCESS_POWER_THROTTLING_EXECUTION_SPEED) ? "on" : "off");
+		return 1;
+	}
+
 	// In game: keep the list for this server (ours or public, the engine's own
 	// address). -> files kept.
 	int PrewarmEndJoin(lua_State* L)
@@ -2773,6 +2848,9 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	SetFunction(LUA, "PrewarmState", Guarded<PrewarmState>);
 	SetFunction(LUA, "PakCache", Guarded<PakCache>);
 	SetFunction(LUA, "PakCacheState", Guarded<PakCacheState>);
+	SetFunction(LUA, "JoinBoost", Guarded<JoinBoost>);
+	SetFunction(LUA, "JoinBoostPending", Guarded<JoinBoostPending>);
+	SetFunction(LUA, "JoinBoostState", Guarded<JoinBoostState>);
 	SetFunction(LUA, "LastServerMark", Guarded<LastServerMark>);
 	SetFunction(LUA, "LastServer", Guarded<LastServer>);
 	SetFunction(LUA, "LastServerForget", Guarded<LastServerForget>);
