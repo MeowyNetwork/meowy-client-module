@@ -95,6 +95,7 @@
 #include "timeline_steam.h"
 #include "prewarm.h"
 #include "server_query.h"
+#include "steam_ugc.h"
 #include "resilience.h"
 #include "doctor.h"
 #include "startup_hook.h"
@@ -1422,6 +1423,56 @@ namespace
 		return 2;
 	}
 
+	// PrewarmWorkshop(address) -> { "<id>", ... }: the Workshop items its last
+	// join mounted (as strings: steamworks takes IDs as strings), possibly empty.
+	int PrewarmWorkshop(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		const char* a = LUA->IsType(1, Type::String) ? LUA->GetString(1) : nullptr;
+		std::vector<uint64_t> ids;
+		if (a && RejoinableAddress(a))
+			ids = prewarm::WorkshopItems(DataDir(), a);
+		LUA->CreateTable();
+		int i = 0;
+		for (uint64_t id : ids)
+		{
+			LUA->PushNumber(++i);
+			LUA->PushString(std::to_string(static_cast<unsigned long long>(id)).c_str());
+			LUA->SetTable(-3);
+		}
+		return 1;
+	}
+
+	// WorkshopItemState(id) -> installed, needsUpdate, busy, legacy, updated |
+	// nil: what Steam knows about a Workshop item here (steam_ugc.h). Read-only.
+	int WorkshopItemState(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		const char* s = LUA->IsType(1, Type::String) ? LUA->GetString(1) : nullptr;
+		uint64_t id = 0;
+		for (const char* p = s; p && *p; ++p)
+		{
+			if (*p < '0' || *p > '9' || id > 1000000000000000000ull)
+			{
+				id = 0;
+				break;
+			}
+			id = id * 10 + static_cast<uint64_t>(*p - '0');
+		}
+		steam_ugc::ItemState st;
+		if (!id || !steam_ugc::State(id, st))
+		{
+			LUA->PushNil();
+			return 1;
+		}
+		LUA->PushBool(st.installed);
+		LUA->PushBool(st.needsUpdate);
+		LUA->PushBool(st.busy);
+		LUA->PushBool(st.legacy);
+		LUA->PushNumber(static_cast<double>(st.updated));
+		return 5;
+	}
+
 	int PrewarmCancel(lua_State*)
 	{
 		prewarm::Cancel();
@@ -2491,6 +2542,8 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	SetFunction(LUA, "PrewarmEndJoin", Guarded<PrewarmEndJoin>);
 	SetFunction(LUA, "PrewarmRecorded", Guarded<PrewarmRecorded>);
 	SetFunction(LUA, "PrewarmStart", Guarded<PrewarmStart>);
+	SetFunction(LUA, "PrewarmWorkshop", Guarded<PrewarmWorkshop>);
+	SetFunction(LUA, "WorkshopItemState", Guarded<WorkshopItemState>);
 	SetFunction(LUA, "PrewarmCancel", Guarded<PrewarmCancel>);
 	SetFunction(LUA, "ServerQueryStart", Guarded<ServerQueryStart>);
 	SetFunction(LUA, "ServerQueryTake", Guarded<ServerQueryTake>);

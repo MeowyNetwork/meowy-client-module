@@ -180,9 +180,10 @@ namespace
 		}
 		void* file = g_fopen(self, name, options, flags, size);
 		// The join's big files, for warming them before the next join to this
-		// server (prewarm.h). FS_fopen gives back the file's size.
-		if (active && file && size && *size >= (1 << 20) && ReadsOnly(options))
-			prewarm::Opened(name, *size);
+		// server, and its Workshop items (prewarm.h). FS_fopen gives back the
+		// file's size; prewarm keeps only what it needs.
+		if (active && file && ReadsOnly(options))
+			prewarm::Opened(name, size ? *size : -1);
 		return file;
 	}
 

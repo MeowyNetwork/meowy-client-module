@@ -102,6 +102,15 @@ local function world(opts)
 		PrewarmCancel = function() w.pwCancels = (w.pwCancels or 0) + 1 end,
 		PrewarmState = function() return "idle" end,
 		ServerQueryStart = function() return 1 end,
+		PrewarmWorkshop = function(a) local ids = {} for i, id in ipairs((w.workshop or {})[a] or {}) do ids[i] = id end return ids end,
+		-- Steam's view of an item: installed, needsUpdate, busy, legacy, updated
+		-- (w.wsState[id] = false: Steam can't say; default: installed, the version of 1600000000).
+		WorkshopItemState = function(id)
+			local s = (w.wsState or {})[id]
+			if s == false then return nil end
+			s = s or { true, false, false, false, 1600000000 }
+			return s[1], s[2], s[3], s[4], s[5]
+		end,
 		-- Menu settings (module.cpp's meowy.Setting): a convar-like value.
 		Setting = function(name, default)
 			w.convars = w.convars or {}
@@ -160,11 +169,40 @@ local function world(opts)
 	env.gui = { IsGameUIVisible = function() return w.escOpen == true end }
 	-- Every Think hook runs each frame, in the order added (resilience, then the Home card).
 	local thinks, order = {}, {}
+	w.hooks = {}
 	env.hook = { Add = function(event, id, fn)
-		if event ~= "Think" then return end
+		if event ~= "Think" then
+			w.hooks[event] = w.hooks[event] or {}
+			w.hooks[event][id] = fn
+			return
+		end
 		if not thinks[id] then order[#order + 1] = id end
 		thinks[id] = fn
 	end }
+	function w.fire(event, ...) for _, fn in pairs(w.hooks[event] or {}) do fn(...) end end
+	-- Steam's Workshop, as the menu has it: each DownloadUGC waits in w.ugc until
+	-- the test answers it (w.answer).
+	w.ugc, w.infos = {}, {}
+	env.steamworks = {
+		DownloadUGC = function(id, cb) w.ugc[#w.ugc + 1] = { id = id, cb = cb } end,
+		FileInfo = function(id, cb) w.infos[#w.infos + 1] = { id = id, cb = cb } end,
+	}
+	function w.answer(i, path)
+		local q = table.remove(w.ugc, i or 1)
+		if q then q.cb(path ~= false and (path or ("cache/workshop/" .. q.id .. ".gma")) or nil, nil) end
+		return q and q.id
+	end
+	-- The Workshop's current version of each asked item (w.published[id]); by
+	-- default the installed one, rounded the way FileInfo's float rounds it.
+	function w.answerInfos()
+		while #w.infos > 0 do
+			local q = table.remove(w.infos, 1)
+			q.cb({ updated = (w.published or {})[q.id] or 1600000064 })
+		end
+	end
+	-- The game's files: everything there but w.missing[path].
+	env.file = { Exists = function(p, where) w.existsAsked = where return not (w.missing or {})[p] end }
+	env.istable = function(v) return type(v) == "table" end
 	w.think = function() for _, id in ipairs(order) do thinks[id]() end end
 	env.hook.Run = function(event) w.hookRuns = w.hookRuns or {} w.hookRuns[#w.hookRuns + 1] = event end
 	-- What Garry's Mod's menu Lua has (mainmenu.lua), for refilling its page.
@@ -1158,6 +1196,19 @@ check("shell: on, sent with its script", shellState(w) == "true" and w.shellJS:f
 local sends = w.shellSends
 w.run(3)
 check("shell: sent again each second (the page may be rebuilt)", w.shellSends - sends >= 2, true)
+-- A page that's just loaded (the game starting, a language change) gets the
+-- script on the next frame, not up to a second later; the stock callback still runs.
+local readyCalls = 0
+w.env.pnlMainMenu.HTML.OnDocumentReady = function() readyCalls = readyCalls + 1 end
+w.env.pnlMainMenu.HTML = setmetatable({}, { __index = w.env.pnlMainMenu.HTML })   -- a new browser panel
+w.env.pnlMainMenu.HTML.Callbacks = { ["lua.Run"] = w.stockRun }
+w.run(0.9)   -- bridged and wrapped, and a send since
+sends = w.shellSends
+w.env.pnlMainMenu.HTML:OnDocumentReady("asset://garrysmod/html/menu.html")
+check("shell: the stock page's ready callback still runs", readyCalls, 1)
+w.run(0.1)
+check("shell: a page just loaded gets it on the next frame", w.shellSends - sends, 1)
+check("shell: the new panel bridged too", w.env.pnlMainMenu.HTML.Callbacks["meowy.post"] ~= nil, true)
 check("shell: never a reload", w.loads, nil)
 check("shell: lua.Run left alone (it's the stock page's)", w.env.pnlMainMenu.HTML.Callbacks["lua.Run"], w.stockRun)
 check("shell: the lists reach it", (w.homeJS or ""):find("MeowyShellLists", 1, true) ~= nil and (homeData(w) or ""):find('"Meowy Network"', 1, true) ~= nil, true)
@@ -1315,6 +1366,85 @@ if pt then pt:SetOn(false) end
 check("prewarm: turning it off stops any warming", w.pwCancels, 1)
 w.concommands.meowy_prewarm_status()
 check("prewarm: status command", (w.logs or ""):find("prewarm: idle", 1, true) ~= nil, true)
+check("prewarm: Workshop items not asked for when there are none", #w.ugc, 0)
+
+-- Workshop items: of the server's last join's items, only those that need it
+-- go to Steam's download, one at a time, at the same moments.
+local IDS = { "101", "102", "103", "104", "105", "106" }
+local function wsWorld(opts2)
+	local ww = world(opts2 or { settings = ON, menu = true })
+	ww.lists = LISTS
+	ww.recorded = { [OURS] = true, ["2.2.2.2:27015"] = true }
+	ww.workshop = { [OURS] = IDS, ["2.2.2.2:27015"] = IDS }
+	ww.wsState = {
+		["102"] = { false, false, false, false, 0 },            -- not installed
+		["103"] = { true, true, false, false, 1600000000 },     -- Steam knows of an update
+		["104"] = { true, false, false, true, 1600000000 },     -- legacy, its unpacked copy gone
+		["106"] = false,                                        -- Steam can't say
+	}
+	ww.missing = { ["cache/workshop/104.gma"] = true }
+	ww.published = { ["105"] = 1600003600 }   -- 105 republished an hour later; 101 the same, rounded up 64 s
+	ww.last = { OURS, "Meowy", ww.osTime }
+	return ww
+end
+w = wsWorld()
+w.run(2)
+check("workshop: nothing asked before the Continue moment", #w.ugc + #w.infos, 0)
+w.run(2)
+check("workshop: one download at a time", #w.ugc, 1)
+check("workshop: the first that needs it", w.ugc[1].id, "102")
+check("workshop: the Workshop asked for the versions of installed items", #w.infos == 2 and w.infos[1].id .. w.infos[2].id, "101105")
+check("workshop: the game's own files looked in", w.existsAsked, "MOD")
+check("workshop: files warmed as well", w.pwStarts and w.pwStarts[1], OURS)
+w.answer()
+check("workshop: an answer starts the next", w.ugc[1] and w.ugc[1].id, "103")
+w.answer()
+check("workshop: a legacy item without its unpacked copy", w.ugc[1] and w.ugc[1].id, "104")
+w.answer(1, false)   -- Steam couldn't get it
+check("workshop: nothing else known to need it yet", #w.ugc, 0)
+w.answerInfos()
+check("workshop: a newer Workshop version is fetched", w.ugc[1] and w.ugc[1].id, "105")
+w.answer()
+check("workshop: up-to-date and unknown items left alone", #w.ugc, 0)
+check("workshop: logged",
+	(w.logs or ""):find("checked " .. OURS .. ": 6 Workshop items, 4 needed an update or unpack, 3 done, 1 failed", 1, true) ~= nil, true)
+w.concommands.meowy_prewarm_status()
+check("workshop: in the status command", (w.logs or ""):find("prewarm workshop: checked " .. OURS, 1, true) ~= nil, true)
+w.run(10)
+check("workshop: once per visit", #w.ugc + #w.infos, 0)
+-- A join stops it asking; what's in flight is left to Steam (and the join).
+w.env.MeowyClientPackHomeIntent(3)   -- 2.2.2.2
+check("workshop: a row the pointer rests on", w.ugc[1] and w.ugc[1].id, "102")
+w.loading = true
+w.run(1)
+w.answer()
+w.answerInfos()
+check("workshop: no new asks once a join starts", #w.ugc, 0)
+check("workshop: logged as stopped", (w.logs or ""):find("stopped checking 2.2.2.2:27015: 6 Workshop items, 3 needed", 1, true) ~= nil, true)
+-- Steam never answers: given up after two minutes.
+w = wsWorld()
+w.wsState = {}   -- all installed and current, as Steam sees them
+w.run(10)
+check("workshop: only version checks pending", #w.ugc == 0 and #w.infos, 6)
+w.run(125)
+check("workshop: given up when Steam never answers", (w.logs or ""):find("stopped checking " .. OURS .. ": 6 Workshop items, 0 needed", 1, true) ~= nil, true)
+w.answerInfos()
+check("workshop: late answers ignored", #w.ugc, 0)
+-- Its own switch: off asks nothing, while the files are still warmed.
+w = wsWorld({ settings = ON, menu = true, convars = { meowy_prewarm_workshop = "0" } })
+w.run(6)
+check("workshop off: nothing asked", #w.ugc + #w.infos, 0)
+check("workshop off: files still warmed", w.pwStarts and w.pwStarts[1], OURS)
+w.concommands.meowy_settings()
+local wt = find(function(p) return p.meowyToggle == "prewarm_workshop" end)
+check("workshop: a toggle in settings, off", wt ~= nil and wt.on, false)
+if wt then wt:SetOn(true) end
+check("workshop: turned on through the console", w.convars.meowy_prewarm_workshop, "1")
+-- With file warming off, the Workshop check still runs.
+w = wsWorld({ settings = ON, menu = true, convars = { meowy_prewarm = "0" } })
+w.run(6)
+check("files off: Workshop items still checked", #w.ugc, 1)
+check("files off: nothing warmed", w.pwStarts, nil)
 
 -- Find servers, faster: its switch in settings (the setting is module.cpp's).
 w = world({ settings = ON, menu = true, engineConVars = true })

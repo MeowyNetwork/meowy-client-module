@@ -137,6 +137,20 @@ the game closes while the pack is starting, the next start skips it once by itse
   - It needs the fast file checks (`meowy_fast_file_checks`, on by default) to see which files a join
     opens. Turn it off in Meowy settings ("Get servers ready before you join") or with `meowy_prewarm 0`.
     `meowy_prewarm_status` shows what it has written down and read.
+  - **Workshop items, too.** The same join notes which Workshop items the server had you mount (from the
+    `.gma` files it opens, any size). At the same moments, the menu checks them, and an item that needs it
+    downloads or unpacks on the main menu instead of on the loading screen.
+    - **What needs it:** an item Steam says isn't installed, has an update or is mid-download (read
+      through the game's own `steam_api`), a legacy item whose unpacked copy in `cache\workshop` is gone,
+      or an item whose Workshop version (`steamworks.FileInfo`) is newer than the one installed.
+    - **What happens:** only those go to the menu's own `steamworks.DownloadUGC`, one at a time, so Garry's
+      Mod's download box shows only for real work. It stops asking when a join starts; anything already
+      downloading carries on, and the join uses it. Only for servers you've joined before.
+    - **Measured** on our dev server, fresh start, with one 94 MB legacy item's unpacked copy deleted: the
+      loading screen's Workshop step took 4.7 s without the check and 2.1 s with it (it unpacked the item
+      at the menu; checking all 29 items took 3.0 s). An update day's downloads move the same way.
+    - **Switch:** its own, in Meowy settings ("Update a server's Workshop items before you join",
+      `meowy_prewarm_workshop`, on by default). `meowy_prewarm_status` shows the last check.
 - With "Start with the game" on, joins to a Meowy Network server get the pack's own loading
   screen instead of Garry's Mod's. It's a separate window over the game, drawn on its own thread,
   so it keeps moving while the game is busy (Garry's Mod's own screen freezes for most of a join).
@@ -293,7 +307,10 @@ the game closes while the pack is starting, the next start skips it once by itse
   Addons and the rest). The pack's own windows already scale with the screen.
 - **Meowy home screen (preview, off by default).** `meowy_menu 1`, or "Meowy home screen (preview)" in
   Meowy settings, puts the pack's home in place of Garry's Mod's main screen. It has:
-  - **Continue**, and your servers with search, as on the card below;
+  - **Continue**, and your servers, as on the card below;
+  - **one search box** (`/` to get to it) for your servers and your installed maps. A map opens Start new
+    game with that map chosen;
+  - **Garry's Mod's news**, the latest three, from its own feed, opened the way Garry's Mod opens them;
   - **the usual links:** Find servers, Start new game, Addons, Dupes, Saves and Demos are Garry's Mod's own
     screens. Options, Meowy settings and Quit work as usual, and Garry's Mod's bottom bar (Problems,
     games, language, gamemode) stays.
@@ -301,7 +318,8 @@ the game closes while the pack is starting, the next start skips it once by itse
   How it works:
   - **Inside Garry's Mod's own menu page:** nothing is reloaded. While it's on, a style rule hides the
     main screen's list and news, the pack's home takes their place, and the links are the page's own
-    screens, so going there and back is instant.
+    screens, so going there and back is instant. When the page has just loaded (the game starting, a
+    language change), the home goes in on the next frame, so Garry's Mod's own list doesn't flash first.
   - **In game:** the Escape menu is Garry's Mod's, with the server card.
   - **What it can do:** every server's text is shown as text. The home asks the pack for anything only
     through `meowy.post(kind, value)`, a fixed list of message types (join a row, Continue, Options,

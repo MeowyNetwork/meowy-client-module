@@ -49,6 +49,7 @@
 		['Quit', 'quit', '']
 	];
 	var MAX_MATCHES = 10;
+	var MAX_MAPS = 8, MAX_NEWS = 3;
 
 	var on = false, query = '', selected = 0, rows = [], focused = false;
 
@@ -116,7 +117,7 @@
 		var search = node('input', 'ms-search');
 		search.type = 'text';
 		search.maxLength = 64;
-		search.placeholder = 'Search your servers   ( / )';
+		search.placeholder = 'Search your servers and maps   ( / )';
 		search.value = query;
 		search.oninput = function () { query = search.value; selected = 0; lists(); };
 		search.onfocus = function () { focused = true; mark(); };
@@ -124,8 +125,88 @@
 		search.onkeydown = keys;
 		home.appendChild(search);
 		home.appendChild(node('div', 'ms-lists'));
+		home.appendChild(node('div', 'ms-news'));
 		root.appendChild(home);
 		return root;
+	}
+
+	// One row: a name, an optional detail and stats; act() is what Enter or a click does.
+	function addRow(list, name, detail, stats, dim, act, intentId) {
+		var cls = 'ms-row' + (dim ? ' ms-dim' : '');
+		var el = node('div', cls);
+		if (stats) el.appendChild(node('span', 'ms-stats', stats));
+		el.appendChild(node('div', 'ms-name', name));
+		if (detail) el.appendChild(node('div', 'ms-detail', detail));
+		el.title = name;
+		el.onclick = act;
+		if (intentId !== undefined) intent(el, intentId);
+		list.appendChild(el);
+		rows.push({ el: el, cls: cls, act: act });
+	}
+
+	// The page's own map list (gScope.MapList: Garry's Mod's Lua sends it for New
+	// game). A map is picked the way New game picks it (its root scope's Map and
+	// LastCategory), then New game opens with it chosen.
+	function pickMap(map, category) {
+		var r = window.rootScope;
+		if (!r) return;
+		r.Map = map;
+		r.LastCategory = category;
+		if (typeof window.UpdateDigest === 'function') window.UpdateDigest(r, 50);
+		location.hash = '#/newgame/';
+	}
+	function mapMatches(q) {
+		var out = [], seen = {}, list = window.gScope && window.gScope.MapList;
+		if (!q || !list || !list.length) return out;
+		for (var i = 0; i < list.length && out.length < MAX_MAPS; i++) {
+			var maps = list[i] && list[i].maps;
+			if (!maps || list[i].category === 'Favourites') continue;   // also listed in their own category
+			for (var j = 0; j < maps.length && out.length < MAX_MAPS; j++) {
+				var m = maps[j];
+				if (typeof m !== 'string' || seen[m] || m.toLowerCase().indexOf(q) < 0) continue;
+				seen[m] = true;
+				out.push([m, String(list[i].category)]);
+			}
+		}
+		return out;
+	}
+
+	// Garry's Mod's news, as the stock main screen had it (rootScope.NewsList,
+	// from its own feed); opened the way the stock page opens it. Titles as text.
+	var newsShown = null;
+	function newsAgo(date) {
+		var t = Date.parse(date);
+		if (isNaN(t)) return '';
+		var days = Math.floor((Date.now() - t) / 86400000);
+		if (days < 1) return 'today';
+		if (days < 2) return 'yesterday';
+		if (days < 60) return days + ' days ago';
+		return new Date(t).toDateString().replace(/^\S+\s/, '');
+	}
+	function news() {
+		var s = shell();
+		if (!s) return;
+		var box = s.querySelector('.ms-news'), items = (window.rootScope && window.rootScope.NewsList) || [];
+		var picked = [];
+		for (var i = 0; i < items.length && picked.length < MAX_NEWS; i++) {
+			if (items[i] && typeof items[i].Title === 'string' && typeof items[i].Url === 'string') picked.push(items[i]);
+		}
+		var key = query ? '' : picked.map(function (n) { return n.Title + '|' + n.Date; }).join('\n');
+		if (key === newsShown) return;
+		newsShown = key;
+		while (box.firstChild) box.removeChild(box.firstChild);
+		if (!key) return;   // hidden while searching, or no news yet
+		box.appendChild(node('div', 'ms-title', 'News'));
+		for (var k = 0; k < picked.length; k++) {
+			var item = node('div', 'ms-row');
+			item.appendChild(node('span', 'ms-stats', newsAgo(picked[k].Date)));
+			item.appendChild(node('div', 'ms-name', picked[k].Title));
+			item.title = picked[k].Title;
+			item.onclick = (function (url) {
+				return function () { if (window.scope && typeof window.scope.OpenInSteam === 'function') window.scope.OpenInSteam(url); };
+			})(picked[k].Url);
+			box.appendChild(item);
+		}
 	}
 
 	function mark() {
@@ -137,7 +218,8 @@
 	}
 
 	// The lists: each section's first rows; while searching, every row whose
-	// name or map has the text (at most MAX_MATCHES a section).
+	// name or map has the text (at most MAX_MATCHES a section), then the
+	// installed maps whose name has it.
 	function lists() {
 		var s = shell();
 		if (!s) return;
@@ -145,9 +227,9 @@
 		var data = window.MeowyHomeData, q = query.toLowerCase();
 		while (list.firstChild) list.removeChild(list.firstChild);
 		rows = [];
-		if (!data || !data.sections) return;
-		for (var i = 0; i < data.sections.length; i++) {
-			var sec = data.sections[i], picked = [];
+		var sections = (data && data.sections) || [];
+		for (var i = 0; i < sections.length; i++) {
+			var sec = sections[i], picked = [];
 			for (var j = 0; j < sec.rows.length; j++) {
 				var r = sec.rows[j];
 				if (q && (r.name + ' ' + r.detail).toLowerCase().indexOf(q) < 0) continue;
@@ -157,23 +239,25 @@
 			if (q && !picked.length) continue;
 			list.appendChild(node('div', 'ms-title', sec.title));
 			for (var k = 0; k < picked.length; k++) {
-				var p = picked[k], cls = 'ms-row' + (p.dim ? ' ms-dim' : '');
-				var el = node('div', cls);
-				if (p.stats) el.appendChild(node('span', 'ms-stats', p.stats));
-				el.appendChild(node('div', 'ms-name', p.name));
-				if (p.detail) el.appendChild(node('div', 'ms-detail', p.detail));
-				el.title = p.name;
-				el.onclick = (function (id) { return function () { post('join', Number(id)); }; })(p.id);
-				intent(el, p.id);
-				list.appendChild(el);
-				rows.push({ id: p.id, el: el, cls: cls });
+				var p = picked[k];
+				addRow(list, p.name, p.detail, p.stats, p.dim,
+					(function (id) { return function () { post('join', Number(id)); }; })(p.id), p.id);
 			}
 			if (!q && sec.note) list.appendChild(node('div', 'ms-note', sec.note));
 		}
-		if (q && !rows.length) list.appendChild(node('div', 'ms-note', 'No server matches'));
+		var maps = mapMatches(q);
+		if (maps.length) {
+			list.appendChild(node('div', 'ms-title', 'Maps'));
+			for (var m = 0; m < maps.length; m++) {
+				addRow(list, maps[m][0], maps[m][1] + ' · start a new game', '', false,
+					(function (map, cat) { return function () { pickMap(map, cat); }; })(maps[m][0], maps[m][1]));
+			}
+		}
+		if (q && !rows.length) list.appendChild(node('div', 'ms-note', 'No server or map matches'));
 		if (selected >= rows.length) selected = rows.length - 1;
 		if (selected < 0) selected = 0;
 		mark();
+		news();
 	}
 
 	function continueEntry() {
@@ -196,7 +280,7 @@
 			selected = Math.max(0, Math.min(rows.length - 1, selected + (k === 40 ? 1 : -1)));
 			mark();
 		} else if (k === 13) {
-			if (rows[selected]) post('join', Number(rows[selected].id));
+			if (rows[selected]) rows[selected].act();
 		} else if (k === 27) {
 			search.value = '';
 			query = '';
@@ -238,8 +322,10 @@
 
 	window.MeowyShell = function (v) {
 		var want = !!v;
+		if (on && want) news();   // the feed arrives after the page: picked up on the next send
 		if (want === on && (!on || shell() || !document.querySelector(MAIN))) return;
 		on = want;
+		newsShown = null;
 		draw();
 	};
 	window.MeowyShellLists = lists;
