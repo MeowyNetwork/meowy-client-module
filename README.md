@@ -137,6 +137,14 @@ the game closes while the pack is starting, the next start skips it once by itse
   - It needs the fast file checks (`meowy_fast_file_checks`, on by default) to see which files a join
     opens. Turn it off in Meowy settings ("Get servers ready before you join") or with `meowy_prewarm 0`.
     `meowy_prewarm_status` shows what it has written down and read.
+  - **Workshop items, too.** The same join notes which Workshop items the server had you mount (from the
+    `.gma` files it opens, any size). At the same moments, the menu asks Steam for each of them
+    (`steamworks.DownloadUGC`, four at a time): an item that's up to date answers at once, and an update
+    or a missing item downloads or unpacks on the main menu instead of on the loading screen. It stops
+    asking when a join starts; anything already downloading carries on, and the join uses it. Only for
+    servers you've joined before. It has its own switch in Meowy settings ("Update a server's Workshop
+    items before you join", `meowy_prewarm_workshop`, on by default), and `meowy_prewarm_status` shows the
+    last check.
 - With "Start with the game" on, joins to a Meowy Network server get the pack's own loading
   screen instead of Garry's Mod's. It's a separate window over the game, drawn on its own thread,
   so it keeps moving while the game is busy (Garry's Mod's own screen freezes for most of a join).

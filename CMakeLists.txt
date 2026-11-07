@@ -24,6 +24,7 @@ add_library(meowy SHARED
 	src/font_loads.cpp
 	src/fs_cache.cpp
 	src/prewarm.cpp
+	src/steam_ugc.cpp
 	src/server_gate.cpp
 	src/discord_ipc.cpp
 	src/loading_screen.cpp

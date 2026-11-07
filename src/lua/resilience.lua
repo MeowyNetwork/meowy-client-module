@@ -96,6 +96,14 @@ local function setPrewarm(on)
 	RunConsoleCommand("meowy_prewarm", on and "1" or "0")
 	if not on and meowy.PrewarmCancel then meowy.PrewarmCancel() end
 end
+-- ...and bring its Workshop items up to date first (home.lua): a download, so
+-- its own switch.
+local prewarmWorkshopSetting = meowy.Setting and meowy.Setting("meowy_prewarm_workshop", "1",
+	"Meowy Client Pack: update a server's Workshop items when you're about to join it (0 = off)")
+local function prewarmWorkshopOn() return prewarmWorkshopSetting == nil or prewarmWorkshopSetting:GetBool() end
+local function setPrewarmWorkshop(on)
+	RunConsoleCommand("meowy_prewarm_workshop", on and "1" or "0")
+end
 
 -- Set by menu_page.lua while our home shows on the stock page (its list, with
 -- the settings entry, is hidden then).
@@ -191,6 +199,15 @@ local function openSettings(startTab)
 			pt.meowyToggle = "prewarm"
 			pt.gapBefore = S(10)
 			blocks[#blocks + 1] = pt
+		end
+		if meowy.PrewarmWorkshop then
+			local wt = UI.Toggle(nil, "Update a server's Workshop items before you join",
+				"At the same moments, Steam is asked whether that server's Workshop items (the ones your last join there "
+				.. "used) are up to date. Up-to-date items cost nothing; an update or a missing item downloads on the main "
+				.. "menu instead of on the loading screen. Only for servers you've joined before.",
+				prewarmWorkshopOn(), function(on) setPrewarmWorkshop(on) end)
+			wt.meowyToggle = "prewarm_workshop"
+			blocks[#blocks + 1] = wt
 		end
 		if UI.Choice and menuScaleSetting then
 			local options = {}
