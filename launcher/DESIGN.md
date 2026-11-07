@@ -160,7 +160,18 @@ format and keys as they are:
   (e.g. stop healing the line, stop adding `-disableluarefresh`).
 - **Repair** of missing DLLs (§4, reinstall) then re-stages the current verified version.
 
-**Until that lands** `updater.rs` is a stub marked `UPDATER-STUB`: it reports "updates come with the
+**The policy (built, 2026-11-07, after the pack's K1 merged):** `core/src/policy.rs` mirrors
+`src/policy.cpp`: the same strict parse, the same keys (`core/build.rs` reads them out of `policy.cpp`, so
+there's one copy; a test checks a policy signed with the production release key), BCrypt verification,
+the same files in `state\` and the same rules for keeping one (higher `seq`; ops and recovery only
+stricter). The launcher re-reads the kept policy every minute and, while the game is closed, fetches the
+same `policy.txt`/`.sig` every 30 minutes, so the stub's `policy.bin` is current before the pack would load.
+It obeys `off launcher` (all of its own features) and `off launcher_repair`, `launcher_fast_start`,
+`launcher_links`, `launcher_servers`; with `pack_enabled 0` it doesn't repair or prepare the pack's start.
+The policy's notice shows in the window. (2026-11-07 the URLs still return the website's page, so nothing
+is kept yet.)
+
+**Until the updater lands** `updater.rs` is a stub marked `UPDATER-STUB`: it reports "updates come with the
 pack" and does no network I/O. Its interface (check → stage → report) is fixed so the real one drops in.
 Before writing update code, check the main session's PR in the repo.
 

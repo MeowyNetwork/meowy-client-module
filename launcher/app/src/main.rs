@@ -13,7 +13,7 @@ use std::time::{Duration, SystemTime};
 
 use launcher_core::links::Link;
 use launcher_core::settings::{self, Settings};
-use launcher_core::{a2s, address, http, index, line, links, log, servers, session, steam, updater, win};
+use launcher_core::{a2s, address, http, index, line, links, log, policy, servers, session, steam, updater, win};
 use serde::Serialize;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -45,6 +45,14 @@ struct Inner {
     servers: Vec<servers::Row>,
     /// Meowy's server index, when it was fetched, and its ETag.
     index: Option<(index::Index, std::time::Instant, Option<String>)>,
+    /// The pack's signed policy as kept in its state folder (None: none, all on).
+    policy: Option<policy::Policy>,
+}
+
+impl Inner {
+    fn allows(&self, feature: &str) -> bool {
+        policy::launcher_allows(self.policy.as_ref(), feature)
+    }
 }
 
 struct AppState(Mutex<Inner>);
@@ -79,6 +87,9 @@ fn locate(inner: &mut Inner) {
 /// game runs.
 fn repair(inner: &mut Inner, why: &str) -> String {
     let Some(game) = inner.game.clone() else { return "Garry's Mod wasn't found in Steam's libraries.".into() };
+    if !inner.allows("repair") {
+        return "Repairs are switched off for now by Meowy Network.".into();
+    }
     if inner.running {
         return "Garry's Mod is running; the launcher repairs when it's closed.".into();
     }
@@ -115,7 +126,7 @@ fn launch(app: &AppHandle, connect: Option<String>) -> Result<String, String> {
         // Never blocks the launch: a failed repair is reported, the game still starts.
         repair(&mut inner, "launch");
     }
-    let args = steam::launch_args(inner.settings.disable_lua_refresh, connect.as_deref());
+    let args = steam::launch_args(inner.settings.disable_lua_refresh && inner.allows("fast_start"), connect.as_deref());
     drop(inner);
     std::process::Command::new(&exe).args(&args).spawn().map_err(|e| format!("Couldn't start Steam: {e}"))?;
     log::line(&format!("launch: steam {}", args.join(" ")));
@@ -192,6 +203,10 @@ fn handle_args(app: &AppHandle, args: &[String]) {
         return;
     }
     if let Some(url) = args.iter().find(|a| links::is_link(a)) {
+        if !app.state::<AppState>().0.lock().unwrap().allows("links") {
+            notice(app, "Link not followed", "meowy:// links are switched off for now by Meowy Network.");
+            return;
+        }
         match links::parse(url) {
             Ok(Link::Connect { address, ours: true }) => {
                 log::line(&format!("link: join {address}"));
@@ -289,6 +304,55 @@ fn watch_back_up(app: AppHandle) {
     }
 }
 
+/// The pack's signed policy (core/src/policy.rs): re-read the kept one each
+/// minute (the pack may have kept a newer one), and while the game is closed
+/// fetch the same files the pack does every 30 minutes, so the start-up
+/// stub's policy.bin is current before the pack would load. Only with the
+/// pack's production keys (read from src/policy.cpp at build time).
+fn watch_policy(app: AppHandle) {
+    let keys = policy::Keys::production();
+    let Some(dir) = policy::state_dir() else { return };
+    let mut last_fetch: Option<std::time::Instant> = None;
+    let mut last_said = String::new();
+    // Let the game watcher see a game that's already running before the first fetch.
+    std::thread::sleep(Duration::from_secs(10));
+    loop {
+        let running = app.state::<AppState>().0.lock().unwrap().running;
+        if keys.any() && !running && last_fetch.map_or(true, |t| t.elapsed() >= Duration::from_secs(30 * 60)) {
+            last_fetch = Some(std::time::Instant::now());
+            let said = match (
+                http::get(policy::HOST, policy::TXT_PATH, None, policy::MAX_BODY + 1, 15000),
+                http::get(policy::HOST, policy::SIG_PATH, None, 1024, 15000),
+            ) {
+                (Ok(txt), Ok(sig)) if txt.status == 200 && sig.status == 200 => {
+                    match policy::offer(&keys, &dir, &txt.body, &String::from_utf8_lossy(&sig.body)) {
+                        Ok(seq) => format!("policy {seq} kept"),
+                        Err(e) => format!("policy not taken: {e}"),
+                    }
+                }
+                (Ok(t), Ok(s)) => format!("policy: HTTP {} / {}", t.status, s.status),
+                (Err(e), _) | (_, Err(e)) => format!("policy: {e}"),
+            };
+            if said != last_said {
+                log::line(&said);
+                last_said = said;
+            }
+        }
+        let kept = policy::current(&keys, &dir).map(|(p, _)| p);
+        {
+            let state = app.state::<AppState>();
+            let mut inner = state.0.lock().unwrap();
+            if inner.policy != kept {
+                log::line(&format!("policy in force: {}", kept.as_ref().map_or("none".into(), |p| format!("seq {}", p.seq))));
+                inner.policy = kept;
+                drop(inner);
+                let _ = app.emit("status", ());
+            }
+        }
+        std::thread::sleep(Duration::from_secs(60));
+    }
+}
+
 /// Every 15 s, one stat each of `appmanifest_4000.acf` and `menu.lua`. When
 /// either changed and then stayed the same for a whole interval, with the
 /// game closed and Steam done with it, the start-up line is checked.
@@ -343,6 +407,8 @@ struct Status {
     start_at_sign_in: bool,
     last_repair: String,
     updates: &'static str,
+    /// The policy's notice for players, if it has one.
+    notice: String,
 }
 
 #[tauri::command]
@@ -372,6 +438,7 @@ fn status(app: AppHandle) -> Status {
         start_at_sign_in: win::start_at_sign_in(),
         last_repair: inner.last_repair.clone(),
         updates: updater::status(),
+        notice: inner.policy.as_ref().map(|p| p.notice.clone()).unwrap_or_default(),
     }
 }
 
@@ -413,6 +480,9 @@ async fn server_list(app: AppHandle) -> Vec<servers::Row> {
     let steam_path = {
         let state = app.state::<AppState>();
         let mut inner = state.0.lock().unwrap();
+        if !inner.allows("servers") {
+            return Vec::new();
+        }
         if inner.steam_path.is_none() {
             locate(&mut inner);
         }
@@ -445,6 +515,9 @@ struct Found {
 /// a minute, with If-None-Match; it's only fetched while the window is used).
 #[tauri::command]
 async fn find_servers(app: AppHandle, query: String) -> Result<Found, String> {
+    if !app.state::<AppState>().0.lock().unwrap().allows("servers") {
+        return Err("Finding servers is switched off for now by Meowy Network.".into());
+    }
     let (stale, etag) = {
         let state = app.state::<AppState>();
         let inner = state.0.lock().unwrap();
@@ -615,6 +688,7 @@ fn main() {
         card: None,
         servers: Vec::new(),
         index: None,
+        policy: None,
     };
     locate(&mut inner);
     // Links aren't logged as given: a refused one may carry a password.
@@ -658,6 +732,8 @@ fn main() {
             std::thread::spawn(move || watch_steam(h));
             let h = handle.clone();
             std::thread::spawn(move || watch_back_up(h));
+            let h = handle.clone();
+            std::thread::spawn(move || watch_policy(h));
             handle_args(&handle, &std::env::args().collect::<Vec<_>>());
             Ok(())
         })
