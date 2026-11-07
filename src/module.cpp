@@ -107,6 +107,7 @@
 #include "timeline_steam.h"
 #include "prewarm.h"
 #include "pak_cache.h"
+#include "policy.h"
 #include "console_capture.h"
 #include "server_query.h"
 #include "steam_ugc.h"
@@ -1890,6 +1891,70 @@ namespace
 		return 1;
 	}
 
+	// --- The signed policy: Meowy Network's kill switch (policy.h) -------------------
+	std::wstring PolicyDir() { return DataDir() + L"\\state"; }
+
+	// Whether this version may run under the policy kept (or the default: all on).
+	bool PolicyAllows()
+	{
+		return policy::VersionAllowed(policy::Effective(), VERSION);
+	}
+
+	// The line printed when it may not.
+	std::string PolicyOffLine()
+	{
+		const policy::Policy p = policy::Effective();
+		std::string s = std::string("[Meowy Client Pack] ") + VERSION + (p.packEnabled ? " has been paused by Meowy Network" : " is switched off by Meowy Network")
+			+ " (policy " + std::to_string(p.seq) + "); the game runs as it would without it";
+		if (!p.notice.empty())
+			s += ": " + p.notice;
+		return s;
+	}
+
+	// meowy.PolicyState() -> { seq, allowed, pack_enabled, off = { setting names }, notice, describe }.
+	int PolicyState(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		const policy::Policy p = policy::Effective();
+		LUA->CreateTable();
+		LUA->PushNumber(static_cast<double>(p.seq));
+		LUA->SetField(-2, "seq");
+		LUA->PushBool(policy::VersionAllowed(p, VERSION));
+		LUA->SetField(-2, "allowed");
+		LUA->PushBool(p.packEnabled);
+		LUA->SetField(-2, "pack_enabled");
+		LUA->CreateTable();
+		double i = 0;
+		for (const std::string& name : p.off)
+		{
+			LUA->PushNumber(++i);
+			LUA->PushString(name.c_str());
+			LUA->SetTable(-3);
+		}
+		LUA->SetField(-2, "off");
+		LUA->PushString(p.notice.c_str());
+		LUA->SetField(-2, "notice");
+		LUA->PushString(policy::Describe().c_str());
+		LUA->SetField(-2, "describe");
+		return 1;
+	}
+
+	void PrintLine(ILuaBase* LUA, const std::string& line)
+	{
+		LUA->PushSpecial(SPECIAL_GLOB);
+		LUA->GetField(-1, "print");
+		if (LUA->IsType(-1, Type::Function))
+		{
+			LUA->PushString(line.c_str());
+			LUA->Call(1, 0);
+		}
+		else
+		{
+			LUA->Pop();
+		}
+		LUA->Pop();
+	}
+
 	// LastServerMark(name) -> ok: the player is in the game on a server now; kept
 	// for the main menu's "Continue" when it's ours or a public one (the engine's
 	// address, read here; the name is the server's, only ever shown as text).
@@ -2564,10 +2629,47 @@ do
 	for name, value in string.gmatch(meowy.MenuSettingsRead() or "", "([%w_]+)=([^\r\n]*)") do
 		saved[name] = value
 	end
+	-- Meowy Network's signed policy (policy.h) can turn a setting off ("off
+	-- meowy_pak_cache"), or the whole pack: such a setting reads as off here,
+	-- whatever the player chose (their own value is kept and comes back when
+	-- the policy lets it). Every feature that reads its setting follows.
+	local policyOff, policyAt, policySeq = {}, -math.huge, nil
+	local function killed(name)
+		local now = SysTime()
+		if now - policyAt > 2 then
+			policyAt = now
+			local st = meowy.PolicyState and meowy.PolicyState()
+			policyOff = {}
+			if istable(st) then
+				for _, n in ipairs(st.off or {}) do policyOff[n] = true end
+				policyOff["*"] = st.pack_enabled == false
+				if st.seq ~= policySeq then
+					if policySeq ~= nil and isstring(st.notice) and st.notice ~= "" then
+						print("[Meowy Client Pack] Meowy Network: " .. st.notice)
+					end
+					policySeq = st.seq
+				end
+			end
+		end
+		return policyOff[name] == true or policyOff["*"] == true
+	end
 	function meowy.Setting(name, default, help)
 		names[#names + 1] = name
-		return CreateConVar(name, saved[name] or default, FCVAR_ARCHIVE, help)
+		local cv = CreateConVar(name, saved[name] or default, FCVAR_ARCHIVE, help)
+		return setmetatable({}, { __index = function(_, k)
+			if k == "GetBool" then return function() return not killed(name) and cv:GetBool() end end
+			if k == "GetInt" then return function() if killed(name) then return 0 end return cv:GetInt() end end
+			if k == "GetFloat" then return function() if killed(name) then return 0 end return cv:GetFloat() end end
+			if k == "GetString" then return function() if killed(name) then return "0" end return cv:GetString() end end
+			local f = cv[k]
+			if isfunction(f) then return function(_, ...) return f(cv, ...) end end
+			return f
+		end })
 	end
+	concommand.Add("meowy_policy_status", function()
+		local st = meowy.PolicyState and meowy.PolicyState()
+		print("[Meowy Client Pack] policy: " .. (istable(st) and st.describe or "unavailable"))
+	end)
 	local nextCheck = 0
 	hook.Add("Think", "MeowyClientPack.SaveSettings", function()
 		local now = SysTime()
@@ -2758,6 +2860,22 @@ end)
 
 GMOD_MODULE_OPEN()
 {
+#ifdef _WIN32
+	// Switched off by the signed policy (policy.h): only the version, nothing runs.
+	policy::StartFetching(PolicyDir());
+	if (!PolicyAllows())
+	{
+		LUA->PushSpecial(SPECIAL_GLOB);
+		LUA->CreateTable();
+		LUA->PushString(VERSION);
+		LUA->SetField(-2, "VERSION");
+		LUA->SetField(-2, "meowy");
+		LUA->Pop();
+		PrintLine(LUA, PolicyOffLine());
+		return 0;
+	}
+#endif
+
 	LUA->PushSpecial(SPECIAL_GLOB);
 	LUA->CreateTable();
 
@@ -2826,12 +2944,26 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
 		reinterpret_cast<LPCWSTR>(&meowy_menu_open), &self);
 
+	// The kill switch first (policy.h): the policy kept from last time decides
+	// this start; a newer one is fetched in the background and applies to
+	// settings at once (meowy.Setting) and to the whole pack from the next start.
+	policy::StartFetching(PolicyDir());
+	const bool allowed = PolicyAllows();
+
 	LUA->PushSpecial(SPECIAL_GLOB);
 	LUA->CreateTable();
 	LUA->PushString(VERSION);
 	LUA->SetField(-2, "VERSION");
 	LUA->PushString("menu");
 	LUA->SetField(-2, "REALM");
+	SetFunction(LUA, "PolicyState", Guarded<PolicyState>);
+	if (!allowed)
+	{
+		LUA->SetField(-2, "meowy");
+		LUA->Pop();
+		PrintLine(LUA, PolicyOffLine());
+		return 0;
+	}
 	startup_hook::NoteMenuLoaded();
 	SetFunction(LUA, "StartupHook", Guarded<StartupHookState>);
 	SetFunction(LUA, "SetStartupHook", Guarded<SetStartupHook>);
