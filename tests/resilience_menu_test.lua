@@ -1875,6 +1875,32 @@ w.events = { "invite 109775241000000009" }
 w.run(1)
 check("party: off, invites ignored", #w.partyJoins, 0)
 check("party: off, no pack in Rich Presence", w.sets["presence.meowy_pack"], "")
+-- Garry's Mod's blacklist check is slow (~0.6 ms a server): the rows go a
+-- slice a frame, the most players first, never all in one frame.
+w = indexWorld()
+for k = 1, 300 do
+	w.indexData.s[k] = { "46.1." .. math.floor(k / 200) .. "." .. (k % 200 + 1) .. ":27015", "Box " .. k, "", "gm_c", "sandbox", "", "", "", 300 - k, 400, 0, 20260429, 0, 1, "", -1 }
+end
+local blacklistCalls = 0
+w.env.IsServerBlacklisted = function(a) blacklistCalls = blacklistCalls + 1 w.now = w.now + 0.0006 return nil end
+w.post("browse")
+w.browseCalls = {}
+w.indexResult = { "ok", "INDEX", "" }
+w.run(0.5)
+local firstBatch = "[]"
+for _, c in ipairs(w.browseCalls) do local b = c:match("MeowyBrowse%.add%(1, (%b[])") if b then firstBatch = b break end end
+local _, inFirst = firstBatch:gsub('"i":', "")
+check("index: the first slice is part of the list", inFirst > 0 and inFirst < 300, true)
+check("index: the biggest server first", firstBatch:find('"n":"Box 1"', 1, true) ~= nil, true)
+w.run(5)
+local sent = 0
+for _, c in ipairs(w.browseCalls) do local b = c:match("MeowyBrowse%.add%(1, (%b[])") if b then local _, n = b:gsub('"i":', "") sent = sent + n end end
+check("index: then the rest, slice by slice", sent, 300)
+check("index: each server checked once", blacklistCalls, 300)
+w.browseCalls = {}
+w.post("browse")
+w.run(0.3)
+check("index: the blacklist's answers kept (no new checks on a refresh)", blacklistCalls, 300)
 -- The Meowy console: the capture starts with the menu; meowy_console opens the
 -- window, reads the lines, and a typed line runs as the console would run it.
 w = world({ settings = ON, menu = true })

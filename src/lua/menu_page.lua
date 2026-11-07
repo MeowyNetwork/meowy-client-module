@@ -158,7 +158,7 @@ local function browseStart(tab)
 	browse.tab = tab
 	for i, r in pairs(browse.rows) do if r.tab == tab then browse.rows[i] = nil end end
 	browse.count, browse.seen, browse.blocked, browse.full, browse.started = 0, {}, 0, false, SysTime()
-	browse.byAddr, browse.fromIndex, browse.known, browse.ping, browse.indexCount = {}, {}, {}, {}, 0
+	browse.byAddr, browse.fromIndex, browse.known, browse.ping, browse.indexCount, browse.job = {}, {}, {}, {}, 0, nil
 	if meowy.FetchServerRep then meowy.FetchServerRep() end
 	-- The index first (the Internet list only): shown as soon as it's here.
 	browse.index = nil
@@ -178,10 +178,21 @@ local function browseStart(tab)
 		browse.index == "waiting" and (idx.fetching and ", asking Meowy's index" or ", from Meowy's index") or "")
 end
 
+-- Garry's Mod's own check, its answers kept for the session by what it reads
+-- (it costs ~0.6 ms a server; the index's 5,000+ come back every minute).
+local blackCache, blackCount = {}, 0
 local function blacklisted(s)
 	if not isfunction(IsServerBlacklisted) then return false end
-	local ok, hit = pcall(IsServerBlacklisted, s.address, s.name or "", s.desc or "", s.gm or "", s.map or "")
-	return ok and hit ~= nil
+	local name, desc, gm, map = s.name or "", s.desc or "", s.gm or "", s.map or ""
+	local key = table.concat({ s.address or "", name, desc, gm, map }, "\0")
+	local hit = blackCache[key]
+	if hit == nil then
+		local ok, r = pcall(IsServerBlacklisted, s.address, name, desc, gm, map)
+		hit = ok and r ~= nil
+		if blackCount >= 50000 then blackCache, blackCount = {}, 0 end
+		blackCache[key], blackCount = hit, blackCount + 1
+	end
+	return hit
 end
 
 -- The native list's server, in the stock query's terms.
@@ -252,13 +263,31 @@ local function browseUpdate(rows)
 	pnlMainMenu:Call("if (window.MeowyBrowse && window.MeowyBrowse.update) window.MeowyBrowse.update(" .. browse.gen .. ", " .. Home.encode(rows) .. ");")
 end
 
--- The index's rows, at once, in one batch. Servers that didn't answer the
--- index's own queries lately are left for Steam to list if they answer it.
+-- The index's rows, the most players first, a slice each frame: Garry's
+-- Mod's blacklist check costs ~0.6 ms a server (3.5 s for the whole index,
+-- measured), so a batch at once would freeze the game. The first slice is a
+-- screenful (INDEX_FIRST_SLICE), the rest INDEX_SLICE of work a frame.
+-- Servers that didn't answer the index's own queries lately are left for
+-- Steam to list if they answer it.
+local INDEX_FIRST_SLICE, INDEX_SLICE = 0.06, 0.008   -- seconds of work
 local function browseFromIndex(now)
 	browse.index = "shown"
-	local batch = {}
-	for _, s in ipairs(idx.rows) do
-		if browse.count >= BROWSE_MAX then browse.full = true break end
+	browse.job = { rows = idx.rows, at = 1, first = true, gen = browse.gen }
+	browse.indexCount = 0
+end
+
+-- One slice of the index's rows (every frame, from its own Think hook).
+local function indexSlice()
+	local job = browse.job
+	if not job then return end
+	if job.gen ~= browse.gen or browse.tab ~= "internet" then browse.job = nil return end
+	local stop = SysTime() + (job.first and INDEX_FIRST_SLICE or INDEX_SLICE)
+	job.first = false
+	local batch, rows = {}, job.rows
+	while job.at <= #rows and SysTime() < stop do
+		local s = rows[job.at]
+		job.at = job.at + 1
+		if browse.count >= BROWSE_MAX then browse.full = true job.at = #rows + 1 break end
 		local address = s.address
 		if not s.quiet and Home.publicAddress(address) and not browse.seen[address] then
 			browse.seen[address] = true
@@ -272,11 +301,21 @@ local function browseFromIndex(now)
 			end
 		end
 	end
-	browse.indexCount = #batch
-	-- The list is complete if Steam has already finished (it's the slower one).
-	browseSend(batch, not browse.id and not browse.stock, now)
-	browseSource()
-	log("browse: %d servers from Meowy's index (%d s old) in %.2f s", #batch, indexAge(), now - browse.started)
+	browse.indexCount = browse.indexCount + #batch
+	local now = SysTime()
+	local last = job.at > #rows
+	-- Complete once the last slice is out, if Steam has already finished (it's the slower one).
+	if #batch > 0 or last then browseSend(batch, last and not browse.id and not browse.stock, now) end
+	if job.firstSent == nil then
+		job.firstSent = now
+		browseSource()
+	end
+	if last then
+		browse.job = nil
+		browseSource()
+		log("browse: %d servers from Meowy's index (%d s old): the first in %.2f s, all in %.2f s", browse.indexCount, indexAge(),
+			job.firstSent - browse.started, now - browse.started)
+	end
 end
 
 -- A newer index while the list is open: rows whose numbers changed are sent
@@ -398,7 +437,7 @@ local function indexTake(now)
 			-- Steam's list wasn't available either: nothing more is coming.
 			if not browse.id and not browse.stock then browseSend({}, true, now) end
 		end
-	elseif browse.index == "shown" and usable and status == "ok" then
+	elseif browse.index == "shown" and usable and status == "ok" and not browse.job then
 		browseIndexRefresh(now)
 	end
 end
@@ -635,6 +674,16 @@ local function tick()
 		sent, sentAt = want, now
 	end
 end
+
+-- The index's rows, a slice a frame while our home shows (indexSlice).
+hook.Add("Think", "MeowyClientPack.MenuPageIndex", function()
+	if not browse.job or not menuPage.ours then return end
+	local ok, err = pcall(indexSlice)
+	if not ok then
+		browse.job = nil
+		ErrorNoHalt("[Meowy Client Pack] menu page (index): " .. tostring(err) .. "\n")
+	end
+end)
 
 hook.Add("Think", "MeowyClientPack.MenuPage", function()
 	local ok, err = pcall(tick)
