@@ -11,3 +11,6 @@
 #define IDR_HOME_LUA 109              // src/lua/home.lua: the Home card on the menu page
 #define IDR_MENU_PAGE_LUA 110         // src/lua/menu_page.lua: the Meowy home screen (preview), its Lua side
 #define IDR_MENU_SHELL_JS 111         // src/menu/shell.js: that home, put into the stock menu page
+#define IDR_CONSOLE_LOGIC_LUA 112     // src/lua/console_logic.lua: the Meowy console's rules
+#define IDR_CONSOLE_LUA 113           // src/lua/console.lua: the Meowy console window (meowy_console)
+#define IDR_MENU_BROWSER_JS 114       // src/menu/browser.js: Find servers, the pack's own (goes in with shell.js)

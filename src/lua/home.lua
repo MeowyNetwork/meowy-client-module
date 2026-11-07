@@ -52,6 +52,14 @@ local HOME_JS = [==[
 		return e;
 	}
 	function join(id) { lua.Run('MeowyClientPackHomeJoin(' + Number(id) + ')'); }
+	// Resting the pointer on a row for a moment: get that server ready (prewarm.h).
+	function intent(el, id) {
+		var timer = null;
+		el.onmouseenter = function () {
+			timer = setTimeout(function () { lua.Run('MeowyClientPackHomeIntent(' + Number(id) + ')'); }, 400);
+		};
+		el.onmouseleave = function () { if (timer) clearTimeout(timer); timer = null; };
+	}
 	function mark() {
 		for (var i = 0; i < rows.length; i++) {
 			var on = focused && i === selected;   // the row Enter joins, while the search box has the keyboard
@@ -83,6 +91,7 @@ local HOME_JS = [==[
 				if (p.detail) el.appendChild(node('div', 'mh-detail', p.detail));
 				el.title = p.name;
 				el.onclick = (function (id) { return function () { join(id); }; })(p.id);
+				intent(el, p.id);
 				list.appendChild(el);
 				rows.push({ id: p.id, el: el, cls: cls });
 			}
@@ -219,6 +228,160 @@ function MeowyClientPackHomeJoin(id)
 	if not Home.validAddress(address) then return end
 	log("home: joining %s", address)
 	join(address)
+end
+
+-- Join pre-warm (prewarm.h): read a server's recorded files into memory when
+-- the player is about to join it. Recorded at every join (any server; native
+-- keeps ours or a public address only); warmed for the Continue server after a
+-- few seconds at the main menu, or for a row the pointer rests on.
+local pw = { joining = false, warmedFor = nil, menuSince = nil }
+
+-- Workshop items (prewarm.h, second part): of the items the server's last join
+-- mounted, only those that need it are handed to Steam (steamworks.DownloadUGC,
+-- the menu's own, which shows Garry's Mod's download box), one at a time, so an
+-- update or a missing item downloads (or unpacks) now instead of on the loading
+-- screen. An item needs it when Steam says so (meowy.WorkshopItemState: not
+-- installed, an update known, mid-download), when the game's unpacked copy of
+-- a legacy item is gone, or when the Workshop's version (steamworks.FileInfo)
+-- is newer than the one installed. Nothing new is asked once a join starts:
+-- the join asks for itself, and Steam carries on with anything downloading.
+local WS_GIVE_UP = 120   -- seconds: Steam never answered
+local WS_TIME_SLACK = 256   -- seconds: FileInfo's float rounding (below)
+local ws = { gen = 0, result = "idle" }
+
+local function wsFinish(stopped)
+	if not ws.address then return end
+	ws.result = string.format("%s %s: %d Workshop items, %d needed an update or unpack, %d done, %d failed, %.1f s",
+		stopped and "stopped checking" or "checked", ws.address, ws.total, ws.stale, ws.done, ws.failed, SysTime() - ws.started)
+	log("prewarm: %s", ws.result)
+	ws.address, ws.queue = nil, nil
+end
+
+local function wsPump()
+	if not ws.queue then return end
+	if IsInLoading() or IsInGame() then wsFinish(true) return end
+	if not ws.inFlight and #ws.queue > 0 then
+		local id = table.remove(ws.queue, 1)
+		local gen = ws.gen
+		ws.inFlight = id
+		steamworks.DownloadUGC(id, function(path, f)
+			if f and f.Close then f:Close() end
+			if gen ~= ws.gen then return end
+			ws.inFlight = nil
+			if path then ws.done = ws.done + 1 else ws.failed = ws.failed + 1 end
+			wsPump()
+		end)
+	end
+	if not ws.inFlight and #ws.queue == 0 and ws.pending == 0 then wsFinish(false) end
+end
+
+local function wsDecide(gen, id, needs)
+	if gen ~= ws.gen or not ws.queue then return end
+	ws.pending = ws.pending - 1
+	if needs then
+		ws.stale = ws.stale + 1
+		ws.queue[#ws.queue + 1] = id
+	end
+	wsPump()
+end
+
+local function wsStart(address)
+	if not (prewarmWorkshopOn() and meowy.PrewarmWorkshop and meowy.WorkshopItemState and steamworks and steamworks.DownloadUGC) then return end
+	if ws.address == address then return end
+	local ids = meowy.PrewarmWorkshop(address)
+	if not istable(ids) or #ids == 0 then return end
+	ws.gen = ws.gen + 1
+	local gen = ws.gen
+	ws.address, ws.queue, ws.total, ws.pending = address, {}, #ids, #ids
+	ws.inFlight, ws.stale, ws.done, ws.failed, ws.started = nil, 0, 0, 0, SysTime()
+	for _, id in ipairs(ids) do
+		local installed, needsUpdate, busy, legacy, updated = meowy.WorkshopItemState(id)
+		if installed == nil then
+			wsDecide(gen, id, false)   -- Steam can't say: leave it to the join
+		elseif not installed or needsUpdate or busy
+			or (legacy and file and file.Exists and not file.Exists("cache/workshop/" .. id .. ".gma", "MOD")) then
+			wsDecide(gen, id, true)
+		elseif steamworks.FileInfo then
+			steamworks.FileInfo(id, function(info)
+				-- FileInfo's time comes through a float: today's unix times are
+				-- rounded to 128 s, either way. Newer means newer by more than that.
+				local now = istable(info) and tonumber(info.updated)
+				wsDecide(gen, id, now ~= nil and now > (tonumber(updated) or 0) + WS_TIME_SLACK)
+			end)
+		else
+			wsDecide(gen, id, false)
+		end
+	end
+end
+
+local function warm(address, why)
+	if not (Home.validAddress(address) and (prewarmOn() or prewarmWorkshopOn())) then return end
+	if IsInGame() or IsInLoading() or address == pw.warmedFor then return end
+	if not (meowy.PrewarmRecorded and meowy.PrewarmRecorded(address)) then return end
+	pw.warmedFor = address
+	wsStart(address)
+	if not (prewarmOn() and meowy.PrewarmStart) then return end
+	local ok, reason = meowy.PrewarmStart(address)
+	log("prewarm: %s %s%s", ok and "warming" or "not warming", address, ok and (" (" .. why .. ")") or (": " .. tostring(reason)))
+end
+
+-- The same for a server listed elsewhere on the home screen (Find servers,
+-- menu_page.lua), by its address.
+function MeowyClientPackWarm(address, why)
+	if isstring(address) and isstring(why) then warm(address, why) end
+end
+
+function MeowyClientPackHomeIntent(id)
+	if not (homeOn() or menuPage.ours) then return end
+	warm(addresses[math.floor(tonumber(id) or 0)], "pointer on its row")
+end
+
+hook.Add("Think", "MeowyClientPack.Prewarm", function()
+	if not meowy.PrewarmBeginJoin then return end
+	local loading = IsInLoading()
+	if ws.queue and (loading or SysTime() - ws.started > WS_GIVE_UP) then wsFinish(true) end
+	if loading and not pw.joining then
+		pw.joining = true
+		if pakCacheOn() and meowy.PakCache then
+			local ok, why = meowy.PakCache(true)
+			if not ok and not pw.pakWhyLogged then pw.pakWhyLogged = true log("pak cache: off (%s)", tostring(why)) end
+		end
+		meowy.PrewarmBeginJoin()   -- also stops any warming: the join's reads come first
+	elseif pw.joining and IsInGame() and not loading then
+		pw.joining = false
+		if meowy.PakCacheState and meowy.PakCache then
+			log("pak cache: %s", meowy.PakCacheState())
+			meowy.PakCache(false)
+		end
+		local kept = meowy.PrewarmEndJoin()
+		pw.warmedFor = nil
+		if kept > 0 then log("prewarm: kept %d files for this server", kept) end
+	elseif not loading and not IsInGame() then
+		if pw.joining and meowy.PakCache then meowy.PakCache(false) end
+		pw.joining = false   -- a join that didn't get in: nothing to keep
+	end
+	-- A few seconds at the main menu: the Continue server, once per visit (a
+	-- row the pointer rests on afterwards takes over).
+	if menuVisible() and not IsInGame() and not loading then
+		pw.menuSince = pw.menuSince or SysTime()
+		if not pw.continueDone and SysTime() - pw.menuSince > 3 and meowy.LastServer then
+			pw.continueDone = true
+			local address = meowy.LastServer()
+			if isstring(address) then warm(address, "your Continue server") end
+		end
+	else
+		pw.menuSince, pw.continueDone = nil, false
+	end
+end)
+
+if concommand then
+	concommand.Add("meowy_prewarm_status", function()
+		MsgN("[Meowy Client Pack] prewarm: " .. (meowy.PrewarmState and meowy.PrewarmState() or "unavailable"))
+		local wsLine = ws.address and string.format("checking %s: %d Workshop items, %d still to check, %d needed an update or unpack, %d done",
+			ws.address, ws.total, ws.pending, ws.stale, ws.done) or ws.result
+		MsgN("[Meowy Client Pack] prewarm workshop: " .. wsLine)
+		MsgN("[Meowy Client Pack] pak cache: " .. (meowy.PakCacheState and meowy.PakCacheState() or "unavailable"))
+	end, nil, "Meowy Client Pack: what join pre-warm is doing")
 end
 
 -- The same from the console: meowy_home lists the rows, meowy_home_join <n> joins one.

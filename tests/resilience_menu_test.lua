@@ -15,6 +15,9 @@ local chunkText = "local UI = (function()\n" .. readFile(here .. "/../src/lua/ui
 	.. "\nlocal Home = (function(...)\n" .. readFile(here .. "/../src/lua/home_logic.lua") .. "\nend)(Logic);\n"
 	.. "(function()\n" .. readFile(here .. "/../src/lua/home.lua") .. "\nend)();\n"
 	.. "(function()\n" .. readFile(here .. "/../src/lua/menu_page.lua") .. "\nend)()\n"
+	-- The Meowy console, as module.cpp appends it.
+	.. ";(function()\nlocal ConsoleLogic = (function()\n" .. readFile(here .. "/../src/lua/console_logic.lua") .. "\nend)()\n"
+	.. readFile(here .. "/../src/lua/console.lua") .. "\nend)()\n"
 local loadstring = loadstring or load
 
 local failures, count = 0, 0
@@ -47,7 +50,7 @@ local function world(opts)
 	-- Globals the menu state doesn't have: touching one fails the test, the way
 	-- it fails in game ("attempt to call global 'RealTime' (a nil value)").
 	local NOT_IN_MENU = { RealTime = true, CurTime = true, FrameTime = true, RealFrameTime = true,
-		LocalPlayer = true, player = true, ents = true, net = true, timer = true, engine = true,
+		LocalPlayer = true, player = true, ents = true, net = true, timer = true,
 		TEXT_ALIGN_LEFT = true, TEXT_ALIGN_CENTER = true, TEXT_ALIGN_RIGHT = true, TEXT_ALIGN_TOP = true, TEXT_ALIGN_BOTTOM = true }
 	local env = setmetatable({}, { __index = function(_, k)
 		if NOT_IN_MENU[k] then error("menu state has no global '" .. k .. "'", 2) end
@@ -94,14 +97,55 @@ local function world(opts)
 			data.Finished()
 		end,
 		LastServerForget = function() w.last = nil w.forgot = (w.forgot or 0) + 1 end,
+		-- Join pre-warm: what was recorded (w.recorded[address]) and what was asked.
+		PrewarmBeginJoin = function() w.pwBegins = (w.pwBegins or 0) + 1 end,
+		PrewarmEndJoin = function() w.pwEnds = (w.pwEnds or 0) + 1 return 12 end,
+		PrewarmRecorded = function(a) return (w.recorded or {})[a] == true, 100 end,
+		PrewarmStart = function(a) w.pwStarts = w.pwStarts or {} w.pwStarts[#w.pwStarts + 1] = a return true end,
+		PrewarmCancel = function() w.pwCancels = (w.pwCancels or 0) + 1 end,
+		PrewarmState = function() return "idle" end,
+		-- Steam's server lists: what was asked (w.sqArgs), what arrived (w.sq, taken
+		-- once), whether it's complete (w.sqDone), and stops (w.sqCancels).
+		ServerQueryStart = function(...) w.sqArgs = { ... } w.sqStarts = (w.sqStarts or 0) + 1 return w.sqStarts end,
+		ServerQueryTake = function() local l = w.sq or {} w.sq = {} return l, w.sqDone == true, 0 end,
+		ServerQueryCancel = function() w.sqCancels = (w.sqCancels or 0) + 1 end,
+		-- The console's lines (w.console), read after an id.
+		ConsoleCaptureStart = function() w.consoleStarts = (w.consoleStarts or 0) + 1 return true end,
+		ConsoleRead = function(after, max)
+			w.consoleReads = (w.consoleReads or 0) + 1
+			local out, last = {}, after
+			for _, l in ipairs(w.console or {}) do
+				if l.id > after then out[#out + 1] = l last = l.id end
+			end
+			return out, last
+		end,
+		ConsoleState = function() return "spew function; 3 lines kept" end,
+		ConsoleRun = function(line) w.consoleRuns = w.consoleRuns or {} w.consoleRuns[#w.consoleRuns + 1] = line return not w.noEngine end,
+		ConsoleFileRead = function(kind) return (w.consoleFiles or opts.consoleFiles or {})[kind] or "" end,
+		ConsoleFileWrite = function(kind, text) w.consoleFiles = w.consoleFiles or {} w.consoleFiles[kind] = text return true end,
+		MaskPaths = function(text) return (text:gsub("%a:[\\/][^\n:]*", "<path>")) end,
+		ConsoleSaveLog = function(text) w.savedLog = text return "<path>\\logs\\console_2026-11-07_16-00-00.txt" end,
+		PrewarmWorkshop = function(a) local ids = {} for i, id in ipairs((w.workshop or {})[a] or {}) do ids[i] = id end return ids end,
+		-- Steam's view of an item: installed, needsUpdate, busy, legacy, updated
+		-- (w.wsState[id] = false: Steam can't say; default: installed, the version of 1600000000).
+		WorkshopItemState = function(id)
+			local s = (w.wsState or {})[id]
+			if s == false then return nil end
+			s = s or { true, false, false, false, 1600000000 }
+			return s[1], s[2], s[3], s[4], s[5]
+		end,
 		-- Menu settings (module.cpp's meowy.Setting): a convar-like value.
 		Setting = function(name, default)
 			w.convars = w.convars or {}
-			if w.convars[name] == nil then w.convars[name] = (opts.convars and opts.convars[name]) or default end
+			-- Unless a test says otherwise, a player who chose Garry's Mod's main
+			-- screen after the home screen left preview (opts.fresh: nothing saved).
+			local saved = not opts.fresh and ({ meowy_menu = "0", meowy_menu_version = "2" })[name] or nil
+			if w.convars[name] == nil then w.convars[name] = (opts.convars and opts.convars[name]) or saved or default end
 			-- As in game: SetBool on these is refused ("not created by Lua"); the
 			-- console sets them (RunConsoleCommand below).
 			return {
 				GetBool = function() return w.convars[name] == "1" end,
+				GetString = function() return w.convars[name] end,
 				SetBool = function() error("calling 'SetBool' on bad self (attempted to modify ConVar not created by Lua)", 2) end,
 			}
 		end,
@@ -132,7 +176,11 @@ local function world(opts)
 	env.os = setmetatable({ time = function() return w.osTime end }, { __index = os })
 	env.IsInGame = function() return w.inGame end
 	env.IsInLoading = function() return w.loading end
-	env.GetConVar = nil
+	-- Convars other parts of the pack own (module.cpp's chunks), only when a test asks.
+	env.GetConVar = opts.engineConVars and function(n)
+		local value = function() if w.cvars[n] ~= nil then return w.cvars[n] end return w.convars and w.convars[n] end
+		if value() ~= nil then return { GetBool = function() return value() == "1" end, GetString = function() return value() end, GetDefault = function() return (w.cvarDefaults or {})[n] end } end
+	end or nil
 	-- Engine convars the Escape card reads and sets.
 	w.cvars = { volume = "0.7", voice_scale = "1", fov_desired = "90" }
 	env.GetConVarString = function(n) if n == "cl_timeout" then return w.cl_timeout end return w.cvars[n] or "" end
@@ -145,14 +193,49 @@ local function world(opts)
 	env.SetClipboardText = function(t) w.clipboard = t end
 	env.RunGameUICommand = function(c) w.gameUI = c end
 	-- The Escape menu is open (in game, the menu shows only then).
-	env.gui = { IsGameUIVisible = function() return w.escOpen == true end }
+	env.gui = { IsGameUIVisible = function() return w.escOpen == true end, IsConsoleVisible = function() return w.stockConsole == true end }
 	-- Every Think hook runs each frame, in the order added (resilience, then the Home card).
 	local thinks, order = {}, {}
+	w.hooks = {}
 	env.hook = { Add = function(event, id, fn)
-		if event ~= "Think" then return end
+		if event ~= "Think" then
+			w.hooks[event] = w.hooks[event] or {}
+			w.hooks[event][id] = fn
+			return
+		end
 		if not thinks[id] then order[#order + 1] = id end
 		thinks[id] = fn
 	end }
+	function w.fire(event, ...) for _, fn in pairs(w.hooks[event] or {}) do fn(...) end end
+	-- Steam's Workshop, as the menu has it: each DownloadUGC waits in w.ugc until
+	-- the test answers it (w.answer).
+	w.ugc, w.infos = {}, {}
+	env.steamworks = {
+		DownloadUGC = function(id, cb) w.ugc[#w.ugc + 1] = { id = id, cb = cb } end,
+		FileInfo = function(id, cb) w.infos[#w.infos + 1] = { id = id, cb = cb } end,
+	}
+	function w.answer(i, path)
+		local q = table.remove(w.ugc, i or 1)
+		if q then q.cb(path ~= false and (path or ("cache/workshop/" .. q.id .. ".gma")) or nil, nil) end
+		return q and q.id
+	end
+	-- The Workshop's current version of each asked item (w.published[id]); by
+	-- default the installed one, rounded the way FileInfo's float rounds it.
+	function w.answerInfos()
+		while #w.infos > 0 do
+			local q = table.remove(w.infos, 1)
+			q.cb({ updated = (w.published or {})[q.id] or 1600000064 })
+		end
+	end
+	-- The game's files: everything there but w.missing[path].
+	env.file = { Exists = function(p, where) w.existsAsked = where return not (w.missing or {})[p] end }
+	env.istable = function(v) return type(v) == "table" end
+	env.KEY_UP, env.KEY_DOWN, env.KEY_ENTER, env.KEY_TAB, env.KEY_R, env.KEY_ESCAPE = 88, 90, 64, 67, 28, 70
+	env.KEY_F, env.KEY_C, env.KEY_A, env.KEY_F3, env.MOUSE_LEFT, env.MOUSE_RIGHT = 16, 13, 11, 94, 107, 108
+	env.input = { IsControlDown = function() return w.ctrl == true end, IsShiftDown = function() return w.shift == true end, IsMouseDown = function() return false end }
+	env.unpack = env.unpack or unpack or table.unpack
+	-- The menu state's engine library: your subscribed addons (w.addons).
+	env.engine = { GetAddons = function() return w.addons or {} end }
 	w.think = function() for _, id in ipairs(order) do thinks[id]() end end
 	env.hook.Run = function(event) w.hookRuns = w.hookRuns or {} w.hookRuns[#w.hookRuns + 1] = event end
 	-- What Garry's Mod's menu Lua has (mainmenu.lua), for refilling its page.
@@ -185,7 +268,10 @@ local function world(opts)
 			w.jsCalls = w.jsCalls + 1
 			if js:find("window.MeowyHome(", 1, true) then w.homeJS = js w.homeCalls = (w.homeCalls or 0) + 1
 			elseif js:find("window.MeowyEsc(", 1, true) then w.escJS = js
+			elseif js:find("window.MeowyAddons", 1, true) then w.addonsJS = js w.addonsSends = (w.addonsSends or 0) + 1
+			elseif js:find("window.MeowyBrowse", 1, true) then w.browseJS = js w.browseCalls = w.browseCalls or {} w.browseCalls[#w.browseCalls + 1] = js
 			elseif js:find("window.MeowyShell(", 1, true) then w.shellJS = js w.shellSends = (w.shellSends or 0) + 1
+			elseif js:find("style.zoom", 1, true) then w.zoomCalls = w.zoomCalls or {} w.zoomCalls[#w.zoomCalls + 1] = js
 			else w.js = js end
 		end }
 		-- The menu's browser (DHTML): its callbacks, the bridge, what it loads.
@@ -1132,7 +1218,7 @@ check("escape: settings window paints", w.paintAll(), "")
 local function shellState(w) return w.shellJS and w.shellJS:match("window%.MeowyShell%((%a+)%);\n$") end
 w = world({ settings = ON, menu = true })
 w.run(3)
-check("shell: off by default, nothing sent", w.shellJS, nil)
+check("shell: turned off, the script loads once with the home off (for the Friends tab)", shellState(w) .. "/" .. tostring(w.shellSends), "false/1")
 check("shell: the bridge is on the browser anyway", w.bridges, 1)
 check("shell: a post while it's off is ignored", (function() w.post("quit") return w.gameUI end)(), nil)
 check("shell: the stock page is never reloaded", w.loads, nil)
@@ -1145,6 +1231,19 @@ check("shell: on, sent with its script", shellState(w) == "true" and w.shellJS:f
 local sends = w.shellSends
 w.run(3)
 check("shell: sent again each second (the page may be rebuilt)", w.shellSends - sends >= 2, true)
+-- A page that's just loaded (the game starting, a language change) gets the
+-- script on the next frame, not up to a second later; the stock callback still runs.
+local readyCalls = 0
+w.env.pnlMainMenu.HTML.OnDocumentReady = function() readyCalls = readyCalls + 1 end
+w.env.pnlMainMenu.HTML = setmetatable({}, { __index = w.env.pnlMainMenu.HTML })   -- a new browser panel
+w.env.pnlMainMenu.HTML.Callbacks = { ["lua.Run"] = w.stockRun }
+w.run(0.9)   -- bridged and wrapped, and a send since
+sends = w.shellSends
+w.env.pnlMainMenu.HTML:OnDocumentReady("asset://garrysmod/html/menu.html")
+check("shell: the stock page's ready callback still runs", readyCalls, 1)
+w.run(0.1)
+check("shell: a page just loaded gets it on the next frame", w.shellSends - sends, 1)
+check("shell: the new panel bridged too", w.env.pnlMainMenu.HTML.Callbacks["meowy.post"] ~= nil, true)
 check("shell: never a reload", w.loads, nil)
 check("shell: lua.Run left alone (it's the stock page's)", w.env.pnlMainMenu.HTML.Callbacks["lua.Run"], w.stockRun)
 check("shell: the lists reach it", (w.homeJS or ""):find("MeowyShellLists", 1, true) ~= nil and (homeData(w) or ""):find('"Meowy Network"', 1, true) ~= nil, true)
@@ -1209,6 +1308,626 @@ if mt then mt:SetOn(true) end
 w.run(1)
 check("shell: turned on from settings (through the console)", shellState(w), "true")
 
+-- The menu's text size (meowy_menu_scale): a zoom on the page, on or off.
+local function zoomJS(w)
+	local z
+	for _, js in ipairs(w.zoomCalls or {}) do z = js:match("style%.zoom = '([%d%.]+)'") end
+	return z
+end
+w = world({ settings = ON, menu = true })
+w.run(4)
+check("zoom: auto at 1080p, nothing sent", zoomJS(w), nil)
+w = world({ settings = ON, menu = true })
+w.env.ScrH = function() return 1440 end
+w.run(1)
+check("zoom: auto at 1440p", zoomJS(w), "1.33")
+local zc = #w.zoomCalls
+w.run(4)
+check("zoom: sent again every few seconds (the page may reload)", #w.zoomCalls > zc, true)
+w.play(2)
+check("zoom: in game too (the Escape menu)", zoomJS(w), "1.33")
+w = world({ settings = ON, menu = true, convars = { meowy_menu_scale = "150" } })
+w.run(1)
+check("zoom: a chosen size", zoomJS(w), "1.50")
+w.concommands.meowy_settings()
+local sc = find(function(p) return p.meowyChoice == "menu_scale" end)
+check("zoom: a choice in settings, showing the size", sc and sc.value, "150")
+check("zoom: six choices", sc and #sc.options, 6)
+check("zoom: settings window paints", w.paintAll(), "")
+-- Which segment a click lands on: 600 wide, 18 padding, 6 segments of 94.
+if sc then
+	sc:Fit(600)
+	check("zoom: a click on the 4th segment is 150%", sc.options[sc:SegmentAt(18 + 94 * 3 + 10, sc.segY + 5)][2], "150")
+	check("zoom: a click on the first is Auto", sc.options[sc:SegmentAt(20, sc.segY + 5)][2], "0")
+	check("zoom: a click on the text above picks nothing", sc:SegmentAt(300, sc.segY - 5), nil)
+	check("zoom: a click in the padding picks nothing", sc:SegmentAt(5, sc.segY + 5), nil)
+end
+if sc then sc:SetValue("100") end
+w.run(1)
+check("zoom: chosen through the console", w.convars.meowy_menu_scale, "100")
+check("zoom: back to 1", zoomJS(w), "1.00")
+local n2 = #w.zoomCalls
+w.run(5)
+check("zoom: 1 isn't sent again and again", #w.zoomCalls, n2)
+
+-- Join pre-warm: recorded at every join; warmed for the Continue server after
+-- a few seconds at the menu, or for a row the pointer rests on.
+w = world({ settings = ON, menu = true })
+w.lists = LISTS
+w.recorded = { [OURS] = true, ["2.2.2.2:27015"] = true }
+w.state, w.address, w.loading = "ours", OURS, true
+w.run(2)
+check("prewarm: a join starts recording (and stops any warming)", w.pwBegins, 1)
+w.play(3)
+check("prewarm: in game, the list is kept once", w.pwEnds, 1)
+w.run(3)
+check("prewarm: not kept again", w.pwEnds, 1)
+check("prewarm: nothing warmed in game", w.pwStarts, nil)
+w.cut()
+w.last = { OURS, "Meowy", w.osTime }
+w.run(2)
+check("prewarm: not at once at the menu", w.pwStarts, nil)
+w.run(3)
+check("prewarm: the Continue server after a few seconds", w.pwStarts and w.pwStarts[1], OURS)
+w.run(10)
+check("prewarm: once per visit", #w.pwStarts, 1)
+w.env.MeowyClientPackHomeIntent(3)   -- row 3: the busiest favourite, 2.2.2.2
+check("prewarm: a row the pointer rests on", w.pwStarts[2], "2.2.2.2:27015")
+w.run(5)
+check("prewarm: the Continue server doesn't take it back", #w.pwStarts, 2)
+w.env.MeowyClientPackHomeIntent(4)   -- 1.1.1.1: never recorded
+w.env.MeowyClientPackHomeIntent(99)
+w.env.MeowyClientPackHomeIntent("x")
+check("prewarm: not recorded, unknown or junk rows warm nothing", #w.pwStarts, 2)
+check("prewarm: logged", (w.logs or ""):find("prewarm: warming 2.2.2.2:27015 (pointer on its row)", 1, true) ~= nil, true)
+-- A join that never gets in keeps nothing.
+w.loading = true
+w.run(1)
+w.loading = false
+w.run(1)
+check("prewarm: a join that didn't get in keeps nothing", w.pwBegins == 2 and w.pwEnds == 1, true)
+-- Off: nothing warmed; the toggle cancels.
+w = world({ settings = ON, menu = true, convars = { meowy_prewarm = "0" } })
+w.recorded = { [OURS] = true }
+w.last = { OURS, "Meowy", w.osTime }
+w.run(6)
+check("prewarm off: nothing warmed", w.pwStarts, nil)
+w.concommands.meowy_settings()
+local pt = find(function(p) return p.meowyToggle == "prewarm" end)
+check("prewarm: a toggle in settings, off", pt ~= nil and pt.on, false)
+if pt then pt:SetOn(true) end
+check("prewarm: turned on through the console", w.convars.meowy_prewarm, "1")
+if pt then pt:SetOn(false) end
+check("prewarm: turning it off stops any warming", w.pwCancels, 1)
+w.concommands.meowy_prewarm_status()
+check("prewarm: status command", (w.logs or ""):find("prewarm: idle", 1, true) ~= nil, true)
+check("prewarm: Workshop items not asked for when there are none", #w.ugc, 0)
+
+-- Workshop items: of the server's last join's items, only those that need it
+-- go to Steam's download, one at a time, at the same moments.
+local IDS = { "101", "102", "103", "104", "105", "106" }
+local function wsWorld(opts2)
+	local ww = world(opts2 or { settings = ON, menu = true })
+	ww.lists = LISTS
+	ww.recorded = { [OURS] = true, ["2.2.2.2:27015"] = true }
+	ww.workshop = { [OURS] = IDS, ["2.2.2.2:27015"] = IDS }
+	ww.wsState = {
+		["102"] = { false, false, false, false, 0 },            -- not installed
+		["103"] = { true, true, false, false, 1600000000 },     -- Steam knows of an update
+		["104"] = { true, false, false, true, 1600000000 },     -- legacy, its unpacked copy gone
+		["106"] = false,                                        -- Steam can't say
+	}
+	ww.missing = { ["cache/workshop/104.gma"] = true }
+	ww.published = { ["105"] = 1600003600 }   -- 105 republished an hour later; 101 the same, rounded up 64 s
+	ww.last = { OURS, "Meowy", ww.osTime }
+	return ww
+end
+w = wsWorld()
+w.run(2)
+check("workshop: nothing asked before the Continue moment", #w.ugc + #w.infos, 0)
+w.run(2)
+check("workshop: one download at a time", #w.ugc, 1)
+check("workshop: the first that needs it", w.ugc[1].id, "102")
+check("workshop: the Workshop asked for the versions of installed items", #w.infos == 2 and w.infos[1].id .. w.infos[2].id, "101105")
+check("workshop: the game's own files looked in", w.existsAsked, "MOD")
+check("workshop: files warmed as well", w.pwStarts and w.pwStarts[1], OURS)
+w.answer()
+check("workshop: an answer starts the next", w.ugc[1] and w.ugc[1].id, "103")
+w.answer()
+check("workshop: a legacy item without its unpacked copy", w.ugc[1] and w.ugc[1].id, "104")
+w.answer(1, false)   -- Steam couldn't get it
+check("workshop: nothing else known to need it yet", #w.ugc, 0)
+w.answerInfos()
+check("workshop: a newer Workshop version is fetched", w.ugc[1] and w.ugc[1].id, "105")
+w.answer()
+check("workshop: up-to-date and unknown items left alone", #w.ugc, 0)
+check("workshop: logged",
+	(w.logs or ""):find("checked " .. OURS .. ": 6 Workshop items, 4 needed an update or unpack, 3 done, 1 failed", 1, true) ~= nil, true)
+w.concommands.meowy_prewarm_status()
+check("workshop: in the status command", (w.logs or ""):find("prewarm workshop: checked " .. OURS, 1, true) ~= nil, true)
+w.run(10)
+check("workshop: once per visit", #w.ugc + #w.infos, 0)
+-- A join stops it asking; what's in flight is left to Steam (and the join).
+w.env.MeowyClientPackHomeIntent(3)   -- 2.2.2.2
+check("workshop: a row the pointer rests on", w.ugc[1] and w.ugc[1].id, "102")
+w.loading = true
+w.run(1)
+w.answer()
+w.answerInfos()
+check("workshop: no new asks once a join starts", #w.ugc, 0)
+check("workshop: logged as stopped", (w.logs or ""):find("stopped checking 2.2.2.2:27015: 6 Workshop items, 3 needed", 1, true) ~= nil, true)
+-- Steam never answers: given up after two minutes.
+w = wsWorld()
+w.wsState = {}   -- all installed and current, as Steam sees them
+w.run(10)
+check("workshop: only version checks pending", #w.ugc == 0 and #w.infos, 6)
+w.run(125)
+check("workshop: given up when Steam never answers", (w.logs or ""):find("stopped checking " .. OURS .. ": 6 Workshop items, 0 needed", 1, true) ~= nil, true)
+w.answerInfos()
+check("workshop: late answers ignored", #w.ugc, 0)
+-- Its own switch: off asks nothing, while the files are still warmed.
+w = wsWorld({ settings = ON, menu = true, convars = { meowy_prewarm_workshop = "0" } })
+w.run(6)
+check("workshop off: nothing asked", #w.ugc + #w.infos, 0)
+check("workshop off: files still warmed", w.pwStarts and w.pwStarts[1], OURS)
+w.concommands.meowy_settings()
+local wt = find(function(p) return p.meowyToggle == "prewarm_workshop" end)
+check("workshop: a toggle in settings, off", wt ~= nil and wt.on, false)
+if wt then wt:SetOn(true) end
+check("workshop: turned on through the console", w.convars.meowy_prewarm_workshop, "1")
+-- With file warming off, the Workshop check still runs.
+w = wsWorld({ settings = ON, menu = true, convars = { meowy_prewarm = "0" } })
+w.run(6)
+check("files off: Workshop items still checked", #w.ugc, 1)
+check("files off: nothing warmed", w.pwStarts, nil)
+
+-- The home screen left preview: on by default, and once for everyone (a saved
+-- "0" from the preview days was the old default, not a choice).
+w = world({ settings = ON, menu = true, fresh = true })
+w.run(1)
+check("home default: on with nothing saved", shellState(w), "true")
+check("home default: the change marked as applied", w.convars.meowy_menu_version, "2")
+w = world({ settings = ON, menu = true, fresh = true, convars = { meowy_menu = "0" } })
+w.run(1)
+check("home default: a preview-days 0 turned on once", w.convars.meowy_menu, "1")
+check("home default: and shown", shellState(w), "true")
+w = world({ settings = ON, menu = true })   -- turned off after release
+w.run(1)
+check("home default: a choice made since is kept", w.convars.meowy_menu .. "/" .. tostring(shellState(w)), "0/false")
+-- Its search gets your subscribed addons: sent when they change or the page reloads.
+w = world({ settings = ON, menu = true, convars = PAGE_ON })
+w.addons = { { title = "Wiremod", wsid = "160250458", mounted = true }, { title = "<b>Bad</b>\"", wsid = "1", mounted = false }, { title = "" } }
+w.run(1)
+check("addons: sent to the page", w.addonsJS ~= nil and w.addonsJS:find("Wiremod", 1, true) ~= nil, true)
+check("addons: a quote in a title escaped", (w.addonsJS or ""):find("Bad", 1, true) ~= nil and (w.addonsJS or ""):find('</b>"', 1, true) == nil, true)
+check("addons: empty titles left out", (w.addonsJS or ""):find("New one", 1, true) == nil and select(2, (w.addonsJS or ""):gsub("160250458", "")) == 1, true)
+local sendsNow = w.addonsSends or 0
+w.run(15)
+check("addons: not sent again while unchanged", w.addonsSends, sendsNow)
+w.addons[#w.addons + 1] = { title = "New one", wsid = "2", mounted = true }
+w.run(11)
+check("addons: sent again when they change", w.addonsSends, sendsNow + 1)
+w.env.pnlMainMenu.HTML.OnDocumentReady(w.env.pnlMainMenu.HTML, "asset://garrysmod/html/menu.html")
+w.run(1.1)
+check("addons: sent again after the page reloads", w.addonsSends, sendsNow + 2)
+-- Find servers, faster: its switch in settings (the setting is module.cpp's).
+w = world({ settings = ON, menu = true, engineConVars = true })
+w.cvars.meowy_fast_serverlist = "1"
+w.concommands.meowy_settings()
+local ft = find(function(p) return p.meowyToggle == "fast_serverlist" end)
+check("fast server list: a toggle in settings, on", ft ~= nil and ft.on, true)
+if ft then ft:SetOn(false) end
+check("fast server list: turned off through the console", w.cvars.meowy_fast_serverlist, "0")
+w = world({ settings = ON, menu = true })
+w.concommands.meowy_settings()
+check("fast server list: no toggle without the setting", find(function(p) return p.meowyToggle == "fast_serverlist" end), nil)
+
+-- Find servers on the home screen: Steam's list in batches, servers with
+-- players then the empty ones; the page asks for a server by its number.
+w = world({ settings = ON, menu = true, convars = PAGE_ON, joinServer = true })
+w.run(1)
+w.post("browse")
+check("browse: Steam asked for servers with players", table.concat(w.sqArgs or {}, " "), "internet gamedir garrysmod hasplayers 1")
+check("browse: the page reset", (w.browseJS or ""):find('MeowyBrowse.reset(1, true, "internet", "")', 1, true) ~= nil, true)
+w.sq = {
+	{ address = "1.2.3.4:27015", name = "A\1 server", map = "rp_x", tags = " gm:darkrp gmws:1 gmc:rp loc:gb ", desc = "DarkRP", players = 12, max = 64, bots = 2, ping = 30, pass = false },
+	{ address = "10.0.0.1:27015", name = "LAN box", map = "gm_l", tags = "", desc = "Sandbox", players = 1, max = 2, bots = 0, ping = 1, pass = false },
+	{ address = "5.6.7.8:27016", name = "B", map = "gm_y", tags = "", desc = "Sandbox", players = 3, max = 10, bots = 0, ping = 50, pass = true },
+}
+w.run(0.3)
+local batch = w.browseJS or ""
+check("browse: a batch sent", batch:find("MeowyBrowse.add(1, [", 1, true) ~= nil, true)
+check("browse: gamemode and category from the tags", batch:find('"g":"darkrp"', 1, true) ~= nil and batch:find('"c":"rp"', 1, true) ~= nil, true)
+check("browse: players and slots without bots", batch:find('"p":10', 1, true) ~= nil and batch:find('"x":62', 1, true) ~= nil, true)
+check("browse: the name cleaned", batch:find('"n":"A server"', 1, true) ~= nil, true)
+check("browse: the address sent to be shown", batch:find('"a":"1.2.3.4:27015"', 1, true) ~= nil, true)
+check("browse: Workshop ID, flag, description", batch:find('"ws":"1"', 1, true) ~= nil and batch:find('"f":"gb"', 1, true) ~= nil and batch:find('"d":"DarkRP"', 1, true) ~= nil, true)
+check("browse: bots and the stage", batch:find('"b":2', 1, true) ~= nil and batch:match(", 1%);%s*$") ~= nil, true)
+check("browse: private addresses left out", batch:find("LAN box", 1, true) == nil, true)
+check("browse: numbered in order", batch:find('"i":1', 1, true) ~= nil and batch:find('"i":2', 1, true) ~= nil and batch:find('"i":3', 1, true) == nil, true)
+local calls = #w.browseCalls
+w.run(1)
+check("browse: nothing sent while nothing arrives", #w.browseCalls, calls)
+w.post("browse_join", 2)
+check("browse: a row joined by its number", w.joinedVia, "5.6.7.8:27016")
+check("browse: joining stops the list", w.sqCancels, 1)
+w.post("browse_join", 99)
+w.post("browse_join", "x")
+check("browse: unknown rows join nothing", w.joinServer, 1)
+-- Complete; a new list replaces the old; leaving or a join stops it.
+w.post("browse")
+check("browse: a refresh starts a new list", (w.browseJS or ""):find('MeowyBrowse.reset(2, true, "internet", "")', 1, true) ~= nil, true)
+w.sqDone = true
+w.browseCalls = {}
+w.run(0.3)
+check("browse: with players done, the empty ones asked for", table.concat(w.sqArgs or {}, " "), "internet gamedir garrysmod noplayers 1")
+check("browse: not complete yet, stage 2", (w.browseCalls[1] or ""):find("MeowyBrowse.add(2, [], false", 1, true) ~= nil and (w.browseCalls[1] or ""):find(", 2);", 1, true) ~= nil, true)
+w.run(0.3)
+check("browse: complete", (w.browseJS or ""):find("MeowyBrowse.add(2, [], true", 1, true) ~= nil, true)
+check("browse: logged", (w.logs or ""):find("browse: 0 internet servers in", 1, true) ~= nil, true)
+check("browse: each stage let go", w.sqCancels, 3)
+w.sqDone = false
+w.post("browse")
+w.post("browse_stop")
+check("browse: Back stops it", w.sqCancels, 4)
+w.post("browse")
+w.loading = true
+w.run(0.5)
+check("browse: a join elsewhere stops it", w.sqCancels, 5)
+w.loading = false
+-- Garry's Mod's blacklist, each address once; the star, right-click and Install.
+w = world({ settings = ON, menu = true, convars = PAGE_ON })
+w.env.IsServerBlacklisted = function(address, name) if name == "Banned" then return "host: Banned" end end
+local favs = { ["1.2.3.4:27015"] = true }
+w.env.serverlist = {
+	IsServerFavorite = function(a) return favs[a] == true end,
+	AddServerToFavorites = function(a) favs[a] = true end,
+	RemoveServerFromFavorites = function(a) favs[a] = nil end,
+}
+local subscribed
+w.env.steamworks.Subscribe = function(id) subscribed = id end
+w.run(1)
+w.post("browse")
+w.sq = {
+	{ address = "1.2.3.4:27015", name = "Fav", map = "m", tags = "gm:ttt gmws:777 ver:251104", desc = "TTT", players = 4, max = 16, bots = 0, ping = 9, pass = false, lastplayed = 1700000000, version = 20250429 },
+	{ address = "1.2.3.4:27015", name = "Fav again", map = "m", tags = "", desc = "TTT", players = 4, max = 16, bots = 0, ping = 9, pass = false },
+	{ address = "9.9.9.9:27015", name = "Banned", map = "m", tags = "", desc = "x", players = 4, max = 16, bots = 0, ping = 9, pass = false },
+}
+w.run(0.3)
+batch = w.browseJS or ""
+check("browse: blacklisted servers left out", batch:find("Banned", 1, true), nil)
+check("browse: each address once", batch:find("Fav again", 1, true), nil)
+check("browse: a favourite marked", batch:find('"fv":true', 1, true) ~= nil, true)
+check("browse: the network version (not the build) and last visit", batch:find('"v":20250429', 1, true) ~= nil and batch:find('"lp":1700000000', 1, true) ~= nil, true)
+w.post("browse_fav", 1)
+check("browse: the star takes it off the favourites", favs["1.2.3.4:27015"], nil)
+w.post("browse_fav", 1)
+check("browse: and puts it back", favs["1.2.3.4:27015"], true)
+w.post("browse_copy", 1)
+check("browse: right-click copies the address", w.clipboard, "1.2.3.4:27015")
+w.post("browse_install", "123")
+check("browse: Install only for a gamemode a server named", subscribed, nil)
+w.post("browse_install", "777")
+check("browse: Install subscribes", subscribed, "777")
+-- The other lists, a picked server, its password, finding by address, the
+-- browser's settings, and the honest list's tags.
+w = world({ settings = ON, menu = true, convars = PAGE_ON, joinServer = true })
+local stockRun
+w.env.meowy.StockServerQuery = function(data) stockRun = data end
+local asked = {}
+w.env.GetPlayerList = function(a) asked[#asked + 1] = "players " .. a end
+w.env.PingServer = function(a) asked[#asked + 1] = "ping " .. a end
+local cookies = {}
+w.env.cookie = { GetString = function(k, d) return cookies[k] or d end, Set = function(k, v) cookies[k] = v end }
+w.env.meowy.ServerTag = function(a) if a == "4.4.4.4:27015" then return "[FAKE - 2 real] ", { verdict = "fake", real = 2 } end end
+w.run(1)
+w.post("browse", "favorite")
+check("lists: Favourites from the game's own query", stockRun and stockRun.Type, "favorite")
+check("lists: the page told which list", (w.browseJS or ""):find('MeowyBrowse.reset(1, true, "favorite", "")', 1, true) ~= nil, true)
+stockRun.Callback(20, "Fav", "Sandbox", "gm_x", 12, 16, 0, false, 1700000000, "4.4.4.4:27015", "sandbox", "0", false, 20260429, 260917, "de", "other")
+stockRun.Finished()
+w.run(0.3)
+batch = w.browseJS or ""
+check("lists: a favourite sent, complete", batch:find("MeowyBrowse.add(1, [", 1, true) ~= nil and batch:find("true, ", 1, true) ~= nil, true)
+check("lists: the honest tag, the real count", batch:find('"h":"FAKE - 2 real"', 1, true) ~= nil and batch:find('"p":2', 1, true) ~= nil, true)
+check("lists: its fields", batch:find('"f":"de"', 1, true) ~= nil and batch:find('"c":"other"', 1, true) ~= nil and batch:find('"v":20260429', 1, true) ~= nil, true)
+local fav = tonumber(batch:match('"i":(%d+)'))
+w.post("browse_select", fav)
+check("picked: its players and numbers asked for", table.concat(asked, ","), "players 4.4.4.4:27015,ping 4.4.4.4:27015")
+w.post("browse_select", fav)
+check("picked: not again within 2 seconds", #asked, 2)
+w.post("browse_pass", fav .. ":hunter2")
+w.post("browse_join", fav)
+check("password: set before the join", table.concat(w.commands, "|"):find("password|hunter2", 1, true) ~= nil or table.concat(w.commands, "|"):find("password hunter2", 1, true) ~= nil, true)
+check("password: joined", w.joinedVia, "4.4.4.4:27015")
+local cmds = #w.commands
+w.post("browse_join", fav)
+check("password: only for that one join", #w.commands, cmds)
+w.post("browse_pass", fav .. ':bad"quote')
+w.post("browse_pass", fav .. ":" .. string.rep("x", 80))
+w.post("browse_join", fav)
+check("password: refused when odd or too long", #w.commands, cmds)
+-- Local network: private addresses, joined only from that list.
+w.post("browse", "lan")
+stockRun.Callback(1, "LAN game", "Sandbox", "gm_x", 1, 8, 0, false, 0, "192.168.1.5:27015", "sandbox", "0", false, 0, 0, "", "")
+stockRun.Finished()
+w.run(0.3)
+batch = w.browseJS or ""
+check("lan: a private address listed", batch:find("LAN game", 1, true) ~= nil, true)
+w.post("browse_join", tonumber(batch:match('"i":(%d+)')))
+check("lan: joined", w.joinedVia, "192.168.1.5:27015")
+-- Settings, kept as they came (JSON the page reads back), and sent with a list.
+w.post("browse_prefs", '{"s":"name"}')
+check("settings: kept", cookies.meowy_browser_prefs, '{"s":"name"}')
+w.post("browse_prefs", "not json")
+w.post("browse_prefs", "{" .. string.rep("x", 700) .. "}")
+check("settings: only JSON, not too long", cookies.meowy_browser_prefs, '{"s":"name"}')
+w.post("browse", "internet")
+check("settings: sent with the list", (w.browseJS or ""):find('"internet", "{\\x22s\\x22:\\x22name\\x22}");', 1, true) ~= nil, true)
+-- Find by address: the usual ports of a host, or the one given.
+local pinged = {}
+w.env.serverlist = { PingServer = function(a, cb) pinged[#pinged + 1] = { a, cb } end, IsServerFavorite = function() return false end }
+w.post("browse_find", "5.6.7.8")
+check("find: the usual ports", #pinged .. " " .. pinged[1][1], "12 5.6.7.8:27015")
+pinged = {}
+w.post("browse_find", "5.6.7.8:27999")
+check("find: the port given", #pinged .. " " .. pinged[1][1], "1 5.6.7.8:27999")
+pinged[1][2](30, "Found", "Sandbox", "gm_x", 3, 10, 0, false, 0, "5.6.7.8:27999", "sandbox", "0", false, 20260429, 0, "", "")
+check("find: the answer sent", (w.browseCalls[#w.browseCalls] or ""):find("MeowyBrowse.found(2, [", 1, true) ~= nil and (w.browseCalls[#w.browseCalls] or ""):find('"n":"Found"', 1, true) ~= nil, true)
+pinged = {}
+w.post("browse_find", "bad host!")
+check("find: nothing asked for odd text", #pinged, 0)
+-- Without Steam's lists: the page is told.
+w = world({ settings = ON, menu = true, convars = PAGE_ON })
+w.env.meowy.ServerQueryStart = nil
+w.run(1)
+w.post("browse")
+check("browse: no Steam list, the page is told", (w.browseJS or ""):find("MeowyBrowse.reset(1, false, ", 1, true) ~= nil, true)
+-- Pointing at a row: that server is got ready (if it was ever joined).
+w = world({ settings = ON, menu = true, convars = PAGE_ON })
+w.recorded = { ["1.2.3.4:27015"] = true }
+w.run(1)
+w.post("browse")
+w.sq = { { address = "1.2.3.4:27015", name = "A", map = "m", tags = "", desc = "D", players = 1, max = 2, bots = 0, ping = 9, pass = false } }
+w.run(0.3)
+w.post("browse_intent", 1)
+check("browse: a row pointed at is got ready", w.pwStarts and w.pwStarts[1], "1.2.3.4:27015")
+-- The Meowy console: the capture starts with the menu; meowy_console opens the
+-- window, reads the lines, and a typed line runs as the console would run it.
+w = world({ settings = ON, menu = true })
+check("console: capture started", w.consoleStarts, 1)
+w.console = { { id = 1, t = 1000, s = 0, c = -1, x = "hello" }, { id = 2, t = 2000, s = 3, c = -1, x = "[ERROR] boom" } }
+w.concommands.meowy_console()
+local consoleFrame
+for _, p in ipairs(w.panels or {}) do if rawget(p, "meowyConsole") then consoleFrame = p end end
+check("console: a window", consoleFrame ~= nil, true)
+check("console: its lines read", w.consoleReads, 1)
+local cmdEntry
+for _, p in ipairs(w.panels or {}) do if p.class == "DTextEntry" and rawget(p, "OnEnter") then cmdEntry = p end end
+check("console: a command line", cmdEntry ~= nil, true)
+if cmdEntry then
+	cmdEntry.GetValue = function() return 'net_graph 1; say "a; b"' end
+	cmdEntry:OnEnter()
+	check("console: the line run as typed, through the engine", w.consoleRuns and w.consoleRuns[#w.consoleRuns], 'net_graph 1; say "a; b"')
+	w.noEngine = true
+	local before = #w.commands
+	cmdEntry:OnEnter()
+	check("console: without the engine, each command through RunConsoleCommand", table.concat(w.commands, "/", before + 1), "net_graph 1/say a; b")
+	w.noEngine = nil
+	local recalled
+	cmdEntry.SetText = function(_, v) recalled = v end
+	cmdEntry:OnKeyCodeTyped(88)   -- Up
+	check("console: Up recalls what was typed", recalled, 'net_graph 1; say "a; b"')
+	-- `clear` empties this window: a mark is echoed first, so what came before
+	-- it goes and what comes after stays; the game's console is cleared too.
+	local copyAll
+	for _, p in ipairs(w.panels or {}) do if p.class == "DButton" and p.text == "Copy" then copyAll = p end end
+	local function shown() w.clipboard = nil copyAll.DoClick() return w.clipboard or "" end
+	cmdEntry.GetValue = function() return "status; clear; echo after" end
+	cmdEntry:OnEnter()
+	check("clear: the mark, then the game's clear", w.consoleRuns[#w.consoleRuns], "status;echo __meowy_console_clear__;clear;echo after")
+	w.console[#w.console + 1] = { id = 3, t = 3000, s = 0, c = -1, x = "status output" }
+	w.console[#w.console + 1] = { id = 4, t = 3000, s = 0, c = -1, x = "__meowy_console_clear__ " }
+	w.console[#w.console + 1] = { id = 5, t = 3000, s = 0, c = -1, x = "after" }
+	w.now = w.now + 1
+	consoleFrame.Think()
+	local after = shown()
+	check("clear: what came before is gone", after:find("hello", 1, true) == nil and after:find("status output", 1, true) == nil, true)
+	check("clear: what came after stays", after:find("after", 1, true) ~= nil, true)
+	check("clear: the mark isn't shown", after:find("__meowy", 1, true), nil)
+	-- Without the engine: emptied here.
+	w.noEngine = true
+	cmdEntry.GetValue = function() return "clear" end
+	cmdEntry:OnEnter()
+	w.noEngine = nil
+	check("clear: without the engine, emptied here", shown(), "")
+	-- showconsole leaves the window open, toggleconsole closes it; neither
+	-- shows the game's console.
+	local runs = #w.consoleRuns
+	cmdEntry.GetValue = function() return "showconsole" end
+	cmdEntry:OnEnter()
+	check("showconsole: nothing sent", #w.consoleRuns, runs)
+	check("showconsole: still open", consoleFrame.removed, nil)
+	cmdEntry.GetValue = function() return "toggleconsole" end
+	cmdEntry:OnEnter()
+	check("toggleconsole: nothing sent", #w.consoleRuns, runs)
+	check("toggleconsole: closed", consoleFrame.removed, true)
+end
+w.concommands.meowy_console_status()
+check("console: status command", (w.logs or ""):find("console: spew function", 1, true) ~= nil, true)
+-- Without the native part: nothing, quietly.
+w = world({ settings = ON, menu = true })
+check("console: capture once per start", w.consoleStarts, 1)
+-- The console key: the game's console showing is hidden again and ours opens,
+-- or closes when open; the key toggles it. Off, the game's console stays.
+local function consoleWindow(ww)
+	for _, p in ipairs(ww.panels or {}) do if rawget(p, "meowyConsole") and not p.removed then return p end end
+end
+w = world({ settings = ON, menu = true })
+w.run(0.5)
+check("console key: nothing while the game's console is shut", consoleWindow(w), nil)
+w.stockConsole = true
+w.run(0.2)
+check("console key: the game's console hidden", table.concat(w.consoleRuns or {}, "|"):find("hideconsole", 1, true) ~= nil, true)
+check("console key: ours opens", consoleWindow(w) ~= nil, true)
+w.stockConsole = false
+w.run(0.2)
+w.stockConsole = true
+w.run(0.2)
+check("console key: again closes ours", consoleWindow(w), nil)
+w.stockConsole = false
+w = world({ settings = ON, menu = true, convars = { meowy_console_key = "0" } })
+w.stockConsole = true
+w.run(0.5)
+check("console key off: the game's console left alone", w.consoleRuns, nil)
+w = world({ settings = ON, menu = true, engineConVars = true })
+w.concommands.meowy_settings()
+local ckt = find(function(p) return p.meowyToggle == "console_key" end)
+check("console key: a toggle in settings, on", ckt ~= nil and ckt.on, true)
+if ckt then ckt:SetOn(false) end
+check("console key: turned off through the console", w.convars.meowy_console_key, "0")
+-- Typing in the console: the command list (cvarlist between two markers, kept
+-- out of the window), Tab completes, the inspector resets, pins and history.
+w = world({ settings = ON, menu = true, engineConVars = true })
+w.consoleFiles = nil
+w.concommands.meowy_console()
+check("typing: the command list asked for", table.concat(w.consoleRuns or {}, "|"), "echo __meowy_cvars_begin__|cvarlist|echo __meowy_cvars_end__")
+w.console = {
+	{ id = 1, t = 1, s = 0, c = -1, x = "__meowy_cvars_begin__ " },   -- echo adds a space
+	{ id = 2, t = 1, s = 0, c = -1, x = "cvar list" },
+	{ id = 3, t = 1, s = 0, c = -1, x = 'net_graph                                : 1        : , "a", "cl"      : Draw the network usage graph' },
+	{ id = 4, t = 1, s = 0, c = -1, x = 'net_graphheight                          : 64       : , "a", "cl"      : Height of netgraph panel' },
+	{ id = 5, t = 1, s = 0, c = -1, x = "retry                                    : cmd      :                  : Retry connection to last server." },
+	{ id = 6, t = 1, s = 0, c = -1, x = "__meowy_cvars_end__ " },
+	{ id = 7, t = 1, s = 0, c = -1, x = "after the list" },
+}
+w.cvars.net_graph, w.cvarDefaults = "1", { net_graph = "0" }
+local typed
+for _, p in ipairs(w.panels or {}) do if p.class == "DTextEntry" and rawget(p, "OnEnter") then typed = p end end
+local holderPanel
+for _, p in ipairs(w.panels or {}) do if rawget(p, "meowyConsole") then holderPanel = p end end
+holderPanel.Think()   -- reads the list
+local text = "net_g"
+typed.GetValue = function() return text end
+typed.SetText = function(_, v) text = v end
+typed.OnChange()
+typed:OnKeyCodeTyped(67)   -- Tab
+check("typing: Tab completes the best match", text, "net_graph ")
+typed.OnChange()
+local resetButton
+for _, p in ipairs(w.panels or {}) do if p.class == "DButton" and p.text == "Reset to default" then resetButton = p end end
+check("typing: the inspector offers a reset", resetButton ~= nil, true)
+if resetButton then resetButton.DoClick() end
+check("typing: reset runs it with its default", w.consoleRuns[#w.consoleRuns], 'net_graph "0"')
+-- Pins: "+ Pin" pins what's typed; a pin runs; right-click unpins; kept in a file.
+local function pinChip(label)
+	local found
+	for _, p in ipairs(w.panels or {}) do if rawget(p, "meowyPin") == label and not p.removed then found = p end end
+	return found
+end
+text = "retry"
+pinChip("+").DoClick()
+check("pins: saved", w.consoleFiles and w.consoleFiles.pins, "retry")
+check("pins: shown", pinChip("retry") ~= nil, true)
+pinChip("retry").DoClick()
+check("pins: a click runs it", w.consoleRuns[#w.consoleRuns], "retry")
+pinChip("retry").DoRightClick()
+check("pins: right-click unpins", w.consoleFiles.pins, "")
+-- History: kept between starts; Up recalls the last; Ctrl+R lists them.
+check("history: what was run is saved", (w.consoleFiles.history or ""):find("retry", 1, true) ~= nil, true)
+w = world({ settings = ON, menu = true, consoleFiles = { history = "first\nsecond", pins = "status" } })
+w.concommands.meowy_console()
+local recallEntry, shown
+for _, p in ipairs(w.panels or {}) do if p.class == "DTextEntry" and rawget(p, "OnEnter") then recallEntry = p end end
+recallEntry.SetText = function(_, v) shown = v end
+recallEntry:OnKeyCodeTyped(88)   -- Up
+check("history: kept from the last start", shown, "second")
+local savedPin
+for _, p in ipairs(w.panels or {}) do if rawget(p, "meowyPin") == "status" then savedPin = p end end
+check("pins: kept from the last start", savedPin ~= nil, true)-- Reading the console: dividers at a join, in game and leaving; the right-click
+-- menu; selected lines copied.
+w = world({ settings = ON, menu = true })
+w.console = { { id = 1, t = 1000, s = 0, c = -1, x = "before" }, { id = 2, t = 2000, s = 3, c = -1, x = "[ERROR] addons/foo/lua/autorun/cl_foo.lua:12: boom" } }
+w.loading = true
+w.run(0.2)
+w.state, w.address, w.loading, w.inGame = "ours", OURS, false, true
+w.run(0.2)
+w.inGame, w.state = false, "none"
+w.run(0.2)
+w.concommands.meowy_console()
+local function panelWith(field, value)
+	for _, p in ipairs(w.panels or {}) do
+		if rawget(p, field) ~= nil and (value == nil or rawget(p, field) == value) and not p.removed then return p end
+	end
+end
+local copyButton
+for _, p in ipairs(w.panels or {}) do if p.class == "DButton" and p.text == "Copy" then copyButton = p end end
+copyButton.DoClick()
+local copiedAll = w.clipboard or ""
+check("markers: a join", copiedAll:find("Joining a server", 1, true) ~= nil or copiedAll:find("Joining " .. OURS, 1, true) ~= nil, true)
+check("markers: in game", copiedAll:find("In game on " .. OURS, 1, true) ~= nil, true)
+check("markers: leaving", copiedAll:find("Left the server", 1, true) ~= nil, true)
+check("markers: in order", (copiedAll:find("before", 1, true) or 99) < (copiedAll:find("Joining", 1, true) or 0), true)
+-- The log panel (the one with keys of its own).
+local logP = panelWith("OnKeyCodePressed")
+for _, p in ipairs(w.panels or {}) do if p.class == "DPanel" and rawget(p, "OnKeyCodePressed") then logP = p end end
+logP.GetWide, logP.GetTall = function() return 800 end, function() return 400 end
+panelWith("meowyConsole"):PerformLayout(1000, 700)   -- the scroll worked out again with that height
+logP.CursorPos = function() return 50, 15 end   -- the first row
+logP:OnMousePressed(108)   -- right-click
+local items = {}
+for _, p in ipairs(w.panels or {}) do if rawget(p, "meowyMenuItem") and not p.removed then items[#items + 1] = p.meowyMenuItem end end
+check("menu: on a line", table.concat(items, "|"), "Copy line|Search for this|Only lines like this")
+local item = panelWith("meowyMenuItem", "Copy line")
+item.DoClick()
+check("menu: copy line", w.clipboard, "before")
+-- A line with a Lua file: which addon has it.
+logP.CursorPos = function() return 50, 35 end   -- the second row
+w.consoleRuns = {}
+logP:OnMousePressed(108)
+local which = panelWith("meowyMenuItem", "Which addon has cl_foo.lua")
+check("menu: which addon has a file", which ~= nil, true)
+if which then which.DoClick() end
+check("menu: asks the game (whereis)", w.consoleRuns[#w.consoleRuns], "whereis addons/foo/lua/autorun/cl_foo.lua")
+-- Select two lines, Ctrl+C.
+logP.CursorPos = function() return 50, 15 end
+logP:OnMousePressed(107)
+w.shift = true
+logP.CursorPos = function() return 50, 35 end
+logP:OnMousePressed(107)
+w.shift = false
+w.ctrl = true
+logP:OnKeyCodePressed(13)   -- C
+w.ctrl = false
+check("select: two lines copied", select(2, (w.clipboard or ""):gsub("\n", "")) + 1, 2)
+-- Errors: OnLuaError recorded by addon; the Errors tab lists them; a report is
+-- copied with paths hidden; an addon can be disabled at the menu (asked first).
+w = world({ settings = ON, menu = true })
+w.env.steamworks.SetShouldMountAddon = function(id, on) w.mounted = { id, on } end
+w.env.steamworks.ApplyAddons = function() w.applied = true end
+w.fire("OnLuaError", "lua/autorun/cl_foo.lua:12: attempt to index a nil value", "client",
+	{ { File = "C:\\Users\\Jane\\gm\\lua\\autorun\\cl_foo.lua", Line = 12, Function = "Draw" } }, "Foo HUD", "123456")
+w.fire("OnLuaError", "lua/autorun/cl_foo.lua:12: attempt to index a nil value", "client", {}, "Foo HUD", "123456")
+w.concommands.meowy_console()
+local errTab
+for _, p in ipairs(w.panels or {}) do if rawget(p, "meowyTab") == "errors" then errTab = p end end
+check("errors: a tab", errTab ~= nil, true)
+errTab.DoClick()
+local reportButton, disableButton
+for _, p in ipairs(w.panels or {}) do
+	if rawget(p, "meowyReport") then reportButton = p end
+	if rawget(p, "meowyDisable") == "123456" then disableButton = p end
+end
+check("errors: one card for the repeated error", reportButton ~= nil, true)
+reportButton.DoClick()
+local report = w.clipboard or ""
+check("errors: the report names the addon", report:find("Foo HUD (Workshop 123456", 1, true) ~= nil, true)
+check("errors: counted twice", report:find("2x, first", 1, true) ~= nil, true)
+check("errors: the stack", report:find("1. Draw - ", 1, true) ~= nil, true)
+check("errors: paths hidden", report:find("Jane", 1, true) == nil and report:find("<path>", 1, true) ~= nil, true)
+check("errors: disable offered at the menu", disableButton ~= nil, true)
+if disableButton then disableButton.DoClick() end
+check("errors: disabling asks first", w.mounted, nil)
 check("no Lua errors", w.errors, nil)
 print(("%d checks, %d failed"):format(count, failures))
 os.exit(failures == 0 and 0 or 1)

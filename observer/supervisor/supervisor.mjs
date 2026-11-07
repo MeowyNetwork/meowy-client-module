@@ -120,6 +120,16 @@ async function disarmOnceLoaded(logFrom, ms = 120000) {
   log('loader_removed', { note: "the module didn't report loading" });
   return false;
 }
+// A kick or refusal line in the console while still joining, and no word from
+// the menu this long after it: the visit is over. Seen 2026-11-07: a server
+// farm turned the observer away with the same text as the visit before it, so
+// the load screen's status never changed, the menu took it for the earlier
+// refusal, and every such visit sat out the menu's 40-minute join timeout.
+// Before the game is in a server no player's chat reaches the console, so the
+// line is the engine's.
+export const KICK_GRACE_MS = 45 * 1000;
+export const refusedWhileJoining = ({ leftAt, inGame, now }) => Boolean(leftAt) && !inGame && now - leftAt >= KICK_GRACE_MS;
+
 // Lines that end a join or a visit: the server's kick reason, or a failed connect.
 // (A refusal at connect time - S2C_CONNREJECT, e.g. a VPN block - reads "Connection rejected...".)
 const DISCONNECT =
@@ -718,6 +728,7 @@ async function visit(job) {
   // says the game really left (any player's chat, or the server's own prints,
   // can contain the same words).
   let leftWhy = null;
+  let leftAt = 0;
   const leave = async (why) => {
     // An engine error while loading (a missing map...) is our side failing, not
     // the server turning us away: the backend mustn't take it as a refusal.
@@ -757,7 +768,13 @@ async function visit(job) {
       consoleAt = next;
       // (Not our own "disconnect" when a visit ends: that's "Disconnect by user".)
       const kicked = [...text.matchAll(DISCONNECT)].find((m) => !/by user/i.test(m[1]));
-      if (kicked && !leftWhy) leftWhy = kicked[1];
+      if (kicked && !leftWhy) {
+        leftWhy = kicked[1];
+        leftAt = Date.now();
+      }
+      // Turned away while joining and the menu didn't notice (see KICK_GRACE_MS).
+      // A new job.json makes the menu drop the join it's still waiting on.
+      if (refusedWhileJoining({ leftAt, inGame, now: Date.now() })) return leave(leftWhy);
       // The game closed mid-visit: say whether it crashed, and why.
       if (MANAGE_GAME && ++checks % 5 === 0 && (await gameGone())) return failed(job, await whyClosed(started, obsLogFrom), visitConsole);
       continue;

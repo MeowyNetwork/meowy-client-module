@@ -27,6 +27,7 @@ jobs:
           lua5.1 tests/resilience_menu_test.lua
           lua5.1 tests/doctor_logic_test.lua
           lua5.1 tests/home_logic_test.lua
+          lua5.1 tests/console_logic_test.lua
           node tests/home_page_test.js
 
   windows:
@@ -65,6 +66,37 @@ jobs:
           cmake -S . -B buildtest32 -A Win32 -DMEOWY_BUILD_TESTS=ON
           cmake --build buildtest32 --config Release --target lua_lookup_smoke
           ./buildtest32/Release/lua_lookup_smoke.exe
+
+      - name: Join pre-warm (prewarm_smoke, both bitnesses)
+        run: |
+          cmake --build buildtest --config Release --target prewarm_smoke
+          ./buildtest/Release/prewarm_smoke.exe "$env:RUNNER_TEMP"
+          cmake --build buildtest32 --config Release --target prewarm_smoke
+          ./buildtest32/Release/prewarm_smoke.exe "$env:RUNNER_TEMP"
+      - name: LZMA pak cache (pak_cache_smoke, both bitnesses)
+        run: |
+          cmake --build buildtest --config Release --target pak_cache_smoke
+          ./buildtest/Release/pak_cache_smoke.exe
+          cmake --build buildtest32 --config Release --target pak_cache_smoke
+          ./buildtest32/Release/pak_cache_smoke.exe
+      - name: Fast file.Find rules (lua_find_smoke, both bitnesses)
+        run: |
+          cmake --build buildtest --config Release --target lua_find_smoke
+          ./buildtest/Release/lua_find_smoke.exe
+          cmake --build buildtest32 --config Release --target lua_find_smoke
+          ./buildtest32/Release/lua_find_smoke.exe
+      - name: Console capture (console_capture_smoke, both bitnesses)
+        run: |
+          cmake --build buildtest --config Release --target console_capture_smoke
+          ./buildtest/Release/console_capture_smoke.exe
+          cmake --build buildtest32 --config Release --target console_capture_smoke
+          ./buildtest32/Release/console_capture_smoke.exe
+      - name: Server lists from Steam (server_query_smoke, both bitnesses)
+        run: |
+          cmake --build buildtest --config Release --target server_query_smoke
+          ./buildtest/Release/server_query_smoke.exe
+          cmake --build buildtest32 --config Release --target server_query_smoke
+          ./buildtest32/Release/server_query_smoke.exe
 
       - name: Font pass gdi32 loads (font_loads_smoke, both bitnesses)
         run: |

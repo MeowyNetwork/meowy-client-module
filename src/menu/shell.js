@@ -1,4 +1,4 @@
-// Meowy home screen (preview; meowy_menu 1): our home inside Garry's Mod's own
+// Meowy home screen (meowy_menu, on by default): our home inside Garry's Mod's own
 // menu page. Nothing is reloaded: the stock main screen's list and news are
 // hidden by a style rule while this is on, our home takes their place, and the
 // links are the page's own routes (#/servers/ and so on), so going there and
@@ -40,15 +40,25 @@
 		+ '#meowy-shell .ms-row.ms-dim { opacity: 0.5; }'
 		+ '#meowy-shell .ms-stats { float: right; font-size: 14px; margin-left: 12px; opacity: 0.85; line-height: 22px; }'
 		+ '#meowy-shell .ms-name { font-size: 18px; font-weight: bold; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 22px; }'
-		+ '#meowy-shell .ms-detail { font-size: 14px; opacity: 0.75; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }';
+		+ '#meowy-shell .ms-detail { font-size: 14px; opacity: 0.75; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }'
+		// Find servers (src/menu/browser.js): the whole page while it's open.
+		+ '#meowy-shell .ms-browse { display: none; position: absolute; left: 40px; right: 32px; top: 36px; bottom: 16px; }'
+		+ '#meowy-shell.ms-browsing .ms-browse { display: block; }'
+		+ '#meowy-shell.ms-browsing .ms-home, #meowy-shell.ms-browsing .ms-nav, #meowy-shell.ms-browsing .ms-foot { display: none; }';
 	// [label, kind, value]: "route" goes to the page's own screen; the rest are posts.
 	var LINKS = [
-		['Find servers', 'route', 'servers'], ['Start new game', 'route', 'newgame'], null,
+		['Find servers', 'browse', ''], ['Start new game', 'route', 'newgame'], null,
 		['Addons', 'route', 'addons'], ['Dupes', 'route', 'dupes'], ['Saves', 'route', 'saves'], ['Demos', 'route', 'demos'], null,
 		['Options', 'options', ''], ['Meowy settings', 'settings', ''], null,
 		['Quit', 'quit', '']
 	];
 	var MAX_MATCHES = 10;
+	var MAX_MAPS = 8, MAX_NEWS = 3, MAX_ADDONS = 6;
+	// Settings the search finds: [title, where it opens, words it answers to].
+	var SETTINGS = [
+		['Options', 'options', 'options video graphics resolution display audio sound volume voice microphone keyboard keys bindings mouse sensitivity controls multiplayer spray language'],
+		['Meowy settings', 'settings', 'meowy settings pack stay connected reconnect start with the game loading screen continue home screen menu escape server card text size zoom scale pre-warm prewarm workshop find servers players fake counts']
+	];
 
 	var on = false, query = '', selected = 0, rows = [], focused = false;
 
@@ -62,6 +72,13 @@
 		return e;
 	}
 	function shell() { return document.getElementById('meowy-shell'); }
+	// Resting the pointer on a row for a moment: get that server ready (prewarm.h).
+	function intentOn(el, kind, id) {
+		var timer = null;
+		el.onmouseenter = function () { timer = setTimeout(function () { post(kind, Number(id)); }, 400); };
+		el.onmouseleave = function () { if (timer) clearTimeout(timer); timer = null; };
+	}
+	function intent(el, id) { intentOn(el, 'intent', id); }
 	function setBodyClass(want) {
 		var b = document.body;
 		if (!b) return;
@@ -75,6 +92,7 @@
 		a.tabIndex = 0;
 		var act = function () {
 			if (kind === 'route') location.hash = '#/' + value + '/';
+			else if (kind === 'browse' && browser()) browser().open(true);
 			else post(kind, value);
 		};
 		a.onclick = act;
@@ -87,7 +105,7 @@
 		root.id = 'meowy-shell';
 		var nav = node('div', 'ms-nav');
 		nav.appendChild(node('div', 'ms-brand', "Garry's Mod"));
-		nav.appendChild(node('div', 'ms-tag', 'Meowy home (preview)'));
+		nav.appendChild(node('div', 'ms-tag', 'Meowy home'));
 		var cont = node('a', 'ms-link ms-cont');
 		cont.tabIndex = 0;
 		cont.appendChild(node('span', 'ms-ctitle', 'Continue'));
@@ -110,7 +128,7 @@
 		var search = node('input', 'ms-search');
 		search.type = 'text';
 		search.maxLength = 64;
-		search.placeholder = 'Search your servers   ( / )';
+		search.placeholder = 'Search servers, maps, addons, settings   ( / )';
 		search.value = query;
 		search.oninput = function () { query = search.value; selected = 0; lists(); };
 		search.onfocus = function () { focused = true; mark(); };
@@ -118,8 +136,101 @@
 		search.onkeydown = keys;
 		home.appendChild(search);
 		home.appendChild(node('div', 'ms-lists'));
+		home.appendChild(node('div', 'ms-news'));
 		root.appendChild(home);
+		root.appendChild(buildBrowse());
+		if (browser() && browser().isOpen()) root.className = 'ms-browsing';
 		return root;
+	}
+
+	// --- Find servers (src/menu/browser.js) ------------------------------------------
+	// The pack's own server browser, put into this page in place of the home while
+	// it's open. It's built once and moved into each new copy of the home.
+	function browser() { return window.MeowyBrowser || null; }
+	function buildBrowse() {
+		var panel = node('div', 'ms-browse');
+		if (browser()) panel.appendChild(browser().element());
+		return panel;
+	}
+	if (browser()) browser().onToggle = function (open) { var s = shell(); if (s) s.className = open ? 'ms-browsing' : ''; };
+
+	// One row: a name, an optional detail and stats; act() is what Enter or a click does.
+	function addRow(list, name, detail, stats, dim, act, intentId) {
+		var cls = 'ms-row' + (dim ? ' ms-dim' : '');
+		var el = node('div', cls);
+		if (stats) el.appendChild(node('span', 'ms-stats', stats));
+		el.appendChild(node('div', 'ms-name', name));
+		if (detail) el.appendChild(node('div', 'ms-detail', detail));
+		el.title = name;
+		el.onclick = act;
+		if (intentId !== undefined) intent(el, intentId);
+		list.appendChild(el);
+		rows.push({ el: el, cls: cls, act: act });
+	}
+
+	// The page's own map list (gScope.MapList: Garry's Mod's Lua sends it for New
+	// game). A map is picked the way New game picks it (its root scope's Map and
+	// LastCategory), then New game opens with it chosen.
+	function pickMap(map, category) {
+		var r = window.rootScope;
+		if (!r) return;
+		r.Map = map;
+		r.LastCategory = category;
+		if (typeof window.UpdateDigest === 'function') window.UpdateDigest(r, 50);
+		location.hash = '#/newgame/';
+	}
+	function mapMatches(q) {
+		var out = [], seen = {}, list = window.gScope && window.gScope.MapList;
+		if (!q || !list || !list.length) return out;
+		for (var i = 0; i < list.length && out.length < MAX_MAPS; i++) {
+			var maps = list[i] && list[i].maps;
+			if (!maps || list[i].category === 'Favourites') continue;   // also listed in their own category
+			for (var j = 0; j < maps.length && out.length < MAX_MAPS; j++) {
+				var m = maps[j];
+				if (typeof m !== 'string' || seen[m] || m.toLowerCase().indexOf(q) < 0) continue;
+				seen[m] = true;
+				out.push([m, String(list[i].category)]);
+			}
+		}
+		return out;
+	}
+
+	// Garry's Mod's news, as the stock main screen had it (rootScope.NewsList,
+	// from its own feed); opened the way the stock page opens it. Titles as text.
+	var newsShown = null;
+	function newsAgo(date) {
+		var t = Date.parse(date);
+		if (isNaN(t)) return '';
+		var days = Math.floor((Date.now() - t) / 86400000);
+		if (days < 1) return 'today';
+		if (days < 2) return 'yesterday';
+		if (days < 60) return days + ' days ago';
+		return new Date(t).toDateString().replace(/^\S+\s/, '');
+	}
+	function news() {
+		var s = shell();
+		if (!s) return;
+		var box = s.querySelector('.ms-news'), items = (window.rootScope && window.rootScope.NewsList) || [];
+		var picked = [];
+		for (var i = 0; i < items.length && picked.length < MAX_NEWS; i++) {
+			if (items[i] && typeof items[i].Title === 'string' && typeof items[i].Url === 'string') picked.push(items[i]);
+		}
+		var key = query ? '' : picked.map(function (n) { return n.Title + '|' + n.Date; }).join('\n');
+		if (key === newsShown) return;
+		newsShown = key;
+		while (box.firstChild) box.removeChild(box.firstChild);
+		if (!key) return;   // hidden while searching, or no news yet
+		box.appendChild(node('div', 'ms-title', 'News'));
+		for (var k = 0; k < picked.length; k++) {
+			var item = node('div', 'ms-row');
+			item.appendChild(node('span', 'ms-stats', newsAgo(picked[k].Date)));
+			item.appendChild(node('div', 'ms-name', picked[k].Title));
+			item.title = picked[k].Title;
+			item.onclick = (function (url) {
+				return function () { if (window.scope && typeof window.scope.OpenInSteam === 'function') window.scope.OpenInSteam(url); };
+			})(picked[k].Url);
+			box.appendChild(item);
+		}
 	}
 
 	function mark() {
@@ -131,7 +242,8 @@
 	}
 
 	// The lists: each section's first rows; while searching, every row whose
-	// name or map has the text (at most MAX_MATCHES a section).
+	// name or map has the text (at most MAX_MATCHES a section), then the
+	// installed maps whose name has it.
 	function lists() {
 		var s = shell();
 		if (!s) return;
@@ -139,9 +251,9 @@
 		var data = window.MeowyHomeData, q = query.toLowerCase();
 		while (list.firstChild) list.removeChild(list.firstChild);
 		rows = [];
-		if (!data || !data.sections) return;
-		for (var i = 0; i < data.sections.length; i++) {
-			var sec = data.sections[i], picked = [];
+		var sections = (data && data.sections) || [];
+		for (var i = 0; i < sections.length; i++) {
+			var sec = sections[i], picked = [];
 			for (var j = 0; j < sec.rows.length; j++) {
 				var r = sec.rows[j];
 				if (q && (r.name + ' ' + r.detail).toLowerCase().indexOf(q) < 0) continue;
@@ -151,22 +263,42 @@
 			if (q && !picked.length) continue;
 			list.appendChild(node('div', 'ms-title', sec.title));
 			for (var k = 0; k < picked.length; k++) {
-				var p = picked[k], cls = 'ms-row' + (p.dim ? ' ms-dim' : '');
-				var el = node('div', cls);
-				if (p.stats) el.appendChild(node('span', 'ms-stats', p.stats));
-				el.appendChild(node('div', 'ms-name', p.name));
-				if (p.detail) el.appendChild(node('div', 'ms-detail', p.detail));
-				el.title = p.name;
-				el.onclick = (function (id) { return function () { post('join', Number(id)); }; })(p.id);
-				list.appendChild(el);
-				rows.push({ id: p.id, el: el, cls: cls });
+				var p = picked[k];
+				addRow(list, p.name, p.detail, p.stats, p.dim,
+					(function (id) { return function () { post('join', Number(id)); }; })(p.id), p.id);
 			}
 			if (!q && sec.note) list.appendChild(node('div', 'ms-note', sec.note));
 		}
-		if (q && !rows.length) list.appendChild(node('div', 'ms-note', 'No server matches'));
+		var maps = mapMatches(q);
+		if (maps.length) {
+			list.appendChild(node('div', 'ms-title', 'Maps'));
+			for (var m = 0; m < maps.length; m++) {
+				addRow(list, maps[m][0], maps[m][1] + ' · start a new game', '', false,
+					(function (map, cat) { return function () { pickMap(map, cat); }; })(maps[m][0], maps[m][1]));
+			}
+		}
+		// Your subscribed addons (menu_page.lua sends their titles): Addons opens.
+		var addons = q && window.MeowyAddons, shown = 0;
+		for (var a = 0; addons && a < addons.length && shown < MAX_ADDONS; a++) {
+			var ad = addons[a];
+			if (!ad || typeof ad.t !== 'string' || ad.t.toLowerCase().indexOf(q) < 0) continue;
+			if (!shown) list.appendChild(node('div', 'ms-title', 'Addons'));
+			shown++;
+			addRow(list, ad.t, ad.m ? 'Subscribed, on' : 'Subscribed, off', '', !ad.m,
+				function () { location.hash = '#/addons/'; });
+		}
+		// Settings: by their names and what they cover.
+		var setFirst = true;
+		for (var st = 0; q && st < SETTINGS.length; st++) {
+			if ((SETTINGS[st][0] + ' ' + SETTINGS[st][2]).toLowerCase().indexOf(q) < 0) continue;
+			if (setFirst) { list.appendChild(node('div', 'ms-title', 'Settings')); setFirst = false; }
+			addRow(list, SETTINGS[st][0], '', '', false, (function (kind) { return function () { post(kind); }; })(SETTINGS[st][1]));
+		}
+		if (q && !rows.length) list.appendChild(node('div', 'ms-note', 'Nothing matches'));
 		if (selected >= rows.length) selected = rows.length - 1;
 		if (selected < 0) selected = 0;
 		mark();
+		news();
 	}
 
 	function continueEntry() {
@@ -189,7 +321,7 @@
 			selected = Math.max(0, Math.min(rows.length - 1, selected + (k === 40 ? 1 : -1)));
 			mark();
 		} else if (k === 13) {
-			if (rows[selected]) post('join', Number(rows[selected].id));
+			if (rows[selected]) rows[selected].act();
 		} else if (k === 27) {
 			search.value = '';
 			query = '';
@@ -231,8 +363,10 @@
 
 	window.MeowyShell = function (v) {
 		var want = !!v;
+		if (on && want) news();   // the feed arrives after the page: picked up on the next send
 		if (want === on && (!on || shell() || !document.querySelector(MAIN))) return;
 		on = want;
+		newsShown = null;
 		draw();
 	};
 	window.MeowyShellLists = lists;
@@ -242,9 +376,39 @@
 	document.addEventListener('keydown', function (e) {
 		var s = shell(), t = e.target && e.target.tagName;
 		if (!s || t === 'INPUT' || t === 'TEXTAREA') return;
-		if (e.key === '/' || e.keyCode === 191) { s.querySelector('.ms-search').focus(); e.preventDefault(); }
+		if (e.key === '/' || e.keyCode === 191) {
+			if (browser() && browser().isOpen()) browser().focusSearch(); else s.querySelector('.ms-search').focus();
+			e.preventDefault();
+		}
 	}, true);
 
+	// Find servers: a Friends tab after Local Network, home screen on or off.
+	// It's the game's own "friends" list (servers your Steam friends are on, no
+	// names), switched to through the page's own SwitchType, like the other tabs.
+	function friendsTab() {
+		var lan = document.querySelector('a[ng-click="SwitchType( \'lan\' )"]');
+		var li = lan && lan.parentNode;
+		if (!li || !li.parentNode) return;
+		var a = document.getElementById('meowy-friends-tab');
+		if (!a) {
+			var item = document.createElement('li');
+			a = node('a', '', 'Friends');
+			a.id = 'meowy-friends-tab';
+			a.onclick = function () {
+				var sc = window.Scope;
+				if (!sc || typeof sc.SwitchType !== 'function') return;
+				if (typeof sc.$apply === 'function') sc.$apply(function () { sc.SwitchType('friends'); });
+				else sc.SwitchType('friends');
+			};
+			item.appendChild(a);
+			li.parentNode.insertBefore(item, li.nextSibling);
+		}
+		var active = !!(window.RootScope && window.RootScope.ServerType === 'friends');
+		if ((a.className === 'active') !== active) a.className = active ? 'active' : '';
+	}
+	window.MeowyFriendsTab = friendsTab;
+
 	var MO = window.MutationObserver || window.WebKitMutationObserver;
-	if (MO && document.body) new MO(function () { if (on) draw(); }).observe(document.body, { childList: true, subtree: true });
+	if (MO && document.body) new MO(function () { if (on) draw(); friendsTab(); }).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
+	friendsTab();
 })();

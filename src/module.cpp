@@ -89,6 +89,7 @@
 #include "crash_reports.h"
 #include "discord_ipc.h"
 #include "engine_patches.h"
+#include "lua_find.h"
 #include "lua_lookup.h"
 #include "font_loads.h"
 #include "fs_cache.h"
@@ -104,6 +105,11 @@
 #include "notify_toast.h"
 #include "timeline.h"
 #include "timeline_steam.h"
+#include "prewarm.h"
+#include "pak_cache.h"
+#include "console_capture.h"
+#include "server_query.h"
+#include "steam_ugc.h"
 #include "resilience.h"
 #include "doctor.h"
 #include "startup_hook.h"
@@ -112,6 +118,7 @@
 #include <cstdio>
 #include <exception>
 #include <string>
+#include <algorithm>
 #include <vector>
 
 #ifdef _WIN32
@@ -472,7 +479,34 @@ namespace
 	int FastLuaLookupNewJoin(lua_State*)
 	{
 		lua_lookup::NewJoin();
+		lua_find::NewJoin();
 		return 0;
+	}
+
+	// meowy.FastLuaFind(on) -> true | false, reason (lua_find.h). Menu realm
+	// only, like FastLuaLookup.
+	int FastLuaFind(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		if (!LUA->GetBool(1))
+		{
+			lua_find::Uninstall();
+			LUA->PushBool(true);
+			return 1;
+		}
+		std::string why;
+		const bool ok = lua_find::Install(why);
+		LUA->PushBool(ok);
+		if (ok)
+			return 1;
+		LUA->PushString(why.c_str());
+		return 2;
+	}
+
+	int FastLuaFindState(lua_State* L)
+	{
+		L->luabase->PushString(lua_find::Describe().c_str());
+		return 1;
 	}
 
 	// meowy.FastFonts(on) -> true | false, reason (font_loads.h). Menu realm
@@ -1461,6 +1495,401 @@ namespace
 		return 2;
 	}
 
+	// --- Join pre-warm (prewarm.h) ---------------------------------------------------
+	constexpr uint64_t kPrewarmBudget = 4ull << 30;   // bytes read per warm, at most
+
+	// A join is loading: start recording its big files and the blocks it reads
+	// (and stop any warming). The read hook goes in on the first join; if it
+	// can't, meowy_prewarm_status says "read hook off".
+	int PrewarmBeginJoin(lua_State*)
+	{
+		static bool hookTried = false;
+		if (!hookTried)
+		{
+			hookTried = true;
+			std::string why;
+			prewarm::InstallReadHook(why);
+		}
+		prewarm::BeginJoin();
+		return 0;
+	}
+
+	// In game: keep the list for this server (ours or public, the engine's own
+	// address). -> files kept.
+	int PrewarmEndJoin(lua_State* L)
+	{
+		std::string address;
+		const server_gate::Result r = server_gate::Check(&address);
+		const bool connected = r == server_gate::Result::Allowed || r == server_gate::Result::OtherServer;
+		const int kept = prewarm::EndJoin(DataDir(), connected && RejoinableAddress(address) ? address : std::string());
+		L->luabase->PushNumber(kept);
+		return 1;
+	}
+
+	// PrewarmRecorded(address) -> true, MB | false.
+	int PrewarmRecorded(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		const char* a = LUA->IsType(1, Type::String) ? LUA->GetString(1) : nullptr;
+		uint64_t bytes = 0;
+		if (!a || !RejoinableAddress(a) || !prewarm::Recorded(DataDir(), a, &bytes))
+		{
+			LUA->PushBool(false);
+			return 1;
+		}
+		LUA->PushBool(true);
+		LUA->PushNumber(static_cast<double>(bytes) / 1048576.0);
+		return 2;
+	}
+
+	// PrewarmStart(address) -> true | false, reason.
+	int PrewarmStart(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		const char* a = LUA->IsType(1, Type::String) ? LUA->GetString(1) : nullptr;
+		std::string why = "not a server address";
+		const bool ok = a && RejoinableAddress(a) && prewarm::Start(DataDir(), a, kPrewarmBudget, why);
+		LUA->PushBool(ok);
+		if (ok)
+			return 1;
+		LUA->PushString(why.c_str());
+		return 2;
+	}
+
+	// PrewarmWorkshop(address) -> { "<id>", ... }: the Workshop items its last
+	// join mounted (as strings: steamworks takes IDs as strings), possibly empty.
+	int PrewarmWorkshop(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		const char* a = LUA->IsType(1, Type::String) ? LUA->GetString(1) : nullptr;
+		std::vector<uint64_t> ids;
+		if (a && RejoinableAddress(a))
+			ids = prewarm::WorkshopItems(DataDir(), a);
+		LUA->CreateTable();
+		int i = 0;
+		for (uint64_t id : ids)
+		{
+			LUA->PushNumber(++i);
+			LUA->PushString(std::to_string(static_cast<unsigned long long>(id)).c_str());
+			LUA->SetTable(-3);
+		}
+		return 1;
+	}
+
+	// WorkshopItemState(id) -> installed, needsUpdate, busy, legacy, updated |
+	// nil: what Steam knows about a Workshop item here (steam_ugc.h). Read-only.
+	int WorkshopItemState(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		const char* s = LUA->IsType(1, Type::String) ? LUA->GetString(1) : nullptr;
+		uint64_t id = 0;
+		for (const char* p = s; p && *p; ++p)
+		{
+			if (*p < '0' || *p > '9' || id > 1000000000000000000ull)
+			{
+				id = 0;
+				break;
+			}
+			id = id * 10 + static_cast<uint64_t>(*p - '0');
+		}
+		steam_ugc::ItemState st;
+		if (!id || !steam_ugc::State(id, st))
+		{
+			LUA->PushNil();
+			return 1;
+		}
+		LUA->PushBool(st.installed);
+		LUA->PushBool(st.needsUpdate);
+		LUA->PushBool(st.busy);
+		LUA->PushBool(st.legacy);
+		LUA->PushNumber(static_cast<double>(st.updated));
+		return 5;
+	}
+
+	int PrewarmCancel(lua_State*)
+	{
+		prewarm::Cancel();
+		return 0;
+	}
+
+	// --- The console's lines (console_capture.h, U8) -------------------------------
+	// ConsoleCaptureStart() -> true | false, reason.
+	int ConsoleCaptureStart(lua_State* L)
+	{
+		std::string why;
+		const bool ok = console_capture::Install(why);
+		L->luabase->PushBool(ok);
+		if (ok)
+			return 1;
+		L->luabase->PushString(why.c_str());
+		return 2;
+	}
+
+	// ConsoleRead(afterId, max) -> { {id, t, s, c, x}, ... }, lastId: the lines
+	// after `afterId` (the newest `max` when there are more), and the id to pass
+	// next time. t: unix ms; s: severity; c: 0xRRGGBB or -1; x: the text.
+	int ConsoleRead(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		const double after = LUA->IsType(1, Type::Number) ? LUA->GetNumber(1) : 0;
+		const double max = LUA->IsType(2, Type::Number) ? LUA->GetNumber(2) : 1000;
+		uint64_t next = 1;
+		const std::vector<console_capture::Line> lines = console_capture::Read(after > 0 ? static_cast<uint64_t>(after) : 0,
+			max < 1 ? 1 : max > 50000 ? 50000 : static_cast<size_t>(max), &next);
+		LUA->CreateTable();
+		int i = 0;
+		for (const console_capture::Line& l : lines)
+		{
+			LUA->PushNumber(++i);
+			LUA->CreateTable();
+			LUA->PushNumber(static_cast<double>(l.id));
+			LUA->SetField(-2, "id");
+			LUA->PushNumber(static_cast<double>(l.timeMs));
+			LUA->SetField(-2, "t");
+			LUA->PushNumber(l.severity);
+			LUA->SetField(-2, "s");
+			LUA->PushNumber(l.color == 0xFFFFFFFF ? -1.0 : static_cast<double>(l.color));
+			LUA->SetField(-2, "c");
+			LUA->PushString(l.text.c_str(), static_cast<unsigned int>(l.text.size()));
+			LUA->SetField(-2, "x");
+			LUA->SetTable(-3);
+		}
+		LUA->PushNumber(static_cast<double>(next - 1));
+		return 2;
+	}
+
+	int ConsoleState(lua_State* L)
+	{
+		L->luabase->PushString(console_capture::Describe().c_str());
+		return 1;
+	}
+
+	// The console's saved lists: ConsoleFileRead(kind) -> text, ConsoleFileWrite(kind,
+	// text) -> ok, for kind "history" or "pins" only, in
+	// %LOCALAPPDATA%\MeowyClientPack\console_<kind>.txt (64 KB at most).
+	constexpr size_t kMaxConsoleFile = 64 * 1024;
+	const wchar_t* ConsoleFileName(const char* kind)
+	{
+		if (!kind)
+			return nullptr;
+		if (std::strcmp(kind, "history") == 0)
+			return L"\\console_history.txt";
+		if (std::strcmp(kind, "pins") == 0)
+			return L"\\console_pins.txt";
+		return nullptr;
+	}
+
+	int ConsoleFileRead(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		const wchar_t* name = ConsoleFileName(LUA->IsType(1, Type::String) ? LUA->GetString(1) : nullptr);
+		const std::string text = name ? file_util::ReadSmall(DataDir() + name, kMaxConsoleFile) : std::string();
+		LUA->PushString(text.c_str(), static_cast<unsigned int>(text.size()));
+		return 1;
+	}
+
+	int ConsoleFileWrite(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		const wchar_t* name = ConsoleFileName(LUA->IsType(1, Type::String) ? LUA->GetString(1) : nullptr);
+		unsigned int size = 0;
+		const char* text = LUA->IsType(2, Type::String) ? LUA->GetString(2, &size) : nullptr;
+		LUA->PushBool(name && text && size <= kMaxConsoleFile && file_util::WriteAtomic(DataDir() + name, std::string(text, size)));
+		return 1;
+	}
+
+	// MaskPaths(text) -> text with absolute paths (which carry the Windows user
+	// name) replaced by "<path>": crash_reports.h's masker, for the console's
+	// error reports.
+	int MaskPathsLua(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		unsigned int size = 0;
+		const char* text = LUA->IsType(1, Type::String) ? LUA->GetString(1, &size) : "";
+		const std::string masked = crashes::MaskPaths(std::string(text, size));
+		LUA->PushString(masked.c_str(), static_cast<unsigned int>(masked.size()));
+		return 1;
+	}
+
+	// ConsoleSaveLog(text) -> path | nil: the console's lines, paths masked, in
+	// %LOCALAPPDATA%\MeowyClientPack\logs\console_YYYY-MM-DD_HH-MM-SS.txt (8 MB at
+	// most; the newest 20 kept).
+	int ConsoleSaveLog(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		unsigned int size = 0;
+		const char* text = LUA->IsType(1, Type::String) ? LUA->GetString(1, &size) : nullptr;
+		if (!text || size > 8u * 1024 * 1024)
+		{
+			LUA->PushNil();
+			return 1;
+		}
+		const std::wstring dir = DataDir() + L"\\logs";
+		CreateDirectoryW(dir.c_str(), nullptr);
+		SYSTEMTIME st;
+		GetLocalTime(&st);
+		wchar_t name[64];
+		swprintf_s(name, L"\\console_%04u-%02u-%02u_%02u-%02u-%02u.txt", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+		const std::wstring path = dir + name;
+		if (!file_util::WriteAtomic(path, crashes::MaskPaths(std::string(text, size))))
+		{
+			LUA->PushNil();
+			return 1;
+		}
+		// The newest 20 kept (the names sort by time).
+		std::vector<std::wstring> logs;
+		WIN32_FIND_DATAW fd;
+		HANDLE h = FindFirstFileW((dir + L"\\console_*.txt").c_str(), &fd);
+		if (h != INVALID_HANDLE_VALUE)
+		{
+			do logs.push_back(fd.cFileName); while (FindNextFileW(h, &fd));
+			FindClose(h);
+		}
+		std::sort(logs.begin(), logs.end());
+		for (size_t i = 0; i + 20 < logs.size(); ++i)
+			DeleteFileW((dir + L"\\" + logs[i]).c_str());
+		const int n = WideCharToMultiByte(CP_UTF8, 0, path.c_str(), -1, nullptr, 0, nullptr, nullptr);
+		std::string utf8(n > 0 ? n - 1 : 0, '\0');
+		if (n > 1)
+			WideCharToMultiByte(CP_UTF8, 0, path.c_str(), -1, &utf8[0], n, nullptr, nullptr);
+		LUA->PushString(crashes::MaskPaths(utf8).c_str());
+		return 1;
+	}
+
+	// ConsoleRun(line) -> ok: the line run as if typed into the console (the
+	// player's own line, from the pack's console window).
+	int ConsoleRun(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		const char* line = LUA->IsType(1, Type::String) ? LUA->GetString(1) : nullptr;
+		LUA->PushBool(console_capture::RunLine(line));
+		return 1;
+	}
+
+	// --- Server lists from Steam (server_query.h, U6 N1) ----------------------------
+	// ServerQueryStart("internet"|"friends", key1, value1, key2, value2, ...) ->
+	// id | nil, reason. The filters are Steam's master-server keys (checked).
+	int ServerQueryStart(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		const char* list = LUA->IsType(1, Type::String) ? LUA->GetString(1) : "";
+		server_query::Filters filters;
+		const int top = LUA->Top();
+		for (int i = 2; i + 1 <= top && filters.size() < 17; i += 2)
+		{
+			if (!LUA->IsType(i, Type::String) || !LUA->IsType(i + 1, Type::String))
+				break;
+			filters.emplace_back(LUA->GetString(i), LUA->GetString(i + 1));
+		}
+		std::string why = "unknown list";
+		const bool friends = std::strcmp(list, "friends") == 0;
+		const int id = (friends || std::strcmp(list, "internet") == 0)
+			? server_query::Start(friends ? server_query::List::Friends : server_query::List::Internet, filters, why)
+			: 0;
+		if (id)
+		{
+			LUA->PushNumber(id);
+			return 1;
+		}
+		LUA->PushNil();
+		LUA->PushString(why.c_str());
+		return 2;
+	}
+
+	// ServerQueryTake(id) -> { {address, name, map, gamedir, desc, tags, ping,
+	// players, max, bots, pass, secure, anon, lastplayed, version}, ... },
+	// finished, failed. version is the network version (the tags' ver: is the build).
+	// Server text is the server's own: shown as text only.
+	int ServerQueryTake(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		const int id = LUA->IsType(1, Type::Number) ? static_cast<int>(LUA->GetNumber(1)) : 0;
+		bool finished = true;
+		int failed = 0;
+		const std::vector<server_query::Server> servers = server_query::Take(id, &finished, &failed);
+		LUA->CreateTable();
+		int i = 0;
+		for (const server_query::Server& s : servers)
+		{
+			LUA->PushNumber(++i);
+			LUA->CreateTable();
+			const auto str = [&](const char* k, const std::string& v) {
+				LUA->PushString(v.c_str(), static_cast<unsigned int>(v.size()));
+				LUA->SetField(-2, k);
+			};
+			const auto num = [&](const char* k, double v) { LUA->PushNumber(v); LUA->SetField(-2, k); };
+			str("address", s.address);
+			str("name", s.name);
+			str("map", s.map);
+			str("gamedir", s.gameDir);
+			str("desc", s.description);
+			str("tags", s.tags);
+			num("ping", s.ping);
+			num("players", s.players);
+			num("max", s.maxPlayers);
+			num("bots", s.bots);
+			LUA->PushBool(s.password);
+			LUA->SetField(-2, "pass");
+			LUA->PushBool(s.secure);
+			LUA->SetField(-2, "secure");
+			LUA->PushBool(s.anonymous);
+			LUA->SetField(-2, "anon");
+			num("lastplayed", s.lastPlayed);
+			num("version", s.version);
+			LUA->SetTable(-3);
+		}
+		LUA->PushBool(finished);
+		LUA->PushNumber(failed);
+		return 3;
+	}
+
+	int ServerQueryCancel(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		if (LUA->IsType(1, Type::Number))
+			server_query::Cancel(static_cast<int>(LUA->GetNumber(1)));
+		return 0;
+	}
+
+	int ServerQueryState(lua_State* L)
+	{
+		L->luabase->PushString(server_query::Describe().c_str());
+		return 1;
+	}
+
+	int PrewarmState(lua_State* L)
+	{
+		L->luabase->PushString(prewarm::Describe().c_str());
+		return 1;
+	}
+
+	// meowy.PakCache(on) -> true | false, reason (pak_cache.h). On while a join
+	// loads (patched in on the first); off empties it.
+	int PakCache(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		const bool on = LUA->GetBool(1);
+		if (on)
+		{
+			std::string why;
+			if (!pak_cache::Install(why))
+			{
+				LUA->PushBool(false);
+				LUA->PushString(why.c_str());
+				return 2;
+			}
+		}
+		pak_cache::SetActive(on);
+		LUA->PushBool(true);
+		return 1;
+	}
+
+	int PakCacheState(lua_State* L)
+	{
+		L->luabase->PushString(pak_cache::Describe().c_str());
+		return 1;
+	}
+
 	// LastServerMark(name) -> ok: the player is in the game on a server now; kept
 	// for the main menu's "Continue" when it's ours or a public one (the engine's
 	// address, read here; the name is the server's, only ever shown as text).
@@ -1542,15 +1971,24 @@ namespace
 			if (!menuPage.empty())
 				home += "(function()\n" + menuPage + "\nend)()\n";
 		}
+		// The Meowy console (console_logic.lua as `ConsoleLogic`, then console.lua),
+		// in a function of its own that sees resilience.lua's locals.
+		std::string consoleLogic = ResourceText(IDR_CONSOLE_LOGIC_LUA);
+		std::string consoleGlue = ResourceText(IDR_CONSOLE_LUA);
+		if (!consoleLogic.empty() && !consoleGlue.empty())
+			// The leading ";": after "end)()" a "(" would call its result.
+			home += ";(function()\nlocal ConsoleLogic = (function()\n" + consoleLogic + "\nend)()\n" + consoleGlue + "\nend)()\n";
 		return "local UI = (function()\n" + ui + "\nend)()\n"
 			"local Logic = (function()\n" + logic + "\nend)()\n" + doctor + glue + home;
 	}
 
-	// MenuShellJs() -> the Meowy home screen's script (src/menu/shell.js), which
-	// menu_page.lua puts into the stock menu page; "" if missing.
+	// MenuShellJs() -> the Meowy home screen's script, which menu_page.lua puts
+	// into the stock menu page: Find servers (src/menu/browser.js) first, then
+	// the home (src/menu/shell.js), which builds it in; "" if missing.
 	int MenuShellJs(lua_State* L)
 	{
-		const std::string js = ResourceText(IDR_MENU_SHELL_JS);
+		const std::string shell = ResourceText(IDR_MENU_SHELL_JS);
+		const std::string js = shell.empty() ? shell : ResourceText(IDR_MENU_BROWSER_JS) + "\n" + shell;
 		L->luabase->PushString(js.c_str(), static_cast<unsigned int>(js.size()));
 		return 1;
 	}
@@ -1923,6 +2361,62 @@ local stockQuery = serverlist.Query
 -- The game's own query, for lists that aren't the browser's (the main menu's
 -- Home card): no count checks, no backend calls.
 meowy.StockServerQuery = stockQuery
+-- For the pack's own Find servers (menu_page.lua): a server's tag ([VERIFIED],
+-- [FAKE - 12 real], ...) and verdict, as this list marks it, and the verdicts fetched.
+meowy.ServerTag = function(address)
+	if not enabled:GetBool() or not isstring(address) then return nil end
+	return tagOf(address)
+end
+meowy.FetchServerRep = function() if enabled:GetBool() then fetchRep() end end
+
+-- Find servers, faster (U6 N1, server_query.h): the browser's Internet list
+-- straight from Steam, whose master server leaves out empty servers before
+-- anything is pinged (Steam pings at most ~5,000 a minute). About a fifth of
+-- the ~4,800 servers, complete in ~20 s instead of ~90 s. Each server reaches
+-- the browser through the query's own Callback, with the values the game's
+-- query gives (its tags read the same way), so the stock page, its blacklist
+-- and the count checks above see no difference.
+local fastList = meowy.Setting("meowy_fast_serverlist", "1",
+	"Meowy Client Pack: Find servers lists only servers with players, straight from Steam (0 = every server, the game's way)")
+local fastRuns = {}   -- [list id] = { data, started, count }
+local function tagValue(tags, key) return (" " .. tags .. " "):match(" " .. key .. ":(%S+)") end
+local function fastQuery(data)
+	if not (fastList:GetBool() and meowy.ServerQueryStart and istable(data) and isfunction(data.Callback)) then return false end
+	if data.Type ~= "internet" or (data.AppID and data.AppID ~= 4000) or (data.GameDir and data.GameDir ~= "garrysmod") then return false end
+	for id in pairs(fastRuns) do meowy.ServerQueryCancel(id) fastRuns[id] = nil end   -- a refresh replaces the last list
+	local id = meowy.ServerQueryStart("internet", "gamedir", "garrysmod", "hasplayers", "1")
+	if not id then return false end
+	fastRuns[id] = { data = data, started = SysTime(), count = 0 }
+	return true
+end
+hook.Add("Think", "MeowyClientPack.FastServerList", function()
+	for id, run in pairs(fastRuns) do
+		local list, finished = meowy.ServerQueryTake(id)
+		local stop = false
+		for _, s in ipairs(list) do
+			local tags = s.tags or ""
+			run.count = run.count + 1
+			local ok, more = pcall(run.data.Callback, s.ping, s.name, s.desc, s.map, s.players, s.max, s.bots, s.pass,
+				s.lastplayed, s.address, tagValue(tags, "gm") or "", tagValue(tags, "gmws") or "0", s.anon,
+				-- netVersion is the network version and luaVersion the build (the tags' ver:), as the
+				-- game's own list gives them: the page marks a server outdated by the first.
+				tonumber(s.version) or 0, tonumber(tagValue(tags, "ver") or "") or 0, tagValue(tags, "loc") or "", tagValue(tags, "gmc") or "")
+			if not ok then ErrorNoHalt("[Meowy Client Pack] fast server list: " .. tostring(more) .. "\n") end
+			if not ok or more == false then stop = true break end
+		end
+		if stop or finished then
+			fastRuns[id] = nil
+			meowy.ServerQueryCancel(id)
+			print(string.format("[Meowy Client Pack] fast server list: %d servers with players in %.1f s%s", run.count,
+				SysTime() - run.started, stop and " (stopped)" or ""))
+			if finished and not stop and isfunction(run.data.Finished) then run.data.Finished() end
+		end
+	end
+end)
+concommand.Add("meowy_fast_serverlist_status", function()
+	print("[Meowy Client Pack] fast server list: " .. (fastList:GetBool() and "on" or "off") .. "; " ..
+		(meowy.ServerQueryState and meowy.ServerQueryState() or "unavailable"))
+end)
 serverlist.Query = function(data)
 	if enabled:GetBool() and istable(data) and isfunction(data.Callback) then
 		local type, callback, finished = data.Type, data.Callback, data.Finished
@@ -1946,6 +2440,7 @@ serverlist.Query = function(data)
 		end
 		fetchRep()
 	end
+	if fastQuery(data) then return end
 	return stockQuery(data)
 end
 
@@ -2124,6 +2619,23 @@ hook.Add("Think", "MeowyClientPack.FastLuaLookup", function()
 end)
 concommand.Add("meowy_fast_lua_lookup_status", function()
 	print("[Meowy Client Pack] fast Lua lookup: " .. meowy.FastLuaLookupState())
+end)
+
+-- file.Find on "LUA" walks only the string table entries that can match the
+-- pattern instead of copying and testing all of them (lua_find.h): the same
+-- answers, on any server. Re-indexed at each join (FastLuaLookupNewJoin above).
+local fastFind = meowy.Setting("meowy_fast_lua_find", "1",
+	"Meowy Client Pack: let file.Find on a server's Lua skip the files that can't match (0 = the game's own walk)")
+local fastFindApplied
+hook.Add("Think", "MeowyClientPack.FastLuaFind", function()
+	local want = fastFind:GetBool()
+	if want == fastFindApplied or IsInLoading() or IsInGame() then return end
+	fastFindApplied = want
+	local ok, why = meowy.FastLuaFind(want)
+	if not ok then print("[Meowy Client Pack] fast file.Find: " .. tostring(why)) end
+end)
+concommand.Add("meowy_fast_lua_find_status", function()
+	print("[Meowy Client Pack] fast file.Find: " .. meowy.FastLuaFindState())
 end)
 
 -- At every map load the game registers all ~400 custom font files again, and
@@ -2361,6 +2873,28 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	SetFunction(LUA, "MenuSettingsWrite", Guarded<MenuSettingsWrite>);
 	SetFunction(LUA, "ResilienceSession", Guarded<ResilienceSession>);
 	SetFunction(LUA, "ResilienceCrashedSession", Guarded<ResilienceCrashedSession>);
+	SetFunction(LUA, "PrewarmBeginJoin", Guarded<PrewarmBeginJoin>);
+	SetFunction(LUA, "PrewarmEndJoin", Guarded<PrewarmEndJoin>);
+	SetFunction(LUA, "PrewarmRecorded", Guarded<PrewarmRecorded>);
+	SetFunction(LUA, "PrewarmStart", Guarded<PrewarmStart>);
+	SetFunction(LUA, "PrewarmWorkshop", Guarded<PrewarmWorkshop>);
+	SetFunction(LUA, "WorkshopItemState", Guarded<WorkshopItemState>);
+	SetFunction(LUA, "PrewarmCancel", Guarded<PrewarmCancel>);
+	SetFunction(LUA, "ConsoleCaptureStart", Guarded<ConsoleCaptureStart>);
+	SetFunction(LUA, "ConsoleRead", Guarded<ConsoleRead>);
+	SetFunction(LUA, "ConsoleState", Guarded<ConsoleState>);
+	SetFunction(LUA, "ConsoleRun", Guarded<ConsoleRun>);
+	SetFunction(LUA, "ConsoleFileRead", Guarded<ConsoleFileRead>);
+	SetFunction(LUA, "ConsoleFileWrite", Guarded<ConsoleFileWrite>);
+	SetFunction(LUA, "MaskPaths", Guarded<MaskPathsLua>);
+	SetFunction(LUA, "ConsoleSaveLog", Guarded<ConsoleSaveLog>);
+	SetFunction(LUA, "ServerQueryStart", Guarded<ServerQueryStart>);
+	SetFunction(LUA, "ServerQueryTake", Guarded<ServerQueryTake>);
+	SetFunction(LUA, "ServerQueryCancel", Guarded<ServerQueryCancel>);
+	SetFunction(LUA, "ServerQueryState", Guarded<ServerQueryState>);
+	SetFunction(LUA, "PrewarmState", Guarded<PrewarmState>);
+	SetFunction(LUA, "PakCache", Guarded<PakCache>);
+	SetFunction(LUA, "PakCacheState", Guarded<PakCacheState>);
 	SetFunction(LUA, "LastServerMark", Guarded<LastServerMark>);
 	SetFunction(LUA, "LastServer", Guarded<LastServer>);
 	SetFunction(LUA, "LastServerForget", Guarded<LastServerForget>);
@@ -2369,6 +2903,8 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	SetFunction(LUA, "FastLuaLookup", Guarded<FastLuaLookup>);
 	SetFunction(LUA, "FastLuaLookupState", Guarded<FastLuaLookupState>);
 	SetFunction(LUA, "FastLuaLookupNewJoin", Guarded<FastLuaLookupNewJoin>);
+	SetFunction(LUA, "FastLuaFind", Guarded<FastLuaFind>);
+	SetFunction(LUA, "FastLuaFindState", Guarded<FastLuaFindState>);
 	SetFunction(LUA, "FastFonts", Guarded<FastFonts>);
 	SetFunction(LUA, "FastFontsState", Guarded<FastFontsState>);
 	SetFunction(LUA, "FastFileChecks", Guarded<FastFileChecks>);

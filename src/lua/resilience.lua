@@ -70,14 +70,54 @@ local function setHome(on)
 	RunConsoleCommand("meowy_menu_home", on and "1" or "0")
 end
 
--- Our own main menu page (menu_page.lua), a preview: off unless turned on.
-local menuSetting = meowy.Setting and meowy.Setting("meowy_menu", "0",
-	"Meowy Client Pack: our own main menu page instead of Garry's Mod's (preview; 0 = Garry's Mod's)")
+-- Our own home screen (menu_page.lua), on by default since it left preview.
+local menuSetting = meowy.Setting and meowy.Setting("meowy_menu", "1",
+	"Meowy Client Pack: the Meowy home screen instead of Garry's Mod's main screen (0 = Garry's Mod's)")
 local function menuOn() return menuSetting ~= nil and menuSetting:GetBool() end
 local function setMenu(on)
 	-- Through the console: Garry's Mod refuses ConVar:SetBool on these menu convars.
 	RunConsoleCommand("meowy_menu", on and "1" or "0")
 end
+-- Every setting is saved as soon as any one changes, so while the home screen
+-- was a preview (off by default) most players got "meowy_menu=0" written
+-- without choosing it. Once, when it left preview: on, whatever was saved.
+local menuVersion = meowy.Setting and meowy.Setting("meowy_menu_version", "0",
+	"Meowy Client Pack: internal (which home screen default has been applied)")
+if menuVersion and menuVersion:GetString() ~= "2" then
+	RunConsoleCommand("meowy_menu", "1")
+	RunConsoleCommand("meowy_menu_version", "2")
+end
+-- The menu page's text size (menu_page.lua): "0" auto, or a percentage.
+local menuScaleSetting = meowy.Setting and meowy.Setting("meowy_menu_scale", "0",
+	"Meowy Client Pack: the main menu's size in percent (0 = auto: 100% at 1080p, 133% at 1440p, 200% at 4K)")
+local function menuScale() return menuScaleSetting and menuScaleSetting:GetString() or "0" end
+local function setMenuScale(v)
+	-- Through the console: Garry's Mod refuses ConVar setters on these menu convars.
+	RunConsoleCommand("meowy_menu_scale", tostring(v))
+end
+
+-- Join pre-warm (home.lua, prewarm.h): read a server's files into memory
+-- before you join it.
+local prewarmSetting = meowy.Setting and meowy.Setting("meowy_prewarm", "1",
+	"Meowy Client Pack: read a server's files into memory when you're about to join it (0 = off)")
+local function prewarmOn() return prewarmSetting == nil or prewarmSetting:GetBool() end
+-- A map's compressed files decompressed once per join, not on every read (pak_cache.h).
+local pakCacheSetting = meowy.Setting and meowy.Setting("meowy_pak_cache", "1",
+	"Meowy Client Pack: decompress a map's compressed files once while a join loads, not on every read (0 = Garry's Mod's way)")
+local function pakCacheOn() return pakCacheSetting == nil or pakCacheSetting:GetBool() end
+local function setPrewarm(on)
+	RunConsoleCommand("meowy_prewarm", on and "1" or "0")
+	if not on and meowy.PrewarmCancel then meowy.PrewarmCancel() end
+end
+-- ...and bring its Workshop items up to date first (home.lua): a download, so
+-- its own switch.
+local prewarmWorkshopSetting = meowy.Setting and meowy.Setting("meowy_prewarm_workshop", "1",
+	"Meowy Client Pack: update a server's Workshop items when you're about to join it (0 = off)")
+local function prewarmWorkshopOn() return prewarmWorkshopSetting == nil or prewarmWorkshopSetting:GetBool() end
+local function setPrewarmWorkshop(on)
+	RunConsoleCommand("meowy_prewarm_workshop", on and "1" or "0")
+end
+
 -- Set by menu_page.lua while our home shows on the stock page (its list, with
 -- the settings entry, is hidden then).
 local menuPage = { ours = false }
@@ -163,6 +203,62 @@ local function openSettings(startTab)
 			label.gapBefore = S(22)
 			blocks[#blocks + 1] = label
 		end
+		if meowy.PrewarmStart then
+			local pt = UI.Toggle(nil, "Get servers ready before you join",
+				"When you're about to join a server you've played on (it's your Continue, or you point at it on the main "
+				.. "menu), its big files (Workshop content, the map) are read into memory in the background, so a join "
+				.. "after a restart doesn't wait on the disk. SSDs only, up to 4 GB, and it stops the moment a join starts.",
+				prewarmOn(), function(on) setPrewarm(on) end)
+			pt.meowyToggle = "prewarm"
+			pt.gapBefore = S(10)
+			blocks[#blocks + 1] = pt
+		end
+		if meowy.PrewarmWorkshop then
+			local wt = UI.Toggle(nil, "Update a server's Workshop items before you join",
+				"At the same moments, Steam is asked whether that server's Workshop items (the ones your last join there "
+				.. "used) are up to date. Up-to-date items cost nothing; an update or a missing item downloads on the main "
+				.. "menu instead of on the loading screen. Only for servers you've joined before.",
+				prewarmWorkshopOn(), function(on) setPrewarmWorkshop(on) end)
+			wt.meowyToggle = "prewarm_workshop"
+			blocks[#blocks + 1] = wt
+		end
+		-- Find servers, faster (module.cpp's server list chunk owns the setting).
+		local fastList = GetConVar and GetConVar("meowy_fast_serverlist")
+		if fastList and meowy.ServerQueryStart then
+			local ft = UI.Toggle(nil, "Find servers: only servers with players",
+				"Steam leaves out empty servers before anything is pinged, so the Internet list is complete in about 20 s "
+				.. "instead of about 90 s. Off lists every server, the game's way. Favourites, History and LAN are always complete.",
+				fastList:GetBool(), function(on) RunConsoleCommand("meowy_fast_serverlist", on and "1" or "0") end)
+			ft.meowyToggle = "fast_serverlist"
+			blocks[#blocks + 1] = ft
+		end
+		-- The console key (console.lua owns the setting).
+		local consoleKey = GetConVar and GetConVar("meowy_console_key")
+		if consoleKey and meowy.ConsoleRun then
+			local ck = UI.Toggle(nil, "The console key opens the Meowy console",
+				"The Meowy console: search, warnings and errors only, repeats collapsed, copy, and commands run as "
+				.. "typed. Off, the key opens Garry's Mod's console; meowy_console still opens this one.",
+				consoleKey:GetBool(), function(on) RunConsoleCommand("meowy_console_key", on and "1" or "0") end)
+			ck.meowyToggle = "console_key"
+			blocks[#blocks + 1] = ck
+		end
+		if UI.Choice and menuScaleSetting then
+			local options = {}
+			for _, pct in ipairs({ 0, 100, 125, 150, 175, 200 }) do
+				options[#options + 1] = { pct == 0 and "Auto" or (pct .. "%"), tostring(pct) }
+			end
+			local current = menuScale()
+			local known = false
+			for _, o in ipairs(options) do if o[2] == current then known = true end end
+			local sc = UI.Choice(nil, "Menu text size",
+				"Garry's Mod draws its menu at the same pixel size on any screen, so it's small at 1440p and tiny at 4K. "
+				.. "Auto is 100% at 1080p, 133% at 1440p and 200% at 4K. Applies to the main and Escape menus, "
+				.. "including Find servers and the other screens.",
+				options, known and current or "0", function(v) setMenuScale(v) end)
+			sc.meowyChoice = "menu_scale"
+			sc.gapBefore = S(10)
+			blocks[#blocks + 1] = sc
+		end
 		if meowy.LastServer then
 			local ct = UI.Toggle(nil, "Continue where you left off",
 				"Shows Continue in the main menu with the last server you played on, any server. One click joins it; "
@@ -191,10 +287,11 @@ local function openSettings(startTab)
 			blocks[#blocks + 1] = et
 		end
 		if meowy.MenuShellJs then
-			local mt = UI.Toggle(nil, "Meowy home screen (preview)",
-				"Our home in place of Garry's Mod's main screen: Continue, your servers with search, and the usual "
-				.. "links (servers, addons and the rest are Garry's Mod's own screens, as before). \"Use Garry's Mod's "
-				.. "menu\" at the bottom, or turning this off, puts the usual main screen back.",
+			local mt = UI.Toggle(nil, "Meowy home screen",
+				"Our home in place of Garry's Mod's main screen: Continue, your servers, one search for servers, maps, "
+				.. "addons and settings, Garry's Mod's news, and the usual links (servers, addons and the rest are Garry's "
+				.. "Mod's own screens, as before). \"Use Garry's Mod's menu\" at the bottom, or turning this off, puts the "
+				.. "usual main screen back.",
 				menuOn(), function(on) setMenu(on) end)
 			mt.meowyToggle = "menu_page"
 			mt.gapBefore = S(10)

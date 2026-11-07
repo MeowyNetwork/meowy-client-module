@@ -26,6 +26,7 @@ namespace
 
 #ifdef _WIN32
 #include "pe_image.h"
+#include "prewarm.h"
 
 namespace
 {
@@ -154,7 +155,8 @@ namespace
 
 	void* Fopen(void* self, const char* name, const char* options, uintptr_t flags, int64_t* size)
 	{
-		if (g_active.load(std::memory_order_relaxed))
+		const bool active = g_active.load(std::memory_order_relaxed);
+		if (active)
 		{
 			++g_opens;
 			std::string dir, file;
@@ -176,7 +178,13 @@ namespace
 			}
 			++g_passed;
 		}
-		return g_fopen(self, name, options, flags, size);
+		void* file = g_fopen(self, name, options, flags, size);
+		// The join's big files, for warming them before the next join to this
+		// server, and its Workshop items (prewarm.h). FS_fopen gives back the
+		// file's size; prewarm keeps only what it needs.
+		if (active && file && ReadsOnly(options))
+			prewarm::Opened(name, size ? *size : -1);
+		return file;
 	}
 
 #ifdef _WIN64

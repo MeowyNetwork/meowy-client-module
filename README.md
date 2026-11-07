@@ -83,7 +83,7 @@ the game closes while the pack is starting, the next start skips it once by itse
     is used again only if the folder hasn't changed since.
   - Turn it off with `meowy_fast_file_checks 0`. `meowy_fast_file_checks_status` shows the counts.
 - The pack's own settings (`meowy_loadingscreen`, `meowy_data_sandbox`, `meowy_honest_serverlist`,
-  `meowy_serverlist_reports`, `meowy_fast_lua_lookup`, `meowy_fast_fonts`,
+  `meowy_serverlist_reports`, `meowy_fast_lua_lookup`, `meowy_fast_lua_find`, `meowy_fast_fonts`,
   `meowy_skipmatreload_anyserver`) are kept in `%LOCALAPPDATA%\MeowyClientPack\menu_settings.txt`.
   The game doesn't save the main menu's settings itself, so before this they were back to their
   defaults at every start.
@@ -98,6 +98,21 @@ the game closes while the pack is starting, the next start skips it once by itse
     otherwise the game's own search runs.
   - Turn it off with `meowy_fast_lua_lookup 0` (it switches back at your next disconnect).
     `meowy_fast_lua_lookup_status` shows how many files it found.
+- With "Start with the game" on, `file.Find` on a server's Lua is 35–90 times faster, on any server.
+  Addon loaders call it a few hundred times while a server's Lua starts. For every search folder,
+  Garry's Mod copies each name in the server's file list into a new string, tests it against the
+  pattern and throws it away: 13–17 ms per call, even for a folder that doesn't exist. Only names that
+  start with the pattern's fixed part (everything before the first `*` or `?`) can pass that test. So
+  the pack hands the game's loop just those names, from a sorted copy of the list, in the same order,
+  and the game's own code does the rest.
+  - Measured on our dev server with its own Lua-find cache switched off (as on any other server): a
+    call went from 14.4 to 0.38 ms, and a join from 21.7–22.1 s to 13.1–15.5 s. The results of 30
+    patterns were identical byte for byte, with and without it.
+  - It changes 31 + 34 bytes (64-bit) or 23 + 29 bytes (32-bit) of `client.dll` in memory. It does
+    nothing unless the loop, its wildcard test and the matcher behind it are exactly the expected
+    code and the list is the engine's own; otherwise the game's own loop runs.
+  - Turn it off with `meowy_fast_lua_find 0` (it switches at your next disconnect).
+    `meowy_fast_lua_find_status` shows the walks and the names skipped.
 - With "Start with the game" on, the font pass on every join is about twice as fast, on any
   server. At each map load Garry's Mod registers all ~400 custom font files again, and loads
   and frees `gdi32.dll` (through the Steam overlay) for every single one, although it's loaded
@@ -106,6 +121,36 @@ the game closes while the pack is starting, the next start skips it once by itse
   - It changes two entries in `vguimatsurface.dll`'s import table, in memory. No code changes.
   - Turn it off with `meowy_fast_fonts 0`. `meowy_fast_fonts_status` shows the loads saved and
     how long the last font pass took.
+- With "Start with the game" on, the pack gets a server ready before you join, on any server. A join
+  reads the same big files every time (the map, its content, the biggest addons). If Windows has thrown
+  them out of memory since, it reads them from disk while you wait on the loading screen. So:
+  - **While you join,** the pack writes down which files of 1 MB or more the game opens, with their sizes
+    (`%LOCALAPPDATA%\MeowyClientPack\joins\<address>.txt`, the last 60 servers). Nothing about the files
+    themselves is kept.
+  - **When you're likely to join that server again,** it reads them into Windows' memory in the background,
+    at low priority: 3 s after the menu shows your Continue server, or when you hold the mouse over a
+    server for 0.4 s on the home card or home screen. It reads at most 4 GB, stops the moment a join
+    starts, and only on an SSD (on a hard drive the reads would get in the way of everything else).
+  - Measured on our dev server, from a fresh start of the game with Windows' memory cleared: in game after
+    46.2 s without it and 30.0 s with it. It had read 1,516 MB in 42 files, in 2.7 s, before the join.
+  - It reads files only. Nothing is changed, and the game opens the same files as before.
+  - It needs the fast file checks (`meowy_fast_file_checks`, on by default) to see which files a join
+    opens. Turn it off in Meowy settings ("Get servers ready before you join") or with `meowy_prewarm 0`.
+    `meowy_prewarm_status` shows what it has written down and read.
+  - **Workshop items, too.** The same join notes which Workshop items the server had you mount (from the
+    `.gma` files it opens, any size). At the same moments, the menu checks them, and an item that needs it
+    downloads or unpacks on the main menu instead of on the loading screen.
+    - **What needs it:** an item Steam says isn't installed, has an update or is mid-download (read
+      through the game's own `steam_api`), a legacy item whose unpacked copy in `cache\workshop` is gone,
+      or an item whose Workshop version (`steamworks.FileInfo`) is newer than the one installed.
+    - **What happens:** only those go to the menu's own `steamworks.DownloadUGC`, one at a time, so Garry's
+      Mod's download box shows only for real work. It stops asking when a join starts; anything already
+      downloading carries on, and the join uses it. Only for servers you've joined before.
+    - **Measured** on our dev server, fresh start, with one 94 MB legacy item's unpacked copy deleted: the
+      loading screen's Workshop step took 4.7 s without the check and 2.1 s with it (it unpacked the item
+      at the menu; checking all 29 items took 3.0 s). An update day's downloads move the same way.
+    - **Switch:** its own, in Meowy settings ("Update a server's Workshop items before you join",
+      `meowy_prewarm_workshop`, on by default). `meowy_prewarm_status` shows the last check.
 - With "Start with the game" on, joins to a Meowy Network server get the pack's own loading
   screen instead of Garry's Mod's. It's a separate window over the game, drawn on its own thread,
   so it keeps moving while the game is busy (Garry's Mod's own screen freezes for most of a join).
@@ -146,6 +191,64 @@ the game closes while the pack is starting, the next start skips it once by itse
   - `meowy_honest_serverlist 0` turns the whole check off; `meowy_serverlist_reports 0` keeps the
     checks but stops the reports. Our own servers are never checked. What each report did (counts and
     the HTTP result, never SteamIDs) goes to `%LOCALAPPDATA%\MeowyClientPack\serverlist.log`.
+- **The Meowy console.** The console key (or `meowy_console`) opens the game's console in the pack's look, at
+  the main menu or over the game:
+  - **Lines:** the last 50,000 console lines with their time and colour, kept from the moment the game
+    starts. Warnings show in amber and errors in red, and text that isn't valid UTF-8 is cleaned.
+  - **Finding things:**
+    - **Search** as you type (Ctrl+F) shows only the lines with it. With "Mark, don't filter", every line
+      stays and the matches are marked; Enter (or F3) goes to the next, Shift+Enter to the previous.
+      "Lua pattern" searches with a Lua pattern.
+    - **Chips** for errors, warnings, network (connects, drops, timeouts), Workshop and the pack's own lines
+      show how many there are of each and narrow the log to the ones picked.
+    - **Collapse repeats** folds the same line into a count, also when it comes back within a few lines and
+      10 seconds, so spam ("x512 in 10 s") doesn't bury the rest.
+  - **Dividers** mark where a join starts, where you're in game and where you leave. While you're scrolled up,
+    a pill says how many lines came in below and takes you back down.
+  - **Copying:** drag over lines (Shift+click extends) and Ctrl+C or Copy copies them; Copy with nothing
+    selected takes everything shown. Right-click a line to copy it, search for it, show only lines like it,
+    or, for a Lua file, ask the game which addon it's from (`whereis`).
+  - **Typing:** as you type a command's name, the matches show with their current values and what they do
+    (from the engine's own command list, read once in the background), and Tab completes. Once a setting is
+    typed, its value, default, flags and help show above the line, with "Reset to default". Ctrl+R searches
+    what you typed before, and that history is kept between starts.
+  - **Pinned commands:** "+ Pin a command" keeps what's typed (or the last command) as a one-click chip;
+    right-click a chip to unpin it. Kept between starts.
+  - **Commands:** a typed line runs exactly as if typed into the game's console, through the engine.
+    The menu's `RunConsoleCommand` refuses some commands, the console doesn't. Up and Down go through what
+    you typed. The commands for the game's console window act on this one: `clear` empties it (what ran
+    before it in the line goes, what runs after stays), `showconsole` leaves it open, and `hideconsole` and
+    `toggleconsole` close it. `con_filter_enable 1` with `con_filter_text` / `con_filter_text_out` filters
+    its lines as it does the game's console ("con_filter on" in the header).
+  - **Window:** drag it by the title, resize it from the corner; the console key or Esc closes it. The header
+    shows the frame rate and, in game, ping, loss and the server. Save writes the lines shown to
+    `%LOCALAPPDATA%\MeowyClientPack\logs\console_<date>.txt` (paths hidden; the newest 20 kept).
+  - **Errors tab:** every Lua error since the game started, grouped by the addon it came from (with its
+    Workshop ID and when it was last updated): the error, how often, first and last time, the realm, the
+    server you were on, and the stack.
+    - **Copy report** puts a ready-made bug report on the clipboard, with paths hidden.
+    - **Open on Workshop** goes to the addon. At the main menu, **Disable addon** (asked first) turns it off.
+  - **Error badge:** in place of Garry's Mod's error notices, a small pill says how many errors and from
+    which addon. Garry's Mod's other two notices (a serious problem; the pause menu blocked) show the same
+    way. `meowy_console_badge 0` brings Garry's Mod's notices back.
+  - **Overlay:** `meowy_console_overlay 1` shows the newest warnings and errors over the game (2: every line),
+    see-through, click-through and fading; off (0) by default.
+  - **The console key:** when Garry's Mod's console shows, it's hidden at once and this one opens. Off in Meowy
+    settings ("The console key opens the Meowy console", `meowy_console_key 0`) for the game's console.
+  - It reads tier0's output through its own listener (the logging system or the spew function, whichever
+    this build has). `meowy_console_status` says which, and how many lines are kept.
+- **Find servers, faster.** Find servers' Internet list comes straight from Steam, and Steam's master server
+  leaves out empty servers before anything is pinged. Steam pings at most about 5,000 servers a minute, so
+  the full list of ~4,800 took 88 s here. The servers with players (964) are complete in 20 s, and the first
+  hundred show within a second.
+  - Each server reaches Garry's Mod's own page through the game's own code, with the same values the game's
+    query gives (its tags read the same way). So the gamemode list, categories, blacklist and the count
+    checks above work as before. Favourites, History and LAN are the game's own, complete lists.
+  - It reads Steam's server list through the game's own `steam_api`, `ISteamMatchmakingServers`.
+  - Off in Meowy settings ("Find servers: only servers with players") or with `meowy_fast_serverlist 0`
+    for every server, the game's way. `meowy_fast_serverlist_status` shows the lists open.
+  - **A Friends tab**, after Local Network: the servers your Steam friends are on (the game's own friends
+    list: servers only, no names), shown like the other tabs. It's there with the home screen on or off.
 - Its only other network traffic is the loading page and its data, from meowynetwork.com, through WebView2. It
   writes only in `%LOCALAPPDATA%\MeowyClientPack` (`boot.lock` and `recover.lock` for a moment at start-up; for the
   loading screen `join_times.txt`, how long each stage of your last join took, `last_join.txt`,
@@ -245,24 +348,59 @@ the game closes while the pack is starting, the next start skips it once by itse
   - **Safety:** names are only ever shown as text; a click sends the page's row number, and the
     address comes from the pack's own list.
   - **Turning it off:** in Meowy settings, or `meowy_menu_home 0`.
-- **Meowy home screen (preview, off by default).** `meowy_menu 1`, or "Meowy home screen (preview)" in
-  Meowy settings, puts the pack's home in place of Garry's Mod's main screen. It has:
-  - **Continue**, and your servers with search, as on the card below;
-  - **the usual links:** Find servers, Start new game, Addons, Dupes, Saves and Demos are Garry's Mod's own
-    screens. Options, Meowy settings and Quit work as usual, and Garry's Mod's bottom bar (Problems,
-    games, language, gamemode) stays.
+- **Menu text size.** Garry's Mod draws its menu at the same pixel size on any screen, so it's small at 1440p
+  and tiny at 4K. The pack zooms the whole menu page: Auto is the screen height over 1080, so 100% at
+  1080p, 133% at 1440p and 200% at 4K. Or pick 100–200% in Meowy settings (`meowy_menu_scale`, 0 =
+  auto). It covers the main and Escape menus and every screen in them (Find servers, New game,
+  Addons and the rest). The pack's own windows already scale with the screen.
+- **Meowy home screen (on by default).** The pack's home in place of Garry's Mod's main screen ("Meowy home
+  screen" in Meowy settings, `meowy_menu`). It has:
+  - **Continue**, and your servers, as on the card below;
+  - **one search box** (`/` to get to it) for your servers, installed maps, subscribed addons and settings.
+    A map opens Start new game with that map chosen, an addon opens Addons, and a setting (by its name or
+    what it covers, like "volume") opens Options or Meowy settings;
+  - **Garry's Mod's news**, the latest three, from its own feed, opened the way Garry's Mod opens them;
+  - **Find servers, the pack's own:** everything Garry's Mod's server browser does, faster, and more.
+    - **Lists:** Internet (straight from Steam, as in Find servers above: the servers with players
+      first, then the empty ones), Favourites, History (the last visit first), Local network and
+      Friends (servers your Steam friends are on). Each list is kept while you look at another.
+    - **Gamemodes first** (Internet): each with its players and servers, sorted by players, servers or
+      name, filtered by category (click once: only it, twice: hide it), with a search, **Install** for
+      a gamemode you don't have, and **Every gamemode** for all the servers in one list.
+    - **Servers in columns:** name, map, players, ping and ranking (and the gamemode in a list of
+      every gamemode). Click a header to sort by it, again to turn it around; the default is Garry's
+      Mod's own ranking. Rows show the favourite star (a click adds or removes it), region flag,
+      password, an outdated or newer version, your last visit, missing maps in red, and the honest
+      server list's `VERIFIED` / `FAKE - 12 real` / `UNVERIFIED` (a fake shows its real count).
+    - **Filters,** kept between starts: not full, has players, no password, not outdated, players from
+      and to, ping at most, and regions (each flag: only these, never these, or either).
+    - **A server picked** (a click): its details, the map's picture if you have it, and its players
+      with their score and time, asked again every 10 seconds (the honest list's own query, which
+      also reads lists some servers hide from Garry's Mod's). **Join**, its password, **Join when a
+      slot opens** for a full one (asked every 5 seconds), the favourite, **Copy address** and the
+      gamemode's **Workshop page**.
+    - A double-click or Enter joins, right-click copies the address, Up and Down move, Esc goes back.
+      Favourites has **Add a server**: an address, with or without its port. Servers on Garry's Mod's
+      blacklist are left out, as its own browser leaves them out. "Garry's Mod's list" opens the
+      game's own browser.
+  - **the usual links:** Start new game, Addons, Dupes, Saves and Demos are Garry's Mod's own screens.
+    Options, Meowy settings and Quit work as usual, and Garry's Mod's bottom bar (Problems, games,
+    language, gamemode) stays.
 
   How it works:
   - **Inside Garry's Mod's own menu page:** nothing is reloaded. While it's on, a style rule hides the
     main screen's list and news, the pack's home takes their place, and the links are the page's own
-    screens, so going there and back is instant.
+    screens, so going there and back is instant. When the page has just loaded (the game starting, a
+    language change), the home goes in on the next frame, so Garry's Mod's own list doesn't flash first.
   - **In game:** the Escape menu is Garry's Mod's, with the server card.
   - **What it can do:** every server's text is shown as text. The home asks the pack for anything only
     through `meowy.post(kind, value)`, a fixed list of message types (join a row, Continue, Options,
     Meowy settings, Quit), each with its value checked.
 
   **Use Garry's Mod's menu** at the bottom switches back for the rest of that start; `meowy_menu 0`
-  turns it off. `meowy_menu_status` says which is showing, and why.
+  turns it off. `meowy_menu_status` says which is showing, and why. While it was a preview most players got
+  `meowy_menu=0` saved without choosing it (every setting is saved when any one changes), so it's turned on
+  once for everyone when this version first starts; turning it off after that sticks.
 - **Server card in the Escape menu.** In game, the same spot in the Escape menu shows the server you're
   on, any server, plus three quick settings:
   - **The server:** its name, map and players (its own answer, asked at most every 30 seconds while
@@ -374,8 +512,10 @@ notification rules), `notify_manual` (a real notification on this PC; see `tests
 `timeline_smoke` (the Steam Timeline marker rules), `lua_lookup_smoke [GarrysMod folder] [stub file]`
 (the fast Lua lookup gives the game's answers on a fake string table, and finds its patch site in the
 installed `client.dll` of the same bitness) `font_loads_smoke <scratch folder>` (the font pass's
-gdi32 loads, on the test's own imports and a real font file) and `fs_cache_smoke <scratch folder>` (which
-paths the missing-file cache answers for, and its answers against real folders).
+gdi32 loads, on the test's own imports and a real font file), `fs_cache_smoke <scratch folder>` (which
+paths the missing-file cache answers for, and its answers against real folders), `prewarm_smoke <scratch
+folder>` (the join pre-warm's file lists, budget and cancelling) and `lua_find_smoke` (the fast `file.Find`'s
+prefix rules and its patch stubs on a copy of the game's code).
 
 Staying connected's and the PC doctor's menu Lua is in `src/lua/` (built into the DLL as resources). Their rules and menu
 glue have offline tests, run by CI with Lua 5.1:
