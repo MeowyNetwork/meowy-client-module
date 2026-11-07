@@ -47,7 +47,7 @@ local function world(opts)
 	-- Globals the menu state doesn't have: touching one fails the test, the way
 	-- it fails in game ("attempt to call global 'RealTime' (a nil value)").
 	local NOT_IN_MENU = { RealTime = true, CurTime = true, FrameTime = true, RealFrameTime = true,
-		LocalPlayer = true, player = true, ents = true, net = true, timer = true, engine = true,
+		LocalPlayer = true, player = true, ents = true, net = true, timer = true,
 		TEXT_ALIGN_LEFT = true, TEXT_ALIGN_CENTER = true, TEXT_ALIGN_RIGHT = true, TEXT_ALIGN_TOP = true, TEXT_ALIGN_BOTTOM = true }
 	local env = setmetatable({}, { __index = function(_, k)
 		if NOT_IN_MENU[k] then error("menu state has no global '" .. k .. "'", 2) end
@@ -114,7 +114,10 @@ local function world(opts)
 		-- Menu settings (module.cpp's meowy.Setting): a convar-like value.
 		Setting = function(name, default)
 			w.convars = w.convars or {}
-			if w.convars[name] == nil then w.convars[name] = (opts.convars and opts.convars[name]) or default end
+			-- Unless a test says otherwise, a player who chose Garry's Mod's main
+			-- screen after the home screen left preview (opts.fresh: nothing saved).
+			local saved = not opts.fresh and ({ meowy_menu = "0", meowy_menu_version = "2" })[name] or nil
+			if w.convars[name] == nil then w.convars[name] = (opts.convars and opts.convars[name]) or saved or default end
 			-- As in game: SetBool on these is refused ("not created by Lua"); the
 			-- console sets them (RunConsoleCommand below).
 			return {
@@ -203,6 +206,8 @@ local function world(opts)
 	-- The game's files: everything there but w.missing[path].
 	env.file = { Exists = function(p, where) w.existsAsked = where return not (w.missing or {})[p] end }
 	env.istable = function(v) return type(v) == "table" end
+	-- The menu state's engine library: your subscribed addons (w.addons).
+	env.engine = { GetAddons = function() return w.addons or {} end }
 	w.think = function() for _, id in ipairs(order) do thinks[id]() end end
 	env.hook.Run = function(event) w.hookRuns = w.hookRuns or {} w.hookRuns[#w.hookRuns + 1] = event end
 	-- What Garry's Mod's menu Lua has (mainmenu.lua), for refilling its page.
@@ -235,6 +240,7 @@ local function world(opts)
 			w.jsCalls = w.jsCalls + 1
 			if js:find("window.MeowyHome(", 1, true) then w.homeJS = js w.homeCalls = (w.homeCalls or 0) + 1
 			elseif js:find("window.MeowyEsc(", 1, true) then w.escJS = js
+			elseif js:find("window.MeowyAddons", 1, true) then w.addonsJS = js w.addonsSends = (w.addonsSends or 0) + 1
 			elseif js:find("window.MeowyShell(", 1, true) then w.shellJS = js w.shellSends = (w.shellSends or 0) + 1
 			elseif js:find("style.zoom", 1, true) then w.zoomCalls = w.zoomCalls or {} w.zoomCalls[#w.zoomCalls + 1] = js
 			else w.js = js end
@@ -1183,7 +1189,7 @@ check("escape: settings window paints", w.paintAll(), "")
 local function shellState(w) return w.shellJS and w.shellJS:match("window%.MeowyShell%((%a+)%);\n$") end
 w = world({ settings = ON, menu = true })
 w.run(3)
-check("shell: off by default, nothing sent", w.shellJS, nil)
+check("shell: turned off, nothing sent", w.shellJS, nil)
 check("shell: the bridge is on the browser anyway", w.bridges, 1)
 check("shell: a post while it's off is ignored", (function() w.post("quit") return w.gameUI end)(), nil)
 check("shell: the stock page is never reloaded", w.loads, nil)
@@ -1446,6 +1452,35 @@ w.run(6)
 check("files off: Workshop items still checked", #w.ugc, 1)
 check("files off: nothing warmed", w.pwStarts, nil)
 
+-- The home screen left preview: on by default, and once for everyone (a saved
+-- "0" from the preview days was the old default, not a choice).
+w = world({ settings = ON, menu = true, fresh = true })
+w.run(1)
+check("home default: on with nothing saved", shellState(w), "true")
+check("home default: the change marked as applied", w.convars.meowy_menu_version, "2")
+w = world({ settings = ON, menu = true, fresh = true, convars = { meowy_menu = "0" } })
+w.run(1)
+check("home default: a preview-days 0 turned on once", w.convars.meowy_menu, "1")
+check("home default: and shown", shellState(w), "true")
+w = world({ settings = ON, menu = true })   -- turned off after release
+w.run(1)
+check("home default: a choice made since is kept", w.convars.meowy_menu .. "/" .. tostring(shellState(w)), "0/nil")
+-- Its search gets your subscribed addons: sent when they change or the page reloads.
+w = world({ settings = ON, menu = true, convars = PAGE_ON })
+w.addons = { { title = "Wiremod", wsid = "160250458", mounted = true }, { title = "<b>Bad</b>\"", wsid = "1", mounted = false }, { title = "" } }
+w.run(1)
+check("addons: sent to the page", w.addonsJS ~= nil and w.addonsJS:find("Wiremod", 1, true) ~= nil, true)
+check("addons: a quote in a title escaped", (w.addonsJS or ""):find("Bad", 1, true) ~= nil and (w.addonsJS or ""):find('</b>"', 1, true) == nil, true)
+check("addons: empty titles left out", (w.addonsJS or ""):find("New one", 1, true) == nil and select(2, (w.addonsJS or ""):gsub("160250458", "")) == 1, true)
+local sendsNow = w.addonsSends or 0
+w.run(15)
+check("addons: not sent again while unchanged", w.addonsSends, sendsNow)
+w.addons[#w.addons + 1] = { title = "New one", wsid = "2", mounted = true }
+w.run(11)
+check("addons: sent again when they change", w.addonsSends, sendsNow + 1)
+w.env.pnlMainMenu.HTML.OnDocumentReady(w.env.pnlMainMenu.HTML, "asset://garrysmod/html/menu.html")
+w.run(1.1)
+check("addons: sent again after the page reloads", w.addonsSends, sendsNow + 2)
 -- Find servers, faster: its switch in settings (the setting is module.cpp's).
 w = world({ settings = ON, menu = true, engineConVars = true })
 w.cvars.meowy_fast_serverlist = "1"

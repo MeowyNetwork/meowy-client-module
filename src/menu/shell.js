@@ -1,4 +1,4 @@
-// Meowy home screen (preview; meowy_menu 1): our home inside Garry's Mod's own
+// Meowy home screen (meowy_menu, on by default): our home inside Garry's Mod's own
 // menu page. Nothing is reloaded: the stock main screen's list and news are
 // hidden by a style rule while this is on, our home takes their place, and the
 // links are the page's own routes (#/servers/ and so on), so going there and
@@ -49,7 +49,12 @@
 		['Quit', 'quit', '']
 	];
 	var MAX_MATCHES = 10;
-	var MAX_MAPS = 8, MAX_NEWS = 3;
+	var MAX_MAPS = 8, MAX_NEWS = 3, MAX_ADDONS = 6;
+	// Settings the search finds: [title, where it opens, words it answers to].
+	var SETTINGS = [
+		['Options', 'options', 'options video graphics resolution display audio sound volume voice microphone keyboard keys bindings mouse sensitivity controls multiplayer spray language'],
+		['Meowy settings', 'settings', 'meowy settings pack stay connected reconnect start with the game loading screen continue home screen menu escape server card text size zoom scale pre-warm prewarm workshop find servers players fake counts']
+	];
 
 	var on = false, query = '', selected = 0, rows = [], focused = false;
 
@@ -94,7 +99,7 @@
 		root.id = 'meowy-shell';
 		var nav = node('div', 'ms-nav');
 		nav.appendChild(node('div', 'ms-brand', "Garry's Mod"));
-		nav.appendChild(node('div', 'ms-tag', 'Meowy home (preview)'));
+		nav.appendChild(node('div', 'ms-tag', 'Meowy home'));
 		var cont = node('a', 'ms-link ms-cont');
 		cont.tabIndex = 0;
 		cont.appendChild(node('span', 'ms-ctitle', 'Continue'));
@@ -117,7 +122,7 @@
 		var search = node('input', 'ms-search');
 		search.type = 'text';
 		search.maxLength = 64;
-		search.placeholder = 'Search your servers and maps   ( / )';
+		search.placeholder = 'Search servers, maps, addons, settings   ( / )';
 		search.value = query;
 		search.oninput = function () { query = search.value; selected = 0; lists(); };
 		search.onfocus = function () { focused = true; mark(); };
@@ -253,7 +258,24 @@
 					(function (map, cat) { return function () { pickMap(map, cat); }; })(maps[m][0], maps[m][1]));
 			}
 		}
-		if (q && !rows.length) list.appendChild(node('div', 'ms-note', 'No server or map matches'));
+		// Your subscribed addons (menu_page.lua sends their titles): Addons opens.
+		var addons = q && window.MeowyAddons, shown = 0;
+		for (var a = 0; addons && a < addons.length && shown < MAX_ADDONS; a++) {
+			var ad = addons[a];
+			if (!ad || typeof ad.t !== 'string' || ad.t.toLowerCase().indexOf(q) < 0) continue;
+			if (!shown) list.appendChild(node('div', 'ms-title', 'Addons'));
+			shown++;
+			addRow(list, ad.t, ad.m ? 'Subscribed, on' : 'Subscribed, off', '', !ad.m,
+				function () { location.hash = '#/addons/'; });
+		}
+		// Settings: by their names and what they cover.
+		var setFirst = true;
+		for (var st = 0; q && st < SETTINGS.length; st++) {
+			if ((SETTINGS[st][0] + ' ' + SETTINGS[st][2]).toLowerCase().indexOf(q) < 0) continue;
+			if (setFirst) { list.appendChild(node('div', 'ms-title', 'Settings')); setFirst = false; }
+			addRow(list, SETTINGS[st][0], '', '', false, (function (kind) { return function () { post(kind); }; })(SETTINGS[st][1]));
+		}
+		if (q && !rows.length) list.appendChild(node('div', 'ms-note', 'Nothing matches'));
 		if (selected >= rows.length) selected = rows.length - 1;
 		if (selected < 0) selected = 0;
 		mark();
