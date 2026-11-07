@@ -11,6 +11,7 @@ pub mod servers;
 pub mod line;
 pub mod links;
 pub mod pe;
+pub mod pipe;
 pub mod log;
 pub mod policy;
 pub mod release;

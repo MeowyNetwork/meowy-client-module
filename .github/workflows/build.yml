@@ -165,6 +165,13 @@ jobs:
           cmake --build buildtest32 --config Release --target content_advert_smoke
           ./buildtest32/Release/content_advert_smoke.exe
 
+      - name: Launcher pipe, the pack's end (launcher_pipe_smoke, both bitnesses)
+        run: |
+          cmake --build buildtest --config Release --target launcher_pipe_smoke
+          ./buildtest/Release/launcher_pipe_smoke.exe
+          cmake --build buildtest32 --config Release --target launcher_pipe_smoke
+          ./buildtest32/Release/launcher_pipe_smoke.exe
+
       - name: Font pass gdi32 loads (font_loads_smoke, both bitnesses)
         run: |
           cmake --build buildtest --config Release --target font_loads_smoke

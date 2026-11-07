@@ -52,6 +52,7 @@ add_library(meowy SHARED
 	src/doctor.cpp
 	src/mouse_confine.cpp
 	src/audio_watch.cpp
+	src/launcher_pipe.cpp
 	src/startup_hook.cpp)
 target_include_directories(meowy PRIVATE ${gmod_module_base_SOURCE_DIR}/include)
 if(WIN32)
@@ -287,6 +288,15 @@ if(MEOWY_BUILD_TESTS)
 	if(MSVC)
 		set_property(TARGET content_advert_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 		target_compile_options(content_advert_smoke PRIVATE /W4 /utf-8)
+	endif()
+	# The Meowy Launcher's pipe, the pack's end: what it takes and sends, no game:
+	#   launcher_pipe_smoke
+	add_executable(launcher_pipe_smoke tests/launcher_pipe_smoke.cpp src/launcher_pipe.cpp src/server_gate.cpp src/server_rep.cpp)
+	target_link_libraries(launcher_pipe_smoke PRIVATE winhttp ws2_32 advapi32)
+	target_compile_definitions(launcher_pipe_smoke PRIVATE _CRT_SECURE_NO_WARNINGS)   # server_rep.cpp's _wfopen
+	if(MSVC)
+		set_property(TARGET launcher_pipe_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+		target_compile_options(launcher_pipe_smoke PRIVATE /W4 /utf-8)
 	endif()
 	# The missing-file cache's rules against real folders, no game:
 	#   fs_cache_smoke <scratch folder>

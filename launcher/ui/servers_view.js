@@ -30,6 +30,14 @@ function foundView(s) {
   return { title: s.name || s.address, detail: parts.join(" · "), join: s.password !== 1, up: true };
 }
 
+// What the pack in the running game reports over the pipe (status.pack).
+function packView(s) {
+  const p = s.pack;
+  if (!p) return s.running ? "Running (the pack isn't connected)" : "-";
+  if (p.state === "menu") return "Main menu" + (p.version ? " (pack " + p.version + ")" : "");
+  return (p.state === "joining" ? "Joining " : "Playing on ") + (p.address || "a server");
+}
+
 // The Updates panel (status.updates, core/src/updater.rs Status).
 function updatesView(u) {
   const lines = [];
@@ -41,4 +49,4 @@ function updatesView(u) {
   return lines;
 }
 
-if (typeof module !== "undefined") module.exports = { serverView, foundView, updatesView };
+if (typeof module !== "undefined") module.exports = { serverView, foundView, packView, updatesView };
