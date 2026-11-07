@@ -39,8 +39,74 @@ local function wanted()
 		and IsValid(pnlMainMenu) and pnlMainMenu.Call ~= nil and shellJs() ~= ""
 end
 
+-- Find servers on the home screen (U6): one list straight from Steam
+-- (server_query.h, servers with players), sent to the page in batches as the
+-- servers answer. The addresses stay here; the page joins a row by its number.
+-- Every server string goes to the page as an escaped string and is shown as text.
+local BROWSE_MAX = 6000
+local browse = { gen = 0, rows = {} }
+local function tagValue(tags, key) return (" " .. (tags or "") .. " "):match(" " .. key .. ":(%S+)") end
+
+local function browseStop()
+	if browse.id and meowy.ServerQueryCancel then meowy.ServerQueryCancel(browse.id) end
+	browse.id = nil
+end
+
+local function browseStart()
+	browseStop()
+	browse.gen = browse.gen + 1
+	browse.rows, browse.started = {}, SysTime()
+	browse.id = meowy.ServerQueryStart and meowy.ServerQueryStart("internet", "gamedir", "garrysmod", "hasplayers", "1") or nil
+	if IsValid(pnlMainMenu) and pnlMainMenu.Call then
+		pnlMainMenu:Call("if (window.MeowyBrowse) window.MeowyBrowse.reset(" .. browse.gen .. ", " .. tostring(browse.id ~= nil) .. ");")
+	end
+	log("browse: %s", browse.id and "listing servers with players" or "Steam's server list isn't available")
+end
+
+local function browsePump(now)
+	if not browse.id then return end
+	local list, finished = meowy.ServerQueryTake(browse.id)
+	local batch = {}
+	for _, s in ipairs(istable(list) and list or {}) do
+		if #browse.rows >= BROWSE_MAX then finished = true break end
+		if Home.publicAddress(s.address) then
+			local i = #browse.rows + 1
+			browse.rows[i] = s.address
+			local bots = tonumber(s.bots) or 0
+			batch[#batch + 1] = {
+				i = i, n = Home.clean(s.name), m = Home.clean(s.map),
+				g = Home.clean(tagValue(s.tags, "gm") or s.desc or ""), c = Home.clean(tagValue(s.tags, "gmc") or ""),
+				p = math.max(0, (tonumber(s.players) or 0) - bots), x = math.max(0, (tonumber(s.max) or 0) - bots),
+				ms = tonumber(s.ping) or 0, pw = s.pass == true,
+			}
+		end
+	end
+	if #batch > 0 or finished then
+		pnlMainMenu:Call("if (window.MeowyBrowse) window.MeowyBrowse.add(" .. browse.gen .. ", "
+			.. (#batch > 0 and Home.encode(batch) or "[]") .. ", " .. tostring(finished == true) .. ", "
+			.. string.format("%.1f", now - browse.started) .. ");")
+	end
+	if finished then
+		log("browse: %d servers with players in %.1f s", #browse.rows, now - browse.started)
+		browseStop()
+	end
+end
+
 -- The page's messages: kind -> handler(value). Anything else is ignored.
 local handlers = {
+	browse = function() browseStart() end,
+	browse_stop = function() browseStop() end,
+	browse_join = function(v)
+		local address = browse.rows[math.floor(tonumber(v) or 0)]
+		if not Home.publicAddress(address) then return end
+		log("browse: joining %s", address)
+		browseStop()
+		join(address)
+	end,
+	browse_intent = function(v)
+		local address = browse.rows[math.floor(tonumber(v) or 0)]
+		if Home.publicAddress(address) and MeowyClientPackWarm then MeowyClientPackWarm(address, "pointer on its row in Find servers") end
+	end,
 	join = function(v) MeowyClientPackHomeJoin(tonumber(v)) end,
 	intent = function(v) MeowyClientPackHomeIntent(tonumber(v)) end,
 	-- A quoted key: Garry's Mod's Lua has `continue` as a keyword.
@@ -111,6 +177,9 @@ local function tick()
 	local want = wanted()
 	menuPage.ours = want
 	if not (IsValid(pnlMainMenu) and pnlMainMenu.Call) then return end
+	if browse.id then
+		if want then browsePump(now) else browseStop() end   -- in game or switched off: stop asking Steam
+	end
 
 	-- The page's zoom (meowy_menu_scale), on whatever it shows. Sent again every
 	-- few seconds: the page may have been reloaded (a language change does).
