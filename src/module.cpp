@@ -78,6 +78,7 @@
 #include "crash_reports.h"
 #include "discord_ipc.h"
 #include "engine_patches.h"
+#include "lua_find.h"
 #include "lua_lookup.h"
 #include "font_loads.h"
 #include "fs_cache.h"
@@ -461,7 +462,34 @@ namespace
 	int FastLuaLookupNewJoin(lua_State*)
 	{
 		lua_lookup::NewJoin();
+		lua_find::NewJoin();
 		return 0;
+	}
+
+	// meowy.FastLuaFind(on) -> true | false, reason (lua_find.h). Menu realm
+	// only, like FastLuaLookup.
+	int FastLuaFind(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		if (!LUA->GetBool(1))
+		{
+			lua_find::Uninstall();
+			LUA->PushBool(true);
+			return 1;
+		}
+		std::string why;
+		const bool ok = lua_find::Install(why);
+		LUA->PushBool(ok);
+		if (ok)
+			return 1;
+		LUA->PushString(why.c_str());
+		return 2;
+	}
+
+	int FastLuaFindState(lua_State* L)
+	{
+		L->luabase->PushString(lua_find::Describe().c_str());
+		return 1;
 	}
 
 	// meowy.FastFonts(on) -> true | false, reason (font_loads.h). Menu realm
@@ -2070,6 +2098,23 @@ concommand.Add("meowy_fast_lua_lookup_status", function()
 	print("[Meowy Client Pack] fast Lua lookup: " .. meowy.FastLuaLookupState())
 end)
 
+-- file.Find on "LUA" walks only the string table entries that can match the
+-- pattern instead of copying and testing all of them (lua_find.h): the same
+-- answers, on any server. Re-indexed at each join (FastLuaLookupNewJoin above).
+local fastFind = meowy.Setting("meowy_fast_lua_find", "1",
+	"Meowy Client Pack: let file.Find on a server's Lua skip the files that can't match (0 = the game's own walk)")
+local fastFindApplied
+hook.Add("Think", "MeowyClientPack.FastLuaFind", function()
+	local want = fastFind:GetBool()
+	if want == fastFindApplied or IsInLoading() or IsInGame() then return end
+	fastFindApplied = want
+	local ok, why = meowy.FastLuaFind(want)
+	if not ok then print("[Meowy Client Pack] fast file.Find: " .. tostring(why)) end
+end)
+concommand.Add("meowy_fast_lua_find_status", function()
+	print("[Meowy Client Pack] fast file.Find: " .. meowy.FastLuaFindState())
+end)
+
 -- At every map load the game registers all ~400 custom font files again, and
 -- loads and frees gdi32.dll for each one; the gdi32 that's already loaded is
 -- used instead (font_loads.h).
@@ -2318,6 +2363,8 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	SetFunction(LUA, "FastLuaLookup", Guarded<FastLuaLookup>);
 	SetFunction(LUA, "FastLuaLookupState", Guarded<FastLuaLookupState>);
 	SetFunction(LUA, "FastLuaLookupNewJoin", Guarded<FastLuaLookupNewJoin>);
+	SetFunction(LUA, "FastLuaFind", Guarded<FastLuaFind>);
+	SetFunction(LUA, "FastLuaFindState", Guarded<FastLuaFindState>);
 	SetFunction(LUA, "FastFonts", Guarded<FastFonts>);
 	SetFunction(LUA, "FastFontsState", Guarded<FastFontsState>);
 	SetFunction(LUA, "FastFileChecks", Guarded<FastFileChecks>);
