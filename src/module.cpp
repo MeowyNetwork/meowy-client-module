@@ -35,6 +35,17 @@
 //                                     all of them (on unless turned off; kept in
 //                                     %LOCALAPPDATA%\MeowyClientPack\notify.txt)
 //   meowy.NotifyEnabled()             true | false, or nil, reason
+//   meowy.NotifyCatalogue(body, sig)  true, version | false, reason (1.6+): our
+//                                     signed list of kinds and their words, so
+//                                     kinds added after this release still toast.
+//                                     Taken only if the signature is ours (key
+//                                     compiled in), it parses, and it isn't older
+//                                     than the one already taken; kept in
+//                                     %LOCALAPPDATA%\MeowyClientPack and checked
+//                                     again when read back. Reasons: "only works
+//                                     on Meowy Network servers", "bad signature",
+//                                     "bad catalogue: ...", "older catalogue".
+//                                     See notify_catalogue.h
 //   meowy.TimelineEvent(kind)         true | false, reason: a marker on Steam's
 //                                     game-recording timeline ("Arrested"), whether
 //                                     or not the game is in front. `kind` is one of
@@ -90,6 +101,7 @@
 #include "data_sandbox.h"
 #include "server_rep.h"
 #include "notify.h"
+#include "notify_catalogue.h"
 #include "notify_toast.h"
 #include "timeline.h"
 #include "timeline_steam.h"
@@ -100,6 +112,7 @@
 #include "server_index.h"
 #include "party_steam.h"
 #include "steam_ugc.h"
+#include "content_advert.h"
 #include "resilience.h"
 #include "doctor.h"
 #include "startup_hook.h"
@@ -714,6 +727,114 @@ namespace
 #endif
 	}
 
+	// --- The signed notification catalogue (notify_catalogue.h) ------------------
+
+	bool g_catalogueLoaded = false;
+
+#ifdef _WIN32
+	// One file: the signature's 128 hex digits, a newline, then the body. Read
+	// back through the same checks as one from the server.
+	std::wstring CatalogueFile()
+	{
+		return DataDir() + L"\\notify_catalogue.txt";
+	}
+#endif
+
+	// Verifies, parses and installs a catalogue. True when it's in use (a
+	// re-send of the current version included); else false with *why.
+	bool TakeCatalogue(const std::string& body, const std::string& sig, bool persist, std::string* why)
+	{
+		if (!notify_catalogue::Verify(body, sig))
+		{
+			*why = "bad signature";
+			return false;
+		}
+		notify_catalogue::Catalogue c;
+		const char* parseWhy = nullptr;
+		if (!notify_catalogue::Parse(body, &c, &parseWhy))
+		{
+			*why = std::string("bad catalogue: ") + (parseWhy ? parseWhy : "unknown");
+			return false;
+		}
+		uint64_t current = notify::CatalogueVersion();
+		if (c.version < current)
+		{
+			*why = "older catalogue";
+			return false;
+		}
+		if (c.version == current)
+			return true;
+		if (!notify::Install(c))
+		{
+			*why = "older catalogue";
+			return false;
+		}
+		g_notifyLimiter.ResetKinds();
+#ifdef _WIN32
+		if (persist)
+			file_util::WriteAtomic(CatalogueFile(), sig + "\n" + body);
+#else
+		(void)persist;
+#endif
+		return true;
+	}
+
+	// The catalogue kept from an earlier game, once per game. A missing, edited
+	// or older file just leaves the compiled list (or what the server sends).
+	void EnsureCatalogueLoaded()
+	{
+		if (g_catalogueLoaded)
+			return;
+		g_catalogueLoaded = true;
+#ifdef _WIN32
+		std::string saved = file_util::ReadSmall(CatalogueFile(), notify_catalogue::kSigHexLen + 1 + notify_catalogue::kMaxBody);
+		if (saved.size() <= notify_catalogue::kSigHexLen + 1 || saved[notify_catalogue::kSigHexLen] != '\n')
+			return;
+		std::string why;
+		TakeCatalogue(saved.substr(notify_catalogue::kSigHexLen + 1), saved.substr(0, notify_catalogue::kSigHexLen),
+			false, &why);
+#endif
+	}
+
+	// meowy.NotifyCatalogue(body, sig) -> true, version | false, reason
+	int NotifyCatalogue(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		int results = 0;
+		if (Refuse(LUA, results))
+			return results;
+		std::string why;
+		bool ok = false;
+		try
+		{
+			unsigned int bodyLen = 0, sigLen = 0;
+			const char* body = LUA->IsType(1, Type::String) ? LUA->GetString(1, &bodyLen) : nullptr;
+			const char* sig = LUA->IsType(2, Type::String) ? LUA->GetString(2, &sigLen) : nullptr;
+			if (!body || !sig || bodyLen == 0 || bodyLen > notify_catalogue::kMaxBody ||
+				sigLen != notify_catalogue::kSigHexLen)
+				why = "bad catalogue: bad arguments";
+			else
+			{
+				EnsureCatalogueLoaded();
+				ok = TakeCatalogue(std::string(body, bodyLen), std::string(sig, sigLen), true, &why);
+			}
+		}
+		catch (...)
+		{
+			ok = false;
+			why = "internal error";
+		}
+		if (!ok)
+		{
+			LUA->PushBool(false);
+			LUA->PushString(why.c_str());
+			return 2;
+		}
+		LUA->PushBool(true);
+		LUA->PushNumber(static_cast<double>(notify::CatalogueVersion()));
+		return 2;
+	}
+
 	// meowy.Notify(kind) -> true | false, reason. Only the kind is read; the
 	// words shown are the pack's. Never blocks: the worker thread shows it.
 	int Notify(lua_State* L)
@@ -732,6 +853,7 @@ namespace
 			// The rest only matters (and is only worked out) for our server.
 			if (in.ourServer)
 			{
+				EnsureCatalogueLoaded();
 				in.enabled = NotifyEnabledSetting();
 				in.focused = notify_toast::GameFocused();
 #ifdef _WIN32
@@ -1457,22 +1579,26 @@ namespace
 		return 1;
 	}
 
+	// A Workshop ID passed as a decimal string (steamworks' way), or 0.
+	uint64_t WorkshopIdArg(ILuaBase* LUA, int at)
+	{
+		const char* s = LUA->IsType(at, Type::String) ? LUA->GetString(at) : nullptr;
+		uint64_t id = 0;
+		for (const char* p = s; p && *p; ++p)
+		{
+			if (*p < '0' || *p > '9' || id > 1000000000000000000ull)
+				return 0;
+			id = id * 10 + static_cast<uint64_t>(*p - '0');
+		}
+		return id;
+	}
+
 	// WorkshopItemState(id) -> installed, needsUpdate, busy, legacy, updated |
 	// nil: what Steam knows about a Workshop item here (steam_ugc.h). Read-only.
 	int WorkshopItemState(lua_State* L)
 	{
 		ILuaBase* LUA = L->luabase;
-		const char* s = LUA->IsType(1, Type::String) ? LUA->GetString(1) : nullptr;
-		uint64_t id = 0;
-		for (const char* p = s; p && *p; ++p)
-		{
-			if (*p < '0' || *p > '9' || id > 1000000000000000000ull)
-			{
-				id = 0;
-				break;
-			}
-			id = id * 10 + static_cast<uint64_t>(*p - '0');
-		}
+		const uint64_t id = WorkshopIdArg(LUA, 1);
 		steam_ugc::ItemState st;
 		if (!id || !steam_ugc::State(id, st))
 		{
@@ -1485,6 +1611,66 @@ namespace
 		LUA->PushBool(st.legacy);
 		LUA->PushNumber(static_cast<double>(st.updated));
 		return 5;
+	}
+
+	// WorkshopItemProgress(id) -> bytes done, bytes in all | nil: a download's
+	// progress, as Steam reports it (steam_ugc.h). Read-only.
+	int WorkshopItemProgress(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		const uint64_t id = WorkshopIdArg(LUA, 1);
+		uint64_t done = 0, total = 0;
+		if (!id || !steam_ugc::Progress(id, done, total))
+		{
+			LUA->PushNil();
+			return 1;
+		}
+		LUA->PushNumber(static_cast<double>(done));
+		LUA->PushNumber(static_cast<double>(total));
+		return 2;
+	}
+
+	// --- Content platform (content_advert.h, docs/CONTENT_PLATFORM.md) ------------
+	// ContentAsk(address) -> true | false: read a public server's `meowy_content`
+	// rule (A2S_RULES) on a worker thread.
+	int ContentAsk(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		LUA->PushBool(LUA->IsType(1, Type::String) && content_advert::Ask(LUA->GetString(1)));
+		return 1;
+	}
+
+	// ContentTake() -> { { address =, answered = bool, value = string | nil }, ... }:
+	// the answers since the last call. `value` is the server's own text
+	// (printable ASCII, at most 4 KB); content_logic.lua checks it.
+	int ContentTake(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		const std::vector<content_advert::Answer> answers = content_advert::Take();
+		LUA->CreateTable();
+		int i = 0;
+		for (const content_advert::Answer& a : answers)
+		{
+			LUA->PushNumber(++i);
+			LUA->CreateTable();
+			LUA->PushString(a.address.c_str());
+			LUA->SetField(-2, "address");
+			LUA->PushBool(a.answered);
+			LUA->SetField(-2, "answered");
+			if (a.found)
+			{
+				LUA->PushString(a.value.c_str(), static_cast<unsigned int>(a.value.size()));
+				LUA->SetField(-2, "value");
+			}
+			LUA->SetTable(-3);
+		}
+		return 1;
+	}
+
+	int ContentState(lua_State* L)
+	{
+		L->luabase->PushString(content_advert::Describe().c_str());
+		return 1;
 	}
 
 	int PrewarmCancel(lua_State*)
@@ -2082,10 +2268,15 @@ namespace
 		// home.lua in a function of its own, which sees resilience.lua's locals).
 		std::string homeLogic = ResourceText(IDR_HOME_LOGIC_LUA);
 		std::string homeGlue = ResourceText(IDR_HOME_LUA);
+		// The content platform's rules (content_logic.lua as `Content`), which
+		// home.lua uses to prepare a server's Workshop items before a join.
+		std::string contentLogic = ResourceText(IDR_CONTENT_LOGIC_LUA);
 		std::string home;
-		if (!homeLogic.empty() && !homeGlue.empty())
+		if (!homeLogic.empty() && !homeGlue.empty() && !contentLogic.empty())
 		{
-			home = "\nlocal Home = (function(...)\n" + homeLogic + "\nend)(Logic);\n(function()\n" + homeGlue + "\nend)();\n";
+			home = "\nlocal Home = (function(...)\n" + homeLogic + "\nend)(Logic);\n"
+				"local Content = (function()\n" + contentLogic + "\nend)();\n"
+				"(function()\n" + homeGlue + "\nend)();\n";
 			// Our own main menu page (preview, menu_page.lua), in a function of its own too,
 			// with Find servers' index rules (browse_logic.lua) as its local `BrowseLogic`.
 			std::string menuPage = ResourceText(IDR_MENU_PAGE_LUA);
@@ -2906,6 +3097,7 @@ GMOD_MODULE_OPEN()
 	SetFunction(LUA, "Notify", Guarded<Notify>);
 	SetFunction(LUA, "SetNotifyEnabled", Guarded<SetNotifyEnabled>);
 	SetFunction(LUA, "NotifyEnabled", Guarded<NotifyEnabled>);
+	SetFunction(LUA, "NotifyCatalogue", Guarded<NotifyCatalogue>);
 	SetFunction(LUA, "TimelineEvent", Guarded<TimelineEvent>);
 	SetFunction(LUA, "ExpectRestart", Guarded<ExpectRestart>);
 
@@ -3006,6 +3198,10 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	SetFunction(LUA, "PrewarmStart", Guarded<PrewarmStart>);
 	SetFunction(LUA, "PrewarmWorkshop", Guarded<PrewarmWorkshop>);
 	SetFunction(LUA, "WorkshopItemState", Guarded<WorkshopItemState>);
+	SetFunction(LUA, "WorkshopItemProgress", Guarded<WorkshopItemProgress>);
+	SetFunction(LUA, "ContentAsk", Guarded<ContentAsk>);
+	SetFunction(LUA, "ContentTake", Guarded<ContentTake>);
+	SetFunction(LUA, "ContentState", Guarded<ContentState>);
 	SetFunction(LUA, "PrewarmCancel", Guarded<PrewarmCancel>);
 	SetFunction(LUA, "ConsoleCaptureStart", Guarded<ConsoleCaptureStart>);
 	SetFunction(LUA, "ConsoleRead", Guarded<ConsoleRead>);

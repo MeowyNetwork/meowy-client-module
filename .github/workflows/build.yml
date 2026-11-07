@@ -28,14 +28,48 @@ jobs:
           lua5.1 tests/doctor_logic_test.lua
           lua5.1 tests/home_logic_test.lua
           lua5.1 tests/console_logic_test.lua
+          lua5.1 tests/content_logic_test.lua
           lua5.1 tests/browse_logic_test.lua
           lua5.1 tests/party_logic_test.lua
           node tests/home_page_test.js
+          node tests/launcher_card_test.js
+
+  launcher:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: launcher
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust toolchain
+        run: rustup toolchain install stable --profile minimal --no-self-update && rustup default stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: launcher
+
+      - name: Launcher rules (cargo test, core)
+        run: cargo test -p meowy-launcher-core --locked
+
+      - name: Build MeowyLauncher.exe
+        run: cargo build -p meowy-launcher --release --locked
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: meowy-launcher
+          path: launcher/target/release/MeowyLauncher.exe
 
   windows:
     runs-on: windows-latest
+    needs: launcher
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: meowy-launcher
+          path: launcher-bin
 
       - name: Build gmcl_meowy_win32.dll
         run: |
@@ -52,6 +86,14 @@ jobs:
           cmake -S . -B buildtest -A x64 -DMEOWY_BUILD_TESTS=ON
           cmake --build buildtest --config Release --target startup_hook_smoke
           ./buildtest/Release/startup_hook_smoke.exe
+
+      - name: Signed notification catalogue (notify_catalogue_smoke, both bitnesses)
+        run: |
+          cmake --build buildtest --config Release --target notify_catalogue_smoke
+          ./buildtest/Release/notify_catalogue_smoke.exe
+          cmake -S . -B buildtest32 -A Win32 -DMEOWY_BUILD_TESTS=ON
+          cmake --build buildtest32 --config Release --target notify_catalogue_smoke
+          ./buildtest32/Release/notify_catalogue_smoke.exe
 
       - name: Fast Lua lookup rules (lua_lookup_smoke, both bitnesses)
         run: |
@@ -98,6 +140,13 @@ jobs:
           cmake --build buildtest32 --config Release --target server_query_smoke
           ./buildtest32/Release/server_query_smoke.exe
 
+      - name: Content platform adverts (content_advert_smoke, both bitnesses)
+        run: |
+          cmake --build buildtest --config Release --target content_advert_smoke
+          ./buildtest/Release/content_advert_smoke.exe
+          cmake --build buildtest32 --config Release --target content_advert_smoke
+          ./buildtest32/Release/content_advert_smoke.exe
+
       - name: Font pass gdi32 loads (font_loads_smoke, both bitnesses)
         run: |
           cmake --build buildtest --config Release --target font_loads_smoke
@@ -117,15 +166,25 @@ jobs:
           cmake --build buildtest --config Release --target session_smoke
           ./buildtest/Release/session_smoke.exe "$env:RUNNER_TEMP"
 
+      - name: Installer rules (uninstall_smoke)
+        shell: pwsh
+        run: |
+          & "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo /main:UninstallSmoke /out:uninstall_smoke.exe /r:System.Windows.Forms.dll /r:System.Drawing.dll installer\Installer.cs tests\uninstall_smoke.cs
+          if ($LASTEXITCODE -ne 0) { throw "csc failed" }
+          $scratch = Join-Path $env:RUNNER_TEMP "uninstall_smoke"
+          New-Item -ItemType Directory $scratch | Out-Null
+          ./uninstall_smoke.exe $scratch
+          if ($LASTEXITCODE -ne 0) { throw "uninstall_smoke failed" }
+
       - name: Build installer
         shell: pwsh
-        run: ./installer/build.ps1 -Win32 build32/Release/gmcl_meowy_win32.dll -Win64 build64/Release/gmcl_meowy_win64.dll -Boot32 build32/Release/gmsv_meowy_boot_win32.dll -Boot64 build64/Release/gmsv_meowy_boot_win64.dll -Out MeowyClientPack.exe
+        run: ./installer/build.ps1 -Win32 build32/Release/gmcl_meowy_win32.dll -Win64 build64/Release/gmcl_meowy_win64.dll -Boot32 build32/Release/gmsv_meowy_boot_win32.dll -Boot64 build64/Release/gmsv_meowy_boot_win64.dll -Launcher launcher-bin/MeowyLauncher.exe -Out MeowyClientPack.exe
 
       - name: Package
         shell: pwsh
         run: |
           New-Item -ItemType Directory dist | Out-Null
-          Copy-Item build32/Release/gmcl_meowy_win32.dll, build64/Release/gmcl_meowy_win64.dll, build32/Release/gmsv_meowy_boot_win32.dll, build64/Release/gmsv_meowy_boot_win64.dll, MeowyClientPack.exe dist/
+          Copy-Item build32/Release/gmcl_meowy_win32.dll, build64/Release/gmcl_meowy_win64.dll, build32/Release/gmsv_meowy_boot_win32.dll, build64/Release/gmsv_meowy_boot_win64.dll, launcher-bin/MeowyLauncher.exe, MeowyClientPack.exe dist/
           Compress-Archive -Path dist/gmcl_meowy_win32.dll, dist/gmcl_meowy_win64.dll, dist/gmsv_meowy_boot_win32.dll, dist/gmsv_meowy_boot_win64.dll -DestinationPath dist/meowy-client-module-manual.zip
           Get-ChildItem dist -File | ForEach-Object { "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name } | Set-Content dist/SHA256SUMS.txt
           Get-Content dist/SHA256SUMS.txt
@@ -144,6 +203,7 @@ jobs:
             dist/gmcl_meowy_win64.dll
             dist/gmsv_meowy_boot_win32.dll
             dist/gmsv_meowy_boot_win64.dll
+            dist/MeowyLauncher.exe
             dist/MeowyClientPack.exe
 
       - name: Release

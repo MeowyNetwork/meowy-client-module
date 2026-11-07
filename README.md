@@ -41,7 +41,23 @@ Lua starts. This is what later join speed-ups and our own loading screen need. U
 the old behaviour. If the game ever fails to start with it, hold **Shift** while Garry's Mod
 starts (or add `-meowy_safe` to its launch options) and the pack isn't loaded at start-up. If
 the game closes while the pack is starting, the next start skips it once by itself. A Steam
-"Verify integrity of game files" removes the line; run the installer again to add it back.
+"Verify integrity of game files" or a game update removes the line; the Meowy Launcher puts it back
+(below), and so does running the installer again.
+
+**The Meowy Launcher** (`launcher/`, design in `launcher/DESIGN.md`): the installer also installs a
+small tray app to `%LOCALAPPDATA%\MeowyClientPack\launcher` and, unless you untick it, starts it when
+you sign in. It never touches the game's memory: it only starts Garry's Mod through Steam and waits for
+it to close.
+- **Play** and **Join Meowy Network** in the tray (and the Start-menu shortcut) start Garry's Mod through
+  Steam with `-disableluarefresh` ("Faster start" in its window turns that off).
+- After a Steam update or Verify it puts the start-up line back, once Steam is done and the game is closed
+  (never if you turned "Start with the game" off).
+- If the game crashes, or is ended in Task Manager, while you're on a server, a small card offers
+  **Rejoin**, and the pack doesn't ask again at the next start.
+- `meowy://connect/<a.b.c.d>:<port>` links join a server: Meowy Network's directly, any other public
+  server after you confirm. A link can't carry a password, launch options or commands.
+- Updates still come with the installer; the launcher will use the pack's signed update channel once
+  it exists.
 
 ## What it does, and doesn't
 - It talks only to the Discord app on your PC, over Discord's local connection
@@ -145,7 +161,21 @@ the game closes while the pack is starting, the next start skips it once by itse
       or an item whose Workshop version (`steamworks.FileInfo`) is newer than the one installed.
     - **What happens:** only those go to the menu's own `steamworks.DownloadUGC`, one at a time, so Garry's
       Mod's download box shows only for real work. It stops asking when a join starts; anything already
-      downloading carries on, and the join uses it. Only for servers you've joined before.
+      downloading carries on, and the join uses it.
+    - **Servers you've never joined** (the content platform, `docs/CONTENT_PLATFORM.md`): a server can say
+      which Workshop items its join will ask for, in a `meowy_content` rule the game's standard server query
+      returns (Meowy Network's servers do). The pack reads it at the same moments, for any server, and adds
+      what the last join learned.
+      - Meowy Network's servers and servers you've joined before are got ready without asking: a first join
+        then only checks the items instead of downloading them on the loading screen. Measured on our dev
+        server with ~600 MB of Workshop content this PC didn't have: in game after 27.2 s instead of ~51.9 s.
+        The content had downloaded at the main menu in 14.6 s, and each prepared item cost the join 0.03 s.
+      - Any other server's row (the home card, and the server picked in Find servers) shows **Get ready ·
+        1.3 GB** instead; nothing downloads until you click it. Over 4 GB always waits for the click.
+      - While it downloads, the row shows **Getting ready · 412 MB of 1.3 GB**. `meowy_content_get_ready
+        <address>` does the same from the console.
+      - The rule is only a list of Workshop IDs: all it can make the pack do is download Workshop items, which
+        Steam checks and the join checks again. The query is the one the server browser already makes.
     - **Measured** on our dev server, fresh start, with one 94 MB legacy item's unpacked copy deleted: the
       loading screen's Workshop step took 4.7 s without the check and 2.1 s with it (it unpacked the item
       at the menu; checking all 29 items took 3.0 s). An update day's downloads move the same way.
@@ -468,6 +498,11 @@ the game closes while the pack is starting, the next start skips it once by itse
   - Only while you're on a Meowy Network server. Our server can switch them off for you
     (`meowy.SetNotifyEnabled(false)`, kept in `notify.txt`); a switch for it in the game's settings
     comes later.
+  - New kinds of notification don't need a new pack (1.6+). Our server hands the pack a list of
+    kinds and their words, signed with Meowy Network's own key, which is kept offline. The pack
+    checks that signature against the key built into it and never takes an older list, so no other
+    server or addon can change what a notification says. The list is kept as `notify_catalogue.txt`
+    and checked again each time it's read.
 - **Markers on Steam's game recording.** If you record with Steam (Steam settings, Game Recording), the
   pack adds a marker to the recording's timeline when you're arrested or released, your printer is
   destroyed, you complete a contract, or you become wanted, so you can jump straight to the moment
@@ -508,6 +543,9 @@ end
 --   if not system.HasFocus() then pcall(meowy.Notify, "printer_attacked") end. Reasons: "only works on
 --   Meowy Network servers", "unknown kind", "disabled", "focused", "rate limited". Kinds: src/notify.cpp)
 -- meowy.SetNotifyEnabled(bool) -> true | false, reason;  meowy.NotifyEnabled() -> bool | nil, reason
+-- meowy.NotifyCatalogue(body, sig) -> true, version | false, reason   (1.6+; our signed kind list from
+--   DarkRP's tools/notify_catalogue/build.py. Reasons: "bad signature", "bad catalogue: ...",
+--   "older catalogue". See src/notify_catalogue.h)
 -- meowy.TimelineEvent(kind) -> true | false, reason   (a Steam Timeline marker, focused or not, e.g.
 --   pcall(meowy.TimelineEvent, "arrested"). Kinds: arrested, released, printer_destroyed, hit_completed,
 --   wanted_on_you. Reasons: "only works on Meowy Network servers", "unknown kind", "timeline unavailable",
@@ -525,6 +563,16 @@ cmake -S . -B build64 -A x64   && cmake --build build64 --config Release
 cmake -S . -B build32 -A Win32 && cmake --build build32 --config Release
 installer/build.ps1 -Win32 build32/Release/gmcl_meowy_win32.dll -Win64 build64/Release/gmcl_meowy_win64.dll
 ```
+The Meowy Launcher (Rust, Tauri 2; no tauri-cli or Node needed) and its tests; pass it to the installer
+with `-Launcher launcher/target/release/MeowyLauncher.exe`:
+```
+cd launcher
+cargo test -p meowy-launcher-core
+cargo build -p meowy-launcher --release
+```
+`node tests/launcher_card_test.js` checks its crash card's text; `launcher/tools/measure_startup.ps1` times
+click to pack start-up with and without it.
+
 `-DMEOWY_BUILD_TESTS=ON` adds `ipc_smoke`, which checks the Discord connection without the game:
 `ipc_smoke <discord application id> [seconds]`. It also adds `notify_smoke <scratch folder>` (the
 notification rules), `notify_manual` (a real notification on this PC; see `tests/NOTIFY_MANUAL.md`),

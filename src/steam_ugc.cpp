@@ -24,9 +24,12 @@ namespace
 	// EItemState (isteamugc.h)
 	constexpr uint32_t kLegacyItem = 2, kInstalled = 4, kNeedsUpdate = 8, kDownloading = 16, kDownloadPending = 32;
 
+	using GetDownloadInfoFn = bool (__cdecl*)(void* self, uint64_t id, uint64_t* done, uint64_t* total);
+
 	GetUgcFn g_get = nullptr;
 	GetItemStateFn g_state = nullptr;
 	GetInstallInfoFn g_info = nullptr;
+	GetDownloadInfoFn g_download = nullptr;   // optional: only the progress line needs it
 	bool g_resolved = false;
 	bool g_broken = false;   // missing exports or a fault: off for this session
 
@@ -42,6 +45,7 @@ namespace
 		g_get = reinterpret_cast<GetUgcFn>(GetProcAddress(steam, "SteamAPI_SteamUGC_v021"));
 		g_state = reinterpret_cast<GetItemStateFn>(GetProcAddress(steam, "SteamAPI_ISteamUGC_GetItemState"));
 		g_info = reinterpret_cast<GetInstallInfoFn>(GetProcAddress(steam, "SteamAPI_ISteamUGC_GetItemInstallInfo"));
+		g_download = reinterpret_cast<GetDownloadInfoFn>(GetProcAddress(steam, "SteamAPI_ISteamUGC_GetItemDownloadInfo"));
 		if (!g_get || !g_state || !g_info)
 		{
 			g_broken = true;
@@ -76,6 +80,20 @@ namespace
 			return false;
 		}
 	}
+
+	bool QueryProgress(uint64_t id, uint64_t* done, uint64_t* total)
+	{
+		__try
+		{
+			void* ugc = g_get();
+			return ugc && g_download(ugc, id, done, total);
+		}
+		__except (OnFault(GetExceptionCode()))
+		{
+			g_broken = true;
+			return false;
+		}
+	}
 #endif
 }
 
@@ -96,6 +114,24 @@ namespace steam_ugc
 		out.busy = (flags & (kDownloading | kDownloadPending)) != 0;
 		out.legacy = (flags & kLegacyItem) != 0;
 		out.updated = haveInfo ? stamp : 0;
+		return true;
+#else
+		(void)id;
+		return false;
+#endif
+	}
+
+	bool Progress(uint64_t id, uint64_t& done, uint64_t& total)
+	{
+		done = total = 0;
+#ifdef _WIN32
+		if (!id || !Resolve() || !g_download)
+			return false;
+		uint64_t d = 0, t = 0;
+		if (!QueryProgress(id, &d, &t))
+			return false;
+		done = d;
+		total = t;
 		return true;
 #else
 		(void)id;
