@@ -59,7 +59,7 @@
 		+ '#meowy-shell .mb-sub { font-size: 13px; opacity: 0.7; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }';
 	// [label, kind, value]: "route" goes to the page's own screen; the rest are posts.
 	var LINKS = [
-		['Find servers', 'browse', ''], ['Start new game', 'route', 'newgame'], null,
+		['Find servers', 'route', 'servers'], ['Start new game', 'route', 'newgame'], null,
 		['Addons', 'route', 'addons'], ['Dupes', 'route', 'dupes'], ['Saves', 'route', 'saves'], ['Demos', 'route', 'demos'], null,
 		['Options', 'options', ''], ['Meowy settings', 'settings', ''], null,
 		['Quit', 'quit', '']
@@ -283,7 +283,9 @@
 		if (br.timer) return;
 		br.timer = setTimeout(function () { br.timer = null; browseRender(); }, 150);
 	}
+	// Find servers opens Garry's Mod's browser while this view is rebuilt; open() shows it.
 	window.MeowyBrowse = {
+		open: function (on) { browseOpen(on !== false); },
 		reset: function (gen, ok) {
 			br.gen = gen; br.rows = []; br.done = !ok; br.ok = !!ok; br.secs = 0; br.at = Date.now(); br.sel = 0;
 			browseRender();
