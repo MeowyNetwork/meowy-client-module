@@ -1609,6 +1609,40 @@ if cmdEntry then
 	cmdEntry.SetText = function(_, v) recalled = v end
 	cmdEntry:OnKeyCodeTyped(88)   -- Up
 	check("console: Up recalls what was typed", recalled, 'net_graph 1; say "a; b"')
+	-- `clear` empties this window: a mark is echoed first, so what came before
+	-- it goes and what comes after stays; the game's console is cleared too.
+	local copyAll
+	for _, p in ipairs(w.panels or {}) do if p.class == "DButton" and p.text == "Copy" then copyAll = p end end
+	local function shown() w.clipboard = nil copyAll.DoClick() return w.clipboard or "" end
+	cmdEntry.GetValue = function() return "status; clear; echo after" end
+	cmdEntry:OnEnter()
+	check("clear: the mark, then the game's clear", w.consoleRuns[#w.consoleRuns], "status;echo __meowy_console_clear__;clear;echo after")
+	w.console[#w.console + 1] = { id = 3, t = 3000, s = 0, c = -1, x = "status output" }
+	w.console[#w.console + 1] = { id = 4, t = 3000, s = 0, c = -1, x = "__meowy_console_clear__ " }
+	w.console[#w.console + 1] = { id = 5, t = 3000, s = 0, c = -1, x = "after" }
+	w.now = w.now + 1
+	consoleFrame.Think()
+	local after = shown()
+	check("clear: what came before is gone", after:find("hello", 1, true) == nil and after:find("status output", 1, true) == nil, true)
+	check("clear: what came after stays", after:find("after", 1, true) ~= nil, true)
+	check("clear: the mark isn't shown", after:find("__meowy", 1, true), nil)
+	-- Without the engine: emptied here.
+	w.noEngine = true
+	cmdEntry.GetValue = function() return "clear" end
+	cmdEntry:OnEnter()
+	w.noEngine = nil
+	check("clear: without the engine, emptied here", shown(), "")
+	-- showconsole leaves the window open, toggleconsole closes it; neither
+	-- shows the game's console.
+	local runs = #w.consoleRuns
+	cmdEntry.GetValue = function() return "showconsole" end
+	cmdEntry:OnEnter()
+	check("showconsole: nothing sent", #w.consoleRuns, runs)
+	check("showconsole: still open", consoleFrame.removed, nil)
+	cmdEntry.GetValue = function() return "toggleconsole" end
+	cmdEntry:OnEnter()
+	check("toggleconsole: nothing sent", #w.consoleRuns, runs)
+	check("toggleconsole: closed", consoleFrame.removed, true)
 end
 w.concommands.meowy_console_status()
 check("console: status command", (w.logs or ""):find("console: spew function", 1, true) ~= nil, true)

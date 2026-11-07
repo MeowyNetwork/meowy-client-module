@@ -105,7 +105,7 @@ function M.rows(lines, opts)
 		if l.marker then
 			out[#out + 1] = { line = l, count = 1, firstT = l.t, lastT = l.t, marker = true }
 			recent = {}
-		elseif anyKind or opts.kinds[M.kind(l)] then
+		elseif (anyKind or opts.kinds[M.kind(l)]) and M.passes(opts.conFilter, l.x) then
 			local match = query and #M.spans(l.x, query, opts.pattern) > 0
 			if opts.find or not query or match then
 				local last, folded = out[#out], false
@@ -187,6 +187,73 @@ function M.commands(line)
 	end
 	endCommand()
 	return cmds
+end
+
+-- A typed line split at ";" (outside quotes), each part as typed (trimmed).
+function M.parts(line)
+	local out, cur, quoted = {}, {}, false
+	local function finish()
+		local p = string.match(table.concat(cur), "^%s*(.-)%s*$")
+		if p ~= "" then out[#out + 1] = p end
+		cur = {}
+	end
+	for ch in string.gmatch(type(line) == "string" and line or "", ".") do
+		if ch == '"' then quoted = not quoted end
+		if ch == ";" and not quoted then
+			finish()
+		elseif ch ~= "\n" and ch ~= "\r" then
+			cur[#cur + 1] = ch
+		end
+	end
+	finish()
+	return out
+end
+
+-- A typed line as the Meowy console runs it. Commands for the game's console
+-- window act on this one instead: `clear` empties it (an echoed mark goes
+-- first, so what ran before it is cleared and what runs after it stays; the
+-- game's own console is cleared too), and while the console key opens this
+-- window, `showconsole` leaves it open and `hideconsole` and `toggleconsole`
+-- close it (the game's console would only flash). Returns the line for the
+-- engine (as typed when none of these is in it; "" when nothing is left) and
+-- whether to close the window.
+M.CLEAR_MARK = "__meowy_console_clear__"
+function M.prepare(line, ownsKey)
+	local out, close, changed = {}, false, false
+	for _, part in ipairs(M.parts(line)) do
+		local w = string.lower((M.firstWord(part)))
+		if w == "clear" then
+			out[#out + 1] = "echo " .. M.CLEAR_MARK
+			out[#out + 1] = part
+			changed = true
+		elseif ownsKey and (w == "hideconsole" or w == "toggleconsole") then
+			close, changed = true, true
+		elseif ownsKey and w == "showconsole" then
+			changed = true
+		else
+			out[#out + 1] = part
+		end
+	end
+	if not changed then return type(line) == "string" and line or "", false end
+	return table.concat(out, ";"), close
+end
+
+-- The game's con_filter, which acts on its own console's text and so never
+-- on these lines: with con_filter_enable 1, only lines with con_filter_text
+-- (when set) and without con_filter_text_out (when set), any case. nil when
+-- it's off.
+function M.conFilter(enable, text, out)
+	if tonumber(enable) ~= 1 then return nil end
+	text, out = string.lower(text or ""), string.lower(out or "")
+	if text == "" and out == "" then return nil end
+	return { text = text, out = out }
+end
+function M.passes(filter, x)
+	if not filter then return true end
+	x = string.lower(x or "")
+	if filter.text ~= "" and not string.find(x, filter.text, 1, true) then return false end
+	if filter.out ~= "" and string.find(x, filter.out, 1, true) then return false end
+	return true
 end
 
 -- Drops the oldest lines past `max`, in place.
