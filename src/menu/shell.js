@@ -360,6 +360,33 @@
 		if (e.key === '/' || e.keyCode === 191) { s.querySelector('.ms-search').focus(); e.preventDefault(); }
 	}, true);
 
+	// Find servers: a Friends tab after Local Network, home screen on or off.
+	// It's the game's own "friends" list (servers your Steam friends are on, no
+	// names), switched to through the page's own SwitchType, like the other tabs.
+	function friendsTab() {
+		var lan = document.querySelector('a[ng-click="SwitchType( \'lan\' )"]');
+		var li = lan && lan.parentNode;
+		if (!li || !li.parentNode) return;
+		var a = document.getElementById('meowy-friends-tab');
+		if (!a) {
+			var item = document.createElement('li');
+			a = node('a', '', 'Friends');
+			a.id = 'meowy-friends-tab';
+			a.onclick = function () {
+				var sc = window.Scope;
+				if (!sc || typeof sc.SwitchType !== 'function') return;
+				if (typeof sc.$apply === 'function') sc.$apply(function () { sc.SwitchType('friends'); });
+				else sc.SwitchType('friends');
+			};
+			item.appendChild(a);
+			li.parentNode.insertBefore(item, li.nextSibling);
+		}
+		var active = !!(window.RootScope && window.RootScope.ServerType === 'friends');
+		if ((a.className === 'active') !== active) a.className = active ? 'active' : '';
+	}
+	window.MeowyFriendsTab = friendsTab;
+
 	var MO = window.MutationObserver || window.WebKitMutationObserver;
-	if (MO && document.body) new MO(function () { if (on) draw(); }).observe(document.body, { childList: true, subtree: true });
+	if (MO && document.body) new MO(function () { if (on) draw(); friendsTab(); }).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
+	friendsTab();
 })();
