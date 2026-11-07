@@ -283,6 +283,7 @@ local handlers = {
 	browse_select = function(v)
 		local address = browseAddress(v)
 		if not address then return end
+		browse.selI = math.floor(tonumber(v) or 0)   -- its content line follows it (browsePrep)
 		local now = SysTime()
 		if browse.pinged[address] and now - browse.pinged[address] < 2 then return end
 		browse.pinged[address] = now
@@ -314,6 +315,11 @@ local handlers = {
 		if browse.ws[ws] and gui and isfunction(gui.OpenURL) then gui.OpenURL("https://steamcommunity.com/sharedfiles/filedetails/?id=" .. ws) end
 	end,
 	browse_find = function(v) browseFind(v) end,
+	-- "Get ready" on the picked server: download its Workshop content now (home.lua).
+	browse_prepare = function(v)
+		local address = browseAddress(v)
+		if address and MeowyClientPackPrepare then MeowyClientPackPrepare(address) end
+	end,
 	-- The browser's sort, categories and filters, kept between starts (JSON the page reads back).
 	browse_prefs = function(v)
 		if isstring(v) and v:sub(1, 1) == "{" and not v:find("[%c]") and cookie and isfunction(cookie.Set) then cookie.Set(BROWSE_PREFS, v) end
@@ -365,6 +371,20 @@ local function sendAddons(now)
 	addonsSent = addonsText
 end
 
+-- The picked server's content line in Find servers (home.lua's
+-- MeowyClientPackPrepLabel: "Get ready · 1.3 GB", or progress), sent when it changes.
+local function browsePrep()
+	local i = browse.selI
+	local address = i and browseAddress(i)
+	if not address or not MeowyClientPackPrepLabel then return end
+	local text, button = MeowyClientPackPrepLabel(address)
+	local key = text and (i .. "|" .. text .. "|" .. tostring(button == true)) or nil
+	if key == browse.prepSent then return end   -- (nothing to show, and nothing shown: no call)
+	browse.prepSent = key
+	pnlMainMenu:Call("if (window.MeowyBrowse && window.MeowyBrowse.prep) window.MeowyBrowse.prep(" .. i .. ", "
+		.. Home.encode(text or "") .. ", " .. tostring(button == true) .. ");")
+end
+
 local function tick()
 	local now = SysTime()
 	if now < nextLook then return end
@@ -379,6 +399,7 @@ local function tick()
 		local ready = html.OnDocumentReady
 		html.OnDocumentReady = function(self, url, ...)
 			sent, zoomSent, nextLook, addonsSent, loaded = nil, nil, 0, nil, nil
+			browse.prepSent = nil
 			if ready then return ready(self, url, ...) end
 		end
 		loaded = nil
@@ -394,6 +415,7 @@ local function tick()
 	if browse.id or browse.stock then
 		if want then browsePump(now) else browseStop() end   -- in game or switched off: stop asking Steam
 	end
+	if want then browsePrep() end
 
 	-- The page's zoom (meowy_menu_scale), on whatever it shows. Sent again every
 	-- few seconds: the page may have been reloaded (a language change does).
