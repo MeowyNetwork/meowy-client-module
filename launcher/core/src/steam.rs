@@ -47,6 +47,66 @@ pub fn tokens(text: &str) -> Vec<String> {
     out
 }
 
+/// A KeyValues node: a string or a block of children.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Kv {
+    Str(String),
+    Obj(Vec<(String, Kv)>),
+}
+
+impl Kv {
+    /// A child block or string by key (case-insensitive).
+    pub fn get(&self, key: &str) -> Option<&Kv> {
+        match self {
+            Kv::Obj(items) => items.iter().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| v),
+            Kv::Str(_) => None,
+        }
+    }
+    pub fn str(&self, key: &str) -> Option<&str> {
+        match self.get(key) {
+            Some(Kv::Str(s)) => Some(s),
+            _ => None,
+        }
+    }
+    pub fn children(&self) -> &[(String, Kv)] {
+        match self {
+            Kv::Obj(items) => items,
+            Kv::Str(_) => &[],
+        }
+    }
+}
+
+/// The whole text as one block (at most 16 levels deep; anything malformed
+/// ends the block it's in).
+pub fn parse_kv(text: &str) -> Kv {
+    fn block(t: &[String], i: &mut usize, depth: usize) -> Vec<(String, Kv)> {
+        let mut items = Vec::new();
+        while *i < t.len() {
+            if t[*i] == "}" {
+                *i += 1;
+                break;
+            }
+            let key = t[*i].clone();
+            *i += 1;
+            match t.get(*i).map(|s| s.as_str()) {
+                Some("{") if depth < 16 => {
+                    *i += 1;
+                    items.push((key, Kv::Obj(block(t, i, depth + 1))));
+                }
+                Some("{") | None => break,
+                Some(_) => {
+                    items.push((key, Kv::Str(t[*i].clone())));
+                    *i += 1;
+                }
+            }
+        }
+        items
+    }
+    let t = tokens(text);
+    let mut i = 0;
+    Kv::Obj(block(&t, &mut i, 0))
+}
+
 /// The first value of `key` (case-insensitive) at any depth.
 pub fn value_of(tokens: &[String], key: &str) -> Option<String> {
     tokens

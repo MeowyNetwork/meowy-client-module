@@ -16,7 +16,8 @@ use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
 };
 use windows_sys::Win32::System::Registry::{
-    RegDeleteKeyValueW, RegDeleteTreeW, RegGetValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_SZ,
+    RegDeleteKeyValueW, RegDeleteTreeW, RegGetValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_DWORD,
+    RRF_RT_REG_SZ,
 };
 use windows_sys::Win32::System::Threading::{
     GetExitCodeProcess, GetProcessTimes, OpenProcess, QueryFullProcessImageNameW, WaitForMultipleObjects,
@@ -50,6 +51,22 @@ pub fn reg_get(subkey: &str, value: &str) -> Option<String> {
         let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
         Some(String::from_utf16_lossy(&buf[..len]))
     }
+}
+
+pub fn reg_get_dword(subkey: &str, value: &str) -> Option<u32> {
+    let (k, v) = (wide(subkey), wide(value));
+    let mut data: u32 = 0;
+    let mut size: u32 = 4;
+    // SAFETY: a 4-byte buffer for a REG_DWORD.
+    let r = unsafe {
+        RegGetValueW(HKEY_CURRENT_USER, k.as_ptr(), v.as_ptr(), RRF_RT_REG_DWORD, null_mut(), (&mut data as *mut u32).cast(), &mut size)
+    };
+    (r == 0).then_some(data)
+}
+
+/// The Steam account signed in now (its 32-bit account id), if Steam says.
+pub fn steam_active_account() -> Option<u32> {
+    reg_get_dword("Software\\Valve\\Steam\\ActiveProcess", "ActiveUser").filter(|&id| id != 0)
 }
 
 pub fn reg_set(subkey: &str, value: &str, data: &str) -> bool {

@@ -13,7 +13,7 @@ use std::time::{Duration, SystemTime};
 
 use launcher_core::links::Link;
 use launcher_core::settings::{self, Settings};
-use launcher_core::{address, line, links, log, session, steam, updater, win};
+use launcher_core::{a2s, address, line, links, log, servers, session, steam, updater, win};
 use serde::Serialize;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -29,15 +29,20 @@ enum Card {
     Confirm { address: String },
     /// Something the player should know (a refused link, Steam not found).
     Notice { title: String, text: String },
+    /// Meowy Network answers again after being down (opt-in).
+    BackUp { address: String, name: String },
 }
 
 struct Inner {
     steam_exe: Option<PathBuf>,
+    steam_path: Option<PathBuf>,
     game: Option<steam::Game>,
     settings: Settings,
     running: bool,
     last_repair: String,
     card: Option<Card>,
+    /// The server list last shown: the only addresses the window may join.
+    servers: Vec<servers::Row>,
 }
 
 struct AppState(Mutex<Inner>);
@@ -57,9 +62,11 @@ fn locate(inner: &mut Inner) {
         Some((exe, path)) => {
             inner.steam_exe = Some(exe);
             inner.game = steam::find_game(&path);
+            inner.steam_path = Some(path);
         }
         None => {
             inner.steam_exe = None;
+            inner.steam_path = None;
             inner.game = None;
         }
     }
@@ -128,7 +135,7 @@ fn show_main(app: &AppHandle) {
     }
     let built = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
         .title("Meowy Launcher")
-        .inner_size(440.0, 600.0)
+        .inner_size(460.0, 720.0)
         .resizable(false)
         .maximizable(false)
         .data_directory(launcher_dir().join("webview"))
@@ -255,6 +262,31 @@ fn watch_game(app: AppHandle) {
     }
 }
 
+/// "Meowy Network is back up": while the setting is on and the game is
+/// closed, one A2S_INFO to Meowy every 30 s; two missed answers in a row mean
+/// down, and the first answer after that shows the card.
+fn watch_back_up(app: AppHandle) {
+    let mut tracker = servers::BackUp::default();
+    loop {
+        std::thread::sleep(Duration::from_secs(30));
+        let (on, running) = {
+            let state = app.state::<AppState>();
+            let inner = state.0.lock().unwrap();
+            (inner.settings.notify_back_up, inner.running)
+        };
+        if !on || running {
+            tracker = servers::BackUp::default();
+            continue;
+        }
+        let reply = a2s::query(address::MEOWY, Duration::from_millis(1500)).ok();
+        if tracker.observe(reply.is_some()) {
+            let name = reply.map(|i| i.name).unwrap_or_default();
+            log::line("Meowy Network is back up");
+            show_card(&app, Card::BackUp { address: address::MEOWY.into(), name });
+        }
+    }
+}
+
 /// Every 15 s, one stat each of `appmanifest_4000.acf` and `menu.lua`. When
 /// either changed and then stayed the same for a whole interval, with the
 /// game closed and Steam done with it, the start-up line is checked.
@@ -305,6 +337,7 @@ struct Status {
     missing_modules: Vec<&'static str>,
     running: bool,
     disable_lua_refresh: bool,
+    notify_back_up: bool,
     start_at_sign_in: bool,
     last_repair: String,
     updates: &'static str,
@@ -333,6 +366,7 @@ fn status(app: AppHandle) -> Status {
         missing_modules: inner.game.as_ref().map(|g| g.missing_modules()).unwrap_or_default(),
         running: inner.running,
         disable_lua_refresh: inner.settings.disable_lua_refresh,
+        notify_back_up: inner.settings.notify_back_up,
         start_at_sign_in: win::start_at_sign_in(),
         last_repair: inner.last_repair.clone(),
         updates: updater::status(),
@@ -362,6 +396,53 @@ fn set_lua_refresh(app: AppHandle, on: bool) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn set_back_up(app: AppHandle, on: bool) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let mut inner = state.0.lock().unwrap();
+    inner.settings.notify_back_up = on;
+    log::line(&format!("setting: notify_back_up = {on}"));
+    inner.settings.save(&launcher_dir()).map_err(|e| e.to_string())
+}
+
+/// Meowy Network, the player's Steam favourites and recent Garry's Mod
+/// servers, each asked over A2S (takes up to ~3 s).
+#[tauri::command]
+async fn server_list(app: AppHandle) -> Vec<servers::Row> {
+    let steam_path = {
+        let state = app.state::<AppState>();
+        let mut inner = state.0.lock().unwrap();
+        if inner.steam_path.is_none() {
+            locate(&mut inner);
+        }
+        inner.steam_path.clone()
+    };
+    let rows = tauri::async_runtime::spawn_blocking(move || {
+        let entries = match (steam_path, win::steam_active_account()) {
+            (Some(path), Some(account)) => std::fs::read(servers::history_file(&path, account))
+                .map(|b| servers::parse_history(&String::from_utf8_lossy(&b)))
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        servers::query_all(&servers::candidates(&entries, 12), Duration::from_millis(1500))
+    })
+    .await
+    .unwrap_or_default();
+    app.state::<AppState>().0.lock().unwrap().servers = rows.clone();
+    rows
+}
+
+/// Joins a server from the list last shown (the page can't name any other).
+#[tauri::command]
+async fn join_server(app: AppHandle, address: String) -> Result<String, String> {
+    let listed = app.state::<AppState>().0.lock().unwrap().servers.iter().any(|r| r.address == address);
+    if !listed {
+        return Err("That server isn't in the list.".into());
+    }
+    log::line(&format!("window: join {address}"));
+    launch(&app, Some(address))
+}
+
+#[tauri::command]
 fn set_sign_in(on: bool) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     log::line(&format!("setting: start at sign-in = {on}"));
@@ -383,7 +464,9 @@ async fn card_answer(app: AppHandle, window: WebviewWindow, action: String) -> R
         let _ = window.destroy();
     };
     match (action.as_str(), card) {
-        ("join", Some(Card::Crash { address, .. })) | ("join", Some(Card::Confirm { address })) => {
+        ("join", Some(Card::Crash { address, .. }))
+        | ("join", Some(Card::Confirm { address }))
+        | ("join", Some(Card::BackUp { address, .. })) => {
             log::line(&format!("card: join {address}"));
             close(&app);
             launch(&app, Some(address))
@@ -463,7 +546,16 @@ fn main() {
     let dir = launcher_dir();
     log::init(&dir);
     let settings = Settings::load(&dir);
-    let mut inner = Inner { steam_exe: None, game: None, settings, running: false, last_repair: String::new(), card: None };
+    let mut inner = Inner {
+        steam_exe: None,
+        steam_path: None,
+        game: None,
+        settings,
+        running: false,
+        last_repair: String::new(),
+        card: None,
+        servers: Vec::new(),
+    };
     locate(&mut inner);
     // Links aren't logged as given: a refused one may carry a password.
     let args: Vec<String> =
@@ -478,7 +570,18 @@ fn main() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| handle_args(app, &args)))
         .manage(AppState(Mutex::new(inner)))
-        .invoke_handler(tauri::generate_handler![status, play, repair_now, set_lua_refresh, set_sign_in, card, card_answer])
+        .invoke_handler(tauri::generate_handler![
+            status,
+            play,
+            repair_now,
+            set_lua_refresh,
+            set_back_up,
+            set_sign_in,
+            server_list,
+            join_server,
+            card,
+            card_answer
+        ])
         .setup(|app| {
             let handle = app.handle().clone();
             tray(&handle)?;
@@ -492,6 +595,8 @@ fn main() {
             std::thread::spawn(move || watch_game(h));
             let h = handle.clone();
             std::thread::spawn(move || watch_steam(h));
+            let h = handle.clone();
+            std::thread::spawn(move || watch_back_up(h));
             handle_args(&handle, &std::env::args().collect::<Vec<_>>());
             Ok(())
         })

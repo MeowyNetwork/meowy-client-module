@@ -49,4 +49,34 @@ check("text is shown as text: markup in a server name stays literal", () => {
   assert.ok(v.text.includes("<img"), "returned as a string for textContent, not parsed");
 });
 
+check("back up: Join or Not now, with the server's own name", () => {
+  const v = cardView({ kind: "back_up", address: "138.201.62.52:27015", name: "Meowy Network | DarkRP" });
+  assert.strictEqual(v.title, "Meowy Network is back up");
+  assert.strictEqual(v.text, "Meowy Network | DarkRP answers again.");
+  assert.deepStrictEqual(actions(v), ["dismiss", "join"]);
+  assert.strictEqual(cardView({ kind: "back_up", address: "x", name: "" }).text, "The server answers again.");
+});
+
+const { serverView } = require(path.join(__dirname, "..", "launcher", "ui", "servers_view.js"));
+const info = (o) => Object.assign({ name: "Meowy Network", map: "rp_downtown_meowy", gamemode: "DarkRP", app_id: 4000,
+  players: 12, max_players: 31, bots: 2, password: false, vac: true, ping_ms: 22 }, o);
+
+check("server row: humans only, map, ping; Join", () => {
+  const v = serverView({ address: "138.201.62.52:27015", ours: true, favorite: false, info: info({}) });
+  assert.strictEqual(v.title, "Meowy Network");
+  assert.strictEqual(v.detail, "Meowy Network · rp_downtown_meowy · 10/31 players · 22 ms");
+  assert.ok(v.join && v.up);
+});
+
+check("server row: not answering, no Join", () => {
+  const v = serverView({ address: "1.2.3.4:27015", ours: false, favorite: true, info: null });
+  assert.deepStrictEqual(v, { title: "1.2.3.4:27015", detail: "Favourite · not answering", join: false, up: false });
+});
+
+check("server row: a password server can't be joined from the launcher (it never sends passwords)", () => {
+  const v = serverView({ address: "1.2.3.4:27015", ours: false, favorite: false, info: info({ name: "", password: true }) });
+  assert.strictEqual(v.title, "1.2.3.4:27015", "falls back to the address");
+  assert.ok(v.detail.endsWith("· password") && !v.join);
+});
+
 console.log(n + " checks passed");

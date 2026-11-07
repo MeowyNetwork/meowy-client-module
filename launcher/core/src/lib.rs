@@ -1,7 +1,9 @@
 //! The Meowy Launcher's logic, apart from its windows (`launcher/app`).
 //! See `launcher/DESIGN.md`.
 
+pub mod a2s;
 pub mod address;
+pub mod servers;
 pub mod line;
 pub mod links;
 pub mod log;
