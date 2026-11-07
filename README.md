@@ -195,9 +195,19 @@ the game closes while the pack is starting, the next start skips it once by itse
   the main menu or over the game:
   - **Lines:** the last 50,000 console lines with their time and colour, kept from the moment the game
     starts. Warnings show in amber and errors in red, and text that isn't valid UTF-8 is cleaned.
-  - **Finding things:** search as you type, "Warnings and errors" only, and "Collapse repeats" (the same
-    line again just adds to a count).
-  - **Copying:** Copy takes what's shown; clicking a line copies that line.
+  - **Finding things:**
+    - **Search** as you type (Ctrl+F) shows only the lines with it. With "Mark, don't filter", every line
+      stays and the matches are marked; Enter (or F3) goes to the next, Shift+Enter to the previous.
+      "Lua pattern" searches with a Lua pattern.
+    - **Chips** for errors, warnings, network (connects, drops, timeouts), Workshop and the pack's own lines
+      show how many there are of each and narrow the log to the ones picked.
+    - **Collapse repeats** folds the same line into a count, also when it comes back within a few lines and
+      10 seconds, so spam ("x512 in 10 s") doesn't bury the rest.
+  - **Dividers** mark where a join starts, where you're in game and where you leave. While you're scrolled up,
+    a pill says how many lines came in below and takes you back down.
+  - **Copying:** drag over lines (Shift+click extends) and Ctrl+C or Copy copies them; Copy with nothing
+    selected takes everything shown. Right-click a line to copy it, search for it, show only lines like it,
+    or, for a Lua file, ask the game which addon it's from (`whereis`).
   - **Typing:** as you type a command's name, the matches show with their current values and what they do
     (from the engine's own command list, read once in the background), and Tab completes. Once a setting is
     typed, its value, default, flags and help show above the line, with "Reset to default". Ctrl+R searches
