@@ -257,6 +257,7 @@ check('null removes the escape card', doc.getElementById('meowy-esc'), null);
 // ---------------------------------------------------------------------------
 // The Meowy home screen (src/menu/shell.js): our home inside the stock page.
 const shellSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'menu', 'shell.js'), 'utf8');
+const browserSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'menu', 'browser.js'), 'utf8');
 function stockPage() {
 	fresh();
 	const view = new El('div'); // ng-view
@@ -274,7 +275,9 @@ function stockPage() {
 	const posts = [];
 	const win = { meowy: { post: (k, v) => posts.push([k, v]) } };
 	const loc = { hash: '#/' };
-	new Function('window', 'document', 'location', 'lua', shellSrc)(win, doc, loc, { Run: s => luaRuns.push(s) });
+	// As module.cpp's MenuShellJs sends them: Find servers, then the home.
+	new Function('window', 'document', 'location', 'lua', 'setTimeout', 'clearTimeout', browserSrc + '\n' + shellSrc)(win, doc, loc, { Run: s => luaRuns.push(s) },
+		fn => { timers.push(fn); return timers.length; }, () => {});
 	return { win, posts, loc, view, main };
 }
 let S = stockPage();
@@ -292,64 +295,286 @@ check('shell: sent again, still one', S.main.querySelectorAll('#meowy-shell').le
 const navs = shellEl().querySelectorAll('.ms-link').filter(a => a.textContent && !a.className.includes('ms-cont'));
 const byText = t => navs.find(a => a.textContent === t);
 byText('Find servers').onclick();
-check("shell: Find servers opens Garry's Mod's browser", S.loc.hash, '#/servers/');
-check('shell: not the browse view', shellEl().className, '');
-S.loc.hash = '#/';
-S.win.MeowyBrowse.open();
-check('shell: the browse view opens', shellEl().className, 'ms-browsing');
-check('shell: and asks for the list', JSON.stringify(S.posts.pop()), '["browse",""]');
-// The list arrives in batches; filtered, sorted, at most 200 drawn; rows joined by number.
+check('shell: Find servers opens the new browser', shellEl().className, 'ms-browsing');
+check('shell: and asks for the internet list', JSON.stringify(S.posts.pop()), '["browse","internet"]');
+// Find servers (src/menu/browser.js), in the home: the list in batches, the
+// gamemodes, a gamemode's servers in columns; rows asked for by number.
 const bview = () => shellEl().querySelector('.ms-browse');
-const bnames = () => bview().querySelectorAll('.mb-name').map(e => e.textContent);
+const BL = S.win.MeowyBrowserLogic;
+S.win.GMOD_VERSION_INT = 250107;
+S.win.DoWeHaveMap = m => m !== 'rp_missing';
+S.win.subscriptions = { Contains: id => id === '111' };
 S.win.MeowyBrowse.reset(1, true);
 S.win.MeowyBrowse.add(1, [
-	{ i: 1, n: 'Small RP', m: 'rp_a', g: 'DarkRP', c: 'rp', p: 5, x: 32, ms: 40, pw: false },
-	{ i: 2, n: '<b>Big</b> TTT', m: 'ttt_b', g: 'TTT', c: 'pvp', p: 30, x: 32, ms: 90, pw: false },
-	{ i: 3, n: 'Full RP', m: 'rp_c', g: 'DarkRP', c: 'rp', p: 64, x: 64, ms: 20, pw: true },
+	{ i: 1, a: '1.1.1.1:27015', n: 'Small RP', d: 'DarkRP', m: 'rp_a', g: 'darkrp', c: 'rp', p: 5, x: 32, b: 0, ms: 40, pw: false, ws: '111', f: 'gb', v: 250107 },
+	{ i: 2, a: '2.2.2.2:27015', n: '<b>Big</b> TTT', d: 'Trouble in Terrorist Town', m: 'ttt_b', g: 'terrortown', c: 'pvp', p: 30, x: 32, ms: 90, ws: '222', v: 250101 },
+	{ i: 3, a: '3.3.3.3:27015', n: 'Full RP', d: 'DarkRP', m: 'rp_missing', g: 'darkrp', c: 'rp', p: 64, x: 64, ms: 20, pw: true, v: 250201, lp: 1700000000, fv: true },
 	{ i: 'x', n: 'bad row' },
-], false, 0.8);
-S.win.MeowyBrowse.add(9, [{ i: 9, n: 'Old list', m: '', g: '', c: '', p: 99, x: 100, ms: 1 }], false, 1);
+	{ i: 4, a: '4.4.4.4:27015', n: 'One slot', g: 'sandbox', p: 0, x: 1, ms: 5 },
+], false, 0.8, 1);
+S.win.MeowyBrowse.add(9, [{ i: 9, a: '9.9.9.9:1', n: 'Old list', g: 'x', p: 99, x: 100, ms: 1 }], false, 1, 1);
 S.win.MeowyBrowse.flush();
-check('browse: most players first', bnames().join('|'), 'Full RP|<b>Big</b> TTT|Small RP');
-check('browse: names are text', bview().all().some(e => e.tagName === 'B'), false);
-check('browse: still loading', bview().querySelector('.mb-status').textContent, '3 servers with players so far…');
-check('browse: players, password, ping', bview().querySelectorAll('.mb-right')[0].textContent, '64/64 · password · 20 ms');
-const chipBy = t => bview().querySelectorAll('.mb-chip').find(c => c.textContent === t);
-chipBy('Not full').onclick();
-check('browse: not full', bnames().join('|'), '<b>Big</b> TTT|Small RP');
-chipBy('Roleplay').onclick();
-check('browse: a category', bnames().join('|'), 'Small RP');
-check('browse: what matches', bview().querySelector('.mb-status').textContent, '3 servers with players so far… · 1 match');
-chipBy('Roleplay').onclick();
-chipBy('Not full').onclick();
-chipBy('Sorted by players').onclick();
-check('browse: by ping', bnames().join('|'), 'Full RP|Small RP|<b>Big</b> TTT');
-chipBy('Sorted by ping').onclick();
-const bfilter = bview().querySelector('.mb-filter');
-bfilter.value = 'ttt';
-bfilter.oninput();
-check('browse: filter by name, map or gamemode', bnames().join('|'), '<b>Big</b> TTT');
-bfilter.onkeydown(key(bfilter, 13));
-check('browse: Enter joins by number', JSON.stringify(S.posts.pop()), '["browse_join",2]');
-bfilter.onkeydown(key(bfilter, 27));
-check('browse: Esc clears the filter first', bfilter.value + '|' + shellEl().className, '|ms-browsing');
-bview().querySelectorAll('.mb-row')[2].onclick();
-check('browse: a click joins by number', JSON.stringify(S.posts.pop()), '["browse_join",1]');
-S.win.MeowyBrowse.add(1, [], true, 19.9);
+const tileNames = () => bview().querySelectorAll('.mb-gm').map(t => t.querySelector('.mb-gmname')._text);
+const sideText = cls => bview().querySelector(cls).textContent;
+const btn = t => bview().querySelectorAll('.mb-btn').find(b => b.textContent === t);
+const link = t => bview().querySelectorAll('.mb-link').find(b => b.textContent === t);
+check('browser: gamemodes, most players first, every gamemode on top', tileNames().join('|'), 'Every gamemode|DarkRP|Trouble in Terrorist Town');
+check('browser: counts (older lists and one-slot servers left out)', bview().querySelector('.mb-side').querySelectorAll('.mb-small')[0].textContent, '3 servers \u00b7 2 gamemodes');
+check('browser: still listing', sideText('.mb-status'), 'Listing servers with players\u2026 0.8 s');
+check('browser: a tile has its players, servers and category',
+	bview().querySelectorAll('.mb-gm')[1].querySelector('.mb-gmstats').textContent + ' / ' + bview().querySelectorAll('.mb-gm')[1].querySelector('.mb-tag').textContent,
+	'69 players on 2 servers / Roleplay');
+check('browser: Install for a gamemode not subscribed to', bview().querySelectorAll('.mb-gm').map(t => !!t.querySelector('.mb-install')).join(','), 'false,false,true');
+bview().querySelectorAll('.mb-gm')[2].querySelector('.mb-install').onclick({ stopPropagation() {} });
+check('browser: Install asks for that Workshop item', JSON.stringify(S.posts.pop()), '["browse_install","222"]');
+btn('Roleplay').onclick();
+check('browser: a category, only it', tileNames().join('|'), 'DarkRP');
+btn('Roleplay').onclick();
+check('browser: again, hidden', tileNames().join('|'), 'Trouble in Terrorist Town');
+btn('Roleplay').onclick();
+check('browser: again, either', tileNames().join('|'), 'Every gamemode|DarkRP|Trouble in Terrorist Town');
+btn('Name').onclick();
+check('browser: gamemodes by name', tileNames().join('|'), 'Every gamemode|DarkRP|Trouble in Terrorist Town');
+btn('Servers').onclick();
+check('browser: by servers', tileNames()[1], 'DarkRP');
+btn('Players').onclick();
+const gmSearch = bview().querySelector('.mb-gmsearch');
+gmSearch.value = 'TERROR';
+gmSearch.oninput();
+check('browser: a gamemode by name or title', tileNames().join('|'), 'Trouble in Terrorist Town');
+gmSearch.value = '';
+gmSearch.oninput();
+// A gamemode's servers.
+bview().querySelectorAll('.mb-gm')[1].onclick();
+const rowNames = () => bview().querySelectorAll('.mb-srow').map(r => r.querySelector('.mb-c-name').children.filter(c => c.tagName === '#TEXT').map(c => c.textContent).join(''));
+check('browser: its servers, best ranked first', rowNames().join('|'), 'Small RP|Full RP');
+check('browser: the page says which gamemode', bview().querySelector('.mb-main').querySelector('.mb-title').textContent, 'DarkRP');
+const full = bview().querySelectorAll('.mb-srow')[1];
+check('browser: a missing map marked', full.className.split(' ').includes('nomap'), true);
+check('browser: a favourite starred', full.querySelector('.mb-fav').className, 'mb-fav on');
+check('browser: a password marked', !!full.querySelector('.mb-lock'), true);
+check('browser: a newer version tagged', full.querySelector('.mb-tag').textContent, 'newer: 2025.02.01');
+check('browser: last visit', /^last visit \d\d\.\d\d\.2023 \d\d:\d\d$/.test(full.querySelector('.mb-last').textContent), true);
+check('browser: players and ping', full.querySelector('.mb-c-ply').textContent + ' ' + full.querySelector('.mb-c-ping').textContent, '64 / 64 20');
+check('browser: a region flag', bview().querySelectorAll('.mb-srow')[0].querySelector('.mb-flag').src, 'asset://garrysmod/materials/flags16/gb.png');
+const head = t => bview().querySelector('.mb-thead').children.find(h => h.textContent.indexOf(t) === 0);
+head('Players').onclick();
+check('browser: by players', rowNames().join('|'), 'Full RP|Small RP');
+head('Players').onclick();
+check('browser: clicked again, reversed', rowNames().join('|'), 'Small RP|Full RP');
+head('Ranking').onclick();
+bview().querySelectorAll('.mb-srow')[1].onclick();
+check('browser: a click selects', bview().querySelectorAll('.mb-srow')[1].className.split(' ').includes('sel'), true);
+check('browser: and joins nothing', S.posts.length === 0 || S.posts[S.posts.length - 1][0] !== 'browse_join', true);
+bview().querySelectorAll('.mb-srow')[0].ondblclick();
+check('browser: a double-click joins by number', JSON.stringify(S.posts.pop()), '["browse_join",1]');
+S.posts.length = 0;
+bview().querySelectorAll('.mb-srow')[1].ondblclick();
+check('browser: a password server waits for its password', S.posts.some(p => p[0] === 'browse_join'), false);
+const pass = bview().querySelector('.mb-pass');
+check('browser: its password field shown', !!pass && doc.activeElement === pass, true);
+pass.value = 'hunter2';
+pass.oninput();
+pass.onkeydown(key(pass, 13));
+check('browser: Enter sends the password, then joins', JSON.stringify(S.posts.slice(-2)), '[["browse_pass","3:hunter2"],["browse_join",3]]');
+let prevented = false;
+bview().querySelectorAll('.mb-srow')[0].oncontextmenu({ preventDefault() { prevented = true; } });
+check('browser: right-click copies the address', JSON.stringify(S.posts.pop()) + prevented, '["browse_copy",1]true');
+bview().querySelectorAll('.mb-srow')[0].querySelector('.mb-fav').onclick({ stopPropagation() {} });
+check('browser: the star', JSON.stringify(S.posts.pop()), '["browse_fav",1]');
+check('browser: starred at once', bview().querySelectorAll('.mb-srow')[0].querySelector('.mb-fav').className, 'mb-fav on');
+const search = bview().querySelector('.mb-search');
+search.value = 'full';
+search.oninput();
+check('browser: search names', rowNames().join('|'), 'Full RP');
+search.value = '1.1.1';
+search.oninput();
+check('browser: search an address', rowNames().join('|'), 'Small RP');
+search.value = 'RP_A';
+search.oninput();
+check('browser: search maps, any case', rowNames().join('|'), 'Small RP');
+search.onkeydown(key(search, 27));
+check('browser: Esc clears the search', search.value + rowNames().length, '2');
+search.onkeydown(key(search, 40));
+search.onkeydown(key(search, 40));
+search.onkeydown(key(search, 13));
+check('browser: Down, Down, Enter joins the second (its password kept)', JSON.stringify(S.posts.slice(-2)), '[["browse_pass","3:hunter2"],["browse_join",3]]');
+check('browser: names are text', bview().all().some(e => e.tagName === 'B'), false);
+// The picked server: its details, players (the game's SetPlayerList) and live
+// numbers (UpdateServer), Join when a slot opens.
+const det = () => bview().querySelector('.mb-detail');
+check('details: shown for the picked server', det().style.display + ' ' + det().querySelector('.mb-dname').textContent, 'block Full RP');
+check('details: facts', det().querySelectorAll('.mb-fact').map(f => f.children[0].textContent).join(','), 'Gamemode,Map,Players,Ping,Version,Last visit');
+check('details: the list makes room', bview().querySelector('.mb-table').style.right, '352px');
+S.posts.length = 0;
+flush();
+check('details: its players and numbers asked for', S.posts.some(p => p[0] === 'browse_select' && p[1] === 3), true);
+check('details: waiting for players', det().textContent.indexOf('Asking the server') >= 0, true);
+S.win.SetPlayerList('9.9.9.9:1', [{ name: 'Nobody', score: 0, time: 1 }]);
+S.win.SetPlayerList('3.3.3.3:27015', [{ name: 'Alice', score: 5, time: 4000 }, { name: '<b>Bob</b>', score: 1, time: 30 }]);
+const prows = () => det().querySelectorAll('.mb-prow').slice(1).map(r => r.children.map(c => c.textContent).join('/'));
+check('details: players, longest first, as text', prows().join(' | '), 'Alice/5/1 h 06 | <b>Bob</b>/1/30 s');
+check('details: no markup from names', det().all().some(e => e.tagName === 'B'), false);
+S.win.UpdateServer('3.3.3.3:27015', 33, 'Full RP', 'rp_missing', 64, 64, 0, true);
+const joinBtn = () => det().querySelector('.mb-join');
+check('details: full', joinBtn().textContent, 'Join anyway');
+const waitBtn = () => det().querySelectorAll('.mb-btn').find(b => b.textContent.indexOf('slot') >= 0);
+waitBtn().onclick();
+check('details: waiting for a slot', waitBtn().textContent, 'Waiting for a slot… (cancel)');
+S.posts.length = 0;
+S.win.UpdateServer('3.3.3.3:27015', 30, 'Full RP', 'rp_missing', 63, 64, 0, true);
+check('details: a slot opened, joined (with its password)', JSON.stringify(S.posts), '[["browse_pass","3:hunter2"],["browse_join",3]]');
+check('details: the row has the new numbers', bview().querySelectorAll('.mb-srow').find(r => r.className.indexOf('sel') >= 0).querySelector('.mb-c-ply').textContent, '63 / 64');
+det().querySelectorAll('.mb-btn').find(b => b.textContent === 'Copy address').onclick();
+check('details: Copy address', JSON.stringify(S.posts.pop()), '["browse_copy",3]');
+det().querySelector('.mb-x').onclick();
+check('details: closed', det().style.display + ' ' + bview().querySelector('.mb-table').style.right, 'none 0px');
+
+// Filters, kept between starts.
+const sbtn = t => bview().querySelector('.mb-side').querySelectorAll('.mb-btn').find(b => b.textContent === t);
+sbtn('No password').onclick();
+check('filters: no password', rowNames().join('|'), 'Small RP');
+check('filters: the count says so', bview().querySelector('.mb-main').querySelector('.mb-small').textContent, '69 players on 1 server shown of 2');
+bview().querySelector('.mb-side').querySelectorAll('.mb-link').find(l => l.textContent === 'Clear filters').onclick();
+check('filters: cleared', rowNames().length, 2);
+const nums = bview().querySelector('.mb-side').querySelectorAll('.mb-num');
+nums[2].value = '35';
+nums[2].oninput();
+check('filters: ping at most', rowNames().join('|'), 'Full RP');
+nums[2].value = '';
+nums[2].oninput();
+nums[0].value = '6';
+nums[0].oninput();
+check('filters: at least 6 players', rowNames().join('|'), 'Full RP');
+nums[0].value = '';
+nums[0].oninput();
+const chipGb = () => bview().querySelector('.mb-side').querySelectorAll('.mb-flagchip')[0];
+check('regions: the flags here', bview().querySelector('.mb-side').querySelectorAll('.mb-flagchip').map(c => c.textContent).join(','), 'gb');
+chipGb().onclick();
+check('regions: only GB', rowNames().join('|'), 'Small RP');
+chipGb().onclick();
+check('regions: never GB (no flag still shows)', rowNames().join('|'), 'Full RP');
+S.posts.length = 0;
+flush();
+const saved = S.posts.filter(p => p[0] === 'browse_prefs').pop();
+check('filters: saved', saved && JSON.stringify(JSON.parse(saved[1]).r), '{"gb":"avoid"}');
+chipGb().onclick();
+check('regions: either again', rowNames().length, 2);
+// Every gamemode, and a long list: only the rows on screen are drawn.
+search.onkeydown(key(search, 27));
+check('browser: Esc again, back to the gamemodes', tileNames()[0], 'Every gamemode');
+const many = [];
+for (let i = 0; i < 600; i++) many.push({ i: 100 + i, a: '5.5.' + Math.floor(i / 250) + '.' + (i % 250) + ':27015', n: 'Box ' + i, g: 'sandbox', p: 1, x: 10, ms: 10 + i });
+S.win.MeowyBrowse.add(1, many, false, 3, 2);
 S.win.MeowyBrowse.flush();
-check('browse: complete', bview().querySelector('.mb-status').textContent, '3 servers with players, complete in 19.9 s');
-bfilter.onkeydown(key(bfilter, 27));
-check('browse: Esc again goes back', shellEl().className, '');
-check('browse: and stops asking', JSON.stringify(S.posts.pop()), '["browse_stop",""]');
+check('browser: the empty ones being listed', sideText('.mb-status'), 'Listing empty servers\u2026 3 s');
+bview().querySelectorAll('.mb-gm')[0].onclick();
+check('browser: every gamemode, every server', bview().querySelector('.mb-main').querySelector('.mb-small').textContent, '699 players on 603 servers');
+const body = bview().querySelector('.mb-tbody');
+check('browser: a long list, only a screenful drawn', bview().querySelectorAll('.mb-srow').length <= 60, true);
+body.clientHeight = 260;
+body.scrollTop = 26 * 300;
+body.onscroll();
+const firstDrawn = Math.floor(26 * 300 / 26) - 20;
+check('browser: scrolled, the rows there drawn', body.children[0].style.height, (firstDrawn * 26) + 'px');
+check('browser: the rest kept as space', body.children[2].style.height, ((603 - (300 + 10 + 20)) * 26) + 'px');
+S.win.MeowyBrowse.add(1, [{ i: 900, a: '6.6.6.6:27015', n: 'Late', g: 'sandbox', p: 50, x: 60, ms: 5 }], false, 4, 2);
+S.win.MeowyBrowse.flush();
+check('browser: a server arriving doesn\'t move the list', body.scrollTop, 26 * 300);
+// Stop, complete, Back; reopening soon keeps the list.
+btn('Stop').onclick();
+check('browser: Stop', JSON.stringify(S.posts.pop()) + ' ' + sideText('.mb-status'), '["browse_stop",""] Stopped after 4 s');
+S.win.MeowyBrowse.add(1, [], true, 19.9, 2);
+S.win.MeowyBrowse.flush();
+check('browser: complete', sideText('.mb-status'), 'Complete in 19.9 s');
+check('browser: Refresh then', !!btn('Refresh'), true);
+link('Back').onclick();
+check('browser: Back closes it', shellEl().className, '');
+check('browser: a finished list isn\'t stopped again', S.posts.length === 0 || S.posts[S.posts.length - 1][0] !== 'browse_stop', true);
 S.win.MeowyBrowse.open();
-check('browse: reopened soon after, the list is kept', S.posts.length === 0 || S.posts[S.posts.length - 1][0] !== 'browse', true);
-chipBy("Garry's Mod's list").onclick();
-check('browse: Garry\'s Mod\'s list is still there', S.loc.hash, '#/servers/');
-check('browse: leaving it stops asking', JSON.stringify(S.posts.pop()), '["browse_stop",""]');
+check('browser: reopened soon after, the list is kept', S.posts.length === 0 || S.posts[S.posts.length - 1][0] !== 'browse', true);
+link("Garry's Mod's list").onclick();
+check("browser: Garry's Mod's list is still there", S.loc.hash + '|' + shellEl().className, '#/servers/|');
+S.loc.hash = '#/';
 S.win.MeowyBrowse.reset(2, false);
 S.win.MeowyBrowse.open();
-check('browse: without Steam\'s list, says where to go', bview().querySelector('.mb-status').textContent, "Steam's server list isn't available here: use Garry's Mod's list.");
-chipBy('Back').onclick();
+check('browser: without Steam\'s list, says where to go', sideText('.mb-status'), "Steam's server list isn't available here: use Garry's Mod's list.");
+// The other lists: Favourites, History, Local network, Friends; one at a time,
+// each kept; every gamemode in one list with a Gamemode column.
+const tabLink = t => bview().querySelector('.mb-side').querySelector('.mb-tabs').children.find(a => a.textContent === t);
+check('tabs: every list', bview().querySelector('.mb-side').querySelector('.mb-tabs').children.map(a => a.textContent).join(','), 'Internet,Favourites,History,Local network,Friends');
+S.posts.length = 0;
+tabLink('Favourites').onclick();
+check('tabs: Favourites asked for', JSON.stringify(S.posts.pop()), '["browse","favorite"]');
+S.win.MeowyBrowse.reset(5, true, 'favorite', '');
+S.win.MeowyBrowse.add(5, [
+	{ i: 50, a: '7.7.7.7:27015', n: 'My RP', d: 'DarkRP', m: 'rp_a', g: 'darkrp', p: 3, x: 20, ms: 30, fv: true },
+	{ i: 51, a: '8.8.8.8:27015', n: 'My TTT', d: 'Trouble in Terrorist Town', m: 'ttt_x', g: 'terrortown', p: 9, x: 20, ms: 60, fv: true },
+], true, 0.4, 1);
+S.win.MeowyBrowse.flush();
+check('tabs: Favourites, one list', bview().querySelector('.mb-main').querySelector('.mb-title').textContent, 'Favourites');
+check('tabs: a Gamemode column', bview().querySelector('.mb-table').className + ' ' + bview().querySelectorAll('.mb-srow').map(r => r.querySelector('.mb-c-gm').textContent).join(','),
+	'mb-table wide DarkRP,Trouble in Terrorist Town');
+check('tabs: no way to the gamemodes from here', !!bview().querySelector('.mb-side').querySelectorAll('.mb-link').find(l => l.textContent === '‹ All gamemodes'), false);
+// Add a server by its address.
+const findIn = bview().querySelector('.mb-find');
+findIn.value = ' 1.2.3.4 ';
+S.posts.length = 0;
+findIn.onkeydown(key(findIn, 13));
+check('find: asked for', JSON.stringify(S.posts.pop()), '["browse_find","1.2.3.4"]');
+check('find: waiting', bview().querySelector('.mb-side').textContent.indexOf('Asking 1.2.3.4') >= 0, true);
+S.win.MeowyBrowse.found(1, [{ i: 60, a: '1.2.3.4:27016', n: 'Found it', g: 'sandbox', p: 1, x: 8, ms: 20 }], true);
+const foundEl = bview().querySelector('.mb-found');
+check('find: what answered', foundEl.children[0].textContent + ' / ' + foundEl.children[1].textContent, 'Found it / 1.2.3.4:27016 · 1 / 8 · 20 ms');
+S.posts.length = 0;
+foundEl.querySelectorAll('.mb-btn')[0].onclick();
+check('find: added to the favourites, and the list asked for again', JSON.stringify(S.posts), '[["browse_fav",60],["browse","favorite"]]');
+S.win.MeowyBrowse.found(2, [], true);
+check('find: nothing there', bview().querySelector('.mb-side').textContent.indexOf('Nothing answered at 1.2.3.4.') >= 0, true);
+// History: the last visit first.
+S.posts.length = 0;
+tabLink('History').onclick();
+check('tabs: History asked for', JSON.stringify(S.posts.pop()), '["browse","history"]');
+S.win.MeowyBrowse.reset(6, true, 'history', '');
+S.win.MeowyBrowse.add(6, [
+	{ i: 70, a: '7.7.7.7:27015', n: 'Older', g: 'darkrp', p: 3, x: 20, ms: 30, lp: 1600000000 },
+	{ i: 71, a: '8.8.8.8:27015', n: 'Newer', g: 'darkrp', p: 3, x: 20, ms: 30, lp: 1700000000 },
+], true, 0.3, 1);
+S.win.MeowyBrowse.flush();
+check('tabs: History, the last visit first', rowNames().join('|'), 'Newer|Older');
+check('tabs: a Last visit column', bview().querySelector('.mb-thead').children.map(h => h.textContent).pop(), 'Last visit ▾');
+// Back to Favourites: kept, not asked for again.
+S.posts.length = 0;
+tabLink('Favourites').onclick();
+check('tabs: a list already there is kept', S.posts.length + ' ' + rowNames().length, '0 2');
+// Local network and Friends are asked for like the others.
+tabLink('Local network').onclick();
+check('tabs: Local network asked for', JSON.stringify(S.posts.pop()), '["browse","lan"]');
+tabLink('Friends').onclick();
+check('tabs: Friends asked for', JSON.stringify(S.posts.pop()), '["browse","friends"]');
+tabLink('Internet').onclick();
+check('tabs: Internet again', JSON.stringify(S.posts.pop()) + ' ' + bview().querySelector('.mb-main').querySelector('.mb-title').textContent, '["browse","internet"] Gamemodes');
+link('Back').onclick();
+
+// The rules on their own.
+check('rules: rank as Garry\'s Mod ranks', BL.rank({ ping: 40, players: 5, pass: false, verC: 0, anon: false }), 30);
+check('rules: empty, password, anonymous', BL.rank({ ping: 10, players: 0, pass: true, verC: 0, anon: true }), 1385);
+check('rules: bars', [10, 60, 150, 250, 900].map(BL.rankBars).join(''), '54321');
+check('rules: version text', BL.formatVersion(250107), '2025.01.07');
+check('rules: flags', BL.flag('EU') + ',' + BL.flag('u-s') + ',' + BL.flag('de'), 'europeanunion,,de');
+const sv = BL.server({ i: 1, a: '1.2.3.4:1', n: 'X', d: '[L] Sandbox', m: 'gm_flat', p: 3, x: 8, ms: 50, f: 'us', v: 250101 }, 250107, () => true);
+check('rules: a listen server', sv.listen + ' ' + sv.desc + ' ' + sv.gm, 'true Sandbox [L] Sandbox');
+check('rules: outdated', sv.verC, -1);
+const F = (f) => BL.serverShown(sv, f);
+check('rules: filters', [F({}), F({ maxPing: 40 }), F({ notFull: true }), F({ minPlayers: 4 }), F({ maxPlayers: 2 }), F({ hideOutdated: true }), F({ hasPlayers: true })].join(','),
+	'true,false,true,false,false,false,true');
+check('rules: flags avoid and prefer', [F({ flags: { us: 'avoid' } }), F({ flags: { de: 'prefer' } }), F({ flags: { us: 'prefer' } })].join(','), 'false,false,true');
+check('rules: cycle', [BL.cycle(undefined, 'only', 'hide'), BL.cycle('only', 'only', 'hide'), BL.cycle('hide', 'only', 'hide')].join(','), 'only,hide,');
+const g = BL.gamemode('darkrp');
+BL.addServer(g, BL.server({ i: 1, n: 'a', d: 'darkrp', g: 'darkrp', p: 50, x: 60 }, 0));
+BL.addServer(g, BL.server({ i: 2, n: 'b', d: 'DarkRP', g: 'darkrp', p: 1, x: 60 }, 0));
+check('rules: a title other than the internal name wins', g.title, 'DarkRP');
+check('rules: roleplay guessed from the title', g.cat, 'rp');
 S.loc.hash = '#/';
 byText('Start new game').onclick();
 check('shell: Start new game', S.loc.hash, '#/newgame/');
@@ -441,7 +666,7 @@ ssearch.value = 'wire';
 ssearch.oninput();
 check('shell: addons found', shellEl().querySelectorAll('.ms-name').map(e => e.textContent).join('|'), 'Wiremod|<img src=x>Wire Extras');
 check('shell: an Addons section', shellEl().querySelectorAll('.ms-title').map(e => e.textContent).join(','), 'Addons');
-check('shell: addon titles are text', shellEl().all().some(e => e.tagName === 'IMG'), false);
+check('shell: addon titles are text', shellEl().querySelector('.ms-home').all().some(e => e.tagName === 'IMG'), false);
 check('shell: a disabled addon dimmed', shellEl().querySelectorAll('.ms-row')[1].className.includes('ms-dim'), true);
 shellEl().querySelectorAll('.ms-row')[0].onclick();
 check('shell: an addon opens Addons', S.loc.hash, '#/addons/');
@@ -497,6 +722,28 @@ S.win.RootScope.ServerType = 'favorite';
 S.win.MeowyFriendsTab();
 check('friends tab: not active once another list is chosen', ftab().className, '');
 check('friends tab: never lua.Run', luaRuns.length, 0);
+
+// The browser's settings from the last start (menu_page.lua sends them with the
+// first list), and the honest list's tags.
+S = stockPage();
+S.win.MeowyShell(true);
+S.win.MeowyBrowse.open();
+S.win.MeowyBrowse.reset(1, true, 'internet', '{"s":"name","c":{"rp":"hide","x":"only"},"f":[1,0,0,0,2,0,100],"r":{"gb":"avoid","BAD1":"prefer"}}');
+S.win.MeowyBrowse.add(1, [
+	{ i: 1, a: '1.1.1.1:27015', n: 'Faker', d: 'Sandbox', m: 'gm_a', g: 'sandbox', p: 5, x: 32, ms: 40, h: 'FAKE - 5 real', hr: 5 },
+	{ i: 2, a: '2.2.2.2:27015', n: 'Honest', d: 'Sandbox', m: 'gm_b', g: 'sandbox', p: 9, x: 32, ms: 45, h: 'VERIFIED' },
+	{ i: 3, a: '3.3.3.3:27015', n: 'Unknown', d: 'Sandbox', m: 'gm_c', g: 'sandbox', p: 9, x: 32, ms: 45, h: 'UNVERIFIED', hp: 40 },
+], false, 1, 1);
+S.win.MeowyBrowse.flush();
+const side2 = () => doc.getElementById('meowy-shell').querySelector('.mb-side');
+check('settings: the sort kept', side2().querySelectorAll('.mb-btn').find(b => b.textContent === 'Name').className, 'mb-btn on');
+check('settings: a hidden category kept', side2().querySelectorAll('.mb-btn').find(b => b.textContent === 'Roleplay').className, 'mb-btn off');
+check('settings: unknown categories dropped', side2().querySelectorAll('.mb-btn').filter(b => b.className === 'mb-btn on').length, 1);
+doc.getElementById('meowy-shell').querySelectorAll('.mb-gm')[0].onclick();
+check('settings: filters kept', side2().querySelectorAll('.mb-btn').find(b => b.textContent === 'Not full').className + ' ' + side2().querySelectorAll('.mb-num').map(n => n.value).join(','), 'mb-btn on 2,,100');
+check('settings: only valid regions', side2().querySelectorAll('.mb-flagchip').map(c => c.textContent + ':' + c.className).join(','), 'gb:mb-flagchip off');
+const tags2 = doc.getElementById('meowy-shell').querySelectorAll('.mb-srow').map(r => r.querySelector('.mb-c-name').children.filter(c => c.tagName === '#TEXT')[0].textContent + '=' + r.querySelector('.mb-tag').textContent + ':' + r.querySelector('.mb-tag').className);
+check('honest: tags, unverified ranked lower', tags2.join(' | '), 'Honest=VERIFIED:mb-tag good | Faker=FAKE - 5 real:mb-tag bad | Unknown=UNVERIFIED:mb-tag');
 
 console.log(`${count} checks, ${failures} failed`);
 process.exit(failures ? 1 : 0);

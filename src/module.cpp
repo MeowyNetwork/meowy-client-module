@@ -1666,7 +1666,8 @@ namespace
 	}
 
 	// ServerQueryTake(id) -> { {address, name, map, gamedir, desc, tags, ping,
-	// players, max, bots, pass, secure, lastplayed}, ... }, finished, failed.
+	// players, max, bots, pass, secure, anon, lastplayed, version}, ... },
+	// finished, failed. version is the network version (the tags' ver: is the build).
 	// Server text is the server's own: shown as text only.
 	int ServerQueryTake(lua_State* L)
 	{
@@ -1703,6 +1704,7 @@ namespace
 			LUA->PushBool(s.anonymous);
 			LUA->SetField(-2, "anon");
 			num("lastplayed", s.lastPlayed);
+			num("version", s.version);
 			LUA->SetTable(-3);
 		}
 		LUA->PushBool(finished);
@@ -1822,11 +1824,13 @@ namespace
 			"local Logic = (function()\n" + logic + "\nend)()\n" + doctor + glue + home;
 	}
 
-	// MenuShellJs() -> the Meowy home screen's script (src/menu/shell.js), which
-	// menu_page.lua puts into the stock menu page; "" if missing.
+	// MenuShellJs() -> the Meowy home screen's script, which menu_page.lua puts
+	// into the stock menu page: Find servers (src/menu/browser.js) first, then
+	// the home (src/menu/shell.js), which builds it in; "" if missing.
 	int MenuShellJs(lua_State* L)
 	{
-		const std::string js = ResourceText(IDR_MENU_SHELL_JS);
+		const std::string shell = ResourceText(IDR_MENU_SHELL_JS);
+		const std::string js = shell.empty() ? shell : ResourceText(IDR_MENU_BROWSER_JS) + "\n" + shell;
 		L->luabase->PushString(js.c_str(), static_cast<unsigned int>(js.size()));
 		return 1;
 	}
@@ -2199,6 +2203,13 @@ local stockQuery = serverlist.Query
 -- The game's own query, for lists that aren't the browser's (the main menu's
 -- Home card): no count checks, no backend calls.
 meowy.StockServerQuery = stockQuery
+-- For the pack's own Find servers (menu_page.lua): a server's tag ([VERIFIED],
+-- [FAKE - 12 real], ...) and verdict, as this list marks it, and the verdicts fetched.
+meowy.ServerTag = function(address)
+	if not enabled:GetBool() or not isstring(address) then return nil end
+	return tagOf(address)
+end
+meowy.FetchServerRep = function() if enabled:GetBool() then fetchRep() end end
 
 -- Find servers, faster (U6 N1, server_query.h): the browser's Internet list
 -- straight from Steam, whose master server leaves out empty servers before
@@ -2229,7 +2240,9 @@ hook.Add("Think", "MeowyClientPack.FastServerList", function()
 			run.count = run.count + 1
 			local ok, more = pcall(run.data.Callback, s.ping, s.name, s.desc, s.map, s.players, s.max, s.bots, s.pass,
 				s.lastplayed, s.address, tagValue(tags, "gm") or "", tagValue(tags, "gmws") or "0", s.anon,
-				tonumber(tagValue(tags, "ver") or "") or 0, 0, tagValue(tags, "loc") or "", tagValue(tags, "gmc") or "")
+				-- netVersion is the network version and luaVersion the build (the tags' ver:), as the
+				-- game's own list gives them: the page marks a server outdated by the first.
+				tonumber(s.version) or 0, tonumber(tagValue(tags, "ver") or "") or 0, tagValue(tags, "loc") or "", tagValue(tags, "gmc") or "")
 			if not ok then ErrorNoHalt("[Meowy Client Pack] fast server list: " .. tostring(more) .. "\n") end
 			if not ok or more == false then stop = true break end
 		end

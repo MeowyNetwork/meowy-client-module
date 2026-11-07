@@ -41,25 +41,13 @@
 		+ '#meowy-shell .ms-stats { float: right; font-size: 14px; margin-left: 12px; opacity: 0.85; line-height: 22px; }'
 		+ '#meowy-shell .ms-name { font-size: 18px; font-weight: bold; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 22px; }'
 		+ '#meowy-shell .ms-detail { font-size: 14px; opacity: 0.75; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }'
-		// Find servers (the browse view): in place of the lists panel, wider.
-		+ '#meowy-shell .ms-browse { display: none; position: absolute; left: 460px; right: 40px; top: 48px; bottom: 16px; background: rgba(0,0,0,0.6); border-radius: 8px; padding: 10px; box-sizing: border-box; }'
+		// Find servers (src/menu/browser.js): the whole page while it's open.
+		+ '#meowy-shell .ms-browse { display: none; position: absolute; left: 40px; right: 32px; top: 36px; bottom: 16px; }'
 		+ '#meowy-shell.ms-browsing .ms-browse { display: block; }'
-		+ '#meowy-shell.ms-browsing .ms-home { display: none; }'
-		+ '#meowy-shell .mb-bar { margin-bottom: 6px; white-space: nowrap; overflow: hidden; }'
-		+ '#meowy-shell .mb-bar .ms-search { display: inline-block; width: 40%; vertical-align: middle; margin-right: 8px; }'
-		+ '#meowy-shell .mb-chip { display: inline-block; vertical-align: middle; font-size: 14px; padding: 5px 10px; margin: 2px 4px 2px 0; border-radius: 12px; background: rgba(255,255,255,0.1); cursor: pointer; }'
-		+ '#meowy-shell .mb-chip:hover { background: rgba(255,255,255,0.2); }'
-		+ '#meowy-shell .mb-chip.on { background: rgba(255,255,140,0.35); }'
-		+ '#meowy-shell .mb-status { font-size: 13px; opacity: 0.8; margin: 4px 4px 6px 4px; }'
-		+ '#meowy-shell .mb-list { position: absolute; left: 10px; right: 10px; top: 104px; bottom: 10px; overflow-y: auto; }'
-		+ '#meowy-shell .mb-row { cursor: pointer; padding: 5px 8px; border-radius: 4px; overflow: hidden; }'
-		+ '#meowy-shell .mb-row:hover, #meowy-shell .mb-row.ms-sel { background: rgba(255,255,255,0.16); }'
-		+ '#meowy-shell .mb-right { float: right; font-size: 14px; margin-left: 12px; text-align: right; line-height: 20px; opacity: 0.9; }'
-		+ '#meowy-shell .mb-name { font-size: 16px; font-weight: bold; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 20px; }'
-		+ '#meowy-shell .mb-sub { font-size: 13px; opacity: 0.7; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }';
+		+ '#meowy-shell.ms-browsing .ms-home, #meowy-shell.ms-browsing .ms-nav, #meowy-shell.ms-browsing .ms-foot { display: none; }';
 	// [label, kind, value]: "route" goes to the page's own screen; the rest are posts.
 	var LINKS = [
-		['Find servers', 'route', 'servers'], ['Start new game', 'route', 'newgame'], null,
+		['Find servers', 'browse', ''], ['Start new game', 'route', 'newgame'], null,
 		['Addons', 'route', 'addons'], ['Dupes', 'route', 'dupes'], ['Saves', 'route', 'saves'], ['Demos', 'route', 'demos'], null,
 		['Options', 'options', ''], ['Meowy settings', 'settings', ''], null,
 		['Quit', 'quit', '']
@@ -104,7 +92,7 @@
 		a.tabIndex = 0;
 		var act = function () {
 			if (kind === 'route') location.hash = '#/' + value + '/';
-			else if (kind === 'browse') browseOpen(true);
+			else if (kind === 'browse' && browser()) browser().open(true);
 			else post(kind, value);
 		};
 		a.onclick = act;
@@ -151,157 +139,20 @@
 		home.appendChild(node('div', 'ms-news'));
 		root.appendChild(home);
 		root.appendChild(buildBrowse());
-		if (br.open) root.className = 'ms-browsing';
+		if (browser() && browser().isOpen()) root.className = 'ms-browsing';
 		return root;
 	}
 
-	// --- Find servers (the browse view) -------------------------------------------
-	// One list straight from Steam (servers with players), sent by menu_page.lua in
-	// batches with window.MeowyBrowse.add; filtered and sorted here, at most
-	// BROWSE_SHOWN rows drawn. A row is joined by its number (the address stays in Lua).
-	var BROWSE_SHOWN = 200, BROWSE_STALE = 120000;
-	var CATS = [['rp', 'Roleplay'], ['pvp', 'PvP'], ['pve', 'PvE'], ['other', 'Other']];
-	var br = { open: false, gen: 0, rows: [], done: false, ok: true, secs: 0, at: 0, q: '', notFull: false, noPass: false,
-		cat: '', byPing: false, shown: [], sel: 0, timer: null };
-
-	function chip(label, isOn, onClick) {
-		var c = node('span', 'mb-chip' + (isOn ? ' on' : ''), label);
-		c.onclick = onClick;
-		return c;
-	}
+	// --- Find servers (src/menu/browser.js) ------------------------------------------
+	// The pack's own server browser, put into this page in place of the home while
+	// it's open. It's built once and moved into each new copy of the home.
+	function browser() { return window.MeowyBrowser || null; }
 	function buildBrowse() {
 		var panel = node('div', 'ms-browse');
-		var bar = node('div', 'mb-bar');
-		var filter = node('input', 'ms-search mb-filter');
-		filter.type = 'text';
-		filter.maxLength = 64;
-		filter.placeholder = 'Filter by name, map or gamemode';
-		filter.value = br.q;
-		filter.oninput = function () { br.q = filter.value; br.sel = 0; browseRender(); };
-		filter.onkeydown = browseKeys;
-		bar.appendChild(filter);
-		panel.appendChild(bar);
-		panel.appendChild(node('div', 'mb-chips'));
-		panel.appendChild(node('div', 'mb-status'));
-		panel.appendChild(node('div', 'mb-list'));
+		if (browser()) panel.appendChild(browser().element());
 		return panel;
 	}
-	function browseChips() {
-		var s = shell();
-		if (!s) return;
-		var box = s.querySelector('.mb-chips');
-		while (box.firstChild) box.removeChild(box.firstChild);
-		box.appendChild(chip('Not full', br.notFull, function () { br.notFull = !br.notFull; browseRender(); }));
-		box.appendChild(chip('No password', br.noPass, function () { br.noPass = !br.noPass; browseRender(); }));
-		for (var i = 0; i < CATS.length; i++) {
-			box.appendChild(chip(CATS[i][1], br.cat === CATS[i][0], (function (c) {
-				return function () { br.cat = br.cat === c ? '' : c; browseRender(); };
-			})(CATS[i][0])));
-		}
-		box.appendChild(chip(br.byPing ? 'Sorted by ping' : 'Sorted by players', false, function () { br.byPing = !br.byPing; browseRender(); }));
-		box.appendChild(chip('Refresh', false, function () { post('browse'); }));
-		box.appendChild(chip("Garry's Mod's list", false, function () { browseOpen(false); location.hash = '#/servers/'; }));
-		box.appendChild(chip('Back', false, function () { browseOpen(false); }));
-	}
-	function browseOpen(open) {
-		br.open = open;
-		var s = shell();
-		if (s) s.className = open ? 'ms-browsing' : '';
-		if (open) {
-			if (!br.rows.length || Date.now() - br.at > BROWSE_STALE) post('browse');
-			browseRender();
-			var f = s && s.querySelector('.mb-filter');
-			if (f && f.focus) f.focus();
-		} else {
-			post('browse_stop');
-		}
-	}
-	function browseRender() {
-		var s = shell();
-		if (!s || !br.open) return;
-		browseChips();
-		var q = br.q.toLowerCase(), list = s.querySelector('.mb-list'), status = s.querySelector('.mb-status');
-		var picked = [];
-		for (var i = 0; i < br.rows.length; i++) {
-			var r = br.rows[i];
-			if (br.notFull && r.p >= r.x) continue;
-			if (br.noPass && r.pw) continue;
-			if (br.cat && r.c !== br.cat) continue;
-			if (q && (r.n + ' ' + r.m + ' ' + r.g).toLowerCase().indexOf(q) < 0) continue;
-			picked.push(r);
-		}
-		picked.sort(br.byPing
-			? function (a, b) { return a.ms - b.ms || b.p - a.p; }
-			: function (a, b) { return b.p - a.p || a.ms - b.ms; });
-		while (list.firstChild) list.removeChild(list.firstChild);
-		br.shown = picked.slice(0, BROWSE_SHOWN);
-		for (var k = 0; k < br.shown.length; k++) {
-			var row = br.shown[k], el = node('div', 'mb-row');
-			el.appendChild(node('span', 'mb-right', row.p + '/' + row.x + (row.pw ? ' · password' : '') + ' · ' + row.ms + ' ms'));
-			el.appendChild(node('div', 'mb-name', row.n));
-			el.appendChild(node('div', 'mb-sub', row.g + (row.m ? ' · ' + row.m : '')));
-			el.title = row.n;
-			el.onclick = (function (id) { return function () { post('browse_join', id); }; })(row.i);
-			intentOn(el, 'browse_intent', row.i);
-			list.appendChild(el);
-		}
-		if (br.sel >= br.shown.length) br.sel = br.shown.length - 1;
-		if (br.sel < 0) br.sel = 0;
-		browseMark();
-		var text;
-		if (!br.ok) text = "Steam's server list isn't available here: use Garry's Mod's list.";
-		else if (br.done) text = br.rows.length + ' servers with players, complete in ' + br.secs + ' s';
-		else text = br.rows.length + ' servers with players so far…';
-		if (picked.length !== br.rows.length) text += ' · ' + picked.length + ' match';
-		if (picked.length > br.shown.length) text += ', the first ' + br.shown.length + ' shown';
-		status.textContent = text;
-	}
-	function browseMark() {
-		var s = shell(), els = s ? s.querySelectorAll('.mb-row') : [];
-		for (var i = 0; i < els.length; i++) {
-			els[i].className = 'mb-row' + (i === br.sel ? ' ms-sel' : '');
-			if (i === br.sel && els[i].scrollIntoView) els[i].scrollIntoView(false);
-		}
-	}
-	// In the filter box: arrows move, Enter joins, Esc clears (then goes back).
-	function browseKeys(e) {
-		var k = e.keyCode, f = e.target;
-		if (k === 40 || k === 38) {
-			br.sel = Math.max(0, Math.min(br.shown.length - 1, br.sel + (k === 40 ? 1 : -1)));
-			browseMark();
-		} else if (k === 13) {
-			if (br.shown[br.sel]) post('browse_join', br.shown[br.sel].i);
-		} else if (k === 27) {
-			if (f.value) { f.value = ''; br.q = ''; br.sel = 0; browseRender(); } else browseOpen(false);
-		} else {
-			return;
-		}
-		e.preventDefault();
-		e.stopPropagation();
-	}
-	function browseSchedule() {
-		if (br.timer) return;
-		br.timer = setTimeout(function () { br.timer = null; browseRender(); }, 150);
-	}
-	// Find servers opens Garry's Mod's browser while this view is rebuilt; open() shows it.
-	window.MeowyBrowse = {
-		open: function (on) { browseOpen(on !== false); },
-		reset: function (gen, ok) {
-			br.gen = gen; br.rows = []; br.done = !ok; br.ok = !!ok; br.secs = 0; br.at = Date.now(); br.sel = 0;
-			browseRender();
-		},
-		add: function (gen, rows, finished, secs) {
-			if (gen !== br.gen || !rows) return;
-			for (var i = 0; i < rows.length; i++) {
-				var r = rows[i];
-				if (r && typeof r.i === 'number' && typeof r.n === 'string') br.rows.push(r);
-			}
-			if (finished) br.done = true;
-			br.secs = secs;
-			browseSchedule();
-		},
-		flush: function () { if (br.timer) { clearTimeout(br.timer); br.timer = null; } browseRender(); }
-	};
+	if (browser()) browser().onToggle = function (open) { var s = shell(); if (s) s.className = open ? 'ms-browsing' : ''; };
 
 	// One row: a name, an optional detail and stats; act() is what Enter or a click does.
 	function addRow(list, name, detail, stats, dim, act, intentId) {
@@ -525,7 +376,10 @@
 	document.addEventListener('keydown', function (e) {
 		var s = shell(), t = e.target && e.target.tagName;
 		if (!s || t === 'INPUT' || t === 'TEXTAREA') return;
-		if (e.key === '/' || e.keyCode === 191) { s.querySelector(br.open ? '.mb-filter' : '.ms-search').focus(); e.preventDefault(); }
+		if (e.key === '/' || e.keyCode === 191) {
+			if (browser() && browser().isOpen()) browser().focusSearch(); else s.querySelector('.ms-search').focus();
+			e.preventDefault();
+		}
 	}, true);
 
 	// Find servers: a Friends tab after Local Network, home screen on or off.
