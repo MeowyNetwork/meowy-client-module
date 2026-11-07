@@ -48,6 +48,14 @@ jobs:
           cmake --build buildtest --config Release --target startup_hook_smoke
           ./buildtest/Release/startup_hook_smoke.exe
 
+      - name: Fast Lua lookup rules (lua_lookup_smoke, both bitnesses)
+        run: |
+          cmake --build buildtest --config Release --target lua_lookup_smoke
+          ./buildtest/Release/lua_lookup_smoke.exe
+          cmake -S . -B buildtest32 -A Win32 -DMEOWY_BUILD_TESTS=ON
+          cmake --build buildtest32 --config Release --target lua_lookup_smoke
+          ./buildtest32/Release/lua_lookup_smoke.exe
+
       - name: Build installer
         shell: pwsh
         run: ./installer/build.ps1 -Win32 build32/Release/gmcl_meowy_win32.dll -Win64 build64/Release/gmcl_meowy_win64.dll -Boot32 build32/Release/gmsv_meowy_boot_win32.dll -Boot64 build64/Release/gmsv_meowy_boot_win64.dll -Out MeowyClientPack.exe

@@ -19,6 +19,7 @@ add_library(meowy SHARED
 	src/crash_reports.cpp
 	src/hardware.cpp
 	src/engine_patches.cpp
+	src/lua_lookup.cpp
 	src/server_gate.cpp
 	src/discord_ipc.cpp
 	src/loading_screen.cpp
@@ -165,5 +166,13 @@ if(MEOWY_BUILD_TESTS)
 	if(MSVC)
 		set_property(TARGET timeline_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 		target_compile_options(timeline_smoke PRIVATE /W4 /utf-8)
+	endif()
+	# The fast client Lua lookup: same answers as the game's scan on a fake string
+	# table, and the patch site found in the installed client.dll, no game running:
+	#   lua_lookup_smoke [GarrysMod folder] [file to write the stub to]
+	add_executable(lua_lookup_smoke tests/lua_lookup_smoke.cpp src/lua_lookup.cpp)
+	if(MSVC)
+		set_property(TARGET lua_lookup_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+		target_compile_options(lua_lookup_smoke PRIVATE /W4 /utf-8)
 	endif()
 endif()

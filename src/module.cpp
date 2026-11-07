@@ -78,6 +78,7 @@
 #include "crash_reports.h"
 #include "discord_ipc.h"
 #include "engine_patches.h"
+#include "lua_lookup.h"
 #include "hardware.h"
 #include "connect_watch.h"
 #include "loading_screen.h"
@@ -409,6 +410,32 @@ namespace
 	int MaterialReloadState(lua_State* L)
 	{
 		L->luabase->PushString(engine_patches::MaterialReloadState());
+		return 1;
+	}
+
+	// meowy.FastLuaLookup(on) -> true | false, reason. Menu realm only: the
+	// patch must outlive any one server, and this DLL is pinned there.
+	int FastLuaLookup(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		if (!LUA->GetBool(1))
+		{
+			lua_lookup::Uninstall();
+			LUA->PushBool(true);
+			return 1;
+		}
+		std::string why;
+		const bool ok = lua_lookup::Install(why);
+		LUA->PushBool(ok);
+		if (ok)
+			return 1;
+		LUA->PushString(why.c_str());
+		return 2;
+	}
+
+	int FastLuaLookupState(lua_State* L)
+	{
+		L->luabase->PushString(lua_lookup::Describe().c_str());
 		return 1;
 	}
 
@@ -1710,6 +1737,23 @@ concommand.Add("meowy_data_sandbox_status", function()
 	print("[Meowy Client Pack] data sandbox: " .. meowy.DataSandboxDescribe())
 end)
 
+-- Client Lua files are found through the string table's own index instead of
+-- a full scan per include and search path (lua_lookup.h): the same answers,
+-- on any server. Switched only between servers, never while one is loading.
+local fastLookup = CreateConVar("meowy_fast_lua_lookup", "1", FCVAR_ARCHIVE,
+	"Meowy Client Pack: find a server's Lua files through the string table's index (0 = the game's own scan)")
+local fastLookupApplied
+hook.Add("Think", "MeowyClientPack.FastLuaLookup", function()
+	local want = fastLookup:GetBool()
+	if want == fastLookupApplied or IsInLoading() or IsInGame() then return end
+	fastLookupApplied = want
+	local ok, why = meowy.FastLuaLookup(want)
+	if not ok then print("[Meowy Client Pack] fast Lua lookup: " .. tostring(why)) end
+end)
+concommand.Add("meowy_fast_lua_lookup_status", function()
+	print("[Meowy Client Pack] fast Lua lookup: " .. meowy.FastLuaLookupState())
+end)
+
 local stockGameDetails = GameDetails
 if isfunction(stockGameDetails) then
 	GameDetails = function(name, url, map, maxplayers, visible, steamid, ...)
@@ -1876,6 +1920,8 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	SetFunction(LUA, "ResilienceCrashedSession", Guarded<ResilienceCrashedSession>);
 	SetFunction(LUA, "DoctorFacts", Guarded<DoctorFacts>);
 	SetFunction(LUA, "DoctorOpen", Guarded<DoctorOpen>);
+	SetFunction(LUA, "FastLuaLookup", Guarded<FastLuaLookup>);
+	SetFunction(LUA, "FastLuaLookupState", Guarded<FastLuaLookupState>);
 	LUA->SetField(-2, "meowy");
 
 	// data/ was put right by the start-up stub (data_sandbox::Recover, under its

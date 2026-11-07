@@ -61,14 +61,25 @@ the game closes while the pack is starting, the next start skips it once by itse
   seconds of every join. When the server asks for it, the module skips the "throw away" step
   (anything new still loads). The game's materials stay exactly as they were loaded seconds
   earlier.
-  - This is the one place the module changes the game: 6 bytes of `client.dll`, in memory, for
-    that session only. Nothing on disk changes, and no other game is affected.
+  - It changes 6 bytes of `client.dll`, in memory, for that session only. Nothing on disk
+    changes, and no other game is affected.
   - It finds that code by an exact byte pattern and does nothing if anything differs (a
     Garry's Mod update, for example).
   - Turn it off with `meowy_skipmatreload 0` in the console. A server can also turn it off for
     everyone.
   - It's switched on only while you join a Meowy Network server and put back as soon as you're
     in game, so other servers you visit in the same session are never affected.
+- With "Start with the game" on, every server's Lua loads faster, on any server. For each Lua
+  file a server's code loads, Garry's Mod searches the server's file list once per search folder,
+  comparing every name in it. That is ~4,000 searches per join, and on our server it was 16 s of
+  every join. The pack has each search ask the list's own index instead. The answer is the same
+  name, compared byte for byte, so every file resolves exactly as before.
+  - It changes 15 bytes (64-bit) or 5 bytes (32-bit) of `client.dll` in memory, from the moment
+    the game starts. Nothing on disk changes.
+  - It does nothing unless the game's code, the list's type and the index all check out exactly;
+    otherwise the game's own search runs.
+  - Turn it off with `meowy_fast_lua_lookup 0` (it switches back at your next disconnect).
+    `meowy_fast_lua_lookup_status` shows how many files it found.
 - With "Start with the game" on, joins to a Meowy Network server get the pack's own loading
   screen instead of Garry's Mod's. It's a separate window over the game, drawn on its own thread,
   so it keeps moving while the game is busy (Garry's Mod's own screen freezes for most of a join).
@@ -261,8 +272,10 @@ installer/build.ps1 -Win32 build32/Release/gmcl_meowy_win32.dll -Win64 build64/R
 ```
 `-DMEOWY_BUILD_TESTS=ON` adds `ipc_smoke`, which checks the Discord connection without the game:
 `ipc_smoke <discord application id> [seconds]`. It also adds `notify_smoke <scratch folder>` (the
-notification rules), `notify_manual` (a real notification on this PC; see `tests/NOTIFY_MANUAL.md`) and
-`timeline_smoke` (the Steam Timeline marker rules).
+notification rules), `notify_manual` (a real notification on this PC; see `tests/NOTIFY_MANUAL.md`),
+`timeline_smoke` (the Steam Timeline marker rules) and `lua_lookup_smoke [GarrysMod folder] [stub file]`
+(the fast Lua lookup gives the game's answers on a fake string table, and finds its patch site in the
+installed `client.dll` of the same bitness).
 
 Staying connected's and the PC doctor's menu Lua is in `src/lua/` (built into the DLL as resources). Their rules and menu
 glue have offline tests, run by CI with Lua 5.1:
