@@ -101,6 +101,10 @@ end
 local prewarmSetting = meowy.Setting and meowy.Setting("meowy_prewarm", "1",
 	"Meowy Client Pack: read a server's files into memory when you're about to join it (0 = off)")
 local function prewarmOn() return prewarmSetting == nil or prewarmSetting:GetBool() end
+-- A map's compressed files decompressed once per join, not on every read (pak_cache.h).
+local pakCacheSetting = meowy.Setting and meowy.Setting("meowy_pak_cache", "1",
+	"Meowy Client Pack: decompress a map's compressed files once while a join loads, not on every read (0 = Garry's Mod's way)")
+local function pakCacheOn() return pakCacheSetting == nil or pakCacheSetting:GetBool() end
 local function setPrewarm(on)
 	RunConsoleCommand("meowy_prewarm", on and "1" or "0")
 	if not on and meowy.PrewarmCancel then meowy.PrewarmCancel() end

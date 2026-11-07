@@ -342,13 +342,22 @@ hook.Add("Think", "MeowyClientPack.Prewarm", function()
 	if ws.queue and (loading or SysTime() - ws.started > WS_GIVE_UP) then wsFinish(true) end
 	if loading and not pw.joining then
 		pw.joining = true
+		if pakCacheOn() and meowy.PakCache then
+			local ok, why = meowy.PakCache(true)
+			if not ok and not pw.pakWhyLogged then pw.pakWhyLogged = true log("pak cache: off (%s)", tostring(why)) end
+		end
 		meowy.PrewarmBeginJoin()   -- also stops any warming: the join's reads come first
 	elseif pw.joining and IsInGame() and not loading then
 		pw.joining = false
+		if meowy.PakCacheState and meowy.PakCache then
+			log("pak cache: %s", meowy.PakCacheState())
+			meowy.PakCache(false)
+		end
 		local kept = meowy.PrewarmEndJoin()
 		pw.warmedFor = nil
 		if kept > 0 then log("prewarm: kept %d files for this server", kept) end
 	elseif not loading and not IsInGame() then
+		if pw.joining and meowy.PakCache then meowy.PakCache(false) end
 		pw.joining = false   -- a join that didn't get in: nothing to keep
 	end
 	-- A few seconds at the main menu: the Continue server, once per visit (a
@@ -371,6 +380,7 @@ if concommand then
 		local wsLine = ws.address and string.format("checking %s: %d Workshop items, %d still to check, %d needed an update or unpack, %d done",
 			ws.address, ws.total, ws.pending, ws.stale, ws.done) or ws.result
 		MsgN("[Meowy Client Pack] prewarm workshop: " .. wsLine)
+		MsgN("[Meowy Client Pack] pak cache: " .. (meowy.PakCacheState and meowy.PakCacheState() or "unavailable"))
 	end, nil, "Meowy Client Pack: what join pre-warm is doing")
 end
 
