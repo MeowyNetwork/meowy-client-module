@@ -22,6 +22,10 @@ namespace server_rep
 	// POSTs a report (JSON built by the menu Lua) on a worker thread.
 	void SendReport(const std::string& json);
 
+	// "a.b.c.d:port" on the public internet (not LAN, loopback, CGNAT or
+	// multicast): the only servers the pack queries or reports on.
+	bool IsPublicAddress(const std::string& address);
+
 	// A2S_PLAYER of "a.b.c.d:port" on a worker thread (public IPv4 only).
 	// GMod's own serverlist.PlayerList hands back nothing when a reply doesn't
 	// add up (e.g. a header saying 86 players over 85 entries), which some

@@ -13,7 +13,10 @@
 --     callable only while connected to our server).
 -- The server went silent before the connection ended: a drop, rejoin. Packets
 -- were still flowing when it ended: a kick, ban, quit or map change, never
--- rejoin, unless our server had said it was restarting.
+-- rejoin, unless our server had said it was restarting. Even then the end
+-- only counts as the restart once the server is seen going down (it stops
+-- answering): a server that keeps answering wasn't restarting, and the player
+-- left, was kicked or joined another server during the notice.
 
 local M = {}
 
@@ -25,7 +28,9 @@ M.MAX_FAILED_JOINS = 3            -- joins that failed in a row, then stop for g
 M.MIN_SILENCE = 10                -- a real drop: the engine heard nothing for this long
 M.JOIN_WAIT = 20                  -- a join that has no connection after this long got no answer
 M.JOIN_RETRY = 3                  -- seconds before trying again after a failed join
+M.UP_WAIT = 15                    -- a restart's server still answering this long after the end: not a restart
 M.TIMEOUT_CL = "60"               -- cl_timeout while the player has opted in
+M.DEFAULT_CL_TIMEOUT = "30"       -- the engine's own cl_timeout
 
 -- The engine had given up hearing from the server: timing out, and silent long enough.
 local function silent(timingOut, silence)
@@ -38,11 +43,14 @@ end
 --   silence = number|nil,    -- last sample before that: seconds since a packet
 --   restartExpected = bool,  -- our server had said it was restarting, still in force
 -- }
--- Returns "timeout", "restart" or nil (final: no automatic rejoin).
+-- Returns "timeout", "restart" or nil (final: no automatic rejoin), and for a
+-- restart whether the server must be seen going down before any join (true
+-- unless the connection itself had gone silent, which is a drop either way).
 function M.classifyEnd(f)
 	if type(f) ~= "table" or f.connectionEnded ~= true then return nil end
-	if f.restartExpected == true then return "restart" end
-	if silent(f.timingOut, f.silence) then return "timeout" end
+	local drop = silent(f.timingOut, f.silence)
+	if f.restartExpected == true then return "restart", not drop end
+	if drop then return "timeout", false end
 	return nil
 end
 
@@ -86,8 +94,11 @@ function M.delay(n, rand)
 end
 
 -- One rejoin episode, after a drop classified as `mode` at time `now`.
-function M.start(mode, now, rand)
-	local s = { mode = mode, startedAt = now, attempt = 0, failedJoins = 0 }
+-- needDown (classifyEnd's second value): no join until a probe has gone
+-- unanswered. A restart needs it unless needDown is false.
+function M.start(mode, now, rand, needDown)
+	local s = { mode = mode, startedAt = now, attempt = 0, failedJoins = 0,
+		needDown = mode == "restart" and needDown ~= false }
 	return M.schedule(s, now, rand)
 end
 
@@ -105,7 +116,8 @@ end
 
 -- Stops the episode. kind: "gave_up" (the cap, joins that kept failing: the
 -- card offers "Rejoin now"), "final" (a password, a join turned down: no
--- offer) or "cancelled" (the player).
+-- offer), "cancelled" (the player) or "not_restart" (the server never went
+-- down: nothing to rejoin, and nothing to say).
 function M.stop(s, why, kind)
 	if not s.stopped then s.stopped, s.stopKind = why, kind or "gave_up" end
 	return s
@@ -114,6 +126,19 @@ end
 -- Whether the card should offer "Rejoin now" after this episode stopped.
 function M.offerRejoin(s)
 	return s.stopped ~= nil and s.stopKind == "gave_up"
+end
+
+-- Whether the card should say the episode stopped: not for the player's own
+-- Cancel, nor for an end that turned out not to be the restart (the player
+-- left, was kicked or joined another server: no reconnect was ever shown).
+function M.announceStop(s)
+	return s.stopped ~= nil and s.stopKind ~= "cancelled" and s.stopKind ~= "not_restart"
+end
+
+-- Whether the episode is still waiting to see the server go down (nothing is
+-- shown meanwhile: it may not be a restart at all).
+function M.confirmingDown(s)
+	return s.needDown == true and not s.sawDown and not s.stopped
 end
 
 -- Plans the next try, or stops when it would come after the cap.
@@ -129,10 +154,14 @@ end
 -- or "stop". answered: it replied; locked: the reply says it has a password;
 -- steamOffline: Steam itself says it isn't logged on (a join would fail its
 -- Steam check): "steam" means wait for Steam (onSteamCheck), not the server.
+-- A restart (needDown) joins only after an unanswered probe: until then an
+-- answer means "ask again soon", and still answering UP_WAIT seconds after the
+-- end means it wasn't the restart: "stop", with nothing offered.
 function M.onProbe(s, answered, locked, now, rand, steamOffline)
 	if s.stopped then return "stop" end
 	s.waitingFor = nil
 	if not answered then
+		s.sawDown = true
 		s.waitingFor = "server"
 		M.schedule(s, now, rand)
 		return s.stopped and "stop" or "wait"
@@ -140,6 +169,15 @@ function M.onProbe(s, answered, locked, now, rand, steamOffline)
 	if locked then
 		M.stop(s, "the server has a password", "final")   -- passwords are never stored or sent
 		return "stop"
+	end
+	if s.needDown and not s.sawDown then
+		if now - s.startedAt >= M.UP_WAIT then
+			M.stop(s, "the server never went down: not a restart (left, kicked or joined elsewhere)", "not_restart")
+			return "stop"
+		end
+		-- Not a try: the backoff starts once it's down.
+		s.waitingFor, s.nextAt = "down", now + M.delay(1, rand)
+		return "wait"
 	end
 	-- Past the cap, but a join already reached the server: MAX_FAILED_JOINS decides.
 	if s.failedJoins == 0 and now - s.startedAt > M.capFor(s) then
@@ -220,6 +258,16 @@ end
 function M.restoreTimeout(current, saved)
 	if M.validTimeout(saved) and tonumber(current) == tonumber(M.TIMEOUT_CL) then return saved end
 	return nil
+end
+
+-- With staying connected on: whether cl_timeout lost our 60 and should get it
+-- again. The engine writes config.cfg only at a clean exit, so a crash (or a
+-- config file) puts back the player's previous value or the default. Any other
+-- value is one the player chose since: left alone.
+function M.reapplyTimeout(current, saved)
+	local n = tonumber(current)
+	if not n or n == tonumber(M.TIMEOUT_CL) then return false end
+	return (M.validTimeout(saved) and n == tonumber(saved)) or n == tonumber(M.DEFAULT_CL_TIMEOUT)
 end
 
 return M

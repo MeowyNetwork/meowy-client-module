@@ -32,6 +32,13 @@ check("planned restart, no sample", ended(nil, nil, true), "restart")
 check("planned restart wins over a timeout", ended(true, 60, true), "restart")
 check("connection didn't end (went elsewhere)", ended(true, 60, false, false), nil)
 check("restart expected but went elsewhere", ended(false, 0, true, false), nil)
+local function needDown(timingOut, silence, restartExpected)
+	return select(2, M.classifyEnd({ connectionEnded = true, timingOut = timingOut, silence = silence, restartExpected = restartExpected }))
+end
+check("restart, packets flowing: must see it go down", needDown(false, 0.02, true), true)
+check("restart, no sample: must see it go down", needDown(nil, nil, true), true)
+check("restart, connection went silent: a drop, no need", needDown(true, 60, true), false)
+check("timeout: no need", needDown(true, 60, false), false)
 check("nothing", M.classifyEnd(nil), nil)
 check("silence as a string isn't a number", ended(true, "60", false), nil)
 
@@ -81,8 +88,50 @@ s = M.start("restart", 0, 0.999)
 t = 0
 while not s.stopped do t = s.nextAt M.onProbe(s, false, false, t, 0.999) end
 check("restart polling never past 5 min", t <= 300, true)
+-- Restart notice, but the server never goes down (the player's own Disconnect,
+-- a kick, a join elsewhere): never joins, stops at UP_WAIT with nothing offered
 s = M.start("restart", 0, 0.5)
-check("restart that answers at once -> join", M.onProbe(s, true, false, 2, 0.5), "join")
+check("restart needs the server seen down", s.needDown, true)
+check("restart that answers at once -> wait, not join", M.onProbe(s, true, false, 2, 0.5), "wait")
+check("waiting to see it go down", s.waitingFor, "down")
+check("asked again soon", near(s.nextAt, 4), true)
+check("not a try", s.attempt, 1)
+check("still nothing to show", M.confirmingDown(s), true)
+t = 2
+while t + 2 < M.UP_WAIT do t = t + 2 check("still up -> wait", M.onProbe(s, true, false, t, 0.5), "wait") end
+check("still up after UP_WAIT -> stop", M.onProbe(s, true, false, M.UP_WAIT, 0.5), "stop")
+check("not a restart", s.stopKind, "not_restart")
+check("not a restart: no Rejoin now", M.offerRejoin(s), false)
+check("not a restart: no card", M.announceStop(s), false)
+check("not a restart: never joins after", M.onProbe(s, true, false, 40, 0.5), "stop")
+-- Server up for a moment (the old instance saving), then down, then back: joins
+s = M.start("restart", 0, 0.5)
+check("old instance still up", M.onProbe(s, true, false, 2, 0.5), "wait")
+check("then down", M.onProbe(s, false, false, 4, 0.5), "wait")
+check("seen down", s.sawDown, true)
+check("backoff starts at the second step", near(s.nextAt, 8), true)
+check("shown once down", M.confirmingDown(s), false)
+check("back up past UP_WAIT -> join", M.onProbe(s, true, false, 40, 0.5), "join")
+-- Up and Steam offline before it went down: still just waiting to see it go down
+s = M.start("restart", 0, 0.5)
+check("up, Steam offline, not seen down -> wait", M.onProbe(s, true, false, 2, 0.5, true), "wait")
+check("a password still stops at once", M.onProbe(s, true, true, 4, 0.5), "stop")
+check("password: announced", M.announceStop(s), true)
+-- The connection went silent and a restart was expected: a drop, joins as before
+s = M.start("restart", 0, 0.5, false)
+check("silent restart end: no need to see it down", s.needDown, false)
+check("silent restart end, answers at once -> join", M.onProbe(s, true, false, 2, 0.5), "join")
+-- A timeout drop is unchanged: joins as soon as the server answers
+s = M.start("timeout", 0, 0.5, true)
+check("timeout never waits to see it go down", s.needDown, false)
+check("timeout answers at once -> join", M.onProbe(s, true, false, 2, 0.5), "join")
+s = M.start("timeout", 0, 0.5)
+M.stop(s, "cancelled", "cancelled")
+check("cancel: no card", M.announceStop(s), false)
+s = M.start("timeout", 0, 0.999)
+t = 0
+while not s.stopped do t = s.nextAt M.onProbe(s, false, false, t, 0.999) end
+check("gave up: card", M.announceStop(s), true)
 
 -- Steam offline (it went down with the same drop): wait for Steam, checked
 -- every second, up to 5 min from the drop, then re-check the server and join
@@ -188,6 +237,13 @@ check("restore when still ours", M.restoreTimeout("60", "30"), "30")
 check("player changed it since: leave it", M.restoreTimeout("120", "30"), nil)
 check("nothing saved", M.restoreTimeout("60", nil), nil)
 check("engine float form", M.restoreTimeout("60.000000", "30.000000"), "30.000000")
+check("lost 60, back to the saved value: set again", M.reapplyTimeout("45", "45"), true)
+check("lost 60, back to the default: set again", M.reapplyTimeout("30", nil), true)
+check("default, engine float form", M.reapplyTimeout("30.000000", "45"), true)
+check("still 60: nothing", M.reapplyTimeout("60", "30"), false)
+check("player's own value since: left alone", M.reapplyTimeout("120", "30"), false)
+check("unreadable: left alone", M.reapplyTimeout(nil, "30"), false)
+check("junk saved value ignored", M.reapplyTimeout("45", "45; quit"), false)
 
 print(("%d checks, %d failed"):format(count, failures))
 os.exit(failures == 0 and 0 or 1)

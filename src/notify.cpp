@@ -1,4 +1,5 @@
 #include "notify.h"
+#include "file_util.h"
 
 #include <cstring>
 
@@ -133,16 +134,11 @@ namespace notify
 		return std::strstr(buf, "enabled=0") == nullptr;
 	}
 
+	// All at once: an interrupted write mustn't leave an empty file, which reads
+	// as "on" and would bring back notifications the player turned off.
 	bool SaveEnabled(const std::wstring& file, bool enabled)
 	{
-		HANDLE h = CreateFileW(file.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-		if (h == INVALID_HANDLE_VALUE)
-			return false;
-		const char* text = enabled ? "enabled=1\r\n" : "enabled=0\r\n";
-		DWORD n = 0;
-		BOOL ok = WriteFile(h, text, static_cast<DWORD>(std::strlen(text)), &n, nullptr);
-		CloseHandle(h);
-		return ok && n == std::strlen(text);
+		return file_util::WriteAtomic(file, enabled ? "enabled=1\r\n" : "enabled=0\r\n");
 	}
 #else
 	bool LoadEnabled(const std::wstring&) { return true; }

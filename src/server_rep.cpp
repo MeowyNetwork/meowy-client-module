@@ -129,15 +129,54 @@ namespace
 		return true;
 	}
 
+	// Length of the valid UTF-8 sequence at s[i] (1-4), or 0 when the bytes there
+	// aren't one (a stray continuation byte, an overlong form, a surrogate, past
+	// U+10FFFF, or cut off by the end).
+	size_t Utf8Length(const unsigned char* s, size_t i, size_t n)
+	{
+		const unsigned char c = s[i];
+		size_t len = c < 0x80 ? 1 : (c >= 0xC2 && c <= 0xDF) ? 2 : (c >= 0xE0 && c <= 0xEF) ? 3 : (c >= 0xF0 && c <= 0xF4) ? 4 : 0;
+		if (len <= 1)
+			return len;
+		if (i + len > n)
+			return 0;
+		for (size_t k = 1; k < len; ++k)
+			if ((s[i + k] & 0xC0) != 0x80)
+				return 0;
+		const unsigned char c1 = s[i + 1];
+		if ((c == 0xE0 && c1 < 0xA0) || (c == 0xED && c1 >= 0xA0) || (c == 0xF0 && c1 < 0x90) || (c == 0xF4 && c1 >= 0x90))
+			return 0;
+		return len;
+	}
+
+	// A JSON string. Server names come from other people's servers: bytes that
+	// aren't valid UTF-8 become U+FFFD, so one bad name can't make the whole
+	// array (every finished query, joined) unreadable to util.JSONToTable.
 	void JsonEscape(std::string& out, const char* s, size_t n)
 	{
+		const unsigned char* u = reinterpret_cast<const unsigned char*>(s);
 		out += '"';
-		for (size_t i = 0; i < n; ++i)
+		for (size_t i = 0; i < n;)
 		{
-			unsigned char ch = (unsigned char)s[i];
-			if (ch == '"' || ch == '\\') { out += '\\'; out += (char)ch; }
-			else if (ch < 0x20) { char buf[8]; snprintf(buf, sizeof(buf), "\\u%04x", ch); out += buf; }
-			else out += (char)ch;
+			const unsigned char ch = u[i];
+			const size_t len = Utf8Length(u, i, n);
+			if (len == 0)
+			{
+				out += "\\ufffd";
+				++i;
+			}
+			else if (len > 1)
+			{
+				out.append(s + i, len);
+				i += len;
+			}
+			else
+			{
+				if (ch == '"' || ch == '\\') { out += '\\'; out += (char)ch; }
+				else if (ch < 0x20 || ch == 0x7F) { char buf[8]; snprintf(buf, sizeof(buf), "\\u%04x", ch); out += buf; }
+				else out += (char)ch;
+				++i;
+			}
 		}
 		out += '"';
 	}
@@ -266,6 +305,12 @@ namespace
 
 namespace server_rep
 {
+	bool IsPublicAddress(const std::string& address)
+	{
+		sockaddr_in unused;
+		return ParsePublicAddress(address, unused);
+	}
+
 	bool QueryPlayers(const std::string& address)
 	{
 		sockaddr_in to;

@@ -9,7 +9,9 @@
 --   connected to (the engine's own address, meowy.ResilienceWatch), and only
 --   when the engine says the server had gone silent before the connection
 --   ended (IsTimingOut and 10+ s since a packet, sampled every frame), or our
---   server had said it was restarting (meowy.ExpectRestart). Never from text.
+--   server had said it was restarting (meowy.ExpectRestart) and then went
+--   down (stopped answering within 15 s; one that keeps answering wasn't
+--   restarting: the player left, was kicked or joined elsewhere). Never from text.
 --   Only after the player had got into the game there. The server is asked
 --   whether it's up (A2S, serverlist.PingServer) before each join. A small
 --   window shows each try and has Cancel.
@@ -483,9 +485,14 @@ local function probe(now)
 		local t = SysTime()
 		local offline = answered and steamOffline() or nil
 		local act = Logic.onProbe(episode.s, answered, locked, t, math.random(), offline)
-		log("reconnect: attempt %d, server %s%s -> %s", episode.s.attempt,
-			answered and "answered" or "didn't answer", offline and ", Steam offline" or "",
-			act == "wait" and ("next try in " .. fmtNum(episode.s.nextAt - t) .. " s") or act)
+		if episode.s.waitingFor == "down" then
+			log("reconnect: server still up %s s after the end (a restart joins only once it went down) -> asking again in %s s",
+				fmtNum(t - episode.s.startedAt), fmtNum(episode.s.nextAt - t))
+		else
+			log("reconnect: attempt %d, server %s%s -> %s", episode.s.attempt,
+				answered and "answered" or "didn't answer", offline and ", Steam offline" or "",
+				act == "wait" and ("next try in " .. fmtNum(episode.s.nextAt - t) .. " s") or act)
+		end
 		-- No "is a join already under way?" check here: IsInLoading()/IsInGame()
 		-- stay true through GMod's disconnect dialog and teardown, and fooled
 		-- that check into waiting forever. A join of the player's own that
@@ -503,7 +510,7 @@ local function probe(now)
 			episode.phase, episode.nextSteam = "steam", t + 1
 			log("reconnect: waiting for Steam to reconnect (up to %d s from the drop)", Logic.capFor(episode.s))
 		else
-			finish(episode.s.stopped, true)
+			finish(episode.s.stopped, Logic.announceStop(episode.s))
 		end
 	end
 	episode.result = result
@@ -527,13 +534,19 @@ local function tickEpisode(now, state)
 		if state == "other" then return finish("joined another server", false) end
 	end
 	if e.phase == "waiting" then
-		if e.s.stopped then return finish(e.s.stopped, true) end
-		local wait = math.max(0, math.ceil(e.s.nextAt - now))
-		local status = e.s.attempt == 0 and "Starting..."
-			or (e.s.mode == "restart" and "The server is restarting. " or "The server didn't answer. ")
-				.. (wait > 0 and ("Trying again in %d s."):format(wait) or "Checking now...")
-		showOverlay("Reconnecting to Meowy Network", status, { { "Cancel", "secondary", cancel } }, true,
-			(now - e.s.startedAt) / Logic.capFor(e.s))
+		if e.s.stopped then return finish(e.s.stopped, Logic.announceStop(e.s)) end
+		if Logic.confirmingDown(e.s) then
+			-- A restart notice, but the server hasn't gone down yet: it may be the
+			-- player's own Disconnect, a kick or a join elsewhere. Nothing shown.
+			hideOverlay()
+		else
+			local wait = math.max(0, math.ceil(e.s.nextAt - now))
+			local status = e.s.attempt == 0 and "Starting..."
+				or (e.s.mode == "restart" and "The server is restarting. " or "The server didn't answer. ")
+					.. (wait > 0 and ("Trying again in %d s."):format(wait) or "Checking now...")
+			showOverlay("Reconnecting to Meowy Network", status, { { "Cancel", "secondary", cancel } }, true,
+				(now - e.s.startedAt) / Logic.capFor(e.s))
+		end
 		if now >= e.s.nextAt then probe(now) end
 	elseif e.phase == "steam" then
 		showOverlay("Waiting for Steam to reconnect",
@@ -546,7 +559,7 @@ local function tickEpisode(now, state)
 				log("reconnect: Steam is back; checking the server once more")
 				probe(now)
 			elseif act == "stop" then
-				return finish(e.s.stopped, true)
+				return finish(e.s.stopped, Logic.announceStop(e.s))
 			end
 		end
 	elseif e.phase == "probing" then
@@ -572,7 +585,7 @@ local function tickEpisode(now, state)
 			local kind = Logic.classifyRefusal(reason)
 			log("reconnect: join refused after %s s (%s) -> %s", fmtNum(waited), reason, kind)
 			Logic.onJoinFailed(e.s, kind, now, math.random())
-			if e.s.stopped then return finish(e.s.stopped, true) end
+			if e.s.stopped then return finish(e.s.stopped, Logic.announceStop(e.s)) end
 			e.phase = "waiting"
 			return
 		end
@@ -582,7 +595,7 @@ local function tickEpisode(now, state)
 			local kind = Logic.classifyJoinEnd({ reachedOurs = false, waited = waited })
 			log("reconnect: join got no connection (%s after %s s) -> %s", turnedAway and "turned away" or "no answer", fmtNum(waited), kind)
 			Logic.onJoinFailed(e.s, kind, now, math.random())
-			if e.s.stopped then return finish(e.s.stopped, true) end
+			if e.s.stopped then return finish(e.s.stopped, Logic.announceStop(e.s)) end
 			e.phase = "waiting"
 			e.s.nextAt = math.max(e.s.nextAt, now + 1)   -- let the disconnect settle
 		end
@@ -595,13 +608,25 @@ local function joinEnded(now, facts)
 	local kind = Logic.classifyJoinEnd({ reachedOurs = true, timingOut = facts.timingOut, silence = facts.silence })
 	log("reconnect: the join's connection ended (timingOut=%s, silence=%s) -> %s", show(facts.timingOut), fmtNum(facts.silence), kind)
 	Logic.onJoinFailed(e.s, kind, now, math.random())
-	if e.s.stopped then return finish(e.s.stopped, true) end
+	if e.s.stopped then return finish(e.s.stopped, Logic.announceStop(e.s)) end
 	e.phase = "waiting"
 end
 
 -- Shown once at start-up (after a crash on our server), then the opt-in question.
 local crashed = meowy.ResilienceCrashedSession()
-local startAt, startupDone = SysTime(), false
+local startAt, startupDone, timeoutChecked = SysTime(), false, false
+
+-- Once, a few seconds after start (config.cfg has run by then): staying
+-- connected is on but cl_timeout lost our 60 (a crash before the engine saved
+-- it at exit, or a config file): set it again, every start, so config.cfg is
+-- never rewritten by the pack. A value the player chose since stays.
+local function keepTimeout()
+	if not settings.enabled then return end
+	local current = clTimeout()
+	if not Logic.reapplyTimeout(current, settings.saved_cl_timeout) then return end
+	log("cl_timeout is %s again while staying connected is on; setting %s", tostring(current), Logic.TIMEOUT_CL)
+	RunConsoleCommand("cl_timeout", Logic.TIMEOUT_CL)
+end
 
 -- One prompt at a time: the crash card first, then the opt-in question.
 local function startup()
@@ -657,7 +682,7 @@ hook.Add("Think", "MeowyClientPack.Resilience", function()
 	end
 
 	if ended then
-		local mode = Logic.classifyEnd(ended)
+		local mode, needDown = Logic.classifyEnd(ended)
 		local decision
 		if episode and episode.phase == "joining" then
 			decision = "part of a rejoin attempt"
@@ -683,8 +708,9 @@ hook.Add("Think", "MeowyClientPack.Resilience", function()
 			if not ok then ErrorNoHalt("[Meowy Client Pack] reconnect: " .. tostring(err) .. "\n") finish(nil, false) end
 		elseif decision:sub(1, 6) == "rejoin" then
 			armed = false   -- the next try needs the player in the game again
-			episode = { s = Logic.start(mode, now, math.random()), address = ourAddress, phase = "waiting" }
-			log("reconnect: %s, first try in %s s, giving up after %d s", mode, fmtNum(episode.s.nextAt - now), Logic.CAP[mode] or 0)
+			episode = { s = Logic.start(mode, now, math.random(), needDown), address = ourAddress, phase = "waiting" }
+			log("reconnect: %s, first try in %s s, giving up after %d s%s", mode, fmtNum(episode.s.nextAt - now), Logic.CAP[mode] or 0,
+				episode.s.needDown and (", joining only once the server has gone down (still up after " .. Logic.UP_WAIT .. " s: not a restart)") or "")
 		end
 	end
 
@@ -695,6 +721,12 @@ hook.Add("Think", "MeowyClientPack.Resilience", function()
 	if not okEntry and not entryFailed then
 		entryFailed = true   -- report once, not five times a second
 		ErrorNoHalt("[Meowy Client Pack] settings entry: " .. tostring(entryErr) .. "\n")
+	end
+
+	if not timeoutChecked and now - startAt > 3 then
+		timeoutChecked = true
+		local ok, err = pcall(keepTimeout)
+		if not ok then ErrorNoHalt("[Meowy Client Pack] cl_timeout: " .. tostring(err) .. "\n") end
 	end
 
 	-- Started straight into a join (a Steam join link): no point offering one after.

@@ -25,4 +25,9 @@ namespace crashes
 
 	// The same, for an explicit game folder (the one holding crashes/). For tests.
 	std::vector<Report> SinceIn(const std::wstring& root, long long since, size_t max);
+
+	// `text` with every absolute path ("C:\...", "C:/...", "\\host\...") replaced
+	// by "<path>", up to a line end, a quote or the ':' before a line number or
+	// message. What leaves the PC in `luaTrace` has been through this.
+	std::string MaskPaths(const std::string& text);
 }

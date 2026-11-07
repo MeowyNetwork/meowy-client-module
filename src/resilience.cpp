@@ -1,6 +1,7 @@
 #include "resilience.h"
 
 #include "crash_reports.h"
+#include "file_util.h"
 #include "server_gate.h"
 
 #include <cstdlib>
@@ -42,15 +43,11 @@ namespace
 		return buf;
 	}
 
+	// All at once (file_util.h): resilience.txt holds the player's answer and the
+	// cl_timeout to put back, which an interrupted write would lose for good.
 	bool WriteSmallFile(const std::wstring& path, const std::string& text)
 	{
-		HANDLE h = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-		if (h == INVALID_HANDLE_VALUE)
-			return false;
-		DWORD n = 0;
-		BOOL ok = WriteFile(h, text.data(), static_cast<DWORD>(text.size()), &n, nullptr);
-		CloseHandle(h);
-		return ok && n == text.size();
+		return file_util::WriteAtomic(path, text);
 	}
 #endif
 }

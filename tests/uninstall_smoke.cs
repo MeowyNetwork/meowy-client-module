@@ -30,6 +30,20 @@ static class UninstallSmoke
 		return File.Exists(path) ? File.ReadAllText(path) : null;
 	}
 
+	static bool IsLink(string path)
+	{
+		return Directory.Exists(path) && (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0;
+	}
+
+	// A directory junction, as the pack makes them.
+	static void Link(string link, string target)
+	{
+		Directory.CreateDirectory(Path.GetDirectoryName(link));
+		var p = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("cmd.exe",
+			"/c mklink /J \"" + link + "\" \"" + target + "\"") { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true });
+		p.WaitForExit();
+	}
+
 	[STAThread]
 	static int Main(string[] args)
 	{
@@ -142,7 +156,58 @@ static class UninstallSmoke
 			Check(r.Vaults.Count == 0 && !Directory.Exists(Path.Combine(s, "backup")), "none: nothing to do, no backup folder made");
 		}
 
-		// 7. The Start-menu shortcut for notifications, in a scratch "Start menu"
+		// 7. 1.6.1+, at the menu: data\ is a link to the vault's menu folder.
+		{
+			string s = Path.Combine(root, "linked");
+			string data = Path.Combine(s, "data"), local = Path.Combine(s, "local"), backup = Path.Combine(s, "backup");
+			Put(Path.Combine(local, @"menu\m.txt"), "m");
+			Put(Path.Combine(local, @"menu\sub\deep.txt"), "deep");
+			Put(Path.Combine(local, @"before-sandbox\old.txt"), "old");
+			Put(Path.Combine(local, @"1.2.3.4_27015\a.txt"), "a");
+			Put(Path.Combine(local, @"menu.incoming\staged.txt"), "staged");          // a start that died converting
+			Put(Path.Combine(local, @"before-sandbox.incoming-2\staged2.txt"), "staged2");
+			Put(Path.Combine(local, "active"), "linked");
+			Link(data, Path.Combine(local, "menu"));
+			Link(data + ".meowy-link", Path.Combine(local, "menu"));   // left by a start that died while linking
+			Program.RestoreReport r = Program.RestoreSandboxData(data, local, null, true, backup);
+			Console.WriteLine(Program.Describe(r));
+			Check(!IsLink(data) && Text(Path.Combine(data, "m.txt")) == "m" && Text(Path.Combine(data, @"sub\deep.txt")) == "deep",
+				"linked: data\\ a plain folder again, with the menu's files");
+			Check(Text(Path.Combine(data, "old.txt")) == "old", "linked: before-sandbox back too");
+			Check(Text(Path.Combine(data, "staged.txt")) == "staged" && Text(Path.Combine(data, "staged2.txt")) == "staged2" &&
+				!Directory.Exists(Path.Combine(backup, "menu.incoming")), "linked: leftover staging folders of the player's own back in data\\");
+			Check(Text(Path.Combine(backup, @"1.2.3.4_27015\a.txt")) == "a" && !File.Exists(Path.Combine(data, "a.txt")), "linked: the server's in the backup");
+			Check(!Directory.Exists(data + ".meowy-link") && !Directory.Exists(local) && r.Left.Count == 0, "linked: leftover link and vault gone, nothing left");
+		}
+
+		// 8. 1.6.1+, the game went down on a server: data\ links to that server's folder.
+		{
+			string s = Path.Combine(root, "linkedcrash");
+			string data = Path.Combine(s, "data"), local = Path.Combine(s, "local"), backup = Path.Combine(s, "backup");
+			Put(Path.Combine(local, @"menu\m.txt"), "m");
+			Put(Path.Combine(local, @"9.9.9.9_27015\c.txt"), "c");
+			Put(Path.Combine(local, "active"), "linked");
+			Link(data, Path.Combine(local, "9.9.9.9_27015"));
+			Program.RestoreSandboxData(data, local, null, true, backup);
+			Check(!IsLink(data) && Text(Path.Combine(data, "m.txt")) == "m" && !File.Exists(Path.Combine(data, "c.txt")),
+				"linked crash: the menu's files in data\\, not the server's");
+			Check(Text(Path.Combine(backup, @"9.9.9.9_27015\c.txt")) == "c", "linked crash: the server's files in the backup");
+		}
+
+		// 9. The player's own link (data\ kept on another drive): never removed.
+		{
+			string s = Path.Combine(root, "ownlink");
+			string data = Path.Combine(s, "data"), local = Path.Combine(s, "local"), backup = Path.Combine(s, "backup");
+			string elsewhere = Path.Combine(s, "elsewhere");
+			Put(Path.Combine(elsewhere, "mine.txt"), "mine");
+			Put(Path.Combine(local, @"before-sandbox\old.txt"), "old");
+			Link(data, elsewhere);
+			Program.RestoreSandboxData(data, local, null, true, backup);
+			Check(IsLink(data) && Text(Path.Combine(elsewhere, "mine.txt")) == "mine" && Text(Path.Combine(elsewhere, "old.txt")) == "old",
+				"own link: kept, and the old files put back through it");
+		}
+
+		// 10. The Start-menu shortcut for notifications, in a scratch "Start menu"
 		//    (never the real one): made with the AUMID, repaired, removed.
 		{
 			string s = Path.Combine(root, "shortcut");

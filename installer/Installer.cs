@@ -237,9 +237,18 @@ namespace MeowyInstaller
 		public static RestoreReport RemoveData(string garrysmod)
 		{
 			RestoreReport report = RestoreSandboxData(garrysmod);
+			// Only the pack's own files from before 1.4.1, never the folder as a
+			// whole: data\ now holds the player's files again, and a server may
+			// have its own "meowy" folder there.
 			string old = Path.Combine(garrysmod, @"data\meowy");
+			foreach (string name in new[] { "join_times.txt", "last_join.txt", "css_scale.txt", "boot.lock" })
+			{
+				string file = Path.Combine(old, name);
+				if (File.Exists(file))
+					File.Delete(file);
+			}
 			if (Directory.Exists(old))
-				Directory.Delete(old, true);
+				RemoveEmpty(old);
 			string local = Environment.GetEnvironmentVariable("LOCALAPPDATA");
 			if (!string.IsNullOrEmpty(local))
 			{
@@ -260,12 +269,17 @@ namespace MeowyInstaller
 
 		// --- The player's files the pack kept apart (src/data_sandbox.cpp) ------
 		//
-		// With the pack, garrysmod\data holds only the files of the server being
-		// played, or the main menu's; the rest wait in a vault:
+		// With the pack, garrysmod\data shows only the files of the server being
+		// played, or the main menu's; they all live in a vault:
 		// %LOCALAPPDATA%\MeowyClientPack\vault, or steamapps\MeowyClientPackVault
 		// when the game is on another drive. In it: "before-sandbox" (all of data\
-		// from before the pack), "menu" (the main menu's files while on a server),
-		// a folder per server, and "active" (whose files data\ holds right now).
+		// from before the pack), "menu" (the main menu's files), a folder per
+		// server, and "active".
+		//
+		// Since 1.6.1 garrysmod\data is a directory junction (a link) to one of
+		// those folders, and "active" just says "linked". Before, data\ was a plain
+		// folder holding one owner's files and "active" named that owner (see
+		// OwnerOf). Uninstall removes the link itself, never what it points to.
 		//
 		// Uninstall puts the player's own files (before-sandbox and menu) back in
 		// garrysmod\data, never overwriting anything there: on a name clash both
@@ -319,14 +333,104 @@ namespace MeowyInstaller
 		{
 			var r = new RestoreReport();
 			r.BackupDir = backup;
+			// 1.6.1+: data\ links into a vault. The link goes first (only the link),
+			// so data\ is a plain folder again before anything is put back in it;
+			// so does a temporary one a start that died while linking left beside it.
+			string linkedVault = UnlinkData(data, localVault, steamVault);
+			string leftover = data + ".meowy-link";
+			if (UnlinkData(leftover, localVault, steamVault) == null && Directory.Exists(leftover) && !IsReparsePoint(leftover))
+				RemoveEmpty(leftover);
 			Directory.CreateDirectory(data);
 			string current = localIsCurrent ? localVault : steamVault;
 			string other = localIsCurrent ? steamVault : localVault;
-			if (current != null)
-				RestoreVault(data, current, true, backup, r);
-			if (other != null && !string.Equals(other, current, StringComparison.OrdinalIgnoreCase))
-				RestoreVault(data, other, false, backup, r);
+			var done = new List<string>();
+			foreach (string vault in new[] { current, other, linkedVault })
+			{
+				if (vault == null || done.Exists(v => string.Equals(v, vault, StringComparison.OrdinalIgnoreCase)))
+					continue;
+				done.Add(vault);
+				RestoreVault(data, vault, vault == current, backup, r);
+			}
 			return r;
+		}
+
+		[System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+		static extern Microsoft.Win32.SafeHandles.SafeFileHandle CreateFileW(string name, uint access, uint share, IntPtr security,
+			uint disposition, uint flags, IntPtr template);
+
+		[System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+		static extern bool DeviceIoControl(Microsoft.Win32.SafeHandles.SafeFileHandle handle, uint code, IntPtr inBuffer, int inSize,
+			byte[] outBuffer, int outSize, out int returned, IntPtr overlapped);
+
+		[System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+		static extern bool RemoveDirectoryW(string path);
+
+		// The folder the junction at `path` points to ("C:\..."), or null when it
+		// isn't a junction to a folder (as data_sandbox.cpp LinkTarget).
+		public static string JunctionTarget(string path)
+		{
+			const uint FILE_READ_ATTRIBUTES = 0x80, SHARE_ALL = 7, OPEN_EXISTING = 3;
+			const uint FILE_FLAG_BACKUP_SEMANTICS = 0x02000000, FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000;
+			const uint FSCTL_GET_REPARSE_POINT = 0x000900A8, IO_REPARSE_TAG_MOUNT_POINT = 0xA0000003;
+			using (var h = CreateFileW(path, FILE_READ_ATTRIBUTES, SHARE_ALL, IntPtr.Zero, OPEN_EXISTING,
+				FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, IntPtr.Zero))
+			{
+				if (h.IsInvalid)
+					return null;
+				var buf = new byte[16 * 1024];
+				int got;
+				if (!DeviceIoControl(h, FSCTL_GET_REPARSE_POINT, IntPtr.Zero, 0, buf, buf.Length, out got, IntPtr.Zero) || got < 16)
+					return null;
+				if (BitConverter.ToUInt32(buf, 0) != IO_REPARSE_TAG_MOUNT_POINT)
+					return null;
+				int offset = BitConverter.ToUInt16(buf, 8), length = BitConverter.ToUInt16(buf, 10);
+				if (16 + offset + length > got)
+					return null;
+				string target = System.Text.Encoding.Unicode.GetString(buf, 16 + offset, length);
+				if (!target.StartsWith(@"\??\", StringComparison.Ordinal) || target.Length < 7 || target[5] != ':')
+					return null;
+				target = target.Substring(4);
+				return target.Length > 3 ? target.TrimEnd('\\') : target;
+			}
+		}
+
+		static bool IsReparsePoint(string path)
+		{
+			try
+			{
+				return (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0;
+			}
+			catch (Exception)
+			{
+				return false;   // doesn't exist
+			}
+		}
+
+		static bool SamePath(string a, string b)
+		{
+			return a != null && b != null &&
+				string.Equals(Path.GetFullPath(a).TrimEnd('\\'), Path.GetFullPath(b).TrimEnd('\\'), StringComparison.OrdinalIgnoreCase);
+		}
+
+		// When data\ is the pack's link, removes the link (RemoveDirectory on a
+		// junction removes only the junction; what it points to is untouched) and
+		// returns the vault it pointed into. Any other link (the player's own, say
+		// data\ kept on another drive) is left alone: it is their real data folder.
+		static string UnlinkData(string data, string localVault, string steamVault)
+		{
+			if (!IsReparsePoint(data))
+				return null;
+			string target = JunctionTarget(data);
+			string vault = target == null ? null : Path.GetDirectoryName(target);
+			bool ours = vault != null && (SamePath(vault, localVault) || SamePath(vault, steamVault) ||
+				vault.EndsWith(@"\MeowyClientPack\vault", StringComparison.OrdinalIgnoreCase) ||
+				vault.EndsWith(@"\MeowyClientPackVault", StringComparison.OrdinalIgnoreCase));
+			if (!ours)
+				return null;
+			if (!RemoveDirectoryW(data))
+				throw new IOException("couldn't remove the link garrysmod\\data (error " +
+					System.Runtime.InteropServices.Marshal.GetLastWin32Error() + "); nothing was changed");
+			return vault;
 		}
 
 		// Whose files data\ holds, from the vault's "active" file (as Recover()
@@ -343,9 +447,19 @@ namespace MeowyInstaller
 			return rest; // the old marker, "switching:<to>"
 		}
 
+		// "linked" (1.6.1+): data\ was the link, removed before this runs, so it
+		// holds nothing of anyone's.
 		static bool IsPlayersOwn(string key)
 		{
-			return key == "" || key == "menu" || key == "before-sandbox";
+			return key == "" || key == "menu" || key == "before-sandbox" || key == "linked";
+		}
+
+		// A staging folder a start that died left beside the player's own folders:
+		// "menu.incoming", "before-sandbox.incoming-2".
+		static bool IsPlayersStaging(string name)
+		{
+			return name.StartsWith("menu.incoming", StringComparison.OrdinalIgnoreCase) ||
+				name.StartsWith("before-sandbox.incoming", StringComparison.OrdinalIgnoreCase);
 		}
 
 		// A key as a single folder name: never a path, never only dots.
@@ -374,12 +488,19 @@ namespace MeowyInstaller
 				MergeMove(menu, data, "menu", true, r);
 			if (Directory.Exists(before))
 				MergeMove(before, data, "before-pack", true, r);
+			// A staging folder a start that died left beside them ("menu.incoming",
+			// "before-sandbox.incoming-2"): the player's own too.
+			foreach (string dir in Directory.GetDirectories(vault))
+			{
+				if (IsPlayersStaging(Path.GetFileName(dir)))
+					MergeMove(dir, data, "staged", true, r);
+			}
 
 			// Each server's own files.
 			foreach (string dir in Directory.GetDirectories(vault))
 			{
 				string name = Path.GetFileName(dir);
-				if (name == "menu" || name == "before-sandbox")
+				if (name == "menu" || name == "before-sandbox" || IsPlayersStaging(name))
 					continue;
 				MergeMove(dir, Path.Combine(backup, SafeName(name)), "older", false, r);
 			}
@@ -550,11 +671,18 @@ namespace MeowyInstaller
 			return sb.ToString();
 		}
 
+		// Written beside the target and swapped in, so a failed write (a full disk,
+		// an antivirus lock) never leaves a truncated DLL for the game to load.
 		public static void ExtractTo(string module, string path)
 		{
+			string temp = path + ".meowy-new";
 			using (Stream src = Assembly.GetExecutingAssembly().GetManifestResourceStream(module))
-			using (FileStream dst = File.Create(path))
+			using (FileStream dst = File.Create(temp))
 				src.CopyTo(dst);
+			if (File.Exists(path))
+				File.Replace(temp, path, null);
+			else
+				File.Move(temp, path);
 		}
 
 		// --- Start-menu shortcut for notifications (src/notify_toast.h) ---------

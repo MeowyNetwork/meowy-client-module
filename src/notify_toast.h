@@ -5,7 +5,10 @@
 //
 // Everything runs on one worker thread (with its own COM apartment), so the
 // game thread only appends a kind index to a queue. The worker starts with the
-// first notification and stops with Shutdown.
+// first notification and stops with Shutdown. The worker holds its own
+// reference to this DLL until its last instruction, and once a toast's click
+// handler has been registered the DLL is pinned for the rest of the game, so
+// the client realm's FreeLibrary never unloads code that still runs.
 //
 //  - Toast: a WinRT ToastNotification under the AppUserModelID
 //    MeowyNetwork.ClientPack (notify.h kAppId). An unpackaged program can only
@@ -38,7 +41,9 @@ namespace notify_toast
 	bool GameFocused();
 
 	// Clears the badge, removes the tray icon and the toasts' click handlers,
-	// and stops the worker. Waits at most ~2 s; never hangs the game.
+	// and stops the worker. Waits at most ~2 s; never hangs the game. A worker
+	// still stuck in Windows after that finishes on its own later, touching
+	// only its own state (a newer worker started by the next Post is separate).
 	void Shutdown();
 
 	// Whether the shortcut at `path` carries our AppUserModelID (the worker

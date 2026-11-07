@@ -631,6 +631,71 @@ namespace
 		return DefWindowProcW(hwnd, msg, wp, lp);
 	}
 
+	bool IsTopmost(HWND hwnd)
+	{
+		return (GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
+	}
+
+	// Keeps the screen over the game, and over nothing else. Called every frame
+	// while it covers the game; only moves the window when it's out of place.
+	//
+	// The game (with no popup of its own up) or this screen in front: topmost,
+	// at the bottom of the topmost band. HWND_TOP from this thread can't move
+	// the window above the active one, so it only worked on a join where this
+	// window came up before the game's (launching straight into the server); a
+	// second join in the same session (retry, the server browser) left it under
+	// the game, showing GMod's own loading page. Topmost works from any thread,
+	// and at the bottom of its band other programs' always-on-top windows (Task
+	// Manager, say) stay above it. An owned window would also stay on top, but
+	// would share the game's input thread and freeze with it during loads.
+	//
+	// Anything else in front (another program, or a window of the game's own
+	// such as an error box): directly above the game in the Z order, so
+	// everything above the game, the foreground window included, stays above
+	// this screen and alt-tab behaves as usual. (HWND_NOTOPMOST alone would put
+	// the screen above all of them.)
+	void KeepAboveGame()
+	{
+		const UINT flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE;
+		const bool gameTopmost = IsTopmost(v.game);
+		HWND fg = GetForegroundWindow();
+		HWND popup = GetWindow(v.game, GW_ENABLEDPOPUP);
+		const bool gamePopup = popup && popup != v.game && IsWindowVisible(popup);
+		const bool front = (fg == v.game && !gamePopup) || fg == v.hwnd;
+
+		if (front && !gameTopmost)
+		{
+			HWND below = GetWindow(v.hwnd, GW_HWNDNEXT);
+			if (IsTopmost(v.hwnd) && (!below || !IsTopmost(below)))
+				return;   // already the lowest topmost window
+			if (!IsTopmost(v.hwnd))
+				SetWindowPos(v.hwnd, HWND_TOPMOST, 0, 0, 0, 0, flags);
+			HWND lowest = nullptr;
+			for (HWND w = GetTopWindow(nullptr); w && IsTopmost(w); w = GetWindow(w, GW_HWNDNEXT))
+				if (w != v.hwnd)
+					lowest = w;
+			if (lowest)
+				SetWindowPos(v.hwnd, lowest, 0, 0, 0, 0, flags);
+			return;
+		}
+
+		// Directly above the game, in its band: whatever is just above the game
+		// (leaving this screen out) ends up just above this screen.
+		HWND above = GetWindow(v.game, GW_HWNDPREV);
+		if (above == v.hwnd && IsTopmost(v.hwnd) == gameTopmost)
+			return;   // already there
+		if (above == v.hwnd)
+			above = GetWindow(v.hwnd, GW_HWNDPREV);
+		HWND after;
+		if (above && IsTopmost(above) == gameTopmost)
+			after = above;           // just under it, so just over the game
+		else if (gameTopmost)
+			after = HWND_TOPMOST;    // the game is the top window of all
+		else                         // the game is the top normal window: nothing normal is above it
+			after = IsTopmost(v.hwnd) ? HWND_NOTOPMOST : HWND_TOP;
+		SetWindowPos(v.hwnd, after, 0, 0, 0, 0, flags);
+	}
+
 	// The screen's thread. Started at game start (Prewarm) or at the first join,
 	// and then kept for the session: the window and the web page stay loaded,
 	// hidden, so a join only has to show them. Between joins the page is
@@ -660,8 +725,8 @@ namespace
 		SetLayeredWindowAttributes(v.hwnd, 0, 0, LWA_ALPHA);
 
 		// The web page. If it isn't ready when a join starts, the native drawing
-		// shows until it is (up to 8 s into the join); if it failed, the next join
-		// tries again.
+		// shows until it is; if it fails (also while it's showing: its browser
+		// died), the native drawing takes over and the next join starts it again.
 		bool webOn = SUCCEEDED(com) && loading_webview::Start(v.hwnd, PageUrl(), WebProfileDir());
 		bool webShown = false;
 
@@ -686,11 +751,14 @@ namespace
 		ULONGLONG countFrom = GetTickCount64(), lastShot = 0;
 		int frames = 0, shotNo = 0;
 		bool shown = false;
-		bool topmost = false;   // see "Stay above the game" below
 		ULONGLONG shownAt = 0;
 		unsigned seenJoin = 0;
+		// The native drawing's back buffer: `bmp` selected into `mem`, and the
+		// bitmap `mem` came with, put back before `bmp` is deleted (GDI won't
+		// delete a bitmap that's selected into a DC).
 		HDC mem = nullptr;
 		HBITMAP bmp = nullptr;
+		HGDIOBJ memOriginal = nullptr;
 		int bw = 0, bh = 0;
 
 		for (;;)
@@ -732,22 +800,40 @@ namespace
 				lastPost = 0;
 				countFrom = now;
 				frames = 0;
-				std::lock_guard<std::mutex> lock(g.m);
-				shotDir.clear();
-				if (GetFileAttributesW((g.dataDir + L"\\screenshot_debug").c_str()) != INVALID_FILE_ATTRIBUTES)
+				std::wstring dataDir;
 				{
-					shotDir = g.dataDir + L"\\shots";
+					std::lock_guard<std::mutex> lock(g.m);
+					dataDir = g.dataDir;
+				}
+				shotDir.clear();
+				if (GetFileAttributesW((dataDir + L"\\screenshot_debug").c_str()) != INVALID_FILE_ATTRIBUTES)
+				{
+					shotDir = dataDir + L"\\shots";
 					CreateDirectoryW(shotDir.c_str(), nullptr);
 				}
+				// A page that failed since the last join (its browser died while
+				// hidden, or the reload after that join failed) is started afresh
+				// now, so this join can still get it.
+				if (webOn && loading_webview::Failed())
+				{
+					loading_webview::Stop();
+					webOn = false;
+				}
+				// Outside g.m: starting WebView2 loads its DLL and may launch its
+				// browser, and the game thread takes g.m every frame. It may also
+				// pump this thread's messages, and WndProc takes g.m.
+				const char* web;
 				if (!webOn && SUCCEEDED(com))
 				{
 					webOn = loading_webview::Start(v.hwnd, PageUrl(), WebProfileDir());
-					Log(webOn ? "web start" : "web unavailable");
+					web = webOn ? "web start" : "web unavailable";
 				}
 				else
 				{
-					Log(loading_webview::Ready() ? "web already loaded" : "web loading");
+					web = !webOn ? "web unavailable" : loading_webview::Ready() ? "web already loaded" : "web loading";
 				}
+				std::lock_guard<std::mutex> lock(g.m);
+				Log(web);
 			}
 
 			if (webOn)
@@ -762,19 +848,24 @@ namespace
 						std::fclose(f);
 					}
 				}
-				if (!webShown && loading_webview::Ready())
+				if (loading_webview::Failed())
+				{
+					// Before it showed, or while showing (its browser or page
+					// process died): the native drawing, with its own Cancel,
+					// takes over from the next frame.
+					const bool wasShown = webShown;
+					loading_webview::Stop();
+					webOn = false;
+					webShown = false;
+					std::lock_guard<std::mutex> lock(g.m);
+					Log(wasShown ? "web failed while shown" : "web failed");
+				}
+				else if (!webShown && loading_webview::Ready())
 				{
 					webShown = true;
 					loading_webview::SetVisible(true);
 					std::lock_guard<std::mutex> lock(g.m);
 					Log("web shown");
-				}
-				else if (!webShown && loading_webview::Failed())
-				{
-					loading_webview::Stop();
-					webOn = false;
-					std::lock_guard<std::mutex> lock(g.m);
-					Log("web failed");
 				}
 				char action = loading_webview::TakeAction();
 				if (action == 'c' || action == 'h')
@@ -850,11 +941,10 @@ namespace
 				ShowWindow(v.hwnd, SW_HIDE);
 				SetLayeredWindowAttributes(v.hwnd, 0, 0, LWA_ALPHA);
 				shown = false;
-				if (topmost)
-				{
+				// Hidden first, so dropping topmost can't put it over anything;
+				// the next join places it again (KeepAboveGame) before showing it.
+				if (IsTopmost(v.hwnd))
 					SetWindowPos(v.hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-					topmost = false;
-				}
 				if (webOn)
 					loading_webview::Reload();   // fresh for the next join
 				continue;
@@ -889,24 +979,8 @@ namespace
 					}
 					if (webOn)
 						loading_webview::Resize(rc.right, rc.bottom);
-					// Stay above the game. HWND_TOP from this thread can't move the
-					// window above the active one, so it only worked on a join where
-					// this window came up before the game's (launching straight
-					// into the server); a second join in the same session (retry,
-					// the server browser) left it under the game, showing GMod's
-					// own loading page. Topmost works from any thread. It's only
-					// held while the game or this screen is in front, and dropped as
-					// soon as anything else is, so alt-tab behaves as usual. An
-					// owned window would also stay on top, but would share the
-					// game's input thread and freeze with it during loads.
-					HWND fg = GetForegroundWindow();
-					bool wantTop = fg == v.game || fg == v.hwnd;
-					if (wantTop != topmost)
-					{
-						SetWindowPos(v.hwnd, wantTop ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0,
-							SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-						topmost = wantTop;
-					}
+					// Over the game and nothing else; placed before it's shown.
+					KeepAboveGame();
 
 					int w = rc.right, h = rc.bottom;
 					HDC dc = GetDC(v.hwnd);
@@ -914,16 +988,30 @@ namespace
 					{
 						if (mem)
 						{
+							SelectObject(mem, memOriginal);
 							DeleteObject(bmp);
 							DeleteDC(mem);
+							mem = nullptr;
+							bmp = nullptr;
+							memOriginal = nullptr;
 						}
-						mem = CreateCompatibleDC(dc);
-						bmp = CreateCompatibleBitmap(dc, w, h);
-						SelectObject(mem, bmp);
-						bw = w;
-						bh = h;
+						// Tried again next frame if it fails (a huge window, low memory).
+						HDC newMem = CreateCompatibleDC(dc);
+						HBITMAP newBmp = newMem ? CreateCompatibleBitmap(dc, w, h) : nullptr;
+						if (newBmp)
+						{
+							mem = newMem;
+							bmp = newBmp;
+							memOriginal = SelectObject(mem, bmp);
+							bw = w;
+							bh = h;
+						}
+						else if (newMem)
+						{
+							DeleteDC(newMem);
+						}
 					}
-					if (!webShown)
+					if (!webShown && mem)
 					{
 						Draw(mem, w, h);
 						BitBlt(dc, 0, 0, w, h, mem, 0, 0, SRCCOPY);
@@ -946,7 +1034,7 @@ namespace
 						swprintf(name, 32, webShown ? L"\\shot_%02d.png" : L"\\shot_%02d.bmp", shotNo++);
 						if (webShown)
 							loading_webview::Capture(shotDir + name);
-						else
+						else if (mem)
 							SaveBmp(mem, bmp, w, h, shotDir + name);
 						lastShot = now;
 					}

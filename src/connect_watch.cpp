@@ -139,11 +139,6 @@ namespace connect_watch
 			(at ? Last() + " " + std::to_string(GetTickCount64() - at) + " ms ago" : "none");
 	}
 
-	std::string LastAddress()
-	{
-		return g_at ? Last() : std::string();
-	}
-
 	bool LastDisconnect(std::string& reason, unsigned long long& msAgo)
 	{
 		ULONGLONG at = g_disconnectAt;
@@ -157,16 +152,19 @@ namespace connect_watch
 		return true;
 	}
 
+	// A command-line target is noted at start-up, some seconds before the join;
+	// it counts until the first join of the session begins.
+	bool g_firstJoin = true;
+
 	bool HeadingToUs(unsigned withinMs)
 	{
 		ULONGLONG at = g_at;
-		// A command-line target is noted at start-up, some seconds before the
-		// join; it counts for the first join of the session.
-		static bool firstJoin = true;
-		bool ok = g_ours && at && (GetTickCount64() - at <= withinMs || (firstJoin && GetTickCount64() - at <= 60000));
-		if (ok)
-			firstJoin = false;
-		return ok;
+		return g_ours && at && (GetTickCount64() - at <= withinMs || (g_firstJoin && GetTickCount64() - at <= 60000));
+	}
+
+	void JoinStarted()
+	{
+		g_firstJoin = false;
 	}
 }
 
@@ -176,8 +174,8 @@ namespace connect_watch
 {
 	void Start() {}
 	bool HeadingToUs(unsigned) { return false; }
+	void JoinStarted() {}
 	std::string Describe() { return "unsupported"; }
-	std::string LastAddress() { return std::string(); }
 	bool LastDisconnect(std::string&, unsigned long long&) { return false; }
 }
 

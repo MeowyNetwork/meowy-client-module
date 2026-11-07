@@ -20,7 +20,6 @@ namespace crashes
 #include <cstdio>
 #include <cwchar>
 #include <fstream>
-#include <regex>
 
 namespace
 {
@@ -179,6 +178,56 @@ namespace
 		CloseHandle(file);
 	}
 
+	bool IsAsciiAlpha(char c) { return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'); }
+	bool IsAsciiDigit(char c) { return c >= '0' && c <= '9'; }
+	bool IsAsciiAlnum(char c) { return IsAsciiAlpha(c) || IsAsciiDigit(c); }
+}
+
+namespace crashes
+{
+	// Error strings inside the traces can quote absolute paths, which carry the
+	// install folder and often the Windows user name. Each one ("C:\...",
+	// "C:/...", "\\host\...") is replaced by "<path>" up to where the path ends:
+	// a line end, a quote, or the ':' before a line number or the error text
+	// ("...\x.lua:12: attempt to..."). Spaces don't end it, so
+	// "C:\Users\Jane Doe\..." is masked whole. Linear, no std::regex (which can
+	// throw on long input in MSVC's implementation).
+	std::string MaskPaths(const std::string& s)
+	{
+		std::string out;
+		out.reserve(s.size());
+		size_t i = 0;
+		while (i < s.size())
+		{
+			const bool boundary = i == 0 || !IsAsciiAlnum(s[i - 1]);
+			const bool drive = boundary && i + 2 < s.size() && IsAsciiAlpha(s[i]) && s[i + 1] == ':' && (s[i + 2] == '\\' || s[i + 2] == '/');
+			const bool unc = boundary && i + 2 < s.size() && s[i] == '\\' && s[i + 1] == '\\' && IsAsciiAlnum(s[i + 2]);
+			if (!drive && !unc)
+			{
+				out += s[i++];
+				continue;
+			}
+			size_t j = i + (drive ? 3 : 2);
+			while (j < s.size())
+			{
+				const char c = s[j];
+				if (c == '\n' || c == '"' || c == '\'')
+					break;
+				if (c == ':' && j + 1 < s.size() && (IsAsciiDigit(s[j + 1]) || s[j + 1] == ' '))
+					break;
+				++j;
+			}
+			out += "<path>";
+			i = j;
+		}
+		return out;
+	}
+}
+
+namespace
+{
+	using crashes::MaskPaths;
+
 	std::string LuaSection(const std::wstring& path)
 	{
 		std::ifstream f(path, std::ios::binary);
@@ -193,9 +242,7 @@ namespace
 			return std::string();
 		std::string section = text.substr(start);
 		section.erase(std::remove(section.begin(), section.end(), '\r'), section.end());
-		// Error strings inside the traces can quote absolute paths; mask them.
-		static const std::regex drivePath(R"([A-Za-z]:[\\/][^\s"':]*)");
-		section = std::regex_replace(section, drivePath, "<path>");
+		section = MaskPaths(section);
 		if (section.size() > MAX_TRACE_BYTES)
 			section.resize(MAX_TRACE_BYTES);
 		return section;

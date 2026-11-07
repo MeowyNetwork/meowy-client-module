@@ -39,6 +39,7 @@ namespace notify_toast
 #include <cstdio>
 #include <cwchar>
 #include <deque>
+#include <memory>
 #include <mutex>
 #include <vector>
 
@@ -59,26 +60,39 @@ namespace
 	constexpr UINT_PTR TIMER_TRAY = 1;
 	constexpr UINT kTrayTimeoutMs = 30 * 1000;  // the tray icon goes after this at the latest
 	constexpr DWORD kShutdownWaitMs = 2000;
+	constexpr size_t kMaxQueued = 32;
 	constexpr size_t kKeepToasts = 16;          // shown toasts whose click handler stays registered
 	constexpr long long kToastLifetime = 30LL * 60 * 10000000; // 30 minutes, in 100 ns units
 
-	// Shared between the game thread and the worker; guarded by g_mutex.
-	std::mutex g_mutex;
-	std::deque<int> g_queue;
-	std::wstring g_dataDir;
-	std::string g_lastResult = "nothing yet";
-
-	// The running worker's own stop flag and wake event: a worker that didn't
-	// stop in time keeps its own (leaked) copy, so a new one can't confuse it.
-	struct Control
+	// One worker's state that others can reach: the game thread (its queue, its
+	// stop flag) and the toasts' click handlers (its window). Reference-counted,
+	// so whoever lets go last frees it: a worker that outlives Shutdown, or a
+	// click that comes in after the worker is gone, only ever sees its own
+	// worker's state, never freed memory or a newer worker's.
+	struct Shared
 	{
 		HANDLE wake = nullptr;
 		std::atomic<bool> stop{ false };
-	};
-	HANDLE g_thread = nullptr;     // game thread only
-	Control* g_control = nullptr;  // game thread only
+		std::atomic<HWND> window{ nullptr };   // the worker's hidden window, while it exists
+		std::deque<int> queue;                 // guarded by g_mutex
 
-	std::atomic<HWND> g_window{ nullptr };      // the worker's hidden window
+		Shared() = default;
+		Shared(const Shared&) = delete;
+		Shared& operator=(const Shared&) = delete;
+		~Shared()
+		{
+			if (wake)
+				CloseHandle(wake);
+		}
+	};
+
+	std::mutex g_mutex;   // every Shared::queue, g_dataDir and g_lastResult
+	std::wstring g_dataDir;
+	std::string g_lastResult = "nothing yet";
+
+	HANDLE g_thread = nullptr;              // game thread only: the current worker
+	std::shared_ptr<Shared> g_shared;       // game thread only: the current worker's
+
 	std::atomic<HWND> g_testTarget{ nullptr };
 	std::atomic<bool> g_forceToast{ false };
 
@@ -88,6 +102,25 @@ namespace
 		GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
 			reinterpret_cast<LPCWSTR>(&Self), &self);
 		return self;
+	}
+
+	// Once a toast's click handler is registered, Windows can call into this
+	// DLL whenever the toast is clicked, also after the client realm that
+	// showed it has closed (and FreeLibrary'd the DLL) and after its handler was
+	// removed, if the click was already on its way. So from then on the DLL
+	// stays loaded for the rest of the game (the menu realm pins it anyway when
+	// the pack starts with the game).
+	bool PinSelf()
+	{
+		static std::atomic<bool> pinned{ false };
+		if (pinned.load())
+			return true;
+		HMODULE self = nullptr;
+		if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+			reinterpret_cast<LPCWSTR>(&PinSelf), &self))
+			return false;
+		pinned = true;
+		return true;
 	}
 
 	void SetResult(const std::string& s)
@@ -146,8 +179,13 @@ namespace
 		return pid == GetCurrentProcessId();
 	}
 
-	// Any thread. Only asynchronous calls into the game's window, so this never
-	// waits on the game thread (which may itself be waiting in Shutdown).
+	// Any thread, and never waits on the game's thread, which may be busy
+	// loading or blocked in Shutdown waiting for the worker that runs this.
+	// Both calls on the game's window are asynchronous: SetForegroundWindow
+	// queues the activation to the game's thread. A click on our toast or
+	// balloon lets this process take the foreground; if Windows didn't allow it
+	// anyway, the taskbar button keeps flashing. (Raising the window by other
+	// means, BringWindowToTop/SetWindowPos, waits for the game's thread.)
 	void BringToFront()
 	{
 		HWND target = Target();
@@ -155,18 +193,7 @@ namespace
 			return;
 		if (IsIconic(target))
 			ShowWindowAsync(target, SW_RESTORE);
-		if (SetForegroundWindow(target))
-			return;
-		// Windows lets a click on our toast hand us the foreground; if it
-		// didn't, share input with the window in front for one call.
-		HWND fg = GetForegroundWindow();
-		DWORD fgThread = fg ? GetWindowThreadProcessId(fg, nullptr) : 0;
-		DWORD me = GetCurrentThreadId();
-		bool attached = fgThread && fgThread != me && AttachThreadInput(me, fgThread, TRUE);
-		BringWindowToTop(target);
 		SetForegroundWindow(target);
-		if (attached)
-			AttachThreadInput(me, fgThread, FALSE);
 	}
 
 	std::wstring Utf8ToWide(const char* s)
@@ -230,8 +257,13 @@ namespace
 		EventRegistrationToken token;
 	};
 
+	// Everything only the worker thread touches. It lives on the worker's
+	// stack and is passed along explicitly (its window procedure finds it in
+	// the window's user data), so two workers can never share it.
 	struct Worker
 	{
+		std::shared_ptr<Shared> shared;
+		std::wstring windowClass;       // unique per worker: an older one may still be stopping
 		HWND window = nullptr;
 		HICON smallIcon = nullptr, largeIcon = nullptr;
 		ComPtr<ITaskbarList3> taskbar;
@@ -242,7 +274,6 @@ namespace
 		ComPtr<WinNotify::IToastNotifier> notifier;
 		std::vector<ShownToast> toasts;
 	};
-	Worker* g_worker = nullptr;          // worker thread only
 
 	// Does the Start menu have our shortcut, carrying our AUMID? Without it,
 	// Windows takes a toast and silently drops it.
@@ -317,9 +348,8 @@ namespace
 		return FileUri(path);
 	}
 
-	void RemoveTray()
+	void RemoveTray(Worker& w)
 	{
-		Worker& w = *g_worker;
 		if (!w.trayAdded)
 			return;
 		NOTIFYICONDATAW nid = {};
@@ -331,9 +361,8 @@ namespace
 		w.trayAdded = false;
 	}
 
-	void ClearBadge()
+	void ClearBadge(Worker& w)
 	{
-		Worker& w = *g_worker;
 		if (!w.badged)
 			return;
 		if (w.taskbar)
@@ -343,9 +372,8 @@ namespace
 		w.badged = nullptr;
 	}
 
-	void Badge(HWND target)
+	void Badge(Worker& w, HWND target)
 	{
-		Worker& w = *g_worker;
 		if (!w.taskbar)
 		{
 			ComPtr<ITaskbarList3> taskbar;
@@ -363,9 +391,8 @@ namespace
 
 	// The fallback: a balloon from a tray icon of our own, removed when the
 	// balloon goes, is clicked, or after kTrayTimeoutMs.
-	bool ShowBalloon(const notify::Kind& kind)
+	bool ShowBalloon(Worker& w, const notify::Kind& kind)
 	{
-		Worker& w = *g_worker;
 		NOTIFYICONDATAW nid = {};
 		nid.cbSize = sizeof(nid);
 		nid.hWnd = w.window;
@@ -398,9 +425,8 @@ namespace
 
 	// The toast. S_FALSE: Windows has notifications from us turned off (the
 	// player's choice, so no balloon either).
-	HRESULT ShowToast(int index, const notify::Kind& kind)
+	HRESULT ShowToast(Worker& w, int index, const notify::Kind& kind)
 	{
-		Worker& w = *g_worker;
 		HRESULT hr;
 		if (!w.notifier)
 		{
@@ -480,13 +506,22 @@ namespace
 		}
 
 		// A click brings the game forward. The handler is agile (WRL's Callback
-		// is free-threaded): it runs on a WinRT thread and only posts to us.
+		// is free-threaded): it runs on a WinRT thread and only posts to the
+		// worker that showed it, through that worker's own Shared (it may be
+		// gone by then: the post then goes nowhere). Its code must outlive the
+		// client realm: see PinSelf.
+		if (!PinSelf())
+		{
+			const DWORD error = GetLastError();
+			return error ? HRESULT_FROM_WIN32(error) : E_FAIL;   // never S_OK: the balloon shows instead
+		}
+		std::shared_ptr<Shared> shared = w.shared;
 		EventRegistrationToken token = {};
 		hr = toast->add_Activated(Callback<WinFoundation::ITypedEventHandler<WinNotify::ToastNotification*, IInspectable*>>(
-			[](WinNotify::IToastNotification*, IInspectable*) -> HRESULT
+			[shared](WinNotify::IToastNotification*, IInspectable*) -> HRESULT
 			{
 				BringToFront();
-				if (HWND window = g_window.load())
+				if (HWND window = shared->window.load())
 					PostMessageW(window, WM_CLICKED, 0, 0);
 				return S_OK;
 			}).Get(), &token);
@@ -508,7 +543,7 @@ namespace
 		return S_OK;
 	}
 
-	void Show(int index)
+	void Show(Worker& w, int index)
 	{
 		size_t count = 0;
 		const notify::Kind* kinds = notify::Kinds(&count);
@@ -522,14 +557,13 @@ namespace
 			return;
 		}
 
-		Worker& w = *g_worker;
 		if (w.shortcut < 0)
 			w.shortcut = ShortcutRegistered() || g_forceToast.load() ? 1 : 0;
 		std::string result;
 		bool shown = false;
 		if (w.shortcut == 1)
 		{
-			HRESULT hr = ShowToast(index, kind);
+			HRESULT hr = ShowToast(w, index, kind);
 			if (hr == S_OK)
 			{
 				result = "toast";
@@ -546,15 +580,20 @@ namespace
 		else
 			result = "no Start-menu shortcut with our AppUserModelID, ";
 		if (!shown)
-			result += ShowBalloon(kind) ? "balloon" : "balloon failed";
+			result += ShowBalloon(w, kind) ? "balloon" : "balloon failed";
 
 		if (HWND target = Target())
-			Badge(target);
+			Badge(w, target);
 		SetResult(result);
 	}
 
 	LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 	{
+		// The worker this window belongs to (set right after it's created,
+		// cleared before it's destroyed).
+		Worker* w = reinterpret_cast<Worker*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+		if (!w)
+			return DefWindowProcW(hwnd, msg, wp, lp);
 		switch (msg)
 		{
 		case WM_TRAY:
@@ -566,76 +605,105 @@ namespace
 			case NIN_KEYSELECT:
 				BringToFront();
 				AddResult("; balloon clicked");
-				if (g_worker) { RemoveTray(); ClearBadge(); }
+				RemoveTray(*w);
+				ClearBadge(*w);
 				break;
 			case NIN_BALLOONTIMEOUT:
 				AddResult("; balloon gone");
-				if (g_worker) RemoveTray();
+				RemoveTray(*w);
 				break;
 			}
 			return 0;
 		case WM_CLICKED:
 			AddResult("; toast clicked");
-			if (g_worker) ClearBadge();
+			ClearBadge(*w);
 			return 0;
 		case WM_TIMER:
-			if (wp == TIMER_TRAY && g_worker)
-				RemoveTray();
+			if (wp == TIMER_TRAY)
+				RemoveTray(*w);
 			return 0;
 		}
 		return DefWindowProcW(hwnd, msg, wp, lp);
 	}
 
-	const wchar_t* const kWindowClass = L"MeowyClientPackNotify";
-
-	DWORD WINAPI WorkerMain(void* param)
+	// Everything that could call back into this DLL or outlive the game goes:
+	// the toasts' click handlers, the tray icon, the badge, the window and its
+	// class. Allocates nothing, so it also runs after an exception.
+	void Teardown(Worker& w, HMODULE self)
 	{
-		Control* control = static_cast<Control*>(param);
-		// STA, with the message loop below: the taskbar and shell-link objects
-		// are apartment-threaded. Toast click handlers come in on WinRT threads.
-		HRESULT co = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-		Worker w;
-		g_worker = &w;
+		for (ShownToast& t : w.toasts)
+			t.toast->remove_Activated(t.token);
+		w.toasts.clear();
+		w.notifier.Reset();
+		RemoveTray(w);
+		ClearBadge(w);
+		w.taskbar.Reset();
+		w.shared->window = nullptr;
+		if (w.window)
+		{
+			SetWindowLongPtrW(w.window, GWLP_USERDATA, 0);
+			DestroyWindow(w.window);
+			w.window = nullptr;
+		}
+		if (!w.windowClass.empty())
+			UnregisterClassW(w.windowClass.c_str(), self);
+		if (w.smallIcon)
+			DestroyIcon(w.smallIcon);
+		if (w.largeIcon)
+			DestroyIcon(w.largeIcon);
+		w.smallIcon = w.largeIcon = nullptr;
+	}
 
+	void RunWorker(Worker& w)
+	{
 		HMODULE self = Self();
 		w.smallIcon = static_cast<HICON>(LoadImageW(self, MAKEINTRESOURCEW(IDI_MEOWY), IMAGE_ICON,
 			GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), 0));
 		w.largeIcon = static_cast<HICON>(LoadImageW(self, MAKEINTRESOURCEW(IDI_MEOWY), IMAGE_ICON,
 			GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), 0));
+		// A class of its own: an older worker that Shutdown stopped waiting for
+		// unregisters its class when it finally ends, which must not take this
+		// worker's class away.
+		w.windowClass = L"MeowyClientPackNotify" + std::to_wstring(GetCurrentThreadId());
 		WNDCLASSEXW wc = { sizeof(wc) };
 		wc.lpfnWndProc = WindowProc;
 		wc.hInstance = self;
-		wc.lpszClassName = kWindowClass;
+		wc.lpszClassName = w.windowClass.c_str();
 		RegisterClassExW(&wc);
 		// A hidden ordinary window (not message-only): the tray needs one to own its icon.
-		w.window = CreateWindowExW(WS_EX_TOOLWINDOW, kWindowClass, L"Meowy Client Pack notifications", WS_POPUP,
+		w.window = CreateWindowExW(WS_EX_TOOLWINDOW, w.windowClass.c_str(), L"Meowy Client Pack notifications", WS_POPUP,
 			0, 0, 0, 0, nullptr, nullptr, self, nullptr);
-		g_window = w.window;
+		if (w.window)
+			SetWindowLongPtrW(w.window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(&w));
+		w.shared->window = w.window;
 		try
 		{
 			w.iconUri = WriteIcon();
 		}
-		catch (...)
+		catch (...)   // out of memory: toasts without our logo
 		{
 		}
 
-		while (!control->stop.load())
+		Shared& shared = *w.shared;
+		while (!shared.stop.load())
 		{
-			DWORD wait = MsgWaitForMultipleObjects(1, &control->wake, FALSE, w.badged ? 250 : INFINITE, QS_ALLINPUT);
+			DWORD wait = MsgWaitForMultipleObjects(1, &shared.wake, FALSE, w.badged ? 250 : INFINITE, QS_ALLINPUT);
 			(void)wait;
-			if (control->stop.load())
+			if (shared.stop.load())
 				break;
 
 			std::deque<int> todo;
 			{
 				std::lock_guard<std::mutex> lock(g_mutex);
-				todo.swap(g_queue);
+				todo.swap(shared.queue);
 			}
 			for (int index : todo)
 			{
+				if (shared.stop.load())
+					break;
 				try
 				{
-					Show(index);
+					Show(w, index);
 				}
 				catch (...)   // out of memory: drop this one, never take the game down
 				{
@@ -650,27 +718,48 @@ namespace
 			}
 
 			if (w.badged && TargetInFront())
-				ClearBadge();
+				ClearBadge(w);
 		}
+	}
 
-		// Clean up everything that could call back into this DLL or outlive the game.
-		for (ShownToast& t : w.toasts)
-			t.toast->remove_Activated(t.token);
-		w.toasts.clear();
-		w.notifier.Reset();
-		RemoveTray();
-		ClearBadge();
-		w.taskbar.Reset();
-		g_window = nullptr;
-		if (w.window)
-			DestroyWindow(w.window);
-		UnregisterClassW(kWindowClass, self);
-		if (w.smallIcon) DestroyIcon(w.smallIcon);
-		if (w.largeIcon) DestroyIcon(w.largeIcon);
-		g_worker = nullptr;
-		if (SUCCEEDED(co))
-			CoUninitialize();
-		return 0;
+	// What a new worker gets: its Shared, and its own reference to this DLL.
+	struct StartParams
+	{
+		std::shared_ptr<Shared> shared;
+		HMODULE module = nullptr;
+	};
+
+	// The worker. It holds its own reference to this DLL and drops it as its
+	// very last step (FreeLibraryAndExitThread): the client realm's FreeLibrary
+	// can't unload the code it's running, even when Shutdown stopped waiting
+	// for it (it's stuck somewhere in Windows) and the realm has closed.
+	DWORD WINAPI WorkerMain(void* param)
+	{
+		HMODULE module = nullptr;
+		{
+			std::unique_ptr<StartParams> params(static_cast<StartParams*>(param));
+			module = params->module;
+			// STA, with the message loop in RunWorker: the taskbar and shell-link
+			// objects are apartment-threaded. Toast click handlers come in on
+			// WinRT threads.
+			HRESULT co = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+			{
+				Worker w;
+				w.shared = std::move(params->shared);
+				params.reset();
+				try
+				{
+					RunWorker(w);
+				}
+				catch (...)   // out of memory while starting: stop cleanly instead
+				{
+				}
+				Teardown(w, Self());
+			}   // the worker's COM objects are released here, before CoUninitialize
+			if (SUCCEEDED(co))
+				CoUninitialize();
+		}
+		FreeLibraryAndExitThread(module, 0);
 	}
 }
 
@@ -686,29 +775,32 @@ namespace notify_toast
 	{
 		if (!g_thread)
 		{
-			Control* control = new Control();
-			control->wake = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-			if (!control->wake)
-			{
-				delete control;
+			std::unique_ptr<StartParams> params(new StartParams());
+			params->shared = std::make_shared<Shared>();
+			params->shared->wake = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+			if (!params->shared->wake)
 				return false;
-			}
-			HANDLE thread = CreateThread(nullptr, 0, WorkerMain, control, 0, nullptr);
+			if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, reinterpret_cast<LPCWSTR>(&WorkerMain),
+				&params->module))
+				return false;
+			std::shared_ptr<Shared> shared = params->shared;
+			HMODULE module = params->module;
+			HANDLE thread = CreateThread(nullptr, 0, WorkerMain, params.get(), 0, nullptr);
 			if (!thread)
 			{
-				CloseHandle(control->wake);
-				delete control;
+				FreeLibrary(module);
 				return false;
 			}
+			params.release();   // the worker owns it now
 			g_thread = thread;
-			g_control = control;
+			g_shared = std::move(shared);
 		}
 		{
 			std::lock_guard<std::mutex> lock(g_mutex);
-			if (g_queue.size() < 32)
-				g_queue.push_back(index);
+			if (g_shared->queue.size() < kMaxQueued)
+				g_shared->queue.push_back(index);
 		}
-		SetEvent(g_control->wake);
+		SetEvent(g_shared->wake);
 		return true;
 	}
 
@@ -723,20 +815,17 @@ namespace notify_toast
 			return;
 		{
 			std::lock_guard<std::mutex> lock(g_mutex);
-			g_queue.clear();
+			g_shared->queue.clear();
 		}
-		g_control->stop = true;
-		SetEvent(g_control->wake);
-		if (WaitForSingleObject(g_thread, kShutdownWaitMs) == WAIT_OBJECT_0)
-		{
-			CloseHandle(g_control->wake);
-			delete g_control;
-		}
-		// else: the worker is stuck somewhere in Windows. It keeps its own
-		// Control (leaked on purpose) and stops when it gets back.
+		g_shared->stop = true;
+		SetEvent(g_shared->wake);
+		// Usually immediate. A worker stuck in Windows (Explorer not answering,
+		// say) is let go after this: it keeps its own Shared and its own
+		// reference to this DLL, and finishes on its own when it gets back.
+		WaitForSingleObject(g_thread, kShutdownWaitMs);
 		CloseHandle(g_thread);
 		g_thread = nullptr;
-		g_control = nullptr;
+		g_shared.reset();
 	}
 
 	void SetTargetWindowForTest(void* hwnd)

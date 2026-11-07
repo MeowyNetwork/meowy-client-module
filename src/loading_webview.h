@@ -20,7 +20,8 @@ namespace loading_webview
 	bool Start(HWND parent, const std::wstring& url, const std::wstring& userDataDir);
 	// The page loaded and said it's ready; it is now shown over the native drawing.
 	bool Ready();
-	// Creation or navigation failed; the native drawing stays.
+	// Creation or navigation failed, or the browser's or the page's process
+	// died since (also while the page is showing): Stop it and draw natively.
 	bool Failed();
 	void Resize(int w, int h);
 	// Sends a JSON object to the page (window.chrome.webview "message" event).

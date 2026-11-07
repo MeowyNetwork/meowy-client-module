@@ -94,6 +94,7 @@
 #include "resource.h"
 
 #include <cstdio>
+#include <exception>
 #include <string>
 #include <vector>
 
@@ -444,6 +445,30 @@ namespace
 		L->SetField(-2, name);
 	}
 
+	// Every function Lua can call is registered through this. A C++ exception
+	// (std::bad_alloc in a 32-bit game, say) must never unwind into the game's
+	// Lua: it becomes `false, "internal error"`, returned after every C++ local
+	// of the function is gone. Lua's own errors (CheckString's argument errors)
+	// aren't std::exceptions and pass through untouched.
+	template <CFunc F>
+	int Guarded(lua_State* L)
+	{
+		const int top = L->luabase->Top();
+		try
+		{
+			return F(L);
+		}
+		catch (const std::exception&)
+		{
+		}
+		const int pushed = L->luabase->Top() - top;
+		if (pushed > 0)
+			L->luabase->Pop(pushed);
+		L->luabase->PushBool(false);
+		L->luabase->PushString("internal error");
+		return 2;
+	}
+
 	// --- Loading screen (loading_screen.h) ----------------------------------
 
 #ifdef _WIN32
@@ -708,6 +733,7 @@ namespace
 		// that it's connecting to one of ours (connect_watch.h).
 		if (server_gate::Check() != server_gate::Result::Allowed && !connect_watch::HeadingToUs(10000))
 			return 0;
+		connect_watch::JoinStarted();
 #ifdef _WIN32
 		ILuaBase* LUA = L->luabase;
 		loading_screen::Begin(DataDir(), LUA->IsType(1, Type::Number) ? LUA->GetNumber(1) : -1);
@@ -785,7 +811,9 @@ namespace
 	// Client: the player has spawned and the game runs smoothly; fade out.
 	int LoadingDone(lua_State*)
 	{
-		loading_screen::Done();
+		// Any server's client Lua can call this; only ours ends our screen.
+		if (server_gate::Check() == server_gate::Result::Allowed)
+			loading_screen::Done();
 		return 0;
 	}
 
@@ -841,10 +869,9 @@ namespace
 		return 1;
 	}
 
-	// "ip:port" of the server the game is really connected to, when it's
-	// someone else's (not ours, not singleplayer); else nil.
 	// DataSandbox(onServer): data/ belongs to the server being joined or played
-	// (onServer true), or to the menu (false). See data_sandbox.h.
+	// (onServer true), or to the menu (false). See data_sandbox.h. Called every
+	// frame; a switch only happens when the owner changes.
 	int DataSandbox(lua_State* L)
 	{
 		bool onServer = L->luabase->IsType(1, Type::Bool) && L->luabase->GetBool(1);
@@ -853,19 +880,33 @@ namespace
 			data_sandbox::Leave();
 			return 0;
 		}
-		// The real connection's address once there is one; until then the
-		// address the engine printed as the join started.
+		// Only the engine's own connection says whose folder it is. Never console
+		// text: a server's Lua can print "Connecting to <another server>" itself.
 		std::string address;
-		server_gate::Result r = server_gate::Check(&address);
-		if ((r != server_gate::Result::Allowed && r != server_gate::Result::OtherServer) || address.empty())
-			address = connect_watch::LastAddress();
-		if (address.empty())
+		switch (server_gate::Check(&address))
+		{
+		case server_gate::Result::Allowed:
+		case server_gate::Result::OtherServer:
+			break;
+		case server_gate::Result::NotConnected:
+			// Loading with no connection yet: a remote server's Lua can't run
+			// before its connection exists (and then this switches to its folder),
+			// while a game hosted here (singleplayer, listen server) runs its
+			// server Lua before connecting to itself. Either way, the menu's.
+			data_sandbox::Leave();
 			return 0;
+		case server_gate::Result::Unavailable:
+			// The engine can't be asked (a game update): a fixed folder, never the menu's.
+			data_sandbox::EnterUnknown();
+			return 0;
+		}
 		// Singleplayer, or hosting a game here: the player's own game, the menu's files.
 		if (address.find("loopback") != std::string::npos || address.rfind("localhost", 0) == 0)
 			data_sandbox::Leave();
+		else if (address.empty())
+			data_sandbox::EnterUnknown();
 		else
-			data_sandbox::Enter(address);   // a P2P host or odd address gets a fixed sandbox of its own
+			data_sandbox::Enter(address);   // a P2P host or odd address gets a fixed folder of its own
 		return 0;
 	}
 
@@ -875,11 +916,15 @@ namespace
 		return 1;
 	}
 
+	// "ip:port" of the server the game is really connected to, when it's
+	// someone else's (not ours, not singleplayer); else nil.
+	// Only a public a.b.c.d:port: a Steam P2P game or a LAN server is someone's
+	// own game, never reported.
 	int OtherServerAddress(lua_State* L)
 	{
 		std::string address;
-		if (server_gate::Check(&address) == server_gate::Result::OtherServer && !address.empty()
-			&& address.find("loopback") == std::string::npos && !server_gate::IsOurAddress(address))
+		if (server_gate::Check(&address) == server_gate::Result::OtherServer && server_rep::IsPublicAddress(address)
+			&& !server_gate::IsOurAddress(address))
 			L->luabase->PushString(address.c_str());
 		else
 			L->luabase->PushNil();
@@ -1187,7 +1232,12 @@ hook.Add("Think", "MeowyClientPack.ServerListTimers", function()
 	for i = #later, 1, -1 do
 		if later[i].at <= now then due[#due + 1] = later[i].fn table.remove(later, i) end
 	end
-	for _, fn in ipairs(due) do fn() end
+	-- Each on its own: one that fails mustn't drop the rest (a check left
+	-- pending for the session, a status capture never ended).
+	for _, fn in ipairs(due) do
+		local ok, err = pcall(fn)
+		if not ok then ErrorNoHalt("[Meowy Client Pack] server list: " .. tostring(err) .. "\n") end
+	end
 end)
 
 -- Players' reports (who was really connected) beat everything; then this PC's
@@ -1349,7 +1399,7 @@ local function judge(address, listA, listB, gap)
 		if usable(e.name) and not suspicious[e.name] then
 			local joined = samples[address].at - e.time
 			for other, o in pairs(samples) do
-				local times = other ~= address and o.joined[e.name]
+				local times = other ~= address and samples[address].at - o.at < RECHECK and o.joined[e.name]
 				if times then
 					for _, t in ipairs(times) do
 						if math.abs(t - joined) <= DUPE_TOLERANCE then suspicious[e.name] = true break end
@@ -1428,6 +1478,11 @@ end
 
 local function startChecks(type)
 	local now = SysTime()
+	-- Samples only count against each other while fresh (judge's same-moment
+	-- check); older ones go, so the session's list doesn't keep growing.
+	for address, smp in pairs(samples) do
+		if now - smp.at > RECHECK and not pending[address] then samples[address] = nil end
+	end
 	local list = {}
 	for address, s in pairs(seen) do
 		if s.type == type and s.players - s.bots >= MIN_PLAYERS and not meowy.IsOurServer(address)
@@ -1593,14 +1648,17 @@ local function runStatus(done)
 	end)
 end
 
-local reported, joinedAt, nextLook = {}, {}, 0
+local reported, joinedAt, nextLook, lastAddress = {}, {}, 0, nil
 hook.Add("Think", "MeowyClientPack.ServerReport", function()
 	if SysTime() < nextLook then return end
 	nextLook = SysTime() + 5
-	if not enabled:GetBool() or not reports:GetBool() or not IsInGame() or IsInLoading() then return end
-	local address = meowy.OtherServerAddress()
-	if not address or reported[address] then return end
-	joinedAt[address] = joinedAt[address] or SysTime()
+	local address = IsInGame() and not IsInLoading() and meowy.OtherServerAddress() or nil
+	-- Each visit's FIRST_RUN counts from when it began, a return to a server too.
+	if address ~= lastAddress then
+		lastAddress = address
+		if address then joinedAt[address] = SysTime() end
+	end
+	if not address or reported[address] or not enabled:GetBool() or not reports:GetBool() then return end
 	if SysTime() - joinedAt[address] < FIRST_RUN then return end
 	reported[address] = true
 
@@ -1647,6 +1705,9 @@ local sandbox = CreateConVar("meowy_data_sandbox", "1", FCVAR_ARCHIVE,
 	"Meowy Client Pack: give every server its own garrysmod/data (0 = one data folder for all)")
 hook.Add("Think", "MeowyClientPack.DataSandbox", function()
 	meowy.DataSandbox(sandbox:GetBool() and (IsInLoading() or IsInGame()))
+end)
+concommand.Add("meowy_data_sandbox_status", function()
+	print("[Meowy Client Pack] data sandbox: " .. meowy.DataSandboxDescribe())
 end)
 
 local stockGameDetails = GameDetails
@@ -1709,23 +1770,23 @@ GMOD_MODULE_OPEN()
 
 	LUA->PushString(VERSION);
 	LUA->SetField(-2, "VERSION");
-	SetFunction(LUA, "DiscordStart", DiscordStart);
-	SetFunction(LUA, "DiscordSetActivity", DiscordSetActivity);
-	SetFunction(LUA, "DiscordClear", DiscordClear);
-	SetFunction(LUA, "DiscordState", DiscordState);
-	SetFunction(LUA, "DiscordLastError", DiscordLastError);
-	SetFunction(LUA, "CrashReports", CrashReports);
-	SetFunction(LUA, "Hardware", Hardware);
-	SetFunction(LUA, "SkipMaterialReload", SkipMaterialReload);
-	SetFunction(LUA, "RestoreMaterialReload", RestoreMaterialReload);
-	SetFunction(LUA, "MaterialReloadState", MaterialReloadState);
-	SetFunction(LUA, "ServerAllowed", ServerAllowed);
-	SetFunction(LUA, "LoadingDone", LoadingDone);
-	SetFunction(LUA, "Notify", Notify);
-	SetFunction(LUA, "SetNotifyEnabled", SetNotifyEnabled);
-	SetFunction(LUA, "NotifyEnabled", NotifyEnabled);
-	SetFunction(LUA, "TimelineEvent", TimelineEvent);
-	SetFunction(LUA, "ExpectRestart", ExpectRestart);
+	SetFunction(LUA, "DiscordStart", Guarded<DiscordStart>);
+	SetFunction(LUA, "DiscordSetActivity", Guarded<DiscordSetActivity>);
+	SetFunction(LUA, "DiscordClear", Guarded<DiscordClear>);
+	SetFunction(LUA, "DiscordState", Guarded<DiscordState>);
+	SetFunction(LUA, "DiscordLastError", Guarded<DiscordLastError>);
+	SetFunction(LUA, "CrashReports", Guarded<CrashReports>);
+	SetFunction(LUA, "Hardware", Guarded<Hardware>);
+	SetFunction(LUA, "SkipMaterialReload", Guarded<SkipMaterialReload>);
+	SetFunction(LUA, "RestoreMaterialReload", Guarded<RestoreMaterialReload>);
+	SetFunction(LUA, "MaterialReloadState", Guarded<MaterialReloadState>);
+	SetFunction(LUA, "ServerAllowed", Guarded<ServerAllowed>);
+	SetFunction(LUA, "LoadingDone", Guarded<LoadingDone>);
+	SetFunction(LUA, "Notify", Guarded<Notify>);
+	SetFunction(LUA, "SetNotifyEnabled", Guarded<SetNotifyEnabled>);
+	SetFunction(LUA, "NotifyEnabled", Guarded<NotifyEnabled>);
+	SetFunction(LUA, "TimelineEvent", Guarded<TimelineEvent>);
+	SetFunction(LUA, "ExpectRestart", Guarded<ExpectRestart>);
 
 	LUA->SetField(-2, "meowy");
 	LUA->Pop();
@@ -1778,46 +1839,47 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	LUA->PushString("menu");
 	LUA->SetField(-2, "REALM");
 	startup_hook::NoteMenuLoaded();
-	SetFunction(LUA, "StartupHook", StartupHookState);
-	SetFunction(LUA, "SetStartupHook", SetStartupHook);
-	SetFunction(LUA, "LoadingTarget", LoadingTarget);
-	SetFunction(LUA, "LoadingHeadsUp", LoadingHeadsUp);
-	SetFunction(LUA, "LoadingTargetState", LoadingTargetState);
-	SetFunction(LUA, "LoadingBegin", LoadingBegin);
-	SetFunction(LUA, "LoadingDetails", LoadingDetails);
-	SetFunction(LUA, "LoadingStatus", LoadingStatus);
-	SetFunction(LUA, "LoadingCancelRequested", LoadingCancelRequested);
-	SetFunction(LUA, "LoadingInGame", LoadingInGame);
-	SetFunction(LUA, "LoadingEnd", LoadingEnd);
-	SetFunction(LUA, "LoadingPrewarm", LoadingPrewarm);
-	SetFunction(LUA, "ServerRepFetch", ServerRepFetch);
-	SetFunction(LUA, "ServerRepTake", ServerRepTake);
-	SetFunction(LUA, "ServerRepReport", ServerRepReport);
-	SetFunction(LUA, "QueryPlayers", QueryPlayers);
-	SetFunction(LUA, "TakePlayers", TakePlayers);
-	SetFunction(LUA, "IsOurServer", IsOurServer);
-	SetFunction(LUA, "OtherServerAddress", OtherServerAddress);
-	SetFunction(LUA, "StatusCaptureBegin", StatusCaptureBegin);
-	SetFunction(LUA, "StatusCaptureEnd", StatusCaptureEnd);
-	SetFunction(LUA, "ServerRepNote", ServerRepNote);
-	SetFunction(LUA, "DataSandbox", DataSandbox);
-	SetFunction(LUA, "DataSandboxDescribe", DataSandboxDescribe);
-	SetFunction(LUA, "ResilienceWatch", ResilienceWatch);
-	SetFunction(LUA, "ResilienceRestartExpected", ResilienceRestartExpected);
-	SetFunction(LUA, "ResilienceLastDisconnect", ResilienceLastDisconnect);
-	SetFunction(LUA, "ResilienceClearRestart", ResilienceClearRestart);
-	SetFunction(LUA, "ResilienceProbe", ResilienceProbe);
-	SetFunction(LUA, "ResilienceProbeResult", ResilienceProbeResult);
-	SetFunction(LUA, "ResilienceSteamOnline", ResilienceSteamOnline);
-	SetFunction(LUA, "ResilienceSettingsRead", ResilienceSettingsRead);
-	SetFunction(LUA, "ResilienceSettingsWrite", ResilienceSettingsWrite);
-	SetFunction(LUA, "ResilienceSession", ResilienceSession);
-	SetFunction(LUA, "ResilienceCrashedSession", ResilienceCrashedSession);
-	SetFunction(LUA, "DoctorFacts", DoctorFacts);
-	SetFunction(LUA, "DoctorOpen", DoctorOpen);
+	SetFunction(LUA, "StartupHook", Guarded<StartupHookState>);
+	SetFunction(LUA, "SetStartupHook", Guarded<SetStartupHook>);
+	SetFunction(LUA, "LoadingTarget", Guarded<LoadingTarget>);
+	SetFunction(LUA, "LoadingHeadsUp", Guarded<LoadingHeadsUp>);
+	SetFunction(LUA, "LoadingTargetState", Guarded<LoadingTargetState>);
+	SetFunction(LUA, "LoadingBegin", Guarded<LoadingBegin>);
+	SetFunction(LUA, "LoadingDetails", Guarded<LoadingDetails>);
+	SetFunction(LUA, "LoadingStatus", Guarded<LoadingStatus>);
+	SetFunction(LUA, "LoadingCancelRequested", Guarded<LoadingCancelRequested>);
+	SetFunction(LUA, "LoadingInGame", Guarded<LoadingInGame>);
+	SetFunction(LUA, "LoadingEnd", Guarded<LoadingEnd>);
+	SetFunction(LUA, "LoadingPrewarm", Guarded<LoadingPrewarm>);
+	SetFunction(LUA, "ServerRepFetch", Guarded<ServerRepFetch>);
+	SetFunction(LUA, "ServerRepTake", Guarded<ServerRepTake>);
+	SetFunction(LUA, "ServerRepReport", Guarded<ServerRepReport>);
+	SetFunction(LUA, "QueryPlayers", Guarded<QueryPlayers>);
+	SetFunction(LUA, "TakePlayers", Guarded<TakePlayers>);
+	SetFunction(LUA, "IsOurServer", Guarded<IsOurServer>);
+	SetFunction(LUA, "OtherServerAddress", Guarded<OtherServerAddress>);
+	SetFunction(LUA, "StatusCaptureBegin", Guarded<StatusCaptureBegin>);
+	SetFunction(LUA, "StatusCaptureEnd", Guarded<StatusCaptureEnd>);
+	SetFunction(LUA, "ServerRepNote", Guarded<ServerRepNote>);
+	SetFunction(LUA, "DataSandbox", Guarded<DataSandbox>);
+	SetFunction(LUA, "DataSandboxDescribe", Guarded<DataSandboxDescribe>);
+	SetFunction(LUA, "ResilienceWatch", Guarded<ResilienceWatch>);
+	SetFunction(LUA, "ResilienceRestartExpected", Guarded<ResilienceRestartExpected>);
+	SetFunction(LUA, "ResilienceLastDisconnect", Guarded<ResilienceLastDisconnect>);
+	SetFunction(LUA, "ResilienceClearRestart", Guarded<ResilienceClearRestart>);
+	SetFunction(LUA, "ResilienceProbe", Guarded<ResilienceProbe>);
+	SetFunction(LUA, "ResilienceProbeResult", Guarded<ResilienceProbeResult>);
+	SetFunction(LUA, "ResilienceSteamOnline", Guarded<ResilienceSteamOnline>);
+	SetFunction(LUA, "ResilienceSettingsRead", Guarded<ResilienceSettingsRead>);
+	SetFunction(LUA, "ResilienceSettingsWrite", Guarded<ResilienceSettingsWrite>);
+	SetFunction(LUA, "ResilienceSession", Guarded<ResilienceSession>);
+	SetFunction(LUA, "ResilienceCrashedSession", Guarded<ResilienceCrashedSession>);
+	SetFunction(LUA, "DoctorFacts", Guarded<DoctorFacts>);
+	SetFunction(LUA, "DoctorOpen", Guarded<DoctorOpen>);
 	LUA->SetField(-2, "meowy");
 
-	data_sandbox::Recover();
+	// data/ was put right by the start-up stub (data_sandbox::Recover, under its
+	// crash guard) before this was loaded.
 	connect_watch::Start();
 
 	const std::string resilienceLua = ResilienceChunk();
@@ -1859,9 +1921,14 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 GMOD_MODULE_CLOSE()
 {
 	(void)LUA;
+	// The client realm closes as the player leaves the server (cancelled,
+	// kicked or dropped before InitPostEntity put it back, too): the material
+	// reload is never skipped for whatever is joined next. Unpinned (the pack
+	// didn't start with the game), the DLL is freed after this, and with it the
+	// only record of where the patch is.
+	engine_patches::RestoreMaterialReload();
 	discord::Shutdown();
-	// The client realm closes as the player leaves the server: no more
-	// notifications, and the badge and the toasts' click handlers go.
+	// No more notifications; the badge and the toasts' click handlers go.
 	notify_toast::Shutdown();
 	return 0;
 }

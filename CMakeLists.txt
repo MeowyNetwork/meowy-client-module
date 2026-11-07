@@ -26,6 +26,7 @@ add_library(meowy SHARED
 	src/connect_watch.cpp
 	src/server_rep.cpp
 	src/data_sandbox.cpp
+	src/file_util.cpp
 	src/notify.cpp
 	src/notify_toast.cpp
 	src/timeline.cpp
@@ -88,7 +89,7 @@ set_target_properties(meowy PROPERTIES
 # DLL is what lua/includes/menu.lua requires; it loads gmcl_meowy (src/boot).
 if(WIN32)
 	# data_sandbox too: the stub puts garrysmod/data right even when the pack doesn't start.
-	add_library(meowy_boot SHARED src/boot/boot.cpp src/data_sandbox.cpp)
+	add_library(meowy_boot SHARED src/boot/boot.cpp src/data_sandbox.cpp src/file_util.cpp)
 	target_include_directories(meowy_boot PRIVATE ${gmod_module_base_SOURCE_DIR}/include)
 	if(MSVC)
 		set_property(TARGET meowy_boot PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
@@ -118,16 +119,16 @@ if(MEOWY_BUILD_TESTS)
 	endif()
 	# The per-server data folder, against a throwaway GarrysMod folder:
 	#   sandbox_smoke <empty scratch folder>
-	add_executable(sandbox_smoke tests/sandbox_smoke.cpp src/data_sandbox.cpp)
+	add_executable(sandbox_smoke tests/sandbox_smoke.cpp src/data_sandbox.cpp src/file_util.cpp)
 	if(MSVC)
 		set_property(TARGET sandbox_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 	endif()
 	# meowy.Notify's rules (kinds, gate, switch, focus, rate limit), no game or Windows UI:
 	#   notify_smoke <empty scratch folder>
-	add_executable(notify_smoke tests/notify_smoke.cpp src/notify.cpp)
+	add_executable(notify_smoke tests/notify_smoke.cpp src/notify.cpp src/file_util.cpp)
 	# A real toast / balloon / taskbar badge on this PC, by hand (tests/NOTIFY_MANUAL.md):
 	#   notify_manual [kind]
-	add_executable(notify_manual tests/notify_manual.cpp src/notify.cpp src/notify_toast.cpp src/meowy.rc)
+	add_executable(notify_manual tests/notify_manual.cpp src/notify.cpp src/notify_toast.cpp src/file_util.cpp src/meowy.rc)
 	target_link_libraries(notify_manual PRIVATE runtimeobject)
 	if(MSVC)
 		set_property(TARGET notify_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
