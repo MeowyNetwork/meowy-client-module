@@ -165,6 +165,15 @@ impl Game {
         std::fs::read_to_string(&self.manifest).ok().map(|t| AppManifest::parse(&t))
     }
 
+    /// The game build the player runs: the x86-64 branch has bin\win64\gmod.exe.
+    pub fn arch(&self) -> &'static str {
+        if self.root.join("bin\\win64\\gmod.exe").is_file() {
+            "win64"
+        } else {
+            "win32"
+        }
+    }
+
     /// The pack's DLLs in `garrysmod\lua\bin` that aren't there.
     pub fn missing_modules(&self) -> Vec<&'static str> {
         MODULES.iter().copied().filter(|m| !self.garrysmod.join("lua\\bin").join(m).is_file()).collect()
