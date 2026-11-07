@@ -18,14 +18,6 @@ $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 if (-not (Test-Path $csc)) { throw "csc.exe not found at $csc" }
 
 $extra = @()
-# The pack's version (src/module.cpp VERSION), for the installed-version record
-# the launcher's updater trusts (Installer.cs RecordInstalled).
-$module = Join-Path $PSScriptRoot '..\src\module.cpp'
-$m = Select-String -Path $module -Pattern 'const char\* const VERSION = "([0-9.]+)";' | Select-Object -First 1
-if (-not $m) { throw "VERSION not found in $module" }
-$versionFile = Join-Path ([IO.Path]::GetTempPath()) "meowy_pack_version_$PID.txt"
-Set-Content -Path $versionFile -Value $m.Matches[0].Groups[1].Value -NoNewline
-$extra += "/resource:$versionFile,pack_version.txt"
 if ($Launcher) {
 	if (-not (Test-Path $Launcher)) { throw "launcher not found at $Launcher" }
 	$extra += "/resource:$Launcher,MeowyLauncher.exe"

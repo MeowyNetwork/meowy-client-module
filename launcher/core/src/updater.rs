@@ -13,9 +13,9 @@
 //!
 //! The running version, from outside the game: the stub's choice
 //! (`pack_versions::Choose`: current, then previous, if hash and policy allow),
-//! else the installed copy, whose version the installer records with its hash
-//! in `state\installed_<arch>.txt`; trusted only while that hash matches the DLL
-//! in `lua\bin`. Not known: nothing is staged (the pack updates itself in game).
+//! else the installed copy in `lua\bin`, by its own version resource (the
+//! pack's VERSIONINFO, src/version.h). A copy without one (installed before the
+//! pack had it) is "not known": nothing is staged, the pack updates itself in game.
 
 use crate::release::{self, Facts, Pointer, Release};
 use std::path::{Path, PathBuf};
@@ -118,7 +118,7 @@ mod staging {
     }
 
     /// The version the stub would load next (`pack_versions::Choose`), or the
-    /// installed copy's from the installer's record when its hash still matches.
+    /// installed copy's own version resource; None when neither is known.
     pub fn running_version(data: &Path, garrysmod: &Path, arch: &str, policy: Option<&crate::policy::Policy>) -> Option<String> {
         let bad = bad_list(data, arch);
         for which in ["current", "previous"] {
@@ -130,9 +130,12 @@ mod staging {
                 return Some(p.version);
             }
         }
-        let installed = read_pointer(&state_path(data, "installed", arch))?;
-        let dll = garrysmod.join("lua\\bin").join(dll_name(arch));
-        (file_sha256(&dll).as_deref() == Some(installed.sha256.as_str())).then_some(installed.version)
+        installed_version(garrysmod, arch)
+    }
+
+    /// The `lua\bin` copy's version from its VERSIONINFO (src/version.h), if it has one.
+    pub fn installed_version(garrysmod: &Path, arch: &str) -> Option<String> {
+        win::file_version(&garrysmod.join("lua\\bin").join(dll_name(arch))).filter(|v| release::valid_version(v))
     }
 
     pub fn status(data: &Path, garrysmod: Option<&Path>, arch: &str, policy: Option<&crate::policy::Policy>, last_check: &str) -> Status {
@@ -267,13 +270,6 @@ mod staging {
         }
     }
 
-    /// What the installer writes: the installed copy's version and hash.
-    pub fn installed_record(version: &str, dll: &Path) -> Option<String> {
-        release::valid_version(version)
-            .then(|| file_sha256(dll))
-            .flatten()
-            .map(|h| Pointer { version: version.into(), sha256: h, ok: 0 }.text())
-    }
 }
 
 #[cfg(all(test, windows))]
@@ -306,21 +302,25 @@ mod tests {
     fn running_version_from_outside() {
         let (data, gm) = setup("running");
         let dll = gm.join("lua\\bin").join(dll_name("win64"));
-        std::fs::write(&dll, b"installed pack").unwrap();
-        assert_eq!(running_version(&data, &gm, "win64", None), None, "no record: not known");
-        std::fs::write(state_path(&data, "installed", "win64"), installed_record("1.6.0", &dll).unwrap()).unwrap();
-        assert_eq!(running_version(&data, &gm, "win64", None).as_deref(), Some("1.6.0"));
-        std::fs::write(&dll, b"someone replaced it").unwrap();
-        assert_eq!(running_version(&data, &gm, "win64", None), None, "hash changed: not trusted");
-        // A current pointer whose file matches wins.
-        let v = version_dll(&data, "1.7.0", "win64");
-        std::fs::create_dir_all(v.parent().unwrap()).unwrap();
-        std::fs::write(&v, b"1.7.0 dll").unwrap();
+        std::fs::write(&dll, b"installed pack, no version resource").unwrap();
+        assert_eq!(running_version(&data, &gm, "win64", None), None, "no version resource: not known");
+        // A DLL with a version resource (kernel32 stands in for a pack built with VERSIONINFO).
+        let sys = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into());
+        std::fs::copy(format!("{sys}\\System32\\kernel32.dll"), &dll).unwrap();
+        let v = running_version(&data, &gm, "win64", None).expect("read from the DLL's VERSIONINFO");
+        assert!(v.starts_with("10.") && release::valid_version(&v), "{v}");
+        // A current pointer whose file matches wins over the installed copy.
+        let staged = version_dll(&data, "1.7.0", "win64");
+        std::fs::create_dir_all(staged.parent().unwrap()).unwrap();
+        std::fs::write(&staged, b"1.7.0 dll").unwrap();
         let p = Pointer { version: "1.7.0".into(), sha256: sha256_hex(b"1.7.0 dll"), ok: 2 };
         std::fs::write(state_path(&data, "current", "win64"), p.text()).unwrap();
         assert_eq!(running_version(&data, &gm, "win64", None).as_deref(), Some("1.7.0"));
+        std::fs::write(&staged, b"changed").unwrap();
+        assert_eq!(running_version(&data, &gm, "win64", None), Some(v.clone()), "a current whose hash fails is passed over");
+        std::fs::write(&staged, b"1.7.0 dll").unwrap();
         std::fs::write(state_path(&data, "bad", "win64"), "1.7.0\n").unwrap();
-        assert_eq!(running_version(&data, &gm, "win64", None), None, "a bad current is passed over");
+        assert_eq!(running_version(&data, &gm, "win64", None), Some(v), "a bad current is passed over");
         std::fs::remove_dir_all(data.parent().unwrap()).unwrap();
     }
 

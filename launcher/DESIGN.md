@@ -186,11 +186,12 @@ is kept yet.)
 
 From outside the game two facts need care:
 - **The running version:** the stub's choice (current, then previous, if hash, bad list and policy allow),
-  else the installed copy, whose version the installer now records with its SHA-256 in
-  `state\installed_<arch>.txt` (from `src/module.cpp`'s `VERSION`, embedded by `build.ps1`). The record is
-  trusted only while the hash matches the DLL in `lua\bin`; otherwise nothing is staged, and the pack still
-  updates itself in the game. A wrong guess here could make the stub prefer an older update over a newer
-  install, so "not known" never stages.
+  else the installed copy in `lua\bin`, by its own version resource (FileVersion from the pack's
+  VERSIONINFO, `src/version.h`, the pack's #68; read with `GetFileVersionInfoW`/`VerQueryValueW`). A copy
+  without one (installed before #68) is "not known": nothing is staged, and the pack still updates itself in
+  the game. The DLL carries its own version, so no file next to it can go stale after a Steam check, a
+  manual copy or an install. A wrong guess could make the stub prefer an older update over a newer install,
+  so "not known" never stages.
 - **The stub's version:** 1 if `gmsv_meowy_boot_<arch>.dll`'s export table (read from the file, never
   loaded) names `meowy_stub_version`, else 0 (an old stub that can't load updates).
 

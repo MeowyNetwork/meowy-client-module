@@ -111,7 +111,6 @@ namespace MeowyInstaller
 				if (install)
 				{
 					Console.WriteLine(ResetUpdates());
-					Console.WriteLine(RecordInstalled(garrysmod));
 					SetStartupChoice(startup);
 					Console.WriteLine(InstallLauncher(signIn));
 				}
@@ -269,77 +268,6 @@ namespace MeowyInstaller
 				removed++;
 			}
 			return removed > 0 ? "updates: the installed copy is the one to load (downloaded versions removed)" : "updates: nothing to reset";
-		}
-
-		// The installed copy's version and hash, for the Meowy Launcher's updater
-		// (launcher/core/src/updater.rs): from outside the game it can't tell which
-		// version is in lua\bin, so it stages nothing unless this record's hash
-		// still matches the DLL there. state\installed_<arch>.txt, in the pointer
-		// format of src/pack_versions.h. The version comes from src/module.cpp's
-		// VERSION, embedded by build.ps1 (no record without it).
-		public static string PackVersion()
-		{
-			using (Stream s = Assembly.GetExecutingAssembly().GetManifestResourceStream("pack_version.txt"))
-			{
-				if (s == null)
-					return null;
-				string v = new StreamReader(s).ReadToEnd().Trim();
-				return Regex.IsMatch(v, @"^\d{1,5}(\.\d{1,5}){0,3}$") ? v : null;
-			}
-		}
-
-		public static string RecordInstalled(string garrysmod)
-		{
-			string local = Environment.GetEnvironmentVariable("LOCALAPPDATA");
-			string version = PackVersion();
-			if (string.IsNullOrEmpty(local) || version == null)
-				return "installed version: not recorded";
-			return RecordInstalled(garrysmod, Path.Combine(local, @"MeowyClientPack\state"), version);
-		}
-
-		public static string RecordInstalled(string garrysmod, string stateDir, string version)
-		{
-			try
-			{
-				Directory.CreateDirectory(stateDir);
-				int n = 0;
-				foreach (string arch in new[] { "win64", "win32" })
-				{
-					string dll = Path.Combine(garrysmod, @"lua\bin\gmcl_meowy_" + arch + ".dll");
-					string record = Path.Combine(stateDir, "installed_" + arch + ".txt");
-					if (!File.Exists(dll))
-					{
-						if (File.Exists(record))
-							File.Delete(record);
-						continue;
-					}
-					string text = "version " + version + "\nsha256 " + Sha256Hex(dll) + "\nok 0\n";
-					string temp = record + ".tmp";
-					File.WriteAllText(temp, text);
-					if (File.Exists(record))
-						File.Replace(temp, record, null);
-					else
-						File.Move(temp, record);
-					n++;
-				}
-				return "installed version: " + version + " recorded (" + n + " architecture" + (n == 1 ? "" : "s") + ")";
-			}
-			catch (Exception e)
-			{
-				return "installed version: not recorded (" + e.Message + ")";
-			}
-		}
-
-		public static string Sha256Hex(string file)
-		{
-			using (var sha = System.Security.Cryptography.SHA256.Create())
-			using (FileStream f = File.OpenRead(file))
-			{
-				var sb = new System.Text.StringBuilder(64);
-				foreach (byte b in sha.ComputeHash(f))
-					sb.Append(b.ToString("x2"));
-				return sb.ToString();
-			}
 		}
 
 		// The pack's files: %LOCALAPPDATA%\MeowyClientPack (boot.lock, join times,
@@ -1349,7 +1277,6 @@ namespace MeowyInstaller
 				else
 					Program.RemoveStartupHook(m_path.Text.Trim());
 				Program.SetStartupChoice(m_startup.Checked);
-				Program.RecordInstalled(m_path.Text.Trim());
 				string launcher = Program.InstallLauncher(m_signIn.Checked);   // never fails the install either
 				Program.InstallShortcut(m_path.Text.Trim());   // never fails the install (balloons without it)
 				RefreshStatus();

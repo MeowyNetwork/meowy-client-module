@@ -211,6 +211,41 @@ pub fn random_bytes(n: usize) -> Option<Vec<u8>> {
     (unsafe { BCryptGenRandom(null_mut(), buf.as_mut_ptr(), n as u32, BCRYPT_USE_SYSTEM_PREFERRED_RNG) } == 0).then_some(buf)
 }
 
+/// A file's own version resource (VS_FIXEDFILEINFO FileVersion) as "a.b.c"
+/// (or "a.b.c.d" when the fourth part isn't 0), or None without one.
+pub fn file_version(path: &Path) -> Option<String> {
+    use windows_sys::Win32::Storage::FileSystem::{GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW, VS_FIXEDFILEINFO};
+    let p = wide(&path.to_string_lossy());
+    // SAFETY: a buffer of the size Windows asks for; the fixed-info pointer
+    // points into it and is read only while the buffer lives.
+    unsafe {
+        let mut handle = 0u32;
+        let size = GetFileVersionInfoSizeW(p.as_ptr(), &mut handle);
+        if size == 0 || size > 1 << 20 {
+            return None;
+        }
+        let mut buf = vec![0u8; size as usize];
+        if GetFileVersionInfoW(p.as_ptr(), 0, size, buf.as_mut_ptr().cast()) == 0 {
+            return None;
+        }
+        let root = wide("\\");
+        let mut info: *mut core::ffi::c_void = null_mut();
+        let mut len = 0u32;
+        if VerQueryValueW(buf.as_ptr().cast(), root.as_ptr(), &mut info, &mut len) == 0
+            || info.is_null()
+            || (len as usize) < std::mem::size_of::<VS_FIXEDFILEINFO>()
+        {
+            return None;
+        }
+        let f = std::ptr::read_unaligned(info as *const VS_FIXEDFILEINFO);
+        if f.dwSignature != 0xFEEF04BD {
+            return None;
+        }
+        let (a, b, c, d) = (f.dwFileVersionMS >> 16, f.dwFileVersionMS & 0xFFFF, f.dwFileVersionLS >> 16, f.dwFileVersionLS & 0xFFFF);
+        Some(if d == 0 { format!("{a}.{b}.{c}") } else { format!("{a}.{b}.{c}.{d}") })
+    }
+}
+
 // --- Shell ------------------------------------------------------------------
 
 /// Opens a URL (`steam://...`) or a folder with the shell.
