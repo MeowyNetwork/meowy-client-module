@@ -16,7 +16,11 @@ hook.Add("Think", "MeowyClientPack.Launcher", function()
 	if SysTime() < nextLook then return end
 	nextLook = SysTime() + 1
 	local join = meowy.LauncherTakeJoin()
-	if isstring(join) and join ~= "" then RunConsoleCommand("connect", join) end
+	-- JoinServer as resilience.lua does: RunConsoleCommand("connect", address)
+	-- quotes the address and the engine answers "Bad server address".
+	if isstring(join) and join ~= "" then
+		if JoinServer then JoinServer(join) else RunConsoleCommand("connect", join) end
+	end
 	local state = IsInLoading() and "joining" or (IsInGame() and "ingame" or "menu")
 	if state ~= last then
 		last = state

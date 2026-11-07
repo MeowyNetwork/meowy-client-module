@@ -66,7 +66,7 @@ int main()
 
 	// The menu Lua chunk takes only what the native side checked.
 	const std::string lua = launcher_pipe::kLua;
-	Check("lua: connect only with the checked join", lua.find("RunConsoleCommand(\"connect\", join)") != std::string::npos &&
+	Check("lua: connect only with the checked join", lua.find("JoinServer(join)") != std::string::npos &&
 		lua.find("RunString") == std::string::npos && lua.find("CompileString") == std::string::npos);
 
 	launcher_pipe::SetState("ingame", "1.2.3.4:27015");
