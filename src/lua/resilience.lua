@@ -78,6 +78,15 @@ local function setMenu(on)
 	-- Through the console: Garry's Mod refuses ConVar:SetBool on these menu convars.
 	RunConsoleCommand("meowy_menu", on and "1" or "0")
 end
+-- The menu page's text size (menu_page.lua): "0" auto, or a percentage.
+local menuScaleSetting = meowy.Setting and meowy.Setting("meowy_menu_scale", "0",
+	"Meowy Client Pack: the main menu's size in percent (0 = auto: 100% at 1080p, 133% at 1440p, 200% at 4K)")
+local function menuScale() return menuScaleSetting and menuScaleSetting:GetString() or "0" end
+local function setMenuScale(v)
+	-- Through the console: Garry's Mod refuses ConVar setters on these menu convars.
+	RunConsoleCommand("meowy_menu_scale", tostring(v))
+end
+
 -- Set by menu_page.lua while our home shows on the stock page (its list, with
 -- the settings entry, is hidden then).
 local menuPage = { ours = false }
@@ -162,6 +171,23 @@ local function openSettings(startTab)
 			local label = UI.Label(nil, "Main menu")
 			label.gapBefore = S(22)
 			blocks[#blocks + 1] = label
+		end
+		if UI.Choice and menuScaleSetting then
+			local options = {}
+			for _, pct in ipairs({ 0, 100, 125, 150, 175, 200 }) do
+				options[#options + 1] = { pct == 0 and "Auto" or (pct .. "%"), tostring(pct) }
+			end
+			local current = menuScale()
+			local known = false
+			for _, o in ipairs(options) do if o[2] == current then known = true end end
+			local sc = UI.Choice(nil, "Menu text size",
+				"Garry's Mod draws its menu at the same pixel size on any screen, so it's small at 1440p and tiny at 4K. "
+				.. "Auto is 100% at 1080p, 133% at 1440p and 200% at 4K. Applies to the main and Escape menus, "
+				.. "including Find servers and the other screens.",
+				options, known and current or "0", function(v) setMenuScale(v) end)
+			sc.meowyChoice = "menu_scale"
+			sc.gapBefore = S(10)
+			blocks[#blocks + 1] = sc
 		end
 		if meowy.LastServer then
 			local ct = UI.Toggle(nil, "Continue where you left off",
