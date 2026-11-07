@@ -89,6 +89,10 @@ local function tick()
 		P.started = true
 		if meowy.PartyAvailable() then meowy.PartyStart() end
 	end
+	-- The game may clear Rich Presence (on a join, say): the pack's keys go back each minute.
+	if now - (P.presenceAt or -math.huge) >= 60 then
+		P.presenceAt, P.packSet, P.presence = now, nil, nil
+	end
 	-- Friends' packs see this one has the pack (Steam shows Rich Presence to friends only).
 	local packWanted = partyOn()
 	if packWanted ~= P.packSet and meowy.PartySet then
