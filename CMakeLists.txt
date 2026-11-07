@@ -40,13 +40,17 @@ add_library(meowy SHARED
 	src/file_util.cpp
 	src/notify.cpp
 	src/notify_catalogue.cpp
+	src/policy.cpp
 	src/notify_toast.cpp
 	src/timeline.cpp
 	src/timeline_steam.cpp
 	src/party_steam.cpp
 	src/resilience.cpp
 	src/resilience_net.cpp
+	src/config_backup.cpp
 	src/doctor.cpp
+	src/mouse_confine.cpp
+	src/audio_watch.cpp
 	src/startup_hook.cpp)
 target_include_directories(meowy PRIVATE ${gmod_module_base_SOURCE_DIR}/include)
 if(WIN32)
@@ -149,6 +153,14 @@ if(MEOWY_BUILD_TESTS)
 		target_compile_options(notify_smoke PRIVATE /W4 /utf-8)
 		target_compile_options(notify_manual PRIVATE /W4 /utf-8)
 	endif()
+	# The signed policy (kill switch): parsing, keys, only-stricter ops key, replay, keeping:
+	#   policy_smoke <scratch folder>
+	add_executable(policy_smoke tests/policy_smoke.cpp src/policy.cpp src/notify_catalogue.cpp src/notify.cpp src/file_util.cpp)
+	target_link_libraries(policy_smoke PRIVATE bcrypt winhttp)
+	if(MSVC)
+		set_property(TARGET policy_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+		target_compile_options(policy_smoke PRIVATE /W4 /utf-8)
+	endif()
 	# The signed notification catalogue (parser, ECDSA check, kind-list switch), no game:
 	#   notify_catalogue_smoke
 	add_executable(notify_catalogue_smoke tests/notify_catalogue_smoke.cpp src/notify_catalogue.cpp src/notify.cpp src/file_util.cpp)
@@ -167,6 +179,20 @@ if(MEOWY_BUILD_TESTS)
 	endif()
 	# PC doctor's native facts (adapters, GPU time per adapter, power), no game:
 	#   doctor_smoke
+	# Holding the mouse inside the game: when it clips (no real clipping):
+	#   mouse_confine_smoke
+	add_executable(mouse_confine_smoke tests/mouse_confine_smoke.cpp src/mouse_confine.cpp)
+	if(MSVC)
+		set_property(TARGET mouse_confine_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+		target_compile_options(mouse_confine_smoke PRIVATE /W4 /utf-8)
+	endif()
+	# Sound devices: the default output and mics as the PC doctor shows them, and the watch:
+	#   audio_watch_smoke [seconds to watch]
+	add_executable(audio_watch_smoke tests/audio_watch_smoke.cpp src/audio_watch.cpp)
+	if(MSVC)
+		set_property(TARGET audio_watch_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+		target_compile_options(audio_watch_smoke PRIVATE /W4 /utf-8)
+	endif()
 	add_executable(doctor_smoke tests/doctor_smoke.cpp src/doctor.cpp)
 	target_link_libraries(doctor_smoke PRIVATE shell32)
 	if(MSVC)
@@ -222,6 +248,13 @@ if(MEOWY_BUILD_TESTS)
 	if(MSVC)
 		set_property(TARGET pak_cache_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 		target_compile_options(pak_cache_smoke PRIVATE /W4 /utf-8)
+	endif()
+	# Copies of config.cfg: one per change, the newest 10, written back for exec:
+	#   config_backup_smoke <scratch folder>
+	add_executable(config_backup_smoke tests/config_backup_smoke.cpp src/config_backup.cpp src/file_util.cpp)
+	if(MSVC)
+		set_property(TARGET config_backup_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+		target_compile_options(config_backup_smoke PRIVATE /W4 /utf-8)
 	endif()
 	# The fast file.Find on "LUA": the walk visits every entry the game's matcher
 	# accepts, in order, on a fake table; and the loop found in the installed client.dll:

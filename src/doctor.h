@@ -43,7 +43,8 @@ namespace doctor
 	Facts Gather();
 
 	// The few pages the doctor may open, by id: "graphics_settings"
-	// (ms-settings:display-advancedgraphics) and "branch_guide" (Facepunch's
-	// wiki on switching branches). Anything else is refused.
+	// (ms-settings:display-advancedgraphics), "branch_guide" (Facepunch's
+	// wiki on switching branches), "sound_settings" (ms-settings:sound) and
+	// "steam_voice" (Steam's voice settings). Anything else is refused.
 	bool Open(const std::string& id);
 }

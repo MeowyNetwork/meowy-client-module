@@ -262,6 +262,10 @@ namespace doctor
 			url = L"ms-settings:display-advancedgraphics";
 		else if (id == "branch_guide")
 			url = L"https://wiki.facepunch.com/gmod/Dev_Branch";
+		else if (id == "sound_settings")
+			url = L"ms-settings:sound";
+		else if (id == "steam_voice")
+			url = L"steam://open/settings/voice";
 		if (!url)
 			return false;
 		return reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr, L"open", url, nullptr, nullptr, SW_SHOWNORMAL)) > 32;

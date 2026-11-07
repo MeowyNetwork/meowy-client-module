@@ -492,6 +492,106 @@ function MeowyClientPackHomeIntent(id)
 	warm(addresses[math.floor(tonumber(id) or 0)], "pointer on its row")
 end
 
+-- Engine convars the pack changes for a while (fps_max_nofocus during a join,
+-- fps_max_menu at a menu in the background): the player's own value is kept
+-- with meowy.CvarHold until it's put back, so one a crash or a quit left
+-- changed (the game saves config.cfg at quit) is put back at the next start.
+local function numberText(v) return isstring(v) and v:match("^%d+%.?%d*$") ~= nil end
+local function cvarText(name) return GetConVarString and GetConVarString(name) end
+local function cvarChange(name, value, own)
+	if not (meowy.ConsoleRun and numberText(own)) then return false end
+	if meowy.CvarHold and not meowy.CvarHold(name, own) then return false end
+	meowy.ConsoleRun(name .. " " .. value)
+	return true
+end
+local function cvarPutBack(name, own)
+	if meowy.ConsoleRun then meowy.ConsoleRun(name .. " " .. own) end
+	if meowy.CvarRelease then meowy.CvarRelease(name) end
+end
+do
+	for name, own in pairs(meowy.CvarHeld and meowy.CvarHeld() or {}) do
+		cvarPutBack(name, own)
+		log("%s put back to %s (the game closed while the pack had it changed)", name, own)
+	end
+end
+
+-- The join priority guard: while a join loads, Windows' own QoS tag at full
+-- speed (meowy.JoinBoost) and fps_max_nofocus lifted to fps_max, both put back
+-- once in game or when the join ends.
+local function boostOn()
+	if not (joinBoostOn() and meowy.JoinBoost) then return end
+	local nofocus, fpsMax = cvarText("fps_max_nofocus"), cvarText("fps_max")
+	meowy.JoinBoost(true)
+	pw.boosted = true
+	if numberText(nofocus) and numberText(fpsMax) and tonumber(nofocus) > 0
+		and cvarChange("fps_max_nofocus", fpsMax, nofocus) then
+		pw.nofocus = nofocus
+	end
+end
+local function boostOff()
+	if not pw.boosted then return end
+	pw.boosted = false
+	if pw.nofocus then cvarPutBack("fps_max_nofocus", pw.nofocus) end
+	pw.nofocus = nil
+	if meowy.JoinBoost then meowy.JoinBoost(false) end
+end
+
+-- Idle savings (meowy_idle_savings).
+-- The loading screen's page (WebView2: six processes, ~150 MB private, ~310 MB
+-- working set) is kept loaded only while a join can come from the menu: from a
+-- few seconds after start-up (not competing with it), while the game has focus
+-- and for two minutes after it loses it. In game, and at a menu left in the
+-- background longer, it's unloaded; a join starts it on its own, the native
+-- drawing showing for the second that takes.
+-- With fps_max_nofocus at 0 (no cap of its own in the background), a menu in
+-- the background runs at fps_max_menu (60 by default): held to 15 fps there,
+-- put back on focus or when a join starts.
+local idleSetting = meowy.Setting and meowy.Setting("meowy_idle_savings", "1",
+	"Meowy Client Pack: unload the loading screen's browser while you play, and slow the menu down while the game is in the background (0 = off)")
+local function idleOn() return idleSetting == nil or idleSetting:GetBool() end
+local MENU_BACKGROUND_FPS, WEB_AFTER_START, WEB_AWAY_KEEP = 15, 5, 120
+local idle = { started = SysTime(), next = 0 }
+local function hasFocus() return not (system and system.HasFocus) or system.HasFocus() end
+local function loadingScreenOn()
+	local c = GetConVar and GetConVar("meowy_loadingscreen")
+	return c ~= nil and c:GetBool() and not (system and system.IsWindowed and not system.IsWindowed())
+end
+local function menuCap(on)
+	if on and not idle.capped then
+		local own = cvarText("fps_max_menu")
+		local n = tonumber(own)
+		if n and (n == 0 or n > MENU_BACKGROUND_FPS) and cvarChange("fps_max_menu", MENU_BACKGROUND_FPS, own) then
+			idle.capped = own
+		end
+	elseif not on and idle.capped then
+		cvarPutBack("fps_max_menu", idle.capped)
+		idle.capped = nil
+	end
+end
+local function loadingPage(want)
+	if want == idle.web then return end
+	idle.web = want
+	if want and meowy.LoadingPrewarm then meowy.LoadingPrewarm()
+	elseif not want and meowy.LoadingPark then meowy.LoadingPark() end
+end
+hook.Add("Think", "MeowyClientPack.IdleSavings", function()
+	local now = SysTime()
+	if now < idle.next then return end
+	idle.next = now + 0.25
+	local loading, inGame, focus = IsInLoading(), IsInGame(), hasFocus()
+	local atMenu = not loading and not inGame
+	if focus or not atMenu then idle.awaySince = nil else idle.awaySince = idle.awaySince or now end
+	local on = idleOn()
+	menuCap(on and atMenu and not focus and cvarText("fps_max_nofocus") == "0")
+	if loading then return end   -- a join keeps the page it has, or starts it
+	if not loadingScreenOn() then loadingPage(false)
+	elseif not on then loadingPage(true)
+	else
+		loadingPage(atMenu and now - idle.started >= WEB_AFTER_START
+			and (idle.awaySince == nil or now - idle.awaySince < WEB_AWAY_KEEP))
+	end
+end)
+
 function MeowyClientPackHomePrepare(id)
 	if not (homeOn() or menuPage.ours) then return end
 	MeowyClientPackPrepare(addresses[math.floor(tonumber(id) or 0)])
@@ -513,6 +613,7 @@ hook.Add("Think", "MeowyClientPack.Prewarm", function()
 	end
 	if loading and not pw.joining then
 		pw.joining = true
+		boostOn()
 		stopAll()
 		if pakCacheOn() and meowy.PakCache then
 			local ok, why = meowy.PakCache(true)
@@ -521,6 +622,7 @@ hook.Add("Think", "MeowyClientPack.Prewarm", function()
 		meowy.PrewarmBeginJoin()   -- also stops any warming: the join's reads come first
 	elseif pw.joining and IsInGame() and not loading then
 		pw.joining = false
+		boostOff()
 		if meowy.PakCacheState and meowy.PakCache then
 			log("pak cache: %s", meowy.PakCacheState())
 			meowy.PakCache(false)
@@ -530,6 +632,7 @@ hook.Add("Think", "MeowyClientPack.Prewarm", function()
 		if kept > 0 then log("prewarm: kept %d files for this server", kept) end
 	elseif not loading and not IsInGame() then
 		if pw.joining and meowy.PakCache then meowy.PakCache(false) end
+		if pw.joining then boostOff() end
 		pw.joining = false   -- a join that didn't get in: nothing to keep
 	end
 	-- A few seconds at the main menu: the Continue server, once per visit (a
@@ -559,6 +662,10 @@ if concommand then
 		end
 		MsgN("[Meowy Client Pack] content adverts: " .. (meowy.ContentState and meowy.ContentState() or "unavailable"))
 		MsgN("[Meowy Client Pack] pak cache: " .. (meowy.PakCacheState and meowy.PakCacheState() or "unavailable"))
+		MsgN("[Meowy Client Pack] join boost: " .. (joinBoostOn() and "on during joins" or "off") .. "; Windows has the game at " ..
+			(meowy.JoinBoostState and (meowy.JoinBoostState() == "on" and "full speed" or "its own policy") or "unknown"))
+		MsgN("[Meowy Client Pack] idle savings: " .. (idleOn() and "on" or "off") .. "; loading screen page " ..
+			(idle.web and "kept loaded" or "unloaded") .. "; menu frame rate " .. (idle.capped and ("held to " .. MENU_BACKGROUND_FPS .. " in the background") or "as set"))
 	end, nil, "Meowy Client Pack: what join pre-warm is doing")
 	-- meowy_content_get_ready <address>: "Get ready" for a server, from the console.
 	-- (The whole argument string: the console splits "a.b.c.d:port" at the colon.)

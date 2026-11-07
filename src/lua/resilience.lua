@@ -105,6 +105,10 @@ local function prewarmOn() return prewarmSetting == nil or prewarmSetting:GetBoo
 local pakCacheSetting = meowy.Setting and meowy.Setting("meowy_pak_cache", "1",
 	"Meowy Client Pack: decompress a map's compressed files once while a join loads, not on every read (0 = Garry's Mod's way)")
 local function pakCacheOn() return pakCacheSetting == nil or pakCacheSetting:GetBool() end
+-- Full speed while a join loads, even with the game in the background (home.lua).
+local joinBoostSetting = meowy.Setting and meowy.Setting("meowy_join_boost", "1",
+	"Meowy Client Pack: while a join loads, keep the game at full speed even when it's in the background (0 = Windows decides)")
+local function joinBoostOn() return joinBoostSetting == nil or joinBoostSetting:GetBool() end
 local function setPrewarm(on)
 	RunConsoleCommand("meowy_prewarm", on and "1" or "0")
 	if not on and meowy.PrewarmCancel then meowy.PrewarmCancel() end

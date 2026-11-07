@@ -36,6 +36,7 @@ async function refresh() {
   else set("modules", "Installed", "ok");
   set("last", s.last_repair || "-");
   $("lua-refresh").checked = s.disable_lua_refresh;
+  $("back-up").checked = s.notify_back_up;
   $("sign-in").checked = s.start_at_sign_in;
   $("updates").textContent = s.updates;
   $("play").disabled = !s.steam;
@@ -61,6 +62,71 @@ $("lua-refresh").onchange = (e) =>
   invoke("set_lua_refresh", { on: e.target.checked }).catch((err) => say(String(err), "bad")).finally(refresh);
 $("sign-in").onchange = (e) =>
   invoke("set_sign_in", { on: e.target.checked }).catch((err) => say(String(err), "bad")).finally(refresh);
+$("back-up").onchange = (e) =>
+  invoke("set_back_up", { on: e.target.checked }).catch((err) => say(String(err), "bad")).finally(refresh);
+
+// One server row (text only), with Join when the view allows it.
+function serverRow(v, address) {
+  const el = document.createElement("div");
+  el.className = "server" + (v.up ? "" : " down");
+  const text = document.createElement("div");
+  const title = document.createElement("div");
+  title.className = "name";
+  title.textContent = v.title;
+  const detail = document.createElement("small");
+  detail.textContent = v.detail;
+  text.append(title, detail);
+  el.appendChild(text);
+  if (v.join) {
+    const b = document.createElement("button");
+    b.textContent = "Join";
+    b.onclick = () => run(b, () => invoke("join_server", { address }));
+    el.appendChild(b);
+  }
+  return el;
+}
+
+// Servers: Meowy Network, then the player's Steam favourites and recent
+// Garry's Mod servers. Asked when the window opens, on Refresh, and every 30 s.
+let asking = false;
+async function servers() {
+  if (asking) return;
+  asking = true;
+  $("refresh").disabled = true;
+  try {
+    const rows = await invoke("server_list");
+    const box = $("servers");
+    box.replaceChildren(...rows.map((row) => serverRow(serverView(row), row.address)));
+    if (!rows.length) box.textContent = "No servers to show.";
+  } catch (e) {
+    $("servers").textContent = String(e);
+  } finally {
+    asking = false;
+    $("refresh").disabled = false;
+  }
+}
+$("refresh").onclick = servers;
+setInterval(() => { if (!document.hidden) servers(); }, 30000);
+
+// Find servers: Meowy's server index (every Garry's Mod server Steam lists,
+// with the honest list's verdicts), searched as you type.
+let findTimer = null, findSeq = 0;
+async function find() {
+  const seq = ++findSeq;
+  try {
+    const r = await invoke("find_servers", { query: $("find").value });
+    if (seq !== findSeq) return; // a newer search is on its way
+    const age = Math.max(0, Math.round(Date.now() / 1000 - r.at));
+    $("find-info").textContent = r.servers.length + " shown of " + r.total + " servers · list " +
+      (age < 90 ? age + " s" : Math.round(age / 60) + " min") + " old";
+    $("found").replaceChildren(...r.servers.map((s) => serverRow(foundView(s), s.address)));
+  } catch (e) {
+    if (seq === findSeq) $("find-info").textContent = String(e);
+  }
+}
+$("find").oninput = () => { clearTimeout(findTimer); findTimer = setTimeout(find, 250); };
 
 listen("status", refresh);
 refresh();
+servers();
+find();

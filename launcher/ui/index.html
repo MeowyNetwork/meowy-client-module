@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <title>Meowy Launcher</title>
   <link rel="stylesheet" href="style.css">
+  <script src="servers_view.js" defer></script>
   <script src="main.js" defer></script>
 </head>
 <body>
@@ -16,6 +17,16 @@
     <button class="ghost" id="repair">Repair now</button>
   </div>
   <div id="message" role="status"></div>
+
+  <h2>Servers <button class="ghost small" id="refresh" title="Ask the servers again">Refresh</button></h2>
+  <div class="panel servers" id="servers"><span class="muted">Asking the servers...</span></div>
+
+  <h2>Find servers</h2>
+  <div class="panel">
+    <input type="search" id="find" placeholder="Name, gamemode, map or address" autocomplete="off" spellcheck="false" maxlength="100">
+    <small class="muted" id="find-info"></small>
+    <div class="servers" id="found"></div>
+  </div>
 
   <h2>Status</h2>
   <div class="panel">
@@ -31,6 +42,12 @@
       <input type="checkbox" id="lua-refresh">
       <span>Faster start
         <small>Starts Garry's Mod with -disableluarefresh (about 1 s faster). Turn it off if you make addons and need Lua autorefresh.</small>
+      </span>
+    </label>
+    <label class="toggle">
+      <input type="checkbox" id="back-up">
+      <span>Tell me when Meowy Network is back up
+        <small>While Garry's Mod is closed, the launcher asks the server every 30 s and shows a card when it answers again after a restart.</small>
       </span>
     </label>
     <label class="toggle">
