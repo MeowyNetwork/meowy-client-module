@@ -279,6 +279,18 @@ it to close.
     for every server, the game's way. `meowy_fast_serverlist_status` shows the lists open.
   - **A Friends tab**, after Local Network: the servers your Steam friends are on (the game's own friends
     list: servers only, no names), shown like the other tabs. It's there with the home screen on or off.
+- **Find servers from Meowy's index** (MR3, `docs/server-index-and-parties.md`). On the home screen,
+  the Internet list fills in about a second from Meowy's own index of every Garry's Mod server. Then
+  Steam's own list updates those rows in place (pings, counts) and adds any the index missed. Nothing is
+  removed.
+  - The index is `https://meowynetwork.com/api/pack/index`: Steam's master list, refreshed each minute,
+    with the honest list's verdicts and no player names. The pack fetches it off the game's thread (gzip,
+    no redirects, 4 MB at most), and fetches it again each minute while the list stays open.
+  - Pings Steam hasn't measured yet show as `~45`, greyed. That's either your last ping to that server's
+    network or an estimate from the distance (IP Geolocation by DB-IP). The pings Steam measures are kept in
+    `%LOCALAPPDATA%\MeowyClientPack\pings.json` (per /24 network, 30 days), never in `garrysmod/data`.
+  - If the index can't be reached, is older than 10 minutes, or is off (`meowy_server_index 0`), the list
+    is Steam's alone, as before. `meowy_server_index_status` shows the last fetch.
 - Its only other network traffic is the loading page and its data, from meowynetwork.com, through WebView2. It
   writes only in `%LOCALAPPDATA%\MeowyClientPack` (`boot.lock` and `recover.lock` for a moment at start-up; for the
   loading screen `join_times.txt`, how long each stage of your last join took, `last_join.txt`,

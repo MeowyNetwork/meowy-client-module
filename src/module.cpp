@@ -109,6 +109,7 @@
 #include "pak_cache.h"
 #include "console_capture.h"
 #include "server_query.h"
+#include "server_index.h"
 #include "steam_ugc.h"
 #include "content_advert.h"
 #include "resilience.h"
@@ -1922,6 +1923,56 @@ namespace
 		return 1;
 	}
 
+	// --- Meowy's server index (server_index.h, MR3) ---------------------------------
+	// ServerIndexFetch() -> true when a fetch started (false: one is running).
+	int ServerIndexFetch(lua_State* L)
+	{
+		L->luabase->PushBool(server_index::Fetch());
+		return 1;
+	}
+
+	// ServerIndexTake() -> nil while nothing finished; else status ("ok", "same",
+	// "error: ..."), body (JSON for "ok", else ""), geo ("lat,lon" or ""), seconds.
+	// The body is the backend's; menu_page.lua checks every row it uses.
+	int ServerIndexTake(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		server_index::Result r = server_index::Take();
+		if (!r.ready)
+		{
+			LUA->PushNil();
+			return 1;
+		}
+		LUA->PushString(r.status.c_str(), static_cast<unsigned int>(r.status.size()));
+		LUA->PushString(r.body.c_str(), static_cast<unsigned int>(r.body.size()));
+		LUA->PushString(r.geo.c_str(), static_cast<unsigned int>(r.geo.size()));
+		LUA->PushNumber(r.seconds);
+		return 4;
+	}
+
+	int ServerIndexState(lua_State* L)
+	{
+		L->luabase->PushString(server_index::Describe().c_str());
+		return 1;
+	}
+
+	// PingMemoryLoad() -> the ping memory's JSON, or "" (server_index.h: kept out
+	// of garrysmod/data and the game's cookies, which any server's Lua can read).
+	int PingMemoryLoad(lua_State* L)
+	{
+		const std::string json = server_index::LoadPings(DataDir());
+		L->luabase->PushString(json.c_str(), static_cast<unsigned int>(json.size()));
+		return 1;
+	}
+
+	// PingMemorySave(json) -> true | false
+	int PingMemorySave(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		LUA->PushBool(LUA->IsType(1, Type::String) && server_index::SavePings(DataDir(), LUA->GetString(1)));
+		return 1;
+	}
+
 	int PrewarmState(lua_State* L)
 	{
 		L->luabase->PushString(prewarm::Describe().c_str());
@@ -2036,10 +2087,12 @@ namespace
 			home = "\nlocal Home = (function(...)\n" + homeLogic + "\nend)(Logic);\n"
 				"local Content = (function()\n" + contentLogic + "\nend)();\n"
 				"(function()\n" + homeGlue + "\nend)();\n";
-			// Our own main menu page (preview, menu_page.lua), in a function of its own too.
+			// Our own main menu page (preview, menu_page.lua), in a function of its own too,
+			// with Find servers' index rules (browse_logic.lua) as its local `BrowseLogic`.
 			std::string menuPage = ResourceText(IDR_MENU_PAGE_LUA);
-			if (!menuPage.empty())
-				home += "(function()\n" + menuPage + "\nend)()\n";
+			std::string browseLogic = ResourceText(IDR_BROWSE_LOGIC_LUA);
+			if (!menuPage.empty() && !browseLogic.empty())
+				home += "(function()\nlocal BrowseLogic = (function()\n" + browseLogic + "\nend)()\n" + menuPage + "\nend)()\n";
 		}
 		// The Meowy console (console_logic.lua as `ConsoleLogic`, then console.lua),
 		// in a function of its own that sees resilience.lua's locals.
@@ -2966,6 +3019,11 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	SetFunction(LUA, "ServerQueryTake", Guarded<ServerQueryTake>);
 	SetFunction(LUA, "ServerQueryCancel", Guarded<ServerQueryCancel>);
 	SetFunction(LUA, "ServerQueryState", Guarded<ServerQueryState>);
+	SetFunction(LUA, "ServerIndexFetch", Guarded<ServerIndexFetch>);
+	SetFunction(LUA, "ServerIndexTake", Guarded<ServerIndexTake>);
+	SetFunction(LUA, "ServerIndexState", Guarded<ServerIndexState>);
+	SetFunction(LUA, "PingMemoryLoad", Guarded<PingMemoryLoad>);
+	SetFunction(LUA, "PingMemorySave", Guarded<PingMemorySave>);
 	SetFunction(LUA, "PrewarmState", Guarded<PrewarmState>);
 	SetFunction(LUA, "PakCache", Guarded<PakCache>);
 	SetFunction(LUA, "PakCacheState", Guarded<PakCacheState>);

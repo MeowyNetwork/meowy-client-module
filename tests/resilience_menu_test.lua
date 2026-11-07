@@ -15,7 +15,8 @@ local chunkText = "local UI = (function()\n" .. readFile(here .. "/../src/lua/ui
 	.. "\nlocal Home = (function(...)\n" .. readFile(here .. "/../src/lua/home_logic.lua") .. "\nend)(Logic);\n"
 	.. "local Content = (function()\n" .. readFile(here .. "/../src/lua/content_logic.lua") .. "\nend)();\n"
 	.. "(function()\n" .. readFile(here .. "/../src/lua/home.lua") .. "\nend)();\n"
-	.. "(function()\n" .. readFile(here .. "/../src/lua/menu_page.lua") .. "\nend)()\n"
+	.. "(function()\nlocal BrowseLogic = (function()\n" .. readFile(here .. "/../src/lua/browse_logic.lua") .. "\nend)()\n"
+	.. readFile(here .. "/../src/lua/menu_page.lua") .. "\nend)()\n"
 	-- The Meowy console, as module.cpp appends it.
 	.. ";(function()\nlocal ConsoleLogic = (function()\n" .. readFile(here .. "/../src/lua/console_logic.lua") .. "\nend)()\n"
 	.. readFile(here .. "/../src/lua/console.lua") .. "\nend)()\n"
@@ -1789,6 +1790,100 @@ w.sq = { { address = "1.2.3.4:27015", name = "A", map = "m", tags = "", desc = "
 w.run(0.3)
 w.post("browse_intent", 1)
 check("browse: a row pointed at is got ready", w.pwStarts and w.pwStarts[1], "1.2.3.4:27015")
+-- Meowy's server index (MR3): the Internet list from the index at once, then
+-- Steam's answers update the same rows; unreachable, Steam's list alone.
+local INDEX_COLS = { "a", "n", "d", "m", "g", "w", "c", "l", "p", "x", "b", "v", "pw", "q", "h", "r", "la", "lo" }
+local function indexWorld(convars)
+	local iw = world({ settings = ON, menu = true, convars = convars or PAGE_ON, joinServer = true })
+	iw.env.util = { JSONToTable = function(s) return s == "INDEX" and iw.indexData or nil end, TableToJSON = function() return '{"45.10.1":[33,1]}' end }
+	iw.env.meowy.ServerIndexFetch = function() iw.indexFetches = (iw.indexFetches or 0) + 1 return true end
+	iw.env.meowy.ServerIndexTake = function() local r = iw.indexResult iw.indexResult = nil if r then return r[1], r[2], r[3], 0.3 end end
+	iw.env.meowy.PingMemoryLoad = function() return "" end
+	iw.env.meowy.PingMemorySave = function(s) iw.pingsSaved = s return true end
+	iw.indexData = { v = 1, at = os.time() - 20, cols = INDEX_COLS, s = {
+		{ "45.10.1.7:27015", "Index RP", "DarkRP", "rp_a", "darkrp", "", "rp", "de", 40, 64, 0, 20260429, 0, 1, "fake", 12, 525, 134 },
+		{ "45.10.2.7:27015", "Quiet box", "", "gm_c", "sandbox", "", "", "", 0, 16, 0, 20260429, -1, 0, "", -1 },
+		{ "192.168.1.5:27015", "LAN box", "", "m", "sandbox", "", "", "", 3, 8, 0, 0, 0, 1, "", -1 },
+	} }
+	iw.run(1)
+	return iw
+end
+w = indexWorld()
+w.post("browse")
+check("index: asked for", w.indexFetches, 1)
+check("index: the page told it's coming", (w.browseJS or ""):find('"idx":"waiting"', 1, true) ~= nil, true)
+check("index: Steam asked at the same time", table.concat(w.sqArgs or {}, " "), "internet gamedir garrysmod hasplayers 1")
+w.browseCalls = {}
+w.indexResult = { "ok", "INDEX", "52.5,13.4" }
+w.run(0.3)
+local all = table.concat(w.browseCalls, "\n")
+check("index: its rows sent at once", all:find('"n":"Index RP"', 1, true) ~= nil, true)
+check("index: a fake's real count from the index", all:find('"h":"FAKE - 12 real"', 1, true) ~= nil and all:find('"p":12', 1, true) ~= nil, true)
+check("index: a ping hint from the distance", all:find('"ph":2', 1, true) ~= nil and all:find('"ms":10', 1, true) ~= nil, true)
+check("index: silent servers and private addresses left for Steam", all:find("Quiet box", 1, true) == nil and all:find("LAN box", 1, true) == nil, true)
+check("index: the page told it's shown", all:find('"idx":"shown"', 1, true) ~= nil, true)
+w.browseCalls = {}
+w.sq = { { address = "45.10.1.7:27015", name = "Index RP", map = "rp_b", tags = "gm:darkrp gmc:rp", desc = "DarkRP", players = 41, max = 64, bots = 0, ping = 33, pass = false } }
+w.sqDone = true
+w.run(0.3)
+all = table.concat(w.browseCalls, "\n")
+check("index: Steam's answer updates the same row", all:find("MeowyBrowse.update(1, [", 1, true) ~= nil and all:find('"i":1,', 1, true) ~= nil and all:find('"ms":33', 1, true) ~= nil, true)
+check("index: Steam's numbers, no hint", all:find('"m":"rp_b"', 1, true) ~= nil and all:find('"ph"', 1, true) == nil, true)
+check("index: no second Steam stage (the index listed the empty ones)", w.sqStarts, 1)
+check("index: complete", all:find("MeowyBrowse.add(1, [], true", 1, true) ~= nil, true)
+check("index: Steam's pings remembered", w.pingsSaved ~= nil, true)
+w.post("browse_join", 1)
+check("index: a row from it joins by number", w.joinedVia, "45.10.1.7:27015")
+-- A minute later the page asks again: changed rows go as updates, new ones are added.
+w.indexData.s[1][9] = 50
+w.indexData.s[4] = { "45.10.3.7:27015", "New one", "", "gm_x", "sandbox", "", "", "", 5, 10, 0, 20260429, 0, 1, "", -1 }
+w.browseCalls = {}
+w.post("browse_refresh")
+check("index: refreshed on the page's ask", w.indexFetches, 2)
+w.indexResult = { "ok", "INDEX", "52.5,13.4" }
+w.run(0.3)
+all = table.concat(w.browseCalls, "\n")
+check("index: a changed row updated, keeping Steam's ping", all:find("MeowyBrowse.update(1, [", 1, true) ~= nil and all:find('"ms":33', 1, true) ~= nil, true)
+check("index: a new server added", all:find('"n":"New one"', 1, true) ~= nil, true)
+-- Unreachable (or switched off): Steam's list alone, both stages, and the page told.
+w = indexWorld()
+w.post("browse")
+w.indexResult = { "error: HTTP 503", "", "" }
+w.run(0.3)
+check("index: unreachable, the page told", (w.browseJS or ""):find('"idx":"failed"', 1, true) ~= nil, true)
+w.sq = { { address = "1.2.3.4:27015", name = "Steam row", map = "m", tags = "", desc = "D", players = 3, max = 8, bots = 0, ping = 9, pass = false } }
+w.sqDone = true
+w.run(0.3)
+check("index: unreachable, Steam's second stage as before", table.concat(w.sqArgs or {}, " "), "internet gamedir garrysmod noplayers 1")
+w = indexWorld({ meowy_menu = "1", meowy_server_index = "0" })
+w.post("browse")
+check("index: switched off, never asked", w.indexFetches, nil)
+-- Garry's Mod's blacklist check is slow (~0.6 ms a server): the rows go a
+-- slice a frame, the most players first, never all in one frame.
+w = indexWorld()
+for k = 1, 300 do
+	w.indexData.s[k] = { "46.1." .. math.floor(k / 200) .. "." .. (k % 200 + 1) .. ":27015", "Box " .. k, "", "gm_c", "sandbox", "", "", "", 300 - k, 400, 0, 20260429, 0, 1, "", -1 }
+end
+local blacklistCalls = 0
+w.env.IsServerBlacklisted = function(a) blacklistCalls = blacklistCalls + 1 w.now = w.now + 0.0006 return nil end
+w.post("browse")
+w.browseCalls = {}
+w.indexResult = { "ok", "INDEX", "" }
+w.run(0.5)
+local firstBatch = "[]"
+for _, c in ipairs(w.browseCalls) do local b = c:match("MeowyBrowse%.add%(1, (%b[])") if b then firstBatch = b break end end
+local _, inFirst = firstBatch:gsub('"i":', "")
+check("index: the first slice is part of the list", inFirst > 0 and inFirst < 300, true)
+check("index: the biggest server first", firstBatch:find('"n":"Box 1"', 1, true) ~= nil, true)
+w.run(5)
+local sent = 0
+for _, c in ipairs(w.browseCalls) do local b = c:match("MeowyBrowse%.add%(1, (%b[])") if b then local _, n = b:gsub('"i":', "") sent = sent + n end end
+check("index: then the rest, slice by slice", sent, 300)
+check("index: each server checked once", blacklistCalls, 300)
+w.browseCalls = {}
+w.post("browse")
+w.run(0.3)
+check("index: the blacklist's answers kept (no new checks on a refresh)", blacklistCalls, 300)
 -- The Meowy console: the capture starts with the menu; meowy_console opens the
 -- window, reads the lines, and a typed line runs as the console would run it.
 w = world({ settings = ON, menu = true })
