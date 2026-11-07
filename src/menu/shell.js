@@ -62,6 +62,12 @@
 		return e;
 	}
 	function shell() { return document.getElementById('meowy-shell'); }
+	// Resting the pointer on a row for a moment: get that server ready (prewarm.h).
+	function intent(el, id) {
+		var timer = null;
+		el.onmouseenter = function () { timer = setTimeout(function () { post('intent', Number(id)); }, 400); };
+		el.onmouseleave = function () { if (timer) clearTimeout(timer); timer = null; };
+	}
 	function setBodyClass(want) {
 		var b = document.body;
 		if (!b) return;
@@ -158,6 +164,7 @@
 				if (p.detail) el.appendChild(node('div', 'ms-detail', p.detail));
 				el.title = p.name;
 				el.onclick = (function (id) { return function () { post('join', Number(id)); }; })(p.id);
+				intent(el, p.id);
 				list.appendChild(el);
 				rows.push({ id: p.id, el: el, cls: cls });
 			}

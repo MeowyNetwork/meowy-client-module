@@ -93,6 +93,7 @@
 #include "notify_toast.h"
 #include "timeline.h"
 #include "timeline_steam.h"
+#include "prewarm.h"
 #include "resilience.h"
 #include "doctor.h"
 #include "startup_hook.h"
@@ -1368,6 +1369,70 @@ namespace
 		return 2;
 	}
 
+	// --- Join pre-warm (prewarm.h) ---------------------------------------------------
+	constexpr uint64_t kPrewarmBudget = 4ull << 30;   // bytes read per warm, at most
+
+	// A join is loading: start recording its big files (and stop any warming).
+	int PrewarmBeginJoin(lua_State*)
+	{
+		prewarm::BeginJoin();
+		return 0;
+	}
+
+	// In game: keep the list for this server (ours or public, the engine's own
+	// address). -> files kept.
+	int PrewarmEndJoin(lua_State* L)
+	{
+		std::string address;
+		const server_gate::Result r = server_gate::Check(&address);
+		const bool connected = r == server_gate::Result::Allowed || r == server_gate::Result::OtherServer;
+		const int kept = prewarm::EndJoin(DataDir(), connected && RejoinableAddress(address) ? address : std::string());
+		L->luabase->PushNumber(kept);
+		return 1;
+	}
+
+	// PrewarmRecorded(address) -> true, MB | false.
+	int PrewarmRecorded(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		const char* a = LUA->IsType(1, Type::String) ? LUA->GetString(1) : nullptr;
+		uint64_t bytes = 0;
+		if (!a || !RejoinableAddress(a) || !prewarm::Recorded(DataDir(), a, &bytes))
+		{
+			LUA->PushBool(false);
+			return 1;
+		}
+		LUA->PushBool(true);
+		LUA->PushNumber(static_cast<double>(bytes) / 1048576.0);
+		return 2;
+	}
+
+	// PrewarmStart(address) -> true | false, reason.
+	int PrewarmStart(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		const char* a = LUA->IsType(1, Type::String) ? LUA->GetString(1) : nullptr;
+		std::string why = "not a server address";
+		const bool ok = a && RejoinableAddress(a) && prewarm::Start(DataDir(), a, kPrewarmBudget, why);
+		LUA->PushBool(ok);
+		if (ok)
+			return 1;
+		LUA->PushString(why.c_str());
+		return 2;
+	}
+
+	int PrewarmCancel(lua_State*)
+	{
+		prewarm::Cancel();
+		return 0;
+	}
+
+	int PrewarmState(lua_State* L)
+	{
+		L->luabase->PushString(prewarm::Describe().c_str());
+		return 1;
+	}
+
 	// LastServerMark(name) -> ok: the player is in the game on a server now; kept
 	// for the main menu's "Continue" when it's ours or a public one (the engine's
 	// address, read here; the name is the server's, only ever shown as text).
@@ -2284,6 +2349,12 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	SetFunction(LUA, "MenuSettingsWrite", Guarded<MenuSettingsWrite>);
 	SetFunction(LUA, "ResilienceSession", Guarded<ResilienceSession>);
 	SetFunction(LUA, "ResilienceCrashedSession", Guarded<ResilienceCrashedSession>);
+	SetFunction(LUA, "PrewarmBeginJoin", Guarded<PrewarmBeginJoin>);
+	SetFunction(LUA, "PrewarmEndJoin", Guarded<PrewarmEndJoin>);
+	SetFunction(LUA, "PrewarmRecorded", Guarded<PrewarmRecorded>);
+	SetFunction(LUA, "PrewarmStart", Guarded<PrewarmStart>);
+	SetFunction(LUA, "PrewarmCancel", Guarded<PrewarmCancel>);
+	SetFunction(LUA, "PrewarmState", Guarded<PrewarmState>);
 	SetFunction(LUA, "LastServerMark", Guarded<LastServerMark>);
 	SetFunction(LUA, "LastServer", Guarded<LastServer>);
 	SetFunction(LUA, "LastServerForget", Guarded<LastServerForget>);

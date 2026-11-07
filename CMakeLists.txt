@@ -23,6 +23,7 @@ add_library(meowy SHARED
 	src/lua_find.cpp
 	src/font_loads.cpp
 	src/fs_cache.cpp
+	src/prewarm.cpp
 	src/server_gate.cpp
 	src/discord_ipc.cpp
 	src/loading_screen.cpp
@@ -185,6 +186,13 @@ if(MEOWY_BUILD_TESTS)
 		set_property(TARGET lua_lookup_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 		target_compile_options(lua_lookup_smoke PRIVATE /W4 /utf-8)
 	endif()
+	# Join pre-warm: the per-server lists, recording, and a warm run on scratch files:
+	#   prewarm_smoke <scratch folder>
+	add_executable(prewarm_smoke tests/prewarm_smoke.cpp src/prewarm.cpp src/file_util.cpp)
+	if(MSVC)
+		set_property(TARGET prewarm_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+		target_compile_options(prewarm_smoke PRIVATE /W4 /utf-8)
+	endif()
 	# The fast file.Find on "LUA": the walk visits every entry the game's matcher
 	# accepts, in order, on a fake table; and the loop found in the installed client.dll:
 	#   lua_find_smoke [GarrysMod folder] [file to write the stubs to]
@@ -195,7 +203,7 @@ if(MEOWY_BUILD_TESTS)
 	endif()
 	# The missing-file cache's rules against real folders, no game:
 	#   fs_cache_smoke <scratch folder>
-	add_executable(fs_cache_smoke tests/fs_cache_smoke.cpp src/fs_cache.cpp)
+	add_executable(fs_cache_smoke tests/fs_cache_smoke.cpp src/fs_cache.cpp src/prewarm.cpp src/file_util.cpp)
 	if(MSVC)
 		set_property(TARGET fs_cache_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 		target_compile_options(fs_cache_smoke PRIVATE /W4 /utf-8)

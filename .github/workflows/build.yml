@@ -58,6 +58,12 @@ jobs:
           cmake --build buildtest32 --config Release --target lua_lookup_smoke
           ./buildtest32/Release/lua_lookup_smoke.exe
 
+      - name: Join pre-warm (prewarm_smoke, both bitnesses)
+        run: |
+          cmake --build buildtest --config Release --target prewarm_smoke
+          ./buildtest/Release/prewarm_smoke.exe "$env:RUNNER_TEMP"
+          cmake --build buildtest32 --config Release --target prewarm_smoke
+          ./buildtest32/Release/prewarm_smoke.exe "$env:RUNNER_TEMP"
       - name: Fast file.Find rules (lua_find_smoke, both bitnesses)
         run: |
           cmake --build buildtest --config Release --target lua_find_smoke

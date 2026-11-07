@@ -94,6 +94,13 @@ local function world(opts)
 			data.Finished()
 		end,
 		LastServerForget = function() w.last = nil w.forgot = (w.forgot or 0) + 1 end,
+		-- Join pre-warm: what was recorded (w.recorded[address]) and what was asked.
+		PrewarmBeginJoin = function() w.pwBegins = (w.pwBegins or 0) + 1 end,
+		PrewarmEndJoin = function() w.pwEnds = (w.pwEnds or 0) + 1 return 12 end,
+		PrewarmRecorded = function(a) return (w.recorded or {})[a] == true, 100 end,
+		PrewarmStart = function(a) w.pwStarts = w.pwStarts or {} w.pwStarts[#w.pwStarts + 1] = a return true end,
+		PrewarmCancel = function() w.pwCancels = (w.pwCancels or 0) + 1 end,
+		PrewarmState = function() return "idle" end,
 		-- Menu settings (module.cpp's meowy.Setting): a convar-like value.
 		Setting = function(name, default)
 			w.convars = w.convars or {}
@@ -1252,6 +1259,58 @@ check("zoom: back to 1", zoomJS(w), "1.00")
 local n2 = #w.zoomCalls
 w.run(5)
 check("zoom: 1 isn't sent again and again", #w.zoomCalls, n2)
+
+-- Join pre-warm: recorded at every join; warmed for the Continue server after
+-- a few seconds at the menu, or for a row the pointer rests on.
+w = world({ settings = ON, menu = true })
+w.lists = LISTS
+w.recorded = { [OURS] = true, ["2.2.2.2:27015"] = true }
+w.state, w.address, w.loading = "ours", OURS, true
+w.run(2)
+check("prewarm: a join starts recording (and stops any warming)", w.pwBegins, 1)
+w.play(3)
+check("prewarm: in game, the list is kept once", w.pwEnds, 1)
+w.run(3)
+check("prewarm: not kept again", w.pwEnds, 1)
+check("prewarm: nothing warmed in game", w.pwStarts, nil)
+w.cut()
+w.last = { OURS, "Meowy", w.osTime }
+w.run(2)
+check("prewarm: not at once at the menu", w.pwStarts, nil)
+w.run(3)
+check("prewarm: the Continue server after a few seconds", w.pwStarts and w.pwStarts[1], OURS)
+w.run(10)
+check("prewarm: once per visit", #w.pwStarts, 1)
+w.env.MeowyClientPackHomeIntent(3)   -- row 3: the busiest favourite, 2.2.2.2
+check("prewarm: a row the pointer rests on", w.pwStarts[2], "2.2.2.2:27015")
+w.run(5)
+check("prewarm: the Continue server doesn't take it back", #w.pwStarts, 2)
+w.env.MeowyClientPackHomeIntent(4)   -- 1.1.1.1: never recorded
+w.env.MeowyClientPackHomeIntent(99)
+w.env.MeowyClientPackHomeIntent("x")
+check("prewarm: not recorded, unknown or junk rows warm nothing", #w.pwStarts, 2)
+check("prewarm: logged", (w.logs or ""):find("prewarm: warming 2.2.2.2:27015 (pointer on its row)", 1, true) ~= nil, true)
+-- A join that never gets in keeps nothing.
+w.loading = true
+w.run(1)
+w.loading = false
+w.run(1)
+check("prewarm: a join that didn't get in keeps nothing", w.pwBegins == 2 and w.pwEnds == 1, true)
+-- Off: nothing warmed; the toggle cancels.
+w = world({ settings = ON, menu = true, convars = { meowy_prewarm = "0" } })
+w.recorded = { [OURS] = true }
+w.last = { OURS, "Meowy", w.osTime }
+w.run(6)
+check("prewarm off: nothing warmed", w.pwStarts, nil)
+w.concommands.meowy_settings()
+local pt = find(function(p) return p.meowyToggle == "prewarm" end)
+check("prewarm: a toggle in settings, off", pt ~= nil and pt.on, false)
+if pt then pt:SetOn(true) end
+check("prewarm: turned on through the console", w.convars.meowy_prewarm, "1")
+if pt then pt:SetOn(false) end
+check("prewarm: turning it off stops any warming", w.pwCancels, 1)
+w.concommands.meowy_prewarm_status()
+check("prewarm: status command", (w.logs or ""):find("prewarm: idle", 1, true) ~= nil, true)
 
 check("no Lua errors", w.errors, nil)
 print(("%d checks, %d failed"):format(count, failures))
