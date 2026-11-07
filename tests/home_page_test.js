@@ -335,6 +335,51 @@ check('shell: its server as text', shellEl().querySelector('.ms-cserver').textCo
 check('shell: no element made from it', shellEl().all().some(e => e.tagName === 'B'), false);
 shellEl().querySelector('.ms-cont').onclick();
 check('shell: Continue posts', JSON.stringify(S.posts.pop()), '["continue",""]');
+// News: the stock page's own feed (rootScope.NewsList), opened the stock way.
+const newsBox = () => shellEl().querySelector('.ms-news');
+check('shell: no news before the feed', newsBox().querySelectorAll('.ms-row').length, 0);
+const opened = [];
+S.win.scope = { OpenInSteam: url => opened.push(url) };
+S.win.rootScope = { NewsList: [
+	{ Title: '<img src=x onerror=alert(1)>November update', Url: 'https://gmod.facepunch.com/news/nov', Date: new Date(Date.now() - 2 * 86400000).toISOString() },
+	{ Title: 'Older post', Url: 'https://gmod.facepunch.com/news/old', Date: '2026-01-02T00:00:00Z' },
+	{ Title: 'Third', Url: 'https://gmod.facepunch.com/news/3', Date: 'not a date' },
+	{ Title: 'Fourth, not shown', Url: 'https://gmod.facepunch.com/news/4', Date: '' },
+	{ Title: 42, Url: 'https://x' },
+] };
+S.win.MeowyShell(true);   // the next send picks the feed up
+check('shell: news shown, at most three', newsBox().querySelectorAll('.ms-name').map(e => e.textContent).join('|'),
+	'<img src=x onerror=alert(1)>November update|Older post|Third');
+check('shell: news titles are text', newsBox().all().some(e => e.tagName === 'IMG'), false);
+check('shell: news age', newsBox().querySelectorAll('.ms-stats').map(e => e.textContent).join('|'), '2 days ago|Jan 02 2026|');
+newsBox().querySelectorAll('.ms-row')[0].onclick();
+check('shell: a news item opens the stock way', opened.pop(), 'https://gmod.facepunch.com/news/nov');
+const newsRows = newsBox().querySelectorAll('.ms-row')[0];
+S.win.MeowyShell(true);
+check('shell: news not redrawn when unchanged', newsBox().querySelectorAll('.ms-row')[0], newsRows);
+// Maps: the page's map list, searched with the servers; picked the New game way.
+S.win.gScope = { MapList: [
+	{ category: 'Favourites', maps: ['gm_meowtest'] },
+	{ category: 'Sandbox', maps: ['gm_meowtest', 'gm_flatgrass'] },
+	{ category: 'DarkRP', maps: ['rp_downtown_meowy', 'rp_meowtest_city'] },
+] };
+const digests = [];
+S.win.UpdateDigest = (sc, t) => digests.push(sc);
+ssearch.value = 'meowtest';
+ssearch.oninput();
+check('shell: maps found by name, once each', shellEl().querySelectorAll('.ms-name').map(e => e.textContent).join(','), 'gm_meowtest,rp_meowtest_city');
+check('shell: a Maps section', shellEl().querySelectorAll('.ms-title').map(e => e.textContent).join(','), 'Maps');
+check('shell: news hidden while searching', newsBox().querySelectorAll('.ms-row').length, 0);
+ssearch.onkeydown(key(ssearch, 40));
+ssearch.onkeydown(key(ssearch, 13));
+check('shell: Enter on a map opens New game', S.loc.hash, '#/newgame/');
+check('shell: with that map chosen', S.win.rootScope.Map + '/' + S.win.rootScope.LastCategory, 'rp_meowtest_city/DarkRP');
+check('shell: the page told', digests.pop(), S.win.rootScope);
+ssearch.value = 'zzz';
+ssearch.oninput();
+check('shell: nothing found', shellEl().querySelector('.ms-note').textContent, 'No server or map matches');
+ssearch.onkeydown(key(ssearch, 27));
+check('shell: news back after the search', newsBox().querySelectorAll('.ms-row').length, 3);
 // Off (in game, or switched off): taken out, the stock screen back.
 S.win.MeowyShell(false);
 check('shell: off takes it out', shellEl(), null);
