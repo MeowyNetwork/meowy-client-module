@@ -9,7 +9,8 @@
 // that same loaded DLL, so both realms share one copy (one patch state).
 //
 // Safe mode: hold Shift while the game starts, or add -meowy_safe to the
-// launch options, and nothing is loaded. If the game died while the module
+// launch options, and nothing is loaded. Nor when Meowy Network's kill switch
+// says so (state\policy.bin, from the pack's signed policy). If the game died while the module
 // was loading last time (%LOCALAPPDATA%\MeowyClientPack\boot.lock was left behind), this launch
 // skips it once.
 //
@@ -105,6 +106,35 @@ namespace
 			Print(LUA, ("[Meowy Client Pack] " + said).c_str());
 	}
 
+	// Meowy Network's kill switch (the pack's policy.h): state\policy.bin, written
+	// by the pack from a signed policy, says "enabled 0" to keep the pack off.
+	// Read here with no crypto and no network; it can only switch the pack off.
+	// Returns the line to print when it's off, else "".
+	std::string PolicyOff(const std::wstring& dataDir)
+	{
+		if (dataDir.empty())
+			return std::string();
+		HANDLE h = CreateFileW((dataDir + L"\\state\\policy.bin").c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+			nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+		if (h == INVALID_HANDLE_VALUE)
+			return std::string();
+		char buf[512] = {};
+		DWORD read = 0;
+		ReadFile(h, buf, sizeof(buf) - 1, &read, nullptr);
+		CloseHandle(h);
+		const std::string text(buf, read);
+		if (text.compare(0, 10, "enabled 0\n") != 0)
+			return std::string();
+		std::string line = "[Meowy Client Pack] switched off by Meowy Network; not loaded at start-up";
+		const size_t notice = text.find("\nnotice ");
+		if (notice != std::string::npos)
+		{
+			const size_t start = notice + 8, end = text.find('\n', start);
+			line += ": " + text.substr(start, end == std::string::npos ? std::string::npos : end - start);
+		}
+		return line;
+	}
+
 	bool SafeModeRequested()
 	{
 		if (GetAsyncKeyState(VK_SHIFT) & 0x8000)
@@ -121,6 +151,13 @@ GMOD_MODULE_OPEN()
 	if (SafeModeRequested())
 	{
 		Print(LUA, "[Meowy Client Pack] safe mode: not loaded at start-up");
+		return 0;
+	}
+
+	const std::string off = PolicyOff(dataDir);
+	if (!off.empty())
+	{
+		Print(LUA, off.c_str());
 		return 0;
 	}
 
