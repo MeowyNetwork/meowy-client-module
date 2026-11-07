@@ -13,11 +13,16 @@ local chunkText = "local UI = (function()\n" .. readFile(here .. "/../src/lua/ui
 	.. readFile(here .. "/../src/lua/resilience.lua")
 	-- The Home card, as module.cpp appends it.
 	.. "\nlocal Home = (function(...)\n" .. readFile(here .. "/../src/lua/home_logic.lua") .. "\nend)(Logic);\n"
+	.. "local Content = (function()\n" .. readFile(here .. "/../src/lua/content_logic.lua") .. "\nend)();\n"
 	.. "(function()\n" .. readFile(here .. "/../src/lua/home.lua") .. "\nend)();\n"
-	.. "(function()\n" .. readFile(here .. "/../src/lua/menu_page.lua") .. "\nend)()\n"
+	.. "(function()\nlocal BrowseLogic = (function()\n" .. readFile(here .. "/../src/lua/browse_logic.lua") .. "\nend)()\n"
+	.. readFile(here .. "/../src/lua/menu_page.lua") .. "\nend)()\n"
 	-- The Meowy console, as module.cpp appends it.
 	.. ";(function()\nlocal ConsoleLogic = (function()\n" .. readFile(here .. "/../src/lua/console_logic.lua") .. "\nend)()\n"
 	.. readFile(here .. "/../src/lua/console.lua") .. "\nend)()\n"
+	-- The settings guard, likewise.
+	.. ";(function()\nlocal SettingsGuard = (function()\n" .. readFile(here .. "/../src/lua/settings_guard_logic.lua") .. "\nend)()\n"
+	.. readFile(here .. "/../src/lua/settings_guard.lua") .. "\nend)()\n"
 local loadstring = loadstring or load
 
 local failures, count = 0, 0
@@ -121,6 +126,32 @@ local function world(opts)
 		end,
 		ConsoleState = function() return "spew function; 3 lines kept" end,
 		ConsoleRun = function(line) w.consoleRuns = w.consoleRuns or {} w.consoleRuns[#w.consoleRuns + 1] = line return not w.noEngine end,
+		-- Windows' default output changes so far (w.audioChanges); nil when it can't be watched.
+		AudioChanges = function()
+			w.audioAsks = (w.audioAsks or 0) + 1
+			if opts.noAudio then return nil end
+			return w.audioChanges or 0
+		end,
+		-- Copies of config.cfg: made (w.backups counts), listed (w.backupList), put back (w.restored).
+		ConfigBackup = function() w.backups = (w.backups or 0) + 1 return true, "copied" end,
+		ConfigBackups = function() return w.backupList or {} end,
+		ConfigRestore = function(name) w.restored = name return true, "meowy_restore.cfg" end,
+		JoinBoost = function(on) w.boost = on return true end,
+		-- cvar_restore.txt: the player's own values while the pack has them changed
+		-- (opts.held: what the last session left).
+		CvarHold = function(name, v)
+			w.held = w.held or {}
+			if w.held[name] == nil then w.held[name] = v end
+			return true
+		end,
+		CvarRelease = function(name) if w.held then w.held[name] = nil end end,
+		CvarHeld = function()
+			if w.held == nil then w.held = {} for k, v in pairs(opts.held or {}) do w.held[k] = v end end
+			local t = {} for k, v in pairs(w.held) do t[k] = v end return t
+		end,
+		-- The loading screen's page: kept loaded (true) or parked (false).
+		LoadingPrewarm = function() w.web = true w.webCalls = (w.webCalls or 0) + 1 end,
+		LoadingPark = function() w.web = false w.webCalls = (w.webCalls or 0) + 1 end,
 		ConsoleFileRead = function(kind) return (w.consoleFiles or opts.consoleFiles or {})[kind] or "" end,
 		ConsoleFileWrite = function(kind, text) w.consoleFiles = w.consoleFiles or {} w.consoleFiles[kind] = text return true end,
 		MaskPaths = function(text) return (text:gsub("%a:[\\/][^\n:]*", "<path>")) end,
@@ -134,6 +165,23 @@ local function world(opts)
 			s = s or { true, false, false, false, 1600000000 }
 			return s[1], s[2], s[3], s[4], s[5]
 		end,
+		-- The content platform (content_advert.h): a server's advert is
+		-- opts.adverts[address] (nil: no rule), answered on the next Take.
+		ContentAsk = opts.adverts and function(a)
+			w.advertAsked = w.advertAsked or {}
+			w.advertAsked[#w.advertAsked + 1] = a
+			w.advertQueue = w.advertQueue or {}
+			w.advertQueue[#w.advertQueue + 1] = a
+			return true
+		end or nil,
+		ContentTake = opts.adverts and function()
+			local out = {}
+			for _, a in ipairs(w.advertQueue or {}) do out[#out + 1] = { address = a, answered = true, value = opts.adverts[a] } end
+			w.advertQueue = {}
+			return out
+		end or nil,
+		ContentState = function() return "adverts" end,
+		WorkshopItemProgress = function(id) return (w.progress or {})[id] end,
 		-- Menu settings (module.cpp's meowy.Setting): a convar-like value.
 		Setting = function(name, default)
 			w.convars = w.convars or {}
@@ -176,6 +224,8 @@ local function world(opts)
 	env.os = setmetatable({ time = function() return w.osTime end }, { __index = os })
 	env.IsInGame = function() return w.inGame end
 	env.IsInLoading = function() return w.loading end
+	-- The game window: focused unless w.focus is false; windowed unless w.fullscreen.
+	env.system = { HasFocus = function() return w.focus ~= false end, IsWindowed = function() return not w.fullscreen end }
 	-- Convars other parts of the pack own (module.cpp's chunks), only when a test asks.
 	env.GetConVar = opts.engineConVars and function(n)
 		local value = function() if w.cvars[n] ~= nil then return w.cvars[n] end return w.convars and w.convars[n] end
@@ -224,7 +274,7 @@ local function world(opts)
 	function w.answerInfos()
 		while #w.infos > 0 do
 			local q = table.remove(w.infos, 1)
-			q.cb({ updated = (w.published or {})[q.id] or 1600000064 })
+			q.cb({ updated = (w.published or {})[q.id] or 1600000064, size = (w.sizes or {})[q.id] })
 		end
 	end
 	-- The game's files: everything there but w.missing[path].
@@ -269,6 +319,7 @@ local function world(opts)
 			if js:find("window.MeowyHome(", 1, true) then w.homeJS = js w.homeCalls = (w.homeCalls or 0) + 1
 			elseif js:find("window.MeowyEsc(", 1, true) then w.escJS = js
 			elseif js:find("window.MeowyAddons", 1, true) then w.addonsJS = js w.addonsSends = (w.addonsSends or 0) + 1
+			elseif js:find("MeowyBrowse.prep(", 1, true) then w.prepJS = js
 			elseif js:find("window.MeowyBrowse", 1, true) then w.browseJS = js w.browseCalls = w.browseCalls or {} w.browseCalls[#w.browseCalls + 1] = js
 			elseif js:find("window.MeowyShell(", 1, true) then w.shellJS = js w.shellSends = (w.shellSends or 0) + 1
 			elseif js:find("style.zoom", 1, true) then w.zoomCalls = w.zoomCalls or {} w.zoomCalls[#w.zoomCalls + 1] = js
@@ -1386,6 +1437,100 @@ w.run(1)
 w.loading = false
 w.run(1)
 check("prewarm: a join that didn't get in keeps nothing", w.pwBegins == 2 and w.pwEnds == 1, true)
+-- The join priority guard: full speed and fps_max_nofocus lifted while a join
+-- loads, both put back in game or when the join ends; a value left by a join
+-- cut short is put back at the next start.
+w = world({ settings = ON, menu = true })
+w.cvars.fps_max_nofocus, w.cvars.fps_max = "20", "300"
+w.state, w.address, w.loading = "ours", OURS, true
+w.consoleRuns = {}
+w.run(1)
+check("join boost: on while loading, the old cap kept", tostring(w.boost) .. " " .. tostring(w.held and w.held.fps_max_nofocus), "true 20")
+check("join boost: fps_max_nofocus lifted to fps_max", table.concat(w.consoleRuns, "|"):find("fps_max_nofocus 300", 1, true) ~= nil, true)
+w.play(3)
+check("join boost: off in game", w.boost, false)
+check("join boost: fps_max_nofocus put back", w.consoleRuns[#w.consoleRuns], "fps_max_nofocus 20")
+check("join boost: no longer kept once put back", w.held.fps_max_nofocus, nil)
+w.cut()
+w.cvars.fps_max_nofocus = "0"
+w.loading = true
+w.consoleRuns = {}
+w.run(1)
+check("join boost: no cap to lift (0), nothing set", w.boost == true and #w.consoleRuns == 0 and w.held.fps_max_nofocus == nil, true)
+w.loading = false
+w.run(1)
+check("join boost: a join that didn't get in turns it off", w.boost, false)
+w = world({ settings = ON, menu = true, held = { fps_max_nofocus = "20", fps_max_menu = "60" } })
+local startRuns = table.concat(w.consoleRuns or {}, "|")
+check("held convars: a value left by a cut-short join put back at start", startRuns:find("fps_max_nofocus 20", 1, true) ~= nil, true)
+check("held convars: a menu cap left by a quit put back at start", startRuns:find("fps_max_menu 60", 1, true) ~= nil, true)
+check("held convars: none kept once put back", next(w.held), nil)
+w = world({ settings = ON, menu = true, convars = { meowy_join_boost = "0" } })
+w.cvars.fps_max_nofocus, w.cvars.fps_max = "20", "300"
+w.state, w.address, w.loading = "ours", OURS, true
+w.run(1)
+check("join boost: off by the setting", w.boost, nil)
+-- Idle savings: the loading screen's page loaded a few seconds after start-up
+-- and kept while the menu has focus (or lost it under two minutes ago);
+-- unloaded in game and at a menu left in the background. A menu in the
+-- background held to 15 fps when fps_max_nofocus is 0, put back on focus or a join.
+w = world({ settings = ON, menu = true, engineConVars = true })
+w.cvars.meowy_loadingscreen, w.cvars.fps_max_nofocus, w.cvars.fps_max_menu = "1", "0", "60"
+w.run(1)
+check("idle: page not loaded during start-up", w.web, false)
+w.run(5)
+check("idle: page loaded a few seconds after start-up", w.web, true)
+w.focus = false
+w.consoleRuns = {}
+w.run(1)
+check("idle: menu in the background held to 15 fps", table.concat(w.consoleRuns, "|"):find("fps_max_menu 15", 1, true) ~= nil, true)
+check("idle: the menu's own frame rate kept", w.held and w.held.fps_max_menu, "60")
+w.run(60)
+check("idle: page still loaded a minute later", w.web, true)
+w.run(70)
+check("idle: page unloaded after two minutes in the background", w.web, false)
+w.focus = true
+w.consoleRuns = {}
+w.run(1)
+check("idle: focus puts the menu's frame rate back", table.concat(w.consoleRuns, "|"):find("fps_max_menu 60", 1, true) ~= nil, true)
+check("idle: and no longer keeps it", w.held.fps_max_menu, nil)
+check("idle: focus loads the page again", w.web, true)
+-- A join from the background: the cap put back as it starts; the page left to the join.
+w.focus = false
+w.run(1)
+w.consoleRuns = {}
+w.state, w.address, w.loading = "ours", OURS, true
+w.run(1)
+check("idle: a join puts the menu's frame rate back", table.concat(w.consoleRuns, "|"):find("fps_max_menu 60", 1, true) ~= nil, true)
+local webCalls = w.webCalls
+w.run(2)
+check("idle: the page left alone while a join loads", w.webCalls, webCalls)
+w.play(3)
+check("idle: page unloaded in game", w.web, false)
+w.cut()
+w.focus = true
+w.run(1)
+check("idle: back at the menu, page loaded again", w.web, true)
+-- fps_max_nofocus caps the background itself: the menu's left alone.
+w.cvars.fps_max_nofocus = "20"
+w.focus = false
+w.consoleRuns = {}
+w.run(2)
+check("idle: fps_max_nofocus set, no menu cap", table.concat(w.consoleRuns, "|"):find("fps_max_menu", 1, true), nil)
+-- Off: the page loaded for the whole session, nothing capped.
+w = world({ settings = ON, menu = true, engineConVars = true, convars = { meowy_idle_savings = "0" } })
+w.cvars.meowy_loadingscreen, w.cvars.fps_max_nofocus, w.cvars.fps_max_menu = "1", "0", "60"
+w.focus = false
+w.run(1)
+check("idle off: page loaded at once", w.web, true)
+w.play(3)
+check("idle off: kept loaded in game", w.web, true)
+check("idle off: nothing capped", (w.held or {}).fps_max_menu, nil)
+-- The loading screen off: the page never loaded.
+w = world({ settings = ON, menu = true, engineConVars = true })
+w.cvars.meowy_loadingscreen = "0"
+w.run(10)
+check("idle: loading screen off, page never loaded", w.web, false)
 -- Off: nothing warmed; the toggle cancels.
 w = world({ settings = ON, menu = true, convars = { meowy_prewarm = "0" } })
 w.recorded = { [OURS] = true }
@@ -1426,45 +1571,55 @@ w = wsWorld()
 w.run(2)
 check("workshop: nothing asked before the Continue moment", #w.ugc + #w.infos, 0)
 w.run(2)
-check("workshop: one download at a time", #w.ugc, 1)
-check("workshop: the first that needs it", w.ugc[1].id, "102")
-check("workshop: the Workshop asked for the versions of installed items", #w.infos == 2 and w.infos[1].id .. w.infos[2].id, "101105")
+check("workshop: every item Steam can say about is looked up first", #w.infos, 5)
+check("workshop: nothing downloaded before the check is done", #w.ugc, 0)
 check("workshop: the game's own files looked in", w.existsAsked, "MOD")
 check("workshop: files warmed as well", w.pwStarts and w.pwStarts[1], OURS)
+w.answerInfos()
+check("workshop: one download at a time", #w.ugc, 1)
+check("workshop: the first that needs it", w.ugc[1] and w.ugc[1].id, "102")
 w.answer()
 check("workshop: an answer starts the next", w.ugc[1] and w.ugc[1].id, "103")
 w.answer()
 check("workshop: a legacy item without its unpacked copy", w.ugc[1] and w.ugc[1].id, "104")
 w.answer(1, false)   -- Steam couldn't get it
-check("workshop: nothing else known to need it yet", #w.ugc, 0)
-w.answerInfos()
 check("workshop: a newer Workshop version is fetched", w.ugc[1] and w.ugc[1].id, "105")
 w.answer()
 check("workshop: up-to-date and unknown items left alone", #w.ugc, 0)
 check("workshop: logged",
-	(w.logs or ""):find("checked " .. OURS .. ": 6 Workshop items, 4 needed an update or unpack, 3 done, 1 failed", 1, true) ~= nil, true)
+	(w.logs or ""):find("checked " .. OURS .. ": 6 Workshop items, 4 needed an update, download or unpack (0 MB), 3 done, 1 failed", 1, true) ~= nil, true)
 w.concommands.meowy_prewarm_status()
 check("workshop: in the status command", (w.logs or ""):find("prewarm workshop: checked " .. OURS, 1, true) ~= nil, true)
 w.run(10)
 check("workshop: once per visit", #w.ugc + #w.infos, 0)
 -- A join stops it asking; what's in flight is left to Steam (and the join).
 w.env.MeowyClientPackHomeIntent(3)   -- 2.2.2.2
+w.answerInfos()
 check("workshop: a row the pointer rests on", w.ugc[1] and w.ugc[1].id, "102")
 w.loading = true
 w.run(1)
 w.answer()
 w.answerInfos()
 check("workshop: no new asks once a join starts", #w.ugc, 0)
-check("workshop: logged as stopped", (w.logs or ""):find("stopped checking 2.2.2.2:27015: 6 Workshop items, 3 needed", 1, true) ~= nil, true)
--- Steam never answers: given up after two minutes.
+check("workshop: logged as stopped", (w.logs or ""):find("stopped preparing 2.2.2.2:27015: 6 Workshop items, 4 needed", 1, true) ~= nil, true)
+-- Steam never answers the version checks: what's known goes on after 20 s.
 w = wsWorld()
 w.wsState = {}   -- all installed and current, as Steam sees them
 w.run(10)
 check("workshop: only version checks pending", #w.ugc == 0 and #w.infos, 6)
-w.run(125)
-check("workshop: given up when Steam never answers", (w.logs or ""):find("stopped checking " .. OURS .. ": 6 Workshop items, 0 needed", 1, true) ~= nil, true)
+w.run(25)
+check("workshop: unanswered checks given up", (w.logs or ""):find("checked " .. OURS .. ": 6 Workshop items, 0 needed", 1, true) ~= nil, true)
 w.answerInfos()
 check("workshop: late answers ignored", #w.ugc, 0)
+-- A download Steam never finishes (no bytes either): given up after two minutes.
+w = wsWorld()
+w.run(6)
+w.answerInfos()
+check("workshop: downloading", #w.ugc, 1)
+w.run(125)
+check("workshop: a stuck download given up", (w.logs or ""):find("stopped preparing " .. OURS, 1, true) ~= nil, true)
+w.answer()
+check("workshop: its late answer starts nothing", #w.ugc, 0)
 -- Its own switch: off asks nothing, while the files are still warmed.
 w = wsWorld({ settings = ON, menu = true, convars = { meowy_prewarm_workshop = "0" } })
 w.run(6)
@@ -1478,7 +1633,75 @@ check("workshop: turned on through the console", w.convars.meowy_prewarm_worksho
 -- With file warming off, the Workshop check still runs.
 w = wsWorld({ settings = ON, menu = true, convars = { meowy_prewarm = "0" } })
 w.run(6)
+w.answerInfos()
 check("files off: Workshop items still checked", #w.ugc, 1)
+
+-- The content platform: a server's advert (its meowy_content rule) says what
+-- its join will ask for, so a server never joined here can be prepared too.
+local MB, GB = 1048576, 1024 * 1048576
+local function contentWorld(sizes)
+	local ww = world({ settings = ON, menu = true, adverts = { ["1.1.1.1:27015"] = "1;ws=301,302,303", [OURS] = "1;ws=401,402" } })
+	ww.lists = LISTS
+	ww.wsState = {}
+	for _, id in ipairs({ "301", "302", "401", "402" }) do ww.wsState[id] = { false, false, false, false, 0 } end
+	ww.sizes = sizes or { ["301"] = 300 * MB, ["302"] = 200 * MB, ["401"] = GB, ["402"] = GB / 2 }
+	return ww
+end
+w = contentWorld()
+w.run(2)
+check("content: nothing asked at once", w.advertAsked, nil)
+w.run(2)
+check("content: our server's advert asked a few seconds into the menu", w.advertAsked and w.advertAsked[1], OURS)
+w.run(0.5)
+w.answerInfos()
+check("content: ours, never joined here, prepared without asking", w.ugc[1] and w.ugc[1].id, "401")
+w.progress = { ["401"] = 512 * MB }
+w.run(1)
+check("content: our row shows how far", (homeData(w) or ""):find('"prep":"Getting ready \194\183 512 MB of 1.5 GB"', 1, true) ~= nil, true)
+w.answer()
+check("content: then the next", w.ugc[1] and w.ugc[1].id, "402")
+w.answer()
+w.run(1)
+check("content: our row says it's ready", (homeData(w) or ""):find('"prep":"Ready \194\183 content downloaded"', 1, true) ~= nil, true)
+check("content: logged", (w.logs or ""):find("checked " .. OURS .. ": 2 Workshop items, 2 needed an update, download or unpack (1.5 GB), 2 done, 0 failed", 1, true) ~= nil, true)
+-- A favourite never joined: its advert is read when the pointer rests on its
+-- row; nothing downloads until "Get ready" is clicked.
+w.env.MeowyClientPackHomeIntent(4)   -- 1.1.1.1
+check("content: a favourite's advert asked", w.advertAsked[2], "1.1.1.1:27015")
+w.run(0.5)
+w.answerInfos()
+w.run(1)
+check("content: never joined: nothing downloaded", #w.ugc, 0)
+local hd = homeData(w) or ""
+check("content: its row has the button, with the size", hd:find('"prep":"Get ready \194\183 500 MB","prepAsk":true', 1, true) ~= nil, true)
+check("content: logged as waiting", (w.logs or ""):find("1.1.1.1:27015 needs 2 of 3 Workshop items (500 MB): waiting for Get ready", 1, true) ~= nil, true)
+w.env.MeowyClientPackHomePrepare(4)
+check("content: the click downloads it", w.ugc[1] and w.ugc[1].id, "301")
+w.run(1)
+check("content: and the row shows how far", (homeData(w) or ""):find('"prep":"Getting ready \194\183 0 MB of 500 MB"', 1, true) ~= nil, true)
+w.env.MeowyClientPackHomePrepare(99)
+w.env.MeowyClientPackHomePrepare("x")
+check("content: unknown or junk rows prepare nothing", #w.ugc, 1)
+-- A join stops it asking.
+w.loading = true
+w.run(1)
+w.answer()
+check("content: nothing new once a join starts", #w.ugc, 0)
+-- Over 4 GB waits for the click, even ours.
+w = contentWorld({ ["401"] = 4 * GB, ["402"] = GB })
+w.run(4.5)
+w.answerInfos()
+w.run(1)
+check("content: ours over 4 GB waits", #w.ugc, 0)
+check("content: ours over 4 GB has the button", (homeData(w) or ""):find('"prep":"Get ready \194\183 5.0 GB","prepAsk":true', 1, true) ~= nil, true)
+w.concommands.meowy_content_get_ready(nil, nil, {}, OURS)
+check("content: the console command is a click", w.ugc[1] and w.ugc[1].id, "401")
+-- A bad advert: what the last join learned still counts; nothing else.
+w = world({ settings = ON, menu = true, adverts = { [OURS] = "2;ws=999" } })
+w.lists = LISTS
+w.run(4.5)
+check("content: an unusable advert logged", (w.logs or ""):find(OURS .. "'s advert isn't usable (not version 1)", 1, true) ~= nil, true)
+check("content: nothing asked of Steam for it", #w.ugc + #w.infos, 0)
 check("files off: nothing warmed", w.pwStarts, nil)
 
 -- The home screen left preview: on by default, and once for everyone (a saved
@@ -1692,6 +1915,100 @@ w.sq = { { address = "1.2.3.4:27015", name = "A", map = "m", tags = "", desc = "
 w.run(0.3)
 w.post("browse_intent", 1)
 check("browse: a row pointed at is got ready", w.pwStarts and w.pwStarts[1], "1.2.3.4:27015")
+-- Meowy's server index (MR3): the Internet list from the index at once, then
+-- Steam's answers update the same rows; unreachable, Steam's list alone.
+local INDEX_COLS = { "a", "n", "d", "m", "g", "w", "c", "l", "p", "x", "b", "v", "pw", "q", "h", "r", "la", "lo" }
+local function indexWorld(convars)
+	local iw = world({ settings = ON, menu = true, convars = convars or PAGE_ON, joinServer = true })
+	iw.env.util = { JSONToTable = function(s) return s == "INDEX" and iw.indexData or nil end, TableToJSON = function() return '{"45.10.1":[33,1]}' end }
+	iw.env.meowy.ServerIndexFetch = function() iw.indexFetches = (iw.indexFetches or 0) + 1 return true end
+	iw.env.meowy.ServerIndexTake = function() local r = iw.indexResult iw.indexResult = nil if r then return r[1], r[2], r[3], 0.3 end end
+	iw.env.meowy.PingMemoryLoad = function() return "" end
+	iw.env.meowy.PingMemorySave = function(s) iw.pingsSaved = s return true end
+	iw.indexData = { v = 1, at = os.time() - 20, cols = INDEX_COLS, s = {
+		{ "45.10.1.7:27015", "Index RP", "DarkRP", "rp_a", "darkrp", "", "rp", "de", 40, 64, 0, 20260429, 0, 1, "fake", 12, 525, 134 },
+		{ "45.10.2.7:27015", "Quiet box", "", "gm_c", "sandbox", "", "", "", 0, 16, 0, 20260429, -1, 0, "", -1 },
+		{ "192.168.1.5:27015", "LAN box", "", "m", "sandbox", "", "", "", 3, 8, 0, 0, 0, 1, "", -1 },
+	} }
+	iw.run(1)
+	return iw
+end
+w = indexWorld()
+w.post("browse")
+check("index: asked for", w.indexFetches, 1)
+check("index: the page told it's coming", (w.browseJS or ""):find('"idx":"waiting"', 1, true) ~= nil, true)
+check("index: Steam asked at the same time", table.concat(w.sqArgs or {}, " "), "internet gamedir garrysmod hasplayers 1")
+w.browseCalls = {}
+w.indexResult = { "ok", "INDEX", "52.5,13.4" }
+w.run(0.3)
+local all = table.concat(w.browseCalls, "\n")
+check("index: its rows sent at once", all:find('"n":"Index RP"', 1, true) ~= nil, true)
+check("index: a fake's real count from the index", all:find('"h":"FAKE - 12 real"', 1, true) ~= nil and all:find('"p":12', 1, true) ~= nil, true)
+check("index: a ping hint from the distance", all:find('"ph":2', 1, true) ~= nil and all:find('"ms":10', 1, true) ~= nil, true)
+check("index: silent servers and private addresses left for Steam", all:find("Quiet box", 1, true) == nil and all:find("LAN box", 1, true) == nil, true)
+check("index: the page told it's shown", all:find('"idx":"shown"', 1, true) ~= nil, true)
+w.browseCalls = {}
+w.sq = { { address = "45.10.1.7:27015", name = "Index RP", map = "rp_b", tags = "gm:darkrp gmc:rp", desc = "DarkRP", players = 41, max = 64, bots = 0, ping = 33, pass = false } }
+w.sqDone = true
+w.run(0.3)
+all = table.concat(w.browseCalls, "\n")
+check("index: Steam's answer updates the same row", all:find("MeowyBrowse.update(1, [", 1, true) ~= nil and all:find('"i":1,', 1, true) ~= nil and all:find('"ms":33', 1, true) ~= nil, true)
+check("index: Steam's numbers, no hint", all:find('"m":"rp_b"', 1, true) ~= nil and all:find('"ph"', 1, true) == nil, true)
+check("index: no second Steam stage (the index listed the empty ones)", w.sqStarts, 1)
+check("index: complete", all:find("MeowyBrowse.add(1, [], true", 1, true) ~= nil, true)
+check("index: Steam's pings remembered", w.pingsSaved ~= nil, true)
+w.post("browse_join", 1)
+check("index: a row from it joins by number", w.joinedVia, "45.10.1.7:27015")
+-- A minute later the page asks again: changed rows go as updates, new ones are added.
+w.indexData.s[1][9] = 50
+w.indexData.s[4] = { "45.10.3.7:27015", "New one", "", "gm_x", "sandbox", "", "", "", 5, 10, 0, 20260429, 0, 1, "", -1 }
+w.browseCalls = {}
+w.post("browse_refresh")
+check("index: refreshed on the page's ask", w.indexFetches, 2)
+w.indexResult = { "ok", "INDEX", "52.5,13.4" }
+w.run(0.3)
+all = table.concat(w.browseCalls, "\n")
+check("index: a changed row updated, keeping Steam's ping", all:find("MeowyBrowse.update(1, [", 1, true) ~= nil and all:find('"ms":33', 1, true) ~= nil, true)
+check("index: a new server added", all:find('"n":"New one"', 1, true) ~= nil, true)
+-- Unreachable (or switched off): Steam's list alone, both stages, and the page told.
+w = indexWorld()
+w.post("browse")
+w.indexResult = { "error: HTTP 503", "", "" }
+w.run(0.3)
+check("index: unreachable, the page told", (w.browseJS or ""):find('"idx":"failed"', 1, true) ~= nil, true)
+w.sq = { { address = "1.2.3.4:27015", name = "Steam row", map = "m", tags = "", desc = "D", players = 3, max = 8, bots = 0, ping = 9, pass = false } }
+w.sqDone = true
+w.run(0.3)
+check("index: unreachable, Steam's second stage as before", table.concat(w.sqArgs or {}, " "), "internet gamedir garrysmod noplayers 1")
+w = indexWorld({ meowy_menu = "1", meowy_server_index = "0" })
+w.post("browse")
+check("index: switched off, never asked", w.indexFetches, nil)
+-- Garry's Mod's blacklist check is slow (~0.6 ms a server): the rows go a
+-- slice a frame, the most players first, never all in one frame.
+w = indexWorld()
+for k = 1, 300 do
+	w.indexData.s[k] = { "46.1." .. math.floor(k / 200) .. "." .. (k % 200 + 1) .. ":27015", "Box " .. k, "", "gm_c", "sandbox", "", "", "", 300 - k, 400, 0, 20260429, 0, 1, "", -1 }
+end
+local blacklistCalls = 0
+w.env.IsServerBlacklisted = function(a) blacklistCalls = blacklistCalls + 1 w.now = w.now + 0.0006 return nil end
+w.post("browse")
+w.browseCalls = {}
+w.indexResult = { "ok", "INDEX", "" }
+w.run(0.5)
+local firstBatch = "[]"
+for _, c in ipairs(w.browseCalls) do local b = c:match("MeowyBrowse%.add%(1, (%b[])") if b then firstBatch = b break end end
+local _, inFirst = firstBatch:gsub('"i":', "")
+check("index: the first slice is part of the list", inFirst > 0 and inFirst < 300, true)
+check("index: the biggest server first", firstBatch:find('"n":"Box 1"', 1, true) ~= nil, true)
+w.run(5)
+local sent = 0
+for _, c in ipairs(w.browseCalls) do local b = c:match("MeowyBrowse%.add%(1, (%b[])") if b then local _, n = b:gsub('"i":', "") sent = sent + n end end
+check("index: then the rest, slice by slice", sent, 300)
+check("index: each server checked once", blacklistCalls, 300)
+w.browseCalls = {}
+w.post("browse")
+w.run(0.3)
+check("index: the blacklist's answers kept (no new checks on a refresh)", blacklistCalls, 300)
 -- The Meowy console: the capture starts with the menu; meowy_console opens the
 -- window, reads the lines, and a typed line runs as the console would run it.
 w = world({ settings = ON, menu = true })
@@ -1928,6 +2245,175 @@ check("errors: paths hidden", report:find("Jane", 1, true) == nil and report:fin
 check("errors: disable offered at the menu", disableButton ~= nil, true)
 if disableButton then disableButton.DoClick() end
 check("errors: disabling asks first", w.mounted, nil)
+
+-- Sound follows Windows' default output: snd_restart 1.5 s after a change, not
+-- while a join loads, at most once every 10 s.
+local function restarts(w) local n = 0 for _, l in ipairs(w.consoleRuns or {}) do if l == "snd_restart" then n = n + 1 end end return n end
+w = world({ settings = ON, menu = true })
+w.run(2)
+check("audio: nothing changed, nothing run", restarts(w), 0)
+w.audioChanges = 1
+w.run(1)
+check("audio: not at once", restarts(w), 0)
+w.run(1)
+check("audio: restarted 1.5 s after the change", restarts(w), 1)
+w.audioChanges = 2
+w.run(3)
+check("audio: another change within 10 s waits", restarts(w), 1)
+w.run(8)
+check("audio: then restarted once more", restarts(w), 2)
+w.run(20)
+check("audio: once per change", restarts(w), 2)
+w.loading, w.audioChanges = true, 3
+w.run(3)
+check("audio: not while a join loads", restarts(w), 2)
+w.loading = false
+w.run(10)
+check("audio: after the join", restarts(w), 3)
+w = world({ settings = ON, menu = true, convars = { meowy_audio_follow = "0" } })
+w.run(1)
+w.audioChanges = 1
+w.run(15)
+check("audio: off, never restarted", restarts(w), 0)
+w = world({ settings = ON, menu = true, noAudio = true })
+w.run(5)
+check("audio: can't be watched, asked once", w.audioAsks, 1)
+-- The settings guard: a session from a join's start until a few seconds back
+-- at the menu (not reconnecting); what changed is listed, put back in one click.
+local function guardSession(w, changes, opts)
+	opts = opts or {}
+	w.cvars.mat_specular, w.cvars.r_3dsky, w.cvars.cl_interp = "1", "1", opts.interp or "0.1"
+	w.otherNow = opts.address or "1.2.3.4:27015"
+	w.state, w.loading, w.inGame = "other", true, false
+	w.run(1)
+	for k, v in pairs(changes) do w.cvars[k] = v end   -- the server's Lua
+	w.loading, w.inGame = false, true
+	w.env.meowy.JoiningName = opts.name or "Foo RP"
+	w.run(2)
+	w.cut()
+	w.consoleRuns = {}
+end
+-- The newest prompt's title (an answered prompt's text panels stay in w.panels).
+local function promptTitle(w)
+	for i = #(w.panels or {}), 1, -1 do
+		local p = w.panels[i]
+		if not p.removed and type(p.text) == "string" and p.text:find("of your settings", 1, true) then return p.text end
+	end
+end
+w = world({ settings = ON, menu = true })
+check("settings backup: a copy at start", w.backups, 1)
+guardSession(w, { mat_specular = "0", r_3dsky = "0" })
+w.run(1)
+check("settings guard: not at once (it could be reconnecting)", promptTitle(w), nil)
+w.run(3)
+check("settings guard: names the server and how many", promptTitle(w), "Foo RP changed 2 of your settings")
+local listed = find(function(p) return type(p.text) == "string" and p.text:find("Specular reflections (mat_specular): 1, now 0", 1, true) ~= nil end)
+check("settings guard: lists each change", listed ~= nil, true)
+w.click("Put back")
+local ran = table.concat(w.consoleRuns, "|")
+check("settings guard: put back", ran, "mat_specular 1|r_3dsky 1")
+-- Keep: nothing run.
+w = world({ settings = ON, menu = true })
+guardSession(w, { mat_specular = "0" })
+w.run(4)
+w.click("Keep")
+check("settings guard: Keep runs nothing", #w.consoleRuns, 0)
+-- Nothing changed: no prompt.
+w = world({ settings = ON, menu = true })
+guardSession(w, {})
+w.run(5)
+check("settings guard: nothing changed, no prompt", promptTitle(w), nil)
+-- Reconnecting in between: one session, one prompt at its end.
+w = world({ settings = ON, menu = true })
+guardSession(w, { r_3dsky = "0" })
+w.run(1)
+w.state, w.loading = "other", true
+w.run(1)
+w.cvars.mat_specular = "0"
+w.loading, w.inGame = false, true
+w.run(2)
+w.cut()
+w.run(1)
+check("settings guard: a reconnect keeps the session going", promptTitle(w), nil)
+w.run(3)
+check("settings guard: both changes, at the end", promptTitle(w), "Foo RP changed 2 of your settings")
+-- Always put back for that server: next time without asking.
+w = world({ settings = ON, menu = true })
+guardSession(w, { mat_specular = "0" })
+w.run(4)
+w.click("Always put back here")
+check("settings guard: always: put back now", table.concat(w.consoleRuns, "|"), "mat_specular 1")
+check("settings guard: always: the server remembered", w.convars.meowy_settings_guard_always, "1.2.3.4:27015")
+guardSession(w, { mat_specular = "0" })
+w.run(4)
+check("settings guard: always: put back next time", table.concat(w.consoleRuns, "|"), "mat_specular 1")
+guardSession(w, { mat_specular = "0" }, { address = "5.6.7.8:27015", name = "Bar RP" })
+w.run(4)
+check("settings guard: always: other servers still ask", promptTitle(w), "Bar RP changed 1 of your settings")
+-- A value that isn't a plain number is never run back.
+w = world({ settings = ON, menu = true })
+guardSession(w, { cl_interp = "0.0152" }, { interp = "0;quit" })
+w.run(4)
+w.click("Put back")
+check("settings guard: only plain numbers run", #w.consoleRuns, 0)
+-- Off: no prompt.
+w = world({ settings = ON, menu = true, convars = { meowy_settings_guard = "0" } })
+guardSession(w, { mat_specular = "0" })
+w.run(5)
+check("settings guard: off, no prompt", promptTitle(w), nil)
+-- Meowy Network's own server: its FPS Booster is the player's own choice, not second-guessed.
+w = world({ settings = ON, menu = true })
+guardSession(w, { mat_specular = "0", r_3dsky = "0" }, { address = OURS, name = "Meowy Network" })
+w.run(5)
+check("settings guard: our own server, no prompt", promptTitle(w), nil)
+check("settings guard: our own server, nothing put back", #w.consoleRuns, 0)
+-- A join cut short while loading (never in game): the server is still named.
+w = world({ settings = ON, menu = true })
+w.cvars.cl_new_impact_effects = "0"
+w.otherNow, w.state, w.loading = "5.6.7.8:27015", "other", true
+w.env.meowy.JoiningName = "Bar RP"
+w.run(1)
+w.cvars.cl_new_impact_effects = "1"
+w.run(1)
+w.state, w.loading = "none", false
+w.run(5)
+check("settings guard: a join cut short still names the server", promptTitle(w), "Bar RP changed 1 of your settings")
+-- The copies' commands.
+w = world({ settings = ON, menu = true })
+w.backupList = { { name = "config-20261107-120000.cfg", when = "2026-11-07 12:00:00", size = 100 } }
+w.concommands.meowy_settings_restore(nil, nil, { "1" })
+check("settings restore: that copy", w.restored, "config-20261107-120000.cfg")
+check("settings restore: run through exec", w.consoleRuns and w.consoleRuns[#w.consoleRuns], "exec meowy_restore.cfg")
+w.restored = nil
+w.concommands.meowy_settings_restore(nil, nil, { "2" })
+check("settings restore: a number that isn't listed does nothing", w.restored, nil)
 check("no Lua errors", w.errors, nil)
+
+-- Find servers: the picked server's content line, and its "Get ready" button.
+w = world({ settings = ON, menu = true, convars = PAGE_ON, adverts = { ["4.4.4.4:27015"] = "1;ws=501" } })
+local fsRun
+w.env.meowy.StockServerQuery = function(data) fsRun = data end
+w.wsState = { ["501"] = { false, false, false, false, 0 } }
+w.sizes = { ["501"] = 80 * 1048576 }
+w.run(1)
+w.post("browse", "favorite")
+fsRun.Callback(20, "Fav", "Sandbox", "gm_x", 12, 16, 0, false, 0, "4.4.4.4:27015", "sandbox", "0", false, 20260429, 260917, "de", "other")
+fsRun.Finished()
+w.run(0.3)
+local fi = tonumber((w.browseJS or ""):match('"i":(%d+)'))
+check("find servers: nothing pushed before a server is picked", w.prepJS, nil)
+w.post("browse_select", fi)
+check("find servers: the picked server's advert asked", w.advertAsked and w.advertAsked[1], "4.4.4.4:27015")
+w.run(0.5)
+w.answerInfos()
+w.run(0.5)
+check("find servers: its Get ready button", (w.prepJS or ""):find("MeowyBrowse.prep(" .. fi .. ', "Get ready \194\183 80 MB", true)', 1, true) ~= nil, true)
+w.post("browse_prepare", fi)
+check("find servers: the button downloads it", w.ugc[1] and w.ugc[1].id, "501")
+w.run(0.5)
+check("find servers: then how far", (w.prepJS or ""):find('"Getting ready \194\183 0 MB of 80 MB", false)', 1, true) ~= nil, true)
+w.post("browse_prepare", 9999)
+check("find servers: an unknown row prepares nothing", #w.ugc, 1)
+check("find servers: no Lua errors", w.errors, nil)
 print(("%d checks, %d failed"):format(count, failures))
 os.exit(failures == 0 and 0 or 1)

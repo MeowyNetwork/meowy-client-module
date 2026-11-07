@@ -48,16 +48,17 @@ namespace MeowyInstaller
 			"(loads the Meowy Client Pack at start-up; turn it off in Meowy settings, in the main menu)";
 		static readonly string[] HookHosts = { @"lua\includes\menu.lua", @"lua\menu\menu.lua" };
 
-		// No arguments: the window. "--install" / "--uninstall" [path] [--no-startup]:
-		// no window; exit code 0 on success, 1 on failure, details on stdout.
+		// No arguments: the window. "--install" / "--uninstall" [path] [--no-startup]
+		// [--no-sign-in]: no window; exit code 0 on success, 1 on failure, details on stdout.
 		[STAThread]
 		static int Main(string[] args)
 		{
 			if (args.Length > 0 && (args[0] == "--install" || args[0] == "--uninstall"))
 			{
 				bool startup = Array.IndexOf(args, "--no-startup") < 0;
+				bool signIn = Array.IndexOf(args, "--no-sign-in") < 0;
 				string path = args.Length > 1 && !args[1].StartsWith("--") ? args[1] : FindGarrysMod();
-				return RunCommandLine(args[0] == "--install", path, startup);
+				return RunCommandLine(args[0] == "--install", path, startup, signIn);
 			}
 
 			Application.EnableVisualStyles();
@@ -70,7 +71,7 @@ namespace MeowyInstaller
 		[System.Runtime.InteropServices.DllImport("kernel32.dll")]
 		static extern bool AttachConsole(int processId);
 
-		static int RunCommandLine(bool install, string garrysmod, bool startup)
+		static int RunCommandLine(bool install, string garrysmod, bool startup, bool signIn)
 		{
 			AttachConsole(-1);
 			if (string.IsNullOrEmpty(garrysmod) || !Directory.Exists(Path.Combine(garrysmod, "lua")))
@@ -85,9 +86,13 @@ namespace MeowyInstaller
 			}
 			try
 			{
-				// Uninstall: the player's files first, while the pack is still whole.
+				// Uninstall: the launcher stops first (it lives in the pack's data
+				// folder), then the player's files, while the pack is still whole.
 				if (!install)
+				{
+					Console.WriteLine(UninstallLauncher());
 					Console.WriteLine(Describe(RemoveData(garrysmod)));
+				}
 				string bin = Path.Combine(garrysmod, @"lua\bin");
 				Directory.CreateDirectory(bin);
 				foreach (string module in Modules)
@@ -104,7 +109,10 @@ namespace MeowyInstaller
 				else
 					RemoveStartupHook(garrysmod);
 				if (install)
+				{
 					SetStartupChoice(startup);
+					Console.WriteLine(InstallLauncher(signIn));
+				}
 				Console.WriteLine("start with the game: " + (StartupHookPresent(garrysmod) ? "on" : "off"));
 				Console.WriteLine(install ? InstallShortcut(garrysmod) : UninstallShortcut());
 				return 0;
@@ -706,7 +714,14 @@ namespace MeowyInstaller
 
 		// Creates (or replaces) the shortcut at `lnk`. Its icon is the module's
 		// own (gmcl_meowy_win64.dll, icon 0) when that file is in `garrysmod`.
+		// It starts the game through Steam, or `launcher` (the Meowy Launcher's
+		// exe) when one is given: the launcher then shows its window.
 		public static void CreateShortcut(string lnk, string garrysmod)
+		{
+			CreateShortcut(lnk, garrysmod, null);
+		}
+
+		public static void CreateShortcut(string lnk, string garrysmod, string launcher)
 		{
 			string dir = Path.GetDirectoryName(lnk);
 			if (!string.IsNullOrEmpty(dir))
@@ -717,10 +732,19 @@ namespace MeowyInstaller
 			var link = (Shell.IShellLinkW)new Shell.CShellLink();
 			try
 			{
-				string explorer = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "explorer.exe");
-				link.SetPath(explorer);
-				link.SetArguments(ShortcutLaunch);
-				link.SetDescription("Garry's Mod with the Meowy Client Pack (shows Meowy Network's notifications)");
+				if (launcher != null)
+				{
+					link.SetPath(launcher);
+					link.SetArguments("");
+					link.SetDescription("Meowy Launcher: Garry's Mod with the Meowy Client Pack");
+				}
+				else
+				{
+					string explorer = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "explorer.exe");
+					link.SetPath(explorer);
+					link.SetArguments(ShortcutLaunch);
+					link.SetDescription("Garry's Mod with the Meowy Client Pack (shows Meowy Network's notifications)");
+				}
 				string icon = string.IsNullOrEmpty(garrysmod) ? null : Path.Combine(garrysmod, @"lua\bin\gmcl_meowy_win64.dll");
 				if (icon != null && File.Exists(icon))
 					link.SetIconLocation(icon, 0);
@@ -812,7 +836,8 @@ namespace MeowyInstaller
 			try
 			{
 				string lnk = StartMenuShortcut();
-				CreateShortcut(lnk, garrysmod);
+				string launcher = LauncherPath();
+				CreateShortcut(lnk, garrysmod, launcher != null && File.Exists(launcher) ? launcher : null);
 				return "notifications: Start-menu shortcut " + lnk;
 			}
 			catch (Exception e)
@@ -832,6 +857,181 @@ namespace MeowyInstaller
 			catch (Exception e)
 			{
 				return "couldn't remove the Start-menu shortcut: " + e.Message;
+			}
+		}
+
+		// --- The Meowy Launcher (launcher/, embedded when build.ps1 got -Launcher) ---
+		//
+		// A tray app outside the game (launcher/DESIGN.md): it starts Garry's Mod
+		// through Steam, puts the start-up line back after a Steam update, and
+		// offers Rejoin after a crash. Installed per user, no admin rights:
+		// %LOCALAPPDATA%\MeowyClientPack\launcher\MeowyLauncher.exe, meowy://
+		// links under HKCU\Software\Classes, and (if chosen) a Run value so it
+		// starts at sign-in in the tray. Uninstall asks it to quit, then removes
+		// all of that.
+
+		public const string LauncherResource = "MeowyLauncher.exe";
+		public const string LauncherRunValue = "MeowyLauncher";
+		public const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
+		public const string ProtocolKey = @"Software\Classes\meowy";
+
+		public static bool HasLauncher()
+		{
+			return Assembly.GetExecutingAssembly().GetManifestResourceInfo(LauncherResource) != null;
+		}
+
+		public static string LauncherPath()
+		{
+			string local = Environment.GetEnvironmentVariable("LOCALAPPDATA");
+			return string.IsNullOrEmpty(local) ? null : Path.Combine(local, @"MeowyClientPack\launcher\" + LauncherResource);
+		}
+
+		// meowy://<...> opens `exe` with the link (under `key`, for tests).
+		public static void RegisterProtocol(string exe, string key)
+		{
+			using (RegistryKey k = Registry.CurrentUser.CreateSubKey(key))
+			{
+				k.SetValue("", "URL:Meowy Launcher");
+				k.SetValue("URL Protocol", "");
+			}
+			using (RegistryKey k = Registry.CurrentUser.CreateSubKey(key + @"\DefaultIcon"))
+				k.SetValue("", "\"" + exe + "\",0");
+			using (RegistryKey k = Registry.CurrentUser.CreateSubKey(key + @"\shell\open\command"))
+				k.SetValue("", "\"" + exe + "\" \"%1\"");
+		}
+
+		// The exe meowy:// opens, or null.
+		public static string ProtocolExe(string key)
+		{
+			using (RegistryKey k = Registry.CurrentUser.OpenSubKey(key + @"\shell\open\command"))
+			{
+				string command = k == null ? null : k.GetValue("") as string;
+				if (command == null || !command.StartsWith("\""))
+					return null;
+				int end = command.IndexOf('"', 1);
+				return end > 1 ? command.Substring(1, end - 1) : null;
+			}
+		}
+
+		// Removes meowy:// only when it opens `exe` (another program's stays).
+		public static void UnregisterProtocol(string exe, string key)
+		{
+			string current = ProtocolExe(key);
+			if (current != null && string.Equals(Path.GetFullPath(current), Path.GetFullPath(exe), StringComparison.OrdinalIgnoreCase))
+				Registry.CurrentUser.DeleteSubKeyTree(key, false);
+		}
+
+		public static void SetLauncherAtSignIn(string exe, bool on, string runKey)
+		{
+			using (RegistryKey k = Registry.CurrentUser.CreateSubKey(runKey))
+			{
+				if (on)
+					k.SetValue(LauncherRunValue, "\"" + exe + "\" --tray");
+				else
+					k.DeleteValue(LauncherRunValue, false);
+			}
+		}
+
+		public static bool LauncherAtSignIn(string runKey)
+		{
+			using (RegistryKey k = Registry.CurrentUser.OpenSubKey(runKey))
+				return k != null && k.GetValue(LauncherRunValue) != null;
+		}
+
+		// Asks a running launcher to quit (it hands "--quit" to the running one),
+		// waits up to 5 s, then ends any copy of the installed exe still running.
+		public static void StopLauncher()
+		{
+			string exe = LauncherPath();
+			if (exe == null || Process.GetProcessesByName("MeowyLauncher").Length == 0)
+				return;
+			if (File.Exists(exe))
+			{
+				try
+				{
+					using (Process p = Process.Start(new ProcessStartInfo(exe, "--quit") { UseShellExecute = false }))
+						p.WaitForExit(5000);
+				}
+				catch (Exception)
+				{
+				}
+			}
+			for (int i = 0; i < 50 && Process.GetProcessesByName("MeowyLauncher").Length > 0; i++)
+				System.Threading.Thread.Sleep(100);
+			foreach (Process p in Process.GetProcessesByName("MeowyLauncher"))
+			{
+				try
+				{
+					if (string.Equals(p.MainModule.FileName, exe, StringComparison.OrdinalIgnoreCase))
+					{
+						p.Kill();
+						p.WaitForExit(3000);
+					}
+				}
+				catch (Exception)
+				{
+				}
+			}
+		}
+
+		// Install's part: the exe, meowy://, start at sign-in. Never fails the
+		// install of the pack itself; says what happened.
+		public static string InstallLauncher(bool startAtSignIn)
+		{
+			if (!HasLauncher())
+				return "launcher: not in this build";
+			string exe = LauncherPath();
+			if (exe == null)
+				return "launcher: no LOCALAPPDATA folder; not installed";
+			try
+			{
+				StopLauncher();
+				Directory.CreateDirectory(Path.GetDirectoryName(exe));
+				ExtractTo(LauncherResource, exe);
+				RegisterProtocol(exe, ProtocolKey);
+				SetLauncherAtSignIn(exe, startAtSignIn, RunKey);
+				return "launcher: " + exe + (startAtSignIn ? " (starts at sign-in)" : "");
+			}
+			catch (Exception e)
+			{
+				return "launcher: couldn't install (" + e.Message + ")";
+			}
+		}
+
+		// Starts the installed launcher in the tray (after the window's Install).
+		public static void StartLauncher()
+		{
+			string exe = LauncherPath();
+			if (exe != null && File.Exists(exe))
+			{
+				try
+				{
+					Process.Start(new ProcessStartInfo(exe, "--tray") { UseShellExecute = false });
+				}
+				catch (Exception)
+				{
+				}
+			}
+		}
+
+		public static string UninstallLauncher()
+		{
+			string exe = LauncherPath();
+			if (exe == null)
+				return "launcher: nothing to remove";
+			try
+			{
+				StopLauncher();
+				SetLauncherAtSignIn(exe, false, RunKey);
+				UnregisterProtocol(exe, ProtocolKey);
+				string dir = Path.GetDirectoryName(exe);
+				if (Directory.Exists(dir))
+					Directory.Delete(dir, true);
+				return "removed " + dir;
+			}
+			catch (Exception e)
+			{
+				return "launcher: couldn't remove everything (" + e.Message + ")";
 			}
 		}
 	}
@@ -918,6 +1118,7 @@ namespace MeowyInstaller
 		readonly Button m_install = new Button();
 		readonly Button m_uninstall = new Button();
 		readonly CheckBox m_startup = new CheckBox();
+		readonly CheckBox m_signIn = new CheckBox();
 
 		public MainForm()
 		{
@@ -925,7 +1126,8 @@ namespace MeowyInstaller
 			FormBorderStyle = FormBorderStyle.FixedDialog;
 			MaximizeBox = false;
 			StartPosition = FormStartPosition.CenterScreen;
-			ClientSize = new Size(520, 280);
+			int extra = Program.HasLauncher() ? 26 : 0;
+			ClientSize = new Size(520, 280 + extra);
 			Font = new Font("Segoe UI", 9f);
 
 			var intro = new Label
@@ -951,20 +1153,26 @@ namespace MeowyInstaller
 			m_startup.Size = new Size(496, 22);
 			m_startup.Checked = true;
 
+			m_signIn.Text = "Start the Meowy Launcher when I sign in (Play, Rejoin after a crash, repairs after Steam updates)";
+			m_signIn.Location = new Point(12, 206);
+			m_signIn.Size = new Size(496, 22);
+			m_signIn.Checked = true;
+			m_signIn.Visible = extra > 0;
+
 			m_install.Text = "Install";
-			m_install.Location = new Point(12, 230);
+			m_install.Location = new Point(12, 230 + extra);
 			m_install.Size = new Size(110, 32);
 			m_install.Click += delegate { Install(); };
 
 			m_uninstall.Text = "Uninstall";
-			m_uninstall.Location = new Point(130, 230);
+			m_uninstall.Location = new Point(130, 230 + extra);
 			m_uninstall.Size = new Size(110, 32);
 			m_uninstall.Click += delegate { Uninstall(); };
 
-			var join = new Button { Text = "Join Meowy Network", Location = new Point(358, 230), Size = new Size(150, 32) };
+			var join = new Button { Text = "Join Meowy Network", Location = new Point(358, 230 + extra), Size = new Size(150, 32) };
 			join.Click += delegate { Process.Start("steam://connect/" + Program.ServerAddress); };
 
-			Controls.AddRange(new Control[] { intro, pathLabel, m_path, browse, m_status, m_startup, m_install, m_uninstall, join });
+			Controls.AddRange(new Control[] { intro, pathLabel, m_path, browse, m_status, m_startup, m_signIn, m_install, m_uninstall, join });
 
 			m_path.Text = Program.FindGarrysMod() ?? "";
 			m_path.TextChanged += delegate { RefreshStatus(); };
@@ -995,7 +1203,12 @@ namespace MeowyInstaller
 			m_status.Text = !installed ? "Not installed." :
 				"Installed" + (hook ? ", starts with the game" : ", doesn't start with the game") + ". Install again to update.";
 			if (installed)
+			{
 				m_startup.Checked = hook;
+				string launcher = Program.LauncherPath();
+				if (launcher != null && File.Exists(launcher))
+					m_signIn.Checked = Program.LauncherAtSignIn(Program.RunKey);
+			}
 			m_install.Enabled = true;
 			m_uninstall.Enabled = installed;
 		}
@@ -1032,10 +1245,17 @@ namespace MeowyInstaller
 				else
 					Program.RemoveStartupHook(m_path.Text.Trim());
 				Program.SetStartupChoice(m_startup.Checked);
+				string launcher = Program.InstallLauncher(m_signIn.Checked);   // never fails the install either
 				Program.InstallShortcut(m_path.Text.Trim());   // never fails the install (balloons without it)
 				RefreshStatus();
-				MessageBox.Show(this, "Installed. Join Meowy Network and your Discord status will show where you are.", Text,
-					MessageBoxButtons.OK, MessageBoxIcon.Information);
+				bool hasLauncher = Program.HasLauncher() && launcher.StartsWith("launcher: " + Program.LauncherPath());
+				if (hasLauncher)
+					Program.StartLauncher();
+				MessageBox.Show(this, "Installed. Join Meowy Network and your Discord status will show where you are." +
+					(hasLauncher ? "\r\n\r\nThe Meowy Launcher is in the tray: Play and Join Meowy Network are there, and it offers " +
+						"Rejoin if the game crashes on a server." :
+					 Program.HasLauncher() ? "\r\n\r\nThe Meowy Launcher wasn't installed: " + launcher : ""),
+					Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
 			}
 			catch (Exception e)
 			{
@@ -1064,6 +1284,7 @@ namespace MeowyInstaller
 				return;
 			try
 			{
+				Program.UninstallLauncher();
 				string files = Program.Describe(Program.RemoveData(garrysmod));
 				foreach (string module in Program.Modules)
 				{
