@@ -53,6 +53,7 @@ for ($r = 1; $r -le $Rounds; $r++) {
 		if ($current -ne $want) { Restart-Launcher $want; $current = $want }
 		Start-Sleep $Settle
 		Set-Content -Path $marker -Value 'measure_startup (not a server)' -NoNewline
+		$start = (Get-Date).AddSeconds(-1)
 		$sw = [Diagnostics.Stopwatch]::StartNew()
 		if ($mode -eq 'steam') { Start-Process $steam -ArgumentList '-applaunch', '4000' }
 		else { Start-Process $Launcher -ArgumentList '--play' }
@@ -62,8 +63,17 @@ for ($r = 1; $r -le $Rounds; $r++) {
 			if (-not (Test-Path $marker)) { $pack = $sw.Elapsed.TotalSeconds }
 			Start-Sleep -Milliseconds 50
 		}
-		$cmd = (Get-CimInstance Win32_Process -Filter "Name='gmod.exe'" | Where-Object { $_.CommandLine -notmatch '--type=' } | Select-Object -First 1).CommandLine
-		$row = [pscustomobject]@{ round = $r; mode = $mode; process_s = [math]::Round($proc, 2); pack_s = [math]::Round($pack, 2); lua_refresh_off = [bool]($cmd -match '-disableluarefresh') }
+		$game = Get-CimInstance Win32_Process -Filter "Name='gmod.exe'" | Where-Object { $_.CommandLine -notmatch '--type=' } | Select-Object -First 1
+		# Valid only if the game this run started is the one that ran the pack:
+		# one game process, created after the clock started.
+		$created = if ($game) { ([datetime]$game.CreationDate) } else { $null }
+		$valid = $null -ne $pack -and $null -ne $proc -and $proc -gt 0.3 -and $created -and $created -ge $start
+		$row = [pscustomobject]@{
+			round = $r; mode = $mode; valid = $valid
+			process_s = [math]::Round($proc, 2); pack_s = [math]::Round($pack, 2)
+			game_to_pack_s = if ($valid) { [math]::Round($pack - $proc, 2) } else { $null }
+			lua_refresh_off = [bool]($game.CommandLine -match '-disableluarefresh')
+		}
 		$row | Format-Table -HideTableHeaders | Out-String | ForEach-Object { $_.Trim() }
 		$rows += $row
 		Start-Sleep 6
@@ -73,11 +83,19 @@ for ($r = 1; $r -le $Rounds; $r++) {
 Wait-GameClosed
 Remove-Item $marker -ErrorAction SilentlyContinue
 $rows | Export-Csv -NoTypeInformation $Out
+
+function Median($xs) {
+	$s = @($xs | Sort-Object)
+	if ($s.Count -eq 0) { return $null }
+	if ($s.Count % 2) { return $s[[int][math]::Floor($s.Count / 2)] }
+	return ($s[$s.Count / 2 - 1] + $s[$s.Count / 2]) / 2
+}
 ""
-"mode           n   process (s)   pack (s) mean   min-max"
+"Medians of valid runs (seconds). click->game: Steam's hop (and the launcher's, for its modes);"
+"game->pack: the game's own start-up until the pack's menu Lua ran."
+"mode           n   click->game   game->pack   click->pack"
 foreach ($g in $rows | Group-Object mode) {
-	$p = $g.Group | Where-Object { $_.pack_s -gt 0 }
-	$m = ($p | Measure-Object pack_s -Average -Minimum -Maximum)
-	$q = ($p | Measure-Object process_s -Average)
-	"{0,-14} {1,-3} {2,8:N2}     {3,8:N2}        {4:N2}-{5:N2}" -f $g.Name, $m.Count, $q.Average, $m.Average, $m.Minimum, $m.Maximum
+	$v = @($g.Group | Where-Object { $_.valid })
+	"{0,-14} {1,-3} {2,10:N2}   {3,10:N2}   {4,10:N2}" -f $g.Name, $v.Count,
+		(Median ($v | ForEach-Object { $_.process_s })), (Median ($v | ForEach-Object { $_.game_to_pack_s })), (Median ($v | ForEach-Object { $_.pack_s }))
 }
