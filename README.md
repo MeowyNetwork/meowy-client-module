@@ -177,6 +177,16 @@ the game closes while the pack is starting, the next start skips it once by itse
   - `meowy_honest_serverlist 0` turns the whole check off; `meowy_serverlist_reports 0` keeps the
     checks but stops the reports. Our own servers are never checked. What each report did (counts and
     the HTTP result, never SteamIDs) goes to `%LOCALAPPDATA%\MeowyClientPack\serverlist.log`.
+- **Find servers, faster.** Find servers' Internet list comes straight from Steam, and Steam's master server
+  leaves out empty servers before anything is pinged. Steam pings at most about 5,000 servers a minute, so
+  the full list of ~4,800 took 88 s here. The servers with players (964) are complete in 20 s, and the first
+  hundred show within a second.
+  - Each server reaches Garry's Mod's own page through the game's own code, with the same values the game's
+    query gives (its tags read the same way). So the gamemode list, categories, blacklist and the count
+    checks above work as before. Favourites, History and LAN are the game's own, complete lists.
+  - It reads Steam's server list through the game's own `steam_api`, `ISteamMatchmakingServers`.
+  - Off in Meowy settings ("Find servers: only servers with players") or with `meowy_fast_serverlist 0`
+    for every server, the game's way. `meowy_fast_serverlist_status` shows the lists open.
 - Its only other network traffic is the loading page and its data, from meowynetwork.com, through WebView2. It
   writes only in `%LOCALAPPDATA%\MeowyClientPack` (`boot.lock` and `recover.lock` for a moment at start-up; for the
   loading screen `join_times.txt`, how long each stage of your last join took, `last_join.txt`,

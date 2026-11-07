@@ -94,6 +94,7 @@
 #include "timeline.h"
 #include "timeline_steam.h"
 #include "prewarm.h"
+#include "server_query.h"
 #include "resilience.h"
 #include "doctor.h"
 #include "startup_hook.h"
@@ -1427,6 +1428,95 @@ namespace
 		return 0;
 	}
 
+	// --- Server lists from Steam (server_query.h, U6 N1) ----------------------------
+	// ServerQueryStart("internet"|"friends", key1, value1, key2, value2, ...) ->
+	// id | nil, reason. The filters are Steam's master-server keys (checked).
+	int ServerQueryStart(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		const char* list = LUA->IsType(1, Type::String) ? LUA->GetString(1) : "";
+		server_query::Filters filters;
+		const int top = LUA->Top();
+		for (int i = 2; i + 1 <= top && filters.size() < 17; i += 2)
+		{
+			if (!LUA->IsType(i, Type::String) || !LUA->IsType(i + 1, Type::String))
+				break;
+			filters.emplace_back(LUA->GetString(i), LUA->GetString(i + 1));
+		}
+		std::string why = "unknown list";
+		const bool friends = std::strcmp(list, "friends") == 0;
+		const int id = (friends || std::strcmp(list, "internet") == 0)
+			? server_query::Start(friends ? server_query::List::Friends : server_query::List::Internet, filters, why)
+			: 0;
+		if (id)
+		{
+			LUA->PushNumber(id);
+			return 1;
+		}
+		LUA->PushNil();
+		LUA->PushString(why.c_str());
+		return 2;
+	}
+
+	// ServerQueryTake(id) -> { {address, name, map, gamedir, desc, tags, ping,
+	// players, max, bots, pass, secure, lastplayed}, ... }, finished, failed.
+	// Server text is the server's own: shown as text only.
+	int ServerQueryTake(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		const int id = LUA->IsType(1, Type::Number) ? static_cast<int>(LUA->GetNumber(1)) : 0;
+		bool finished = true;
+		int failed = 0;
+		const std::vector<server_query::Server> servers = server_query::Take(id, &finished, &failed);
+		LUA->CreateTable();
+		int i = 0;
+		for (const server_query::Server& s : servers)
+		{
+			LUA->PushNumber(++i);
+			LUA->CreateTable();
+			const auto str = [&](const char* k, const std::string& v) {
+				LUA->PushString(v.c_str(), static_cast<unsigned int>(v.size()));
+				LUA->SetField(-2, k);
+			};
+			const auto num = [&](const char* k, double v) { LUA->PushNumber(v); LUA->SetField(-2, k); };
+			str("address", s.address);
+			str("name", s.name);
+			str("map", s.map);
+			str("gamedir", s.gameDir);
+			str("desc", s.description);
+			str("tags", s.tags);
+			num("ping", s.ping);
+			num("players", s.players);
+			num("max", s.maxPlayers);
+			num("bots", s.bots);
+			LUA->PushBool(s.password);
+			LUA->SetField(-2, "pass");
+			LUA->PushBool(s.secure);
+			LUA->SetField(-2, "secure");
+			LUA->PushBool(s.anonymous);
+			LUA->SetField(-2, "anon");
+			num("lastplayed", s.lastPlayed);
+			LUA->SetTable(-3);
+		}
+		LUA->PushBool(finished);
+		LUA->PushNumber(failed);
+		return 3;
+	}
+
+	int ServerQueryCancel(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		if (LUA->IsType(1, Type::Number))
+			server_query::Cancel(static_cast<int>(LUA->GetNumber(1)));
+		return 0;
+	}
+
+	int ServerQueryState(lua_State* L)
+	{
+		L->luabase->PushString(server_query::Describe().c_str());
+		return 1;
+	}
+
 	int PrewarmState(lua_State* L)
 	{
 		L->luabase->PushString(prewarm::Describe().c_str());
@@ -1895,6 +1985,53 @@ local stockQuery = serverlist.Query
 -- The game's own query, for lists that aren't the browser's (the main menu's
 -- Home card): no count checks, no backend calls.
 meowy.StockServerQuery = stockQuery
+
+-- Find servers, faster (U6 N1, server_query.h): the browser's Internet list
+-- straight from Steam, whose master server leaves out empty servers before
+-- anything is pinged (Steam pings at most ~5,000 a minute). About a fifth of
+-- the ~4,800 servers, complete in ~20 s instead of ~90 s. Each server reaches
+-- the browser through the query's own Callback, with the values the game's
+-- query gives (its tags read the same way), so the stock page, its blacklist
+-- and the count checks above see no difference.
+local fastList = meowy.Setting("meowy_fast_serverlist", "1",
+	"Meowy Client Pack: Find servers lists only servers with players, straight from Steam (0 = every server, the game's way)")
+local fastRuns = {}   -- [list id] = { data, started, count }
+local function tagValue(tags, key) return (" " .. tags .. " "):match(" " .. key .. ":(%S+)") end
+local function fastQuery(data)
+	if not (fastList:GetBool() and meowy.ServerQueryStart and istable(data) and isfunction(data.Callback)) then return false end
+	if data.Type ~= "internet" or (data.AppID and data.AppID ~= 4000) or (data.GameDir and data.GameDir ~= "garrysmod") then return false end
+	for id in pairs(fastRuns) do meowy.ServerQueryCancel(id) fastRuns[id] = nil end   -- a refresh replaces the last list
+	local id = meowy.ServerQueryStart("internet", "gamedir", "garrysmod", "hasplayers", "1")
+	if not id then return false end
+	fastRuns[id] = { data = data, started = SysTime(), count = 0 }
+	return true
+end
+hook.Add("Think", "MeowyClientPack.FastServerList", function()
+	for id, run in pairs(fastRuns) do
+		local list, finished = meowy.ServerQueryTake(id)
+		local stop = false
+		for _, s in ipairs(list) do
+			local tags = s.tags or ""
+			run.count = run.count + 1
+			local ok, more = pcall(run.data.Callback, s.ping, s.name, s.desc, s.map, s.players, s.max, s.bots, s.pass,
+				s.lastplayed, s.address, tagValue(tags, "gm") or "", tagValue(tags, "gmws") or "0", s.anon,
+				tonumber(tagValue(tags, "ver") or "") or 0, 0, tagValue(tags, "loc") or "", tagValue(tags, "gmc") or "")
+			if not ok then ErrorNoHalt("[Meowy Client Pack] fast server list: " .. tostring(more) .. "\n") end
+			if not ok or more == false then stop = true break end
+		end
+		if stop or finished then
+			fastRuns[id] = nil
+			meowy.ServerQueryCancel(id)
+			print(string.format("[Meowy Client Pack] fast server list: %d servers with players in %.1f s%s", run.count,
+				SysTime() - run.started, stop and " (stopped)" or ""))
+			if finished and not stop and isfunction(run.data.Finished) then run.data.Finished() end
+		end
+	end
+end)
+concommand.Add("meowy_fast_serverlist_status", function()
+	print("[Meowy Client Pack] fast server list: " .. (fastList:GetBool() and "on" or "off") .. "; " ..
+		(meowy.ServerQueryState and meowy.ServerQueryState() or "unavailable"))
+end)
 serverlist.Query = function(data)
 	if enabled:GetBool() and istable(data) and isfunction(data.Callback) then
 		local type, callback, finished = data.Type, data.Callback, data.Finished
@@ -1918,6 +2055,7 @@ serverlist.Query = function(data)
 		end
 		fetchRep()
 	end
+	if fastQuery(data) then return end
 	return stockQuery(data)
 end
 
@@ -2354,6 +2492,10 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	SetFunction(LUA, "PrewarmRecorded", Guarded<PrewarmRecorded>);
 	SetFunction(LUA, "PrewarmStart", Guarded<PrewarmStart>);
 	SetFunction(LUA, "PrewarmCancel", Guarded<PrewarmCancel>);
+	SetFunction(LUA, "ServerQueryStart", Guarded<ServerQueryStart>);
+	SetFunction(LUA, "ServerQueryTake", Guarded<ServerQueryTake>);
+	SetFunction(LUA, "ServerQueryCancel", Guarded<ServerQueryCancel>);
+	SetFunction(LUA, "ServerQueryState", Guarded<ServerQueryState>);
 	SetFunction(LUA, "PrewarmState", Guarded<PrewarmState>);
 	SetFunction(LUA, "LastServerMark", Guarded<LastServerMark>);
 	SetFunction(LUA, "LastServer", Guarded<LastServer>);

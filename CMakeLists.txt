@@ -24,6 +24,7 @@ add_library(meowy SHARED
 	src/font_loads.cpp
 	src/fs_cache.cpp
 	src/prewarm.cpp
+	src/server_query.cpp
 	src/server_gate.cpp
 	src/discord_ipc.cpp
 	src/loading_screen.cpp
@@ -200,6 +201,12 @@ if(MEOWY_BUILD_TESTS)
 	if(MSVC)
 		set_property(TARGET lua_find_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 		target_compile_options(lua_find_smoke PRIVATE /W4 /utf-8)
+	endif()
+	# Server lists from Steam: the filters passed on, no game (server_query_smoke).
+	add_executable(server_query_smoke tests/server_query_smoke.cpp src/server_query.cpp)
+	if(MSVC)
+		set_property(TARGET server_query_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+		target_compile_options(server_query_smoke PRIVATE /W4 /utf-8)
 	endif()
 	# The missing-file cache's rules against real folders, no game:
 	#   fs_cache_smoke <scratch folder>

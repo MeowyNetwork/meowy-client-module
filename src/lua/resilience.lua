@@ -192,6 +192,16 @@ local function openSettings(startTab)
 			pt.gapBefore = S(10)
 			blocks[#blocks + 1] = pt
 		end
+		-- Find servers, faster (module.cpp's server list chunk owns the setting).
+		local fastList = GetConVar and GetConVar("meowy_fast_serverlist")
+		if fastList and meowy.ServerQueryStart then
+			local ft = UI.Toggle(nil, "Find servers: only servers with players",
+				"Steam leaves out empty servers before anything is pinged, so the Internet list is complete in about 20 s "
+				.. "instead of about 90 s. Off lists every server, the game's way. Favourites, History and LAN are always complete.",
+				fastList:GetBool(), function(on) RunConsoleCommand("meowy_fast_serverlist", on and "1" or "0") end)
+			ft.meowyToggle = "fast_serverlist"
+			blocks[#blocks + 1] = ft
+		end
 		if UI.Choice and menuScaleSetting then
 			local options = {}
 			for _, pct in ipairs({ 0, 100, 125, 150, 175, 200 }) do
