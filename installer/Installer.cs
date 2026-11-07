@@ -1276,6 +1276,9 @@ namespace MeowyInstaller
 					Program.AddStartupHook(m_path.Text.Trim());
 				else
 					Program.RemoveStartupHook(m_path.Text.Trim());
+				// As --install does: what was just put in lua\bin is the pack to load,
+				// not an older downloaded update (src/pack_versions.h).
+				Program.ResetUpdates();
 				Program.SetStartupChoice(m_startup.Checked);
 				string launcher = Program.InstallLauncher(m_signIn.Checked);   // never fails the install either
 				Program.InstallShortcut(m_path.Text.Trim());   // never fails the install (balloons without it)
