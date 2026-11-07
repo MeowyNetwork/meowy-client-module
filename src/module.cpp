@@ -1227,15 +1227,25 @@ namespace
 		return 1;
 	}
 
-	// ResilienceSession(true): on our server now (the address is the engine's,
-	// read here); false: left it.
+	// A server a crash card may offer: ours, or any public a.b.c.d:port (never a
+	// LAN, loopback or P2P address).
+	bool RejoinableAddress(const std::string& address)
+	{
+		return server_gate::IsOurAddress(address) || server_rep::IsPublicAddress(address);
+	}
+
+	// ResilienceSession(true, name): on a server now, ours or any public one
+	// (the address is the engine's, read here; the name is the server's, only
+	// ever shown as text); false: left it.
 	int ResilienceSession(lua_State* L)
 	{
-		if (L->luabase->IsType(1, Type::Bool) && L->luabase->GetBool(1))
+		ILuaBase* LUA = L->luabase;
+		if (LUA->IsType(1, Type::Bool) && LUA->GetBool(1))
 		{
 			std::string address;
-			if (server_gate::Check(&address) == server_gate::Result::Allowed)
-				resilience::MarkSession(DataDir(), address);
+			const server_gate::Result r = server_gate::Check(&address);
+			if ((r == server_gate::Result::Allowed || r == server_gate::Result::OtherServer) && RejoinableAddress(address))
+				resilience::MarkSession(DataDir(), address, LUA->IsType(2, Type::String) ? LUA->GetString(2) : "");
 		}
 		else
 		{
@@ -1244,15 +1254,19 @@ namespace
 		return 0;
 	}
 
-	// The address to offer a rejoin to after a crash on our server, or nil.
+	// The server to offer a rejoin to after a crash: address, name; or nil.
 	int ResilienceCrashedSession(lua_State* L)
 	{
-		std::string address = resilience::CrashedSession(DataDir());
-		if (address.empty())
+		std::string name;
+		const std::string address = resilience::CrashedSession(DataDir(), &name);
+		if (address.empty() || !RejoinableAddress(address))
+		{
 			L->luabase->PushNil();
-		else
-			L->luabase->PushString(address.c_str());
-		return 1;
+			return 1;
+		}
+		L->luabase->PushString(address.c_str());
+		L->luabase->PushString(name.c_str());
+		return 2;
 	}
 
 	// src/lua/resilience_logic.lua, doctor_logic.lua, doctor.lua and
@@ -1899,6 +1913,8 @@ local stockGameDetails = GameDetails
 if isfunction(stockGameDetails) then
 	GameDetails = function(name, url, map, maxplayers, visible, steamid, ...)
 		details = { tostring(name or ""), tostring(map or ""), tostring(steamid or "") }
+		-- The server's name, for the rejoin-after-a-crash card (resilience.lua).
+		meowy.JoiningName = details[1]
 		-- Our own SteamID64, so the server-list reports can leave our row out.
 		if details[3]:match("^7656119%d+$") then meowy.SelfSteamID64 = details[3] end
 		if active and sure then meowy.LoadingDetails(details[1], details[2], details[3]) end
