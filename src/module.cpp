@@ -95,6 +95,7 @@
 #include "timeline_steam.h"
 #include "prewarm.h"
 #include "pak_cache.h"
+#include "mouse_confine.h"
 #include "console_capture.h"
 #include "server_query.h"
 #include "steam_ugc.h"
@@ -515,6 +516,19 @@ namespace
 			return 1;
 		LUA->PushString(why.c_str());
 		return 2;
+	}
+
+	// meowy.MouseConfine(on): hold the mouse inside the game window while aiming (mouse_confine.h).
+	int MouseConfine(lua_State* L)
+	{
+		mouse_confine::Set(L->luabase->GetBool(1));
+		return 0;
+	}
+
+	int MouseConfineState(lua_State* L)
+	{
+		L->luabase->PushString(mouse_confine::Describe().c_str());
+		return 1;
 	}
 
 	int FastFontsState(lua_State* L)
@@ -2534,6 +2548,23 @@ concommand.Add("meowy_fast_fonts_status", function()
 	print("[Meowy Client Pack] fast fonts: " .. meowy.FastFontsState())
 end)
 
+-- While you aim (the cursor hidden, the game in front), the mouse is held
+-- inside the game's window, so a fast flick can't click another window or
+-- monitor and drop the game to the background; menus and alt-tab free it at
+-- once (mouse_confine.h).
+local mouseConfine = meowy.Setting("meowy_mouse_confine", "1",
+	"Meowy Client Pack: while you aim, keep the mouse inside the game so a fast flick can't click another window or monitor (0 = off)")
+local mouseConfineApplied
+hook.Add("Think", "MeowyClientPack.MouseConfine", function()
+	local want = mouseConfine:GetBool()
+	if want == mouseConfineApplied then return end
+	mouseConfineApplied = want
+	meowy.MouseConfine(want)
+end)
+concommand.Add("meowy_mouse_confine_status", function()
+	print("[Meowy Client Pack] mouse confine: " .. meowy.MouseConfineState())
+end)
+
 -- While a join loads, the game looks for each model and material in every
 -- search folder in turn; a folder already read once answers "not there"
 -- without trying to open the file (fs_cache.h). Installed between servers,
@@ -2785,6 +2816,8 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	SetFunction(LUA, "FastLuaFindState", Guarded<FastLuaFindState>);
 	SetFunction(LUA, "FastFonts", Guarded<FastFonts>);
 	SetFunction(LUA, "FastFontsState", Guarded<FastFontsState>);
+	SetFunction(LUA, "MouseConfine", Guarded<MouseConfine>);
+	SetFunction(LUA, "MouseConfineState", Guarded<MouseConfineState>);
 	SetFunction(LUA, "FastFileChecks", Guarded<FastFileChecks>);
 	SetFunction(LUA, "FastFileChecksActive", Guarded<FastFileChecksActive>);
 	SetFunction(LUA, "FastFileChecksState", Guarded<FastFileChecksState>);
