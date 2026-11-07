@@ -21,6 +21,7 @@ local CATALOG_AGE = 120    -- seconds before the command list is read again
 local ERROR = Color(238, 104, 112)
 local lines, lastId = {}, 0
 local holder
+local errorGroups, errorsChanged, lastErrorAt = {}, 0, nil   -- Lua errors (OnLuaError, below)
 
 -- What you typed (kept between starts) and the pinned commands.
 local function loadList(kind, max)
@@ -224,7 +225,10 @@ local function open()
 	end
 	header.Paint = function(self, w, h)
 		local note = (state.note and SysTime() < state.noteUntil) and state.note
-			or (state.tab == "errors" and (ConsoleLogic.errorCount(errorGroups) .. " Lua errors since the game started"))
+			or (state.tab == "errors" and (function()
+				local n = ConsoleLogic.errorCount(errorGroups)
+				return (n == 1 and "1 Lua error" or (n .. " Lua errors")) .. " since the game started"
+			end)())
 			or (#state.view == #lines and (#lines .. " lines") or (#state.view .. " of " .. #lines .. " lines"))
 		draw.SimpleText(note, "MeowyPack.Small", self.textX or S(200), h / 2 + S(1), C.dim, UI.LEFT, UI.CENTER)
 		-- Live numbers.
@@ -996,7 +1000,6 @@ end)
 -- Lua errors, from the same hook the game's own notices use (OnLuaError: the
 -- message, realm, stack, and the addon it came from), grouped by addon for the
 -- Errors tab; with the server you were on.
-local errorGroups, errorsChanged, lastErrorAt = {}, 0, nil
 hook.Add("OnLuaError", "MeowyClientPack.ConsoleErrors", function(message, realm, stack, title, id)
 	local address = IsInGame() and meowy.ServerNow and meowy.ServerNow() or nil
 	ConsoleLogic.recordError(errorGroups, message, realm, stack, title, id, os.time(), isstring(address) and address or nil)
