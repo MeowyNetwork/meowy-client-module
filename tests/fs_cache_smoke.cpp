@@ -41,6 +41,45 @@ static void Put(const std::string& path)
 	CloseHandle(h);
 }
 
+static FILETIME FolderTime(const std::string& dir)
+{
+	WIN32_FILE_ATTRIBUTE_DATA a = {};
+	GetFileAttributesExA(dir.c_str(), GetFileExInfoStandard, &a);
+	return a.ftLastWriteTime;
+}
+
+// A folder's last-write time: `exact`, or `secondsAgo` before now.
+static void SetFolderTime(const std::string& dir, int secondsAgo, const FILETIME* exact = nullptr)
+{
+	FILETIME ft;
+	if (exact)
+	{
+		ft = *exact;
+	}
+	else
+	{
+		GetSystemTimeAsFileTime(&ft);
+		ULARGE_INTEGER t;
+		t.LowPart = ft.dwLowDateTime;
+		t.HighPart = ft.dwHighDateTime;
+		t.QuadPart -= static_cast<unsigned long long>(secondsAgo) * 10000000ULL;
+		ft.dwLowDateTime = t.LowPart;
+		ft.dwHighDateTime = t.HighPart;
+	}
+	HANDLE h = CreateFileA(dir.c_str(), FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+		nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+	SetFileTime(h, nullptr, nullptr, &ft);
+	CloseHandle(h);
+}
+
+// Listings reused from earlier joins so far (from the status line).
+static long long Reused()
+{
+	const std::string d = fs_cache::Describe();
+	const size_t at = d.find(" folder listings (");
+	return at == std::string::npos ? -1 : std::atoll(d.c_str() + at + 18);
+}
+
 int main(int argc, char** argv)
 {
 	using namespace fs_cache::detail;
@@ -95,10 +134,34 @@ int main(int argc, char** argv)
 	Check("stale until dropped (why writes drop the folder)", Lookup(dir, name) == Answer::Absent);
 	Invalidate(dir);
 	Check("present once the folder is listed again", Lookup(dir, name) == Answer::Present);
-	// Across joins: an unchanged folder's listing is reused, a changed one listed again.
+	// Across joins. A folder that changed moments ago isn't trusted past this
+	// join: the clock can be too coarse for a second change to move its time.
+	const std::string materials = root + "\\materials";
 	NewJoin();
-	Check("next join: unchanged folder still answers", Lookup(dir, name) == Answer::Present);
-	Check("next join: reused, not listed again", fs_cache::Describe().find("(1 reused") != std::string::npos);
+	long long before = Reused();
+	Check("next join: a folder that changed just now is listed again", Lookup(dir, name) == Answer::Present && Reused() == before);
+	// The same-tick case itself: listed, a file added, the folder's time put back
+	// to what it was (as a coarse clock would leave it): still seen next join.
+	SetFolderTime(materials, 0);
+	Invalidate(dir);
+	Lookup(dir, name);
+	FILETIME same = FolderTime(materials);
+	Put(root + "\\materials\\sametick.vmt");
+	SetFolderTime(materials, 0, &same);
+	std::string dirS, sameTick;
+	Split((root + "\\materials\\sametick.vmt").c_str(), dirS, sameTick);
+	NewJoin();
+	Check("next join: a file added in the same clock tick is seen", Lookup(dirS, sameTick) == Answer::Present);
+	DeleteFileA((root + "\\materials\\sametick.vmt").c_str());
+	// A settled folder (written a minute ago) is reused in the next join...
+	SetFolderTime(materials, 60);
+	Invalidate(dir);
+	Lookup(dir, name);
+	NewJoin();
+	before = Reused();
+	Check("next join: an unchanged, settled folder answers", Lookup(dir, name) == Answer::Present);
+	Check("next join: reused, not listed again", Reused() == before + 1);
+	// ...and listed again once a name in it changes.
 	Put(root + "\\materials\\added.vmt");
 	std::string dir2, added;
 	Split((root + "\\materials\\added.vmt").c_str(), dir2, added);

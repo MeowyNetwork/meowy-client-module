@@ -87,8 +87,19 @@ namespace
 		bool exists = false, link = false;
 		// Before the listing: a name added in between moves the time, so the
 		// next join lists again rather than trusting a listing that missed it.
+		// Unless the folder changed within the last couple of seconds: the
+		// clock can be 15 ms coarse, so a second change in the same tick
+		// wouldn't move the time. Such a listing is only for this join.
 		if (Probe(dir, exists, listing->written, link) && exists && !link)
-			listing->reusable = true;
+		{
+			FILETIME now;
+			GetSystemTimeAsFileTime(&now);
+			const auto ticks = [](const FILETIME& f) {
+				return (static_cast<unsigned long long>(f.dwHighDateTime) << 32) | f.dwLowDateTime;
+			};
+			const unsigned long long kSettled = 2ULL * 10000000ULL;   // 2 s in 100 ns units
+			listing->reusable = ticks(now) >= ticks(listing->written) + kSettled;
+		}
 		WIN32_FIND_DATAA fd;
 		HANDLE h = FindFirstFileExA((dir + "\\*").c_str(), FindExInfoBasic, &fd, FindExSearchNameMatch, nullptr,
 			FIND_FIRST_EX_LARGE_FETCH);
