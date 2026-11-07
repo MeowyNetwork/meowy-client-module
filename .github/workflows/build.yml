@@ -28,6 +28,7 @@ jobs:
           lua5.1 tests/doctor_logic_test.lua
           lua5.1 tests/home_logic_test.lua
           lua5.1 tests/console_logic_test.lua
+          lua5.1 tests/settings_guard_logic_test.lua
           lua5.1 tests/content_logic_test.lua
           lua5.1 tests/browse_logic_test.lua
           node tests/home_page_test.js
@@ -94,6 +95,12 @@ jobs:
           cmake --build buildtest32 --config Release --target notify_catalogue_smoke
           ./buildtest32/Release/notify_catalogue_smoke.exe
 
+      - name: Signed policy (policy_smoke, both bitnesses)
+        run: |
+          cmake --build buildtest --config Release --target policy_smoke
+          ./buildtest/Release/policy_smoke.exe "$env:RUNNER_TEMP"
+          cmake --build buildtest32 --config Release --target policy_smoke
+          ./buildtest32/Release/policy_smoke.exe "$env:RUNNER_TEMP"
       - name: Fast Lua lookup rules (lua_lookup_smoke, both bitnesses)
         run: |
           cmake --build buildtest --config Release --target lua_lookup_smoke
@@ -108,12 +115,24 @@ jobs:
           ./buildtest/Release/prewarm_smoke.exe "$env:RUNNER_TEMP"
           cmake --build buildtest32 --config Release --target prewarm_smoke
           ./buildtest32/Release/prewarm_smoke.exe "$env:RUNNER_TEMP"
+      - name: Mouse confine rules (mouse_confine_smoke, both bitnesses)
+        run: |
+          cmake --build buildtest --config Release --target mouse_confine_smoke
+          ./buildtest/Release/mouse_confine_smoke.exe
+          cmake --build buildtest32 --config Release --target mouse_confine_smoke
+          ./buildtest32/Release/mouse_confine_smoke.exe
       - name: LZMA pak cache (pak_cache_smoke, both bitnesses)
         run: |
           cmake --build buildtest --config Release --target pak_cache_smoke
           ./buildtest/Release/pak_cache_smoke.exe
           cmake --build buildtest32 --config Release --target pak_cache_smoke
           ./buildtest32/Release/pak_cache_smoke.exe
+      - name: Settings backups (config_backup_smoke, both bitnesses)
+        run: |
+          cmake --build buildtest --config Release --target config_backup_smoke
+          ./buildtest/Release/config_backup_smoke.exe "$env:RUNNER_TEMP"
+          cmake --build buildtest32 --config Release --target config_backup_smoke
+          ./buildtest32/Release/config_backup_smoke.exe "$env:RUNNER_TEMP"
       - name: Fast file.Find rules (lua_find_smoke, both bitnesses)
         run: |
           cmake --build buildtest --config Release --target lua_find_smoke

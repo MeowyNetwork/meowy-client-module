@@ -4,7 +4,8 @@
 --
 -- facts: meowy.DoctorFacts() (doctor.cpp): { arch, gpu_time_known, on_battery,
 --   battery_saver, power_mode, adapters = { { name, vram_mb, perf_rank,
---   power_rank, share } } }. Any field may be missing.
+--   power_rank, share } }, audio = { output, input, comms_input,
+--   output_handsfree, input_handsfree, inputs } }. Any field may be missing.
 -- cvars: { mcore = gmod_mcore_test, queue = mat_queue_mode } as strings, or nil.
 -- Everything stays on this PC. Nothing is changed: tips say what to do.
 
@@ -13,7 +14,8 @@ local M = {}
 M.MIN_SHARE = 0.5   -- the adapter with at least this much of the game's GPU time draws it
 
 -- How much each tip matters: "high" (a big, fixable slowdown or crashes) or "medium".
-M.SEVERITY = { gpu = "high", mcore = "high", branch = "high", queue = "medium", battery = "medium", battery_saver = "medium", power_mode = "medium" }
+M.SEVERITY = { gpu = "high", mcore = "high", branch = "high", queue = "medium", battery = "medium", battery_saver = "medium", power_mode = "medium",
+	mic_handsfree = "medium", mic_two = "medium" }
 
 local function str(v) return type(v) == "string" and v or "" end
 
@@ -132,6 +134,27 @@ function M.diagnose(facts, cvars)
 		report[#report + 1] = "Game: 64-bit"
 	end
 
+	-- Sound and the microphone. Voice chat records through Steam, not the game:
+	-- the mic Steam's voice settings pick is the one others hear.
+	local audio = type(facts.audio) == "table" and facts.audio or nil
+	if audio then
+		local output, input, comms = str(audio.output), str(audio.input), str(audio.comms_input)
+		report[#report + 1] = "Sound: " .. (output ~= "" and output or "no output device")
+		report[#report + 1] = "Microphone: " .. (input ~= "" and input or "none found")
+		if comms ~= "" and comms ~= input then report[#report + 1] = "Calls microphone: " .. comms end
+		if input ~= "" and audio.input_handsfree == true then
+			tips[#tips + 1] = { id = "mic_handsfree", title = "Your mic is a Bluetooth headset's hands-free mic.",
+				text = "While voice chat is open, Bluetooth drops the headset's sound to phone quality, and some headsets "
+					.. "then play the game on the wrong device. A wired or USB mic, or the headset's own USB dongle, sounds much better.",
+				action = "sound_settings", action_label = "Open Sound settings" }
+		elseif input ~= "" and comms ~= "" and comms ~= input then
+			tips[#tips + 1] = { id = "mic_two", title = "Windows has two default microphones.",
+				text = ("Your default mic is %s, but calls use %s, and Steam's voice chat may pick either. "
+					.. "Set both to the mic you talk into in Windows' Sound settings, then choose it in Steam, Settings, Voice."):format(input, comms),
+				action = "steam_voice", action_label = "Open Steam voice settings" }
+		end
+	end
+
 	for _, t in ipairs(tips) do t.severity = M.SEVERITY[t.id] or "medium" end
 	return tips, report
 end
@@ -148,6 +171,8 @@ function M.consoleText(tips, report)
 	for i, t in ipairs(tips or {}) do
 		out[#out + 1] = ("  %d. %s %s"):format(i, t.title, t.text)
 		if t.action == "graphics_settings" then out[#out + 1] = "     (Settings: ms-settings:display-advancedgraphics)" end
+		if t.action == "sound_settings" then out[#out + 1] = "     (Settings: ms-settings:sound)" end
+		if t.action == "steam_voice" then out[#out + 1] = "     (Steam: Settings, Voice)" end
 	end
 	for _, line in ipairs(report or {}) do out[#out + 1] = "  - " .. line end
 	return table.concat(out, "\n") .. "\n"

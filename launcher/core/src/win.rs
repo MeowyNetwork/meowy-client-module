@@ -178,6 +178,51 @@ impl Drop for NameWatch {
     }
 }
 
+// --- Signatures ---------------------------------------------------------------
+
+/// ECDSA P-256 over SHA-256 of `body`, `sig` = r || s (64 bytes), against the
+/// public key X || Y, through Windows' BCrypt (as the pack's VerifyWithKey).
+pub fn verify_p256(key_xy: &[u8; 64], body: &[u8], sig: &[u8]) -> bool {
+    use windows_sys::Win32::Security::Cryptography::{
+        BCryptCloseAlgorithmProvider, BCryptDestroyKey, BCryptHash, BCryptImportKeyPair, BCryptOpenAlgorithmProvider,
+        BCryptVerifySignature, BCRYPT_ECCKEY_BLOB, BCRYPT_ECCPUBLIC_BLOB, BCRYPT_ECDSA_P256_ALGORITHM, BCRYPT_ECDSA_PUBLIC_P256_MAGIC,
+        BCRYPT_SHA256_ALGORITHM,
+    };
+    if sig.len() != 64 || body.len() > u32::MAX as usize {
+        return false;
+    }
+    // SAFETY: handles we open and close here; buffers sized as BCrypt asks.
+    unsafe {
+        let mut sha = null_mut();
+        if BCryptOpenAlgorithmProvider(&mut sha, BCRYPT_SHA256_ALGORITHM, null(), 0) != 0 {
+            return false;
+        }
+        let mut digest = [0u8; 32];
+        let hashed = BCryptHash(sha, null(), 0, body.as_ptr(), body.len() as u32, digest.as_mut_ptr(), 32) == 0;
+        BCryptCloseAlgorithmProvider(sha, 0);
+        if !hashed {
+            return false;
+        }
+        let mut ecdsa = null_mut();
+        if BCryptOpenAlgorithmProvider(&mut ecdsa, BCRYPT_ECDSA_P256_ALGORITHM, null(), 0) != 0 {
+            return false;
+        }
+        let header = BCRYPT_ECCKEY_BLOB { dwMagic: BCRYPT_ECDSA_PUBLIC_P256_MAGIC, cbKey: 32 };
+        let mut blob = Vec::with_capacity(8 + 64);
+        blob.extend_from_slice(&header.dwMagic.to_le_bytes());
+        blob.extend_from_slice(&header.cbKey.to_le_bytes());
+        blob.extend_from_slice(key_xy);
+        let mut key = null_mut();
+        let ok = BCryptImportKeyPair(ecdsa, null_mut(), BCRYPT_ECCPUBLIC_BLOB, &mut key, blob.as_ptr(), blob.len() as u32, 0) == 0
+            && BCryptVerifySignature(key, null(), digest.as_ptr(), 32, sig.as_ptr(), 64, 0) == 0;
+        if !key.is_null() {
+            BCryptDestroyKey(key);
+        }
+        BCryptCloseAlgorithmProvider(ecdsa, 0);
+        ok
+    }
+}
+
 // --- Shell ------------------------------------------------------------------
 
 /// Opens a URL (`steam://...`) or a folder with the shell.
