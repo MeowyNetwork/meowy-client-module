@@ -136,7 +136,8 @@ int main(int argc, char** argv)
 	Check("ops: stricter taken", policy::Offer(dir, P2.body, P2.sig, result));
 	Check("ops: switching a feature back on refused", !policy::Offer(dir, P3.body, P3.sig, result));
 	Check("recovery: switching the pack off taken", policy::Offer(dir, P4.body, P4.sig, result));
-	Check("stub file: off, with the notice", file_util::ReadSmall(dir + L"\\policy.bin", 256) == "enabled 0\nseq 4\nnotice Paused while we fix a crash.\n");
+	Check("stub file: off, revoked versions, the notice", file_util::ReadSmall(dir + L"\\policy.bin", 256)
+		== "enabled 0\nseq 4\nrevoked 1.6.1\nnotice Paused while we fix a crash.\n");
 	Check("an older policy refused (no replay)", !policy::Offer(dir, P0.body, P0.sig, result));
 	Check("a tampered policy refused", !policy::Offer(dir, tampered, P1.sig, result));
 	policy::Policy kept;

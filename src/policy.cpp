@@ -309,6 +309,11 @@ namespace policy
 		void WriteStubFile(const std::wstring& stateDir, const Policy& p)
 		{
 			std::string text = std::string("enabled ") + (p.packEnabled ? "1" : "0") + "\nseq " + std::to_string(p.seq) + "\n";
+			// The stub also passes over an update this policy doesn't allow (pack_versions.h).
+			if (!p.minVersion.empty())
+				text += "min_version " + p.minVersion + "\n";
+			for (const std::string& r : p.revoked)
+				text += "revoked " + r + "\n";
 			if (!p.notice.empty())
 				text += "notice " + p.notice + "\n";
 			file_util::WriteAtomic(PathIn(stateDir, L"policy.bin"), text);
@@ -471,6 +476,8 @@ namespace policy
 			std::string result;
 			if (body.empty() || sig.empty())
 				result = "couldn't fetch";
+			else if (body.compare(0, 20, "meowy-pack-policy 1\n") != 0)
+				result = "none published yet";   // the site answers unknown paths with its own page
 			else
 				Offer(stateDir, body, sig, result);
 			std::lock_guard<std::mutex> lock(g_lock);

@@ -110,6 +110,7 @@ namespace MeowyInstaller
 					RemoveStartupHook(garrysmod);
 				if (install)
 				{
+					Console.WriteLine(ResetUpdates());
 					SetStartupChoice(startup);
 					Console.WriteLine(InstallLauncher(signIn));
 				}
@@ -236,6 +237,37 @@ namespace MeowyInstaller
 			string temp = file + ".meowy-tmp";
 			File.WriteAllText(temp, text);
 			File.Replace(temp, file, null);
+		}
+
+		// What was just installed in lua\bin is the pack to load: versions the
+		// updater put in %LOCALAPPDATA%\MeowyClientPack\bin and their pointers in
+		// state\ (src/pack_versions.h) go, so an older update can't win over a
+		// newer install. The bad list stays (it only ever names updates).
+		public static string ResetUpdates()
+		{
+			string local = Environment.GetEnvironmentVariable("LOCALAPPDATA");
+			if (string.IsNullOrEmpty(local))
+				return "updates: nothing to reset";
+			string dir = Path.Combine(local, "MeowyClientPack");
+			int removed = 0;
+			string state = Path.Combine(dir, "state");
+			foreach (string which in new[] { "current", "previous", "pending" })
+				foreach (string arch in new[] { "win64", "win32" })
+				{
+					string file = Path.Combine(state, which + "_" + arch + ".txt");
+					if (File.Exists(file))
+					{
+						File.Delete(file);
+						removed++;
+					}
+				}
+			string bin = Path.Combine(dir, "bin");
+			if (Directory.Exists(bin))
+			{
+				Directory.Delete(bin, true);
+				removed++;
+			}
+			return removed > 0 ? "updates: the installed copy is the one to load (downloaded versions removed)" : "updates: nothing to reset";
 		}
 
 		// The pack's files: %LOCALAPPDATA%\MeowyClientPack (boot.lock, join times,
