@@ -183,18 +183,33 @@ Weaponry item (join-pipeline #7).
   "Get ready · 1.3 GB" button (the home card's row, and the picked server's panel in Find
   servers); never more than 4 GB per server without a click.
 
-## Measuring
+## Measured (dev, 2026-11-07)
 
-Before/after on dev with Workshop items this PC doesn't have, added to dev temporarily:
-- **before:** a stock join meets set A (≈ 1 GB) → the Workshop stage's time;
-- **after:** the pack reads the advert, prepares set B (≈ 1 GB, similar sizes), then joins.
+Two first joins of Workshop content this PC didn't have, added to dev temporarily (the server's
+own 29 items stayed installed). Both runs used the same pack build, a fresh game start, then a join
+from the menu. Each was checked against Steam's launch log (no other game launch during the run).
+Both consoles were clean.
 
-Same PC, same server, same day; the server's own 29 items stay installed in both runs.
+| | Before: preparation off | After: prepared at the menu |
+|---|---|---|
+| New content | 4 items, 592 MB (1 legacy) | 3 items, 622 MB (1 legacy) |
+| At the menu | — | advert read and items prepared in **14.6 s**, done 17 s after the menu appeared |
+| Workshop stage of the join | **24.6 s** (incl. 6.6 s unpacking the legacy item) | **1.5 s** (no download, no unpack) |
+| Connect → in game | **58.9 s** | **27.2 s** |
+
+- Run 1 also downloaded a new gluapack pack (4.6 MB, 7.0 s), because dev's client Lua had just
+  changed. That isn't part of this feature, so like-for-like it's **~51.9 s → 27.2 s (−48%)**.
+- This PC downloads from Steam at ~33 MB/s. At 100 Mbit/s the same content is ~50 s of the "before"
+  join instead of ~18 s.
+- Meowy's own first join (1.28 GB, 29 items) moves ~40 s here, or ~105 s at 100 Mbit/s, from the
+  loading screen to the menu.
+- The advert on dev listed 36 items (Meowy's list, the test items and the gamemode).
 
 ## Milestones
 
 1. **MVP (this PR series):** rules query + advert parse + plan + DownloadUGC prepare for servers
-   never joined + row status + `meowy_content_status`; tests for the advert parser and planner.
+   never joined + row status + `meowy_prewarm_status` / `meowy_content_get_ready`; tests for the
+   advert parser and planner.
 2. **Meowy server:** the advert from `resource.AddWorkshop` (its own change in the DarkRP repo).
 3. Full manifest + FastDL prefetch.
 4. Progressive join SDK; Lua bundle prefill.

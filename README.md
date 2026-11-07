@@ -151,8 +151,9 @@ the game closes while the pack is starting, the next start skips it once by itse
       returns (Meowy Network's servers do). The pack reads it at the same moments, for any server, and adds
       what the last join learned.
       - Meowy Network's servers and servers you've joined before are got ready without asking: a first join
-        then only checks the items instead of downloading them on the loading screen (measured: 0.03 s per
-        prepared item instead of its download).
+        then only checks the items instead of downloading them on the loading screen. Measured on our dev
+        server with ~600 MB of Workshop content this PC didn't have: in game after 27.2 s instead of ~51.9 s.
+        The content had downloaded at the main menu in 14.6 s, and each prepared item cost the join 0.03 s.
       - Any other server's row (the home card, and the server picked in Find servers) shows **Get ready ·
         1.3 GB** instead; nothing downloads until you click it. Over 4 GB always waits for the click.
       - While it downloads, the row shows **Getting ready · 412 MB of 1.3 GB**. `meowy_content_get_ready
