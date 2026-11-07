@@ -14,3 +14,5 @@
 #define IDR_CONSOLE_LOGIC_LUA 112     // src/lua/console_logic.lua: the Meowy console's rules
 #define IDR_CONSOLE_LUA 113           // src/lua/console.lua: the Meowy console window (meowy_console)
 #define IDR_MENU_BROWSER_JS 114       // src/menu/browser.js: Find servers, the pack's own (goes in with shell.js)
+#define IDR_SETTINGS_GUARD_LOGIC_LUA 115   // src/lua/settings_guard_logic.lua: what servers changed in your settings, its rules
+#define IDR_SETTINGS_GUARD_LUA 116         // src/lua/settings_guard.lua: its prompt, and the config.cfg copies' commands

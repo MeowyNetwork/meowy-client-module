@@ -42,6 +42,7 @@ add_library(meowy SHARED
 	src/timeline_steam.cpp
 	src/resilience.cpp
 	src/resilience_net.cpp
+	src/config_backup.cpp
 	src/doctor.cpp
 	src/startup_hook.cpp)
 target_include_directories(meowy PRIVATE ${gmod_module_base_SOURCE_DIR}/include)
@@ -203,6 +204,13 @@ if(MEOWY_BUILD_TESTS)
 	if(MSVC)
 		set_property(TARGET pak_cache_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 		target_compile_options(pak_cache_smoke PRIVATE /W4 /utf-8)
+	endif()
+	# Copies of config.cfg: one per change, the newest 10, written back for exec:
+	#   config_backup_smoke <scratch folder>
+	add_executable(config_backup_smoke tests/config_backup_smoke.cpp src/config_backup.cpp src/file_util.cpp)
+	if(MSVC)
+		set_property(TARGET config_backup_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+		target_compile_options(config_backup_smoke PRIVATE /W4 /utf-8)
 	endif()
 	# The fast file.Find on "LUA": the walk visits every entry the game's matcher
 	# accepts, in order, on a fake table; and the loop found in the installed client.dll:
