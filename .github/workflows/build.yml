@@ -51,12 +51,6 @@ jobs:
           cmake --build buildtest --config Release --target startup_hook_smoke
           ./buildtest/Release/startup_hook_smoke.exe
 
-      - name: Signed policy (policy_smoke, both bitnesses)
-        run: |
-          cmake --build buildtest --config Release --target policy_smoke
-          ./buildtest/Release/policy_smoke.exe "$env:RUNNER_TEMP"
-          cmake --build buildtest32 --config Release --target policy_smoke
-          ./buildtest32/Release/policy_smoke.exe "$env:RUNNER_TEMP"
       - name: Signed notification catalogue (notify_catalogue_smoke, both bitnesses)
         run: |
           cmake --build buildtest --config Release --target notify_catalogue_smoke
@@ -65,6 +59,12 @@ jobs:
           cmake --build buildtest32 --config Release --target notify_catalogue_smoke
           ./buildtest32/Release/notify_catalogue_smoke.exe
 
+      - name: Signed policy (policy_smoke, both bitnesses)
+        run: |
+          cmake --build buildtest --config Release --target policy_smoke
+          ./buildtest/Release/policy_smoke.exe "$env:RUNNER_TEMP"
+          cmake --build buildtest32 --config Release --target policy_smoke
+          ./buildtest32/Release/policy_smoke.exe "$env:RUNNER_TEMP"
       - name: Fast Lua lookup rules (lua_lookup_smoke, both bitnesses)
         run: |
           cmake --build buildtest --config Release --target lua_lookup_smoke
