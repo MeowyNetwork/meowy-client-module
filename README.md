@@ -314,9 +314,14 @@ the game closes while the pack is starting, the next start skips it once by itse
     A map opens Start new game with that map chosen, an addon opens Addons, and a setting (by its name or
     what it covers, like "volume") opens Options or Meowy settings;
   - **Garry's Mod's news**, the latest three, from its own feed, opened the way Garry's Mod opens them;
-  - **the usual links:** Find servers, Start new game, Addons, Dupes, Saves and Demos are Garry's Mod's own
-    screens. Options, Meowy settings and Quit work as usual, and Garry's Mod's bottom bar (Problems,
-    games, language, gamemode) stays.
+  - **Find servers, as one list:** every server with players, straight from Steam (as in Find servers
+    above), arriving as they answer (most in the first few seconds, all in about 20 s). It's sorted by
+    players or by ping, filtered by name, map or gamemode, not full, no password and category, and you join
+    with a click or Enter. Pointing at a row gets that server ready, as on the home lists. "Garry's Mod's
+    list" opens the game's own browser (with the Friends tab).
+  - **the usual links:** Start new game, Addons, Dupes, Saves and Demos are Garry's Mod's own screens.
+    Options, Meowy settings and Quit work as usual, and Garry's Mod's bottom bar (Problems, games,
+    language, gamemode) stays.
 
   How it works:
   - **Inside Garry's Mod's own menu page:** nothing is reloaded. While it's on, a style rule hides the

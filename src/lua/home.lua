@@ -325,6 +325,12 @@ local function warm(address, why)
 	log("prewarm: %s %s%s", ok and "warming" or "not warming", address, ok and (" (" .. why .. ")") or (": " .. tostring(reason)))
 end
 
+-- The same for a server listed elsewhere on the home screen (Find servers,
+-- menu_page.lua), by its address.
+function MeowyClientPackWarm(address, why)
+	if isstring(address) and isstring(why) then warm(address, why) end
+end
+
 function MeowyClientPackHomeIntent(id)
 	if not (homeOn() or menuPage.ours) then return end
 	warm(addresses[math.floor(tonumber(id) or 0)], "pointer on its row")

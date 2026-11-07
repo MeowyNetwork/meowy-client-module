@@ -292,7 +292,61 @@ check('shell: sent again, still one', S.main.querySelectorAll('#meowy-shell').le
 const navs = shellEl().querySelectorAll('.ms-link').filter(a => a.textContent && !a.className.includes('ms-cont'));
 const byText = t => navs.find(a => a.textContent === t);
 byText('Find servers').onclick();
-check('shell: Find servers is the page\'s own route', S.loc.hash, '#/servers/');
+check('shell: Find servers opens the browse view', shellEl().className, 'ms-browsing');
+check('shell: and asks for the list', JSON.stringify(S.posts.pop()), '["browse",""]');
+// The list arrives in batches; filtered, sorted, at most 200 drawn; rows joined by number.
+const bview = () => shellEl().querySelector('.ms-browse');
+const bnames = () => bview().querySelectorAll('.mb-name').map(e => e.textContent);
+S.win.MeowyBrowse.reset(1, true);
+S.win.MeowyBrowse.add(1, [
+	{ i: 1, n: 'Small RP', m: 'rp_a', g: 'DarkRP', c: 'rp', p: 5, x: 32, ms: 40, pw: false },
+	{ i: 2, n: '<b>Big</b> TTT', m: 'ttt_b', g: 'TTT', c: 'pvp', p: 30, x: 32, ms: 90, pw: false },
+	{ i: 3, n: 'Full RP', m: 'rp_c', g: 'DarkRP', c: 'rp', p: 64, x: 64, ms: 20, pw: true },
+	{ i: 'x', n: 'bad row' },
+], false, 0.8);
+S.win.MeowyBrowse.add(9, [{ i: 9, n: 'Old list', m: '', g: '', c: '', p: 99, x: 100, ms: 1 }], false, 1);
+S.win.MeowyBrowse.flush();
+check('browse: most players first', bnames().join('|'), 'Full RP|<b>Big</b> TTT|Small RP');
+check('browse: names are text', bview().all().some(e => e.tagName === 'B'), false);
+check('browse: still loading', bview().querySelector('.mb-status').textContent, '3 servers with players so far…');
+check('browse: players, password, ping', bview().querySelectorAll('.mb-right')[0].textContent, '64/64 · password · 20 ms');
+const chipBy = t => bview().querySelectorAll('.mb-chip').find(c => c.textContent === t);
+chipBy('Not full').onclick();
+check('browse: not full', bnames().join('|'), '<b>Big</b> TTT|Small RP');
+chipBy('Roleplay').onclick();
+check('browse: a category', bnames().join('|'), 'Small RP');
+check('browse: what matches', bview().querySelector('.mb-status').textContent, '3 servers with players so far… · 1 match');
+chipBy('Roleplay').onclick();
+chipBy('Not full').onclick();
+chipBy('Sorted by players').onclick();
+check('browse: by ping', bnames().join('|'), 'Full RP|Small RP|<b>Big</b> TTT');
+chipBy('Sorted by ping').onclick();
+const bfilter = bview().querySelector('.mb-filter');
+bfilter.value = 'ttt';
+bfilter.oninput();
+check('browse: filter by name, map or gamemode', bnames().join('|'), '<b>Big</b> TTT');
+bfilter.onkeydown(key(bfilter, 13));
+check('browse: Enter joins by number', JSON.stringify(S.posts.pop()), '["browse_join",2]');
+bfilter.onkeydown(key(bfilter, 27));
+check('browse: Esc clears the filter first', bfilter.value + '|' + shellEl().className, '|ms-browsing');
+bview().querySelectorAll('.mb-row')[2].onclick();
+check('browse: a click joins by number', JSON.stringify(S.posts.pop()), '["browse_join",1]');
+S.win.MeowyBrowse.add(1, [], true, 19.9);
+S.win.MeowyBrowse.flush();
+check('browse: complete', bview().querySelector('.mb-status').textContent, '3 servers with players, complete in 19.9 s');
+bfilter.onkeydown(key(bfilter, 27));
+check('browse: Esc again goes back', shellEl().className, '');
+check('browse: and stops asking', JSON.stringify(S.posts.pop()), '["browse_stop",""]');
+byText('Find servers').onclick();
+check('browse: reopened soon after, the list is kept', S.posts.length === 0 || S.posts[S.posts.length - 1][0] !== 'browse', true);
+chipBy("Garry's Mod's list").onclick();
+check('browse: Garry\'s Mod\'s list is still there', S.loc.hash, '#/servers/');
+check('browse: leaving it stops asking', JSON.stringify(S.posts.pop()), '["browse_stop",""]');
+S.win.MeowyBrowse.reset(2, false);
+byText('Find servers').onclick();
+check('browse: without Steam\'s list, says where to go', bview().querySelector('.mb-status').textContent, "Steam's server list isn't available here: use Garry's Mod's list.");
+chipBy('Back').onclick();
+S.loc.hash = '#/';
 byText('Start new game').onclick();
 check('shell: Start new game', S.loc.hash, '#/newgame/');
 byText('Options').onclick();

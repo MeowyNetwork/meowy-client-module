@@ -101,7 +101,11 @@ local function world(opts)
 		PrewarmStart = function(a) w.pwStarts = w.pwStarts or {} w.pwStarts[#w.pwStarts + 1] = a return true end,
 		PrewarmCancel = function() w.pwCancels = (w.pwCancels or 0) + 1 end,
 		PrewarmState = function() return "idle" end,
-		ServerQueryStart = function() return 1 end,
+		-- Steam's server lists: what was asked (w.sqArgs), what arrived (w.sq, taken
+		-- once), whether it's complete (w.sqDone), and stops (w.sqCancels).
+		ServerQueryStart = function(...) w.sqArgs = { ... } w.sqStarts = (w.sqStarts or 0) + 1 return w.sqStarts end,
+		ServerQueryTake = function() local l = w.sq or {} w.sq = {} return l, w.sqDone == true, 0 end,
+		ServerQueryCancel = function() w.sqCancels = (w.sqCancels or 0) + 1 end,
 		PrewarmWorkshop = function(a) local ids = {} for i, id in ipairs((w.workshop or {})[a] or {}) do ids[i] = id end return ids end,
 		-- Steam's view of an item: installed, needsUpdate, busy, legacy, updated
 		-- (w.wsState[id] = false: Steam can't say; default: installed, the version of 1600000000).
@@ -241,6 +245,7 @@ local function world(opts)
 			if js:find("window.MeowyHome(", 1, true) then w.homeJS = js w.homeCalls = (w.homeCalls or 0) + 1
 			elseif js:find("window.MeowyEsc(", 1, true) then w.escJS = js
 			elseif js:find("window.MeowyAddons", 1, true) then w.addonsJS = js w.addonsSends = (w.addonsSends or 0) + 1
+			elseif js:find("window.MeowyBrowse", 1, true) then w.browseJS = js w.browseCalls = w.browseCalls or {} w.browseCalls[#w.browseCalls + 1] = js
 			elseif js:find("window.MeowyShell(", 1, true) then w.shellJS = js w.shellSends = (w.shellSends or 0) + 1
 			elseif js:find("style.zoom", 1, true) then w.zoomCalls = w.zoomCalls or {} w.zoomCalls[#w.zoomCalls + 1] = js
 			else w.js = js end
@@ -1493,6 +1498,67 @@ w = world({ settings = ON, menu = true })
 w.concommands.meowy_settings()
 check("fast server list: no toggle without the setting", find(function(p) return p.meowyToggle == "fast_serverlist" end), nil)
 
+-- Find servers on the home screen: Steam's list (servers with players) in
+-- batches; the page joins by number, the address stays here.
+w = world({ settings = ON, menu = true, convars = PAGE_ON, joinServer = true })
+w.run(1)
+w.post("browse")
+check("browse: Steam asked for servers with players", table.concat(w.sqArgs or {}, " "), "internet gamedir garrysmod hasplayers 1")
+check("browse: the page reset", (w.browseJS or ""):find("MeowyBrowse.reset(1, true)", 1, true) ~= nil, true)
+w.sq = {
+	{ address = "1.2.3.4:27015", name = "A\1 server", map = "rp_x", tags = " gm:darkrp gmws:1 gmc:rp loc:gb ", desc = "DarkRP", players = 12, max = 64, bots = 2, ping = 30, pass = false },
+	{ address = "10.0.0.1:27015", name = "LAN box", map = "gm_l", tags = "", desc = "Sandbox", players = 1, max = 2, bots = 0, ping = 1, pass = false },
+	{ address = "5.6.7.8:27016", name = "B", map = "gm_y", tags = "", desc = "Sandbox", players = 3, max = 10, bots = 0, ping = 50, pass = true },
+}
+w.run(0.3)
+local batch = w.browseJS or ""
+check("browse: a batch sent", batch:find("MeowyBrowse.add(1, [", 1, true) ~= nil, true)
+check("browse: gamemode and category from the tags", batch:find('"g":"darkrp"', 1, true) ~= nil and batch:find('"c":"rp"', 1, true) ~= nil, true)
+check("browse: players and slots without bots", batch:find('"p":10', 1, true) ~= nil and batch:find('"x":62', 1, true) ~= nil, true)
+check("browse: the name cleaned", batch:find('"n":"A server"', 1, true) ~= nil, true)
+check("browse: no address sent", batch:find("1.2.3.4", 1, true) == nil and batch:find("5.6.7.8", 1, true) == nil, true)
+check("browse: private addresses left out", batch:find("LAN box", 1, true) == nil, true)
+check("browse: numbered in order", batch:find('"i":1', 1, true) ~= nil and batch:find('"i":2', 1, true) ~= nil and batch:find('"i":3', 1, true) == nil, true)
+local calls = #w.browseCalls
+w.run(1)
+check("browse: nothing sent while nothing arrives", #w.browseCalls, calls)
+w.post("browse_join", 2)
+check("browse: a row joined by its number", w.joinedVia, "5.6.7.8:27016")
+check("browse: joining stops the list", w.sqCancels, 1)
+w.post("browse_join", 99)
+w.post("browse_join", "x")
+check("browse: unknown rows join nothing", w.joinServer, 1)
+-- Complete; a new list replaces the old; leaving or a join stops it.
+w.post("browse")
+check("browse: a refresh starts a new list", (w.browseJS or ""):find("MeowyBrowse.reset(2, true)", 1, true) ~= nil, true)
+w.sqDone = true
+w.run(0.3)
+check("browse: complete", (w.browseJS or ""):find("MeowyBrowse.add(2, [], true", 1, true) ~= nil, true)
+check("browse: logged", (w.logs or ""):find("browse: 0 servers with players in", 1, true) ~= nil, true)
+w.sqDone = false
+w.post("browse")
+w.post("browse_stop")
+check("browse: Back stops it", w.sqCancels, 3)
+w.post("browse")
+w.loading = true
+w.run(0.5)
+check("browse: a join elsewhere stops it", w.sqCancels, 4)
+w.loading = false
+-- Without Steam's lists: the page is told.
+w = world({ settings = ON, menu = true, convars = PAGE_ON })
+w.env.meowy.ServerQueryStart = nil
+w.run(1)
+w.post("browse")
+check("browse: no Steam list, the page is told", (w.browseJS or ""):find("MeowyBrowse.reset(1, false)", 1, true) ~= nil, true)
+-- Pointing at a row: that server is got ready (if it was ever joined).
+w = world({ settings = ON, menu = true, convars = PAGE_ON })
+w.recorded = { ["1.2.3.4:27015"] = true }
+w.run(1)
+w.post("browse")
+w.sq = { { address = "1.2.3.4:27015", name = "A", map = "m", tags = "", desc = "D", players = 1, max = 2, bots = 0, ping = 9, pass = false } }
+w.run(0.3)
+w.post("browse_intent", 1)
+check("browse: a row pointed at is got ready", w.pwStarts and w.pwStarts[1], "1.2.3.4:27015")
 check("no Lua errors", w.errors, nil)
 print(("%d checks, %d failed"):format(count, failures))
 os.exit(failures == 0 and 0 or 1)
