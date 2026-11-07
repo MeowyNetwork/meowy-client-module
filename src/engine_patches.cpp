@@ -5,8 +5,7 @@
 #include <vector>
 
 #ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#include "pe_image.h"
 #endif
 
 namespace
@@ -68,28 +67,6 @@ namespace
 	const uint8_t kNop6[kCallLen] = { 0x66, 0x0F, 0x1F, 0x44, 0x00, 0x00 };
 
 	uint8_t* g_patchedAt = nullptr;
-
-	bool TextSection(HMODULE mod, uint8_t*& start, size_t& size)
-	{
-		auto* base = reinterpret_cast<uint8_t*>(mod);
-		auto* dos = reinterpret_cast<IMAGE_DOS_HEADER*>(base);
-		if (dos->e_magic != IMAGE_DOS_SIGNATURE)
-			return false;
-		auto* nt = reinterpret_cast<IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
-		if (nt->Signature != IMAGE_NT_SIGNATURE)
-			return false;
-		IMAGE_SECTION_HEADER* sec = IMAGE_FIRST_SECTION(nt);
-		for (WORD i = 0; i < nt->FileHeader.NumberOfSections; ++i, ++sec)
-		{
-			if (std::memcmp(sec->Name, ".text", 6) == 0)
-			{
-				start = base + sec->VirtualAddress;
-				size = sec->Misc.VirtualSize;
-				return true;
-			}
-		}
-		return false;
-	}
 
 	bool Matches(const uint8_t* p)
 	{
@@ -175,7 +152,7 @@ namespace engine_patches
 		HMODULE client = GetModuleHandleW(L"client.dll");
 		uint8_t* text = nullptr;
 		size_t size = 0;
-		if (!client || !TextSection(client, text, size))
+		if (!client || !pe_image::TextSection(client, text, size))
 		{
 			why = "client.dll not found";
 			return false;

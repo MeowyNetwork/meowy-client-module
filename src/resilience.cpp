@@ -32,15 +32,7 @@ namespace
 #ifdef _WIN32
 	std::string ReadSmallFile(const std::wstring& path, size_t max)
 	{
-		HANDLE h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
-		if (h == INVALID_HANDLE_VALUE)
-			return std::string();
-		std::string buf(max, '\0');
-		DWORD n = 0;
-		BOOL ok = ReadFile(h, &buf[0], static_cast<DWORD>(max), &n, nullptr);
-		CloseHandle(h);
-		buf.resize(ok ? n : 0);
-		return buf;
+		return file_util::ReadSmall(path, max);
 	}
 
 	// All at once (file_util.h): resilience.txt holds the player's answer and the
