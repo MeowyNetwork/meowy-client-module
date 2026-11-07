@@ -188,6 +188,29 @@ pub fn verify_p256(key_xy: &[u8; 64], body: &[u8], sig: &[u8]) -> bool {
     }
 }
 
+/// SHA-256 through BCrypt.
+pub fn sha256(data: &[u8]) -> [u8; 32] {
+    use windows_sys::Win32::Security::Cryptography::{BCryptCloseAlgorithmProvider, BCryptHash, BCryptOpenAlgorithmProvider, BCRYPT_SHA256_ALGORITHM};
+    let mut out = [0u8; 32];
+    // SAFETY: a provider we open and close; buffers sized.
+    unsafe {
+        let mut alg = null_mut();
+        if BCryptOpenAlgorithmProvider(&mut alg, BCRYPT_SHA256_ALGORITHM, null(), 0) == 0 {
+            BCryptHash(alg, null(), 0, data.as_ptr(), data.len() as u32, out.as_mut_ptr(), 32);
+            BCryptCloseAlgorithmProvider(alg, 0);
+        }
+    }
+    out
+}
+
+/// `n` bytes from the system's preferred RNG.
+pub fn random_bytes(n: usize) -> Option<Vec<u8>> {
+    use windows_sys::Win32::Security::Cryptography::{BCryptGenRandom, BCRYPT_USE_SYSTEM_PREFERRED_RNG};
+    let mut buf = vec![0u8; n];
+    // SAFETY: a buffer of n bytes.
+    (unsafe { BCryptGenRandom(null_mut(), buf.as_mut_ptr(), n as u32, BCRYPT_USE_SYSTEM_PREFERRED_RNG) } == 0).then_some(buf)
+}
+
 // --- Shell ------------------------------------------------------------------
 
 /// Opens a URL (`steam://...`) or a folder with the shell.

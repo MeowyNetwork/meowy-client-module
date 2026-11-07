@@ -38,7 +38,11 @@ async function refresh() {
   $("lua-refresh").checked = s.disable_lua_refresh;
   $("back-up").checked = s.notify_back_up;
   $("sign-in").checked = s.start_at_sign_in;
-  $("updates").textContent = s.updates;
+  $("updates").replaceChildren(...updatesView(s.updates).map((t) => {
+    const d = document.createElement("div");
+    d.textContent = t;
+    return d;
+  }));
   $("notice").textContent = s.notice || "";
   $("notice").hidden = !s.notice;
   $("play").disabled = !s.steam;

@@ -30,4 +30,15 @@ function foundView(s) {
   return { title: s.name || s.address, detail: parts.join(" · "), join: s.password !== 1, up: true };
 }
 
-if (typeof module !== "undefined") module.exports = { serverView, foundView };
+// The Updates panel (status.updates, core/src/updater.rs Status).
+function updatesView(u) {
+  const lines = [];
+  lines.push(u.running ? "Pack " + u.running + " (" + u.arch + ")" : "Pack version: not known here (it updates itself in the game)");
+  if (u.pending) lines.push(u.pending + " is ready: it starts next time you open Garry's Mod");
+  if (u.previous) lines.push("Previous: " + u.previous);
+  if (u.bad && u.bad.length) lines.push("Not loaded again (failed to start): " + u.bad.join(", "));
+  lines.push("Last check: " + u.last_check + (u.release_seq ? " (release " + u.release_seq + ")" : ""));
+  return lines;
+}
+
+if (typeof module !== "undefined") module.exports = { serverView, foundView, updatesView };

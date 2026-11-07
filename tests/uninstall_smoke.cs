@@ -285,6 +285,25 @@ static class UninstallSmoke
 			}
 		}
 
+		// 12. The installed-version record the launcher's updater trusts.
+		{
+			string s = Path.Combine(root, "installed");
+			string garrysmod = Path.Combine(s, "garrysmod");
+			string state = Path.Combine(s, "state");
+			Put(Path.Combine(garrysmod, @"lua\bin\gmcl_meowy_win64.dll"), "abc");
+			string said = Program.RecordInstalled(garrysmod, state, "1.6.0");
+			Check(said.Contains("1.6.0 recorded (1 architecture)"), "installed: recorded (" + said + ")");
+			Check(Text(Path.Combine(state, "installed_win64.txt")) ==
+				"version 1.6.0\nsha256 ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\nok 0\n",
+				"installed: version and the DLL's SHA-256, in the pointer format");
+			Check(!File.Exists(Path.Combine(state, "installed_win32.txt")), "installed: nothing for an architecture not installed");
+			Put(Path.Combine(state, "installed_win32.txt"), "stale");
+			Program.RecordInstalled(garrysmod, state, "1.6.1");
+			Check(!File.Exists(Path.Combine(state, "installed_win32.txt")), "installed: a stale record for a missing DLL goes");
+			Check(Text(Path.Combine(state, "installed_win64.txt")).StartsWith("version 1.6.1\n"), "installed: rewritten on reinstall");
+			Check(Program.PackVersion() == null, "installed: no version resource in this test build");
+		}
+
 		Console.WriteLine(failed > 0 ? "FAILED" : "all passed");
 		return failed > 0 ? 1 : 0;
 	}

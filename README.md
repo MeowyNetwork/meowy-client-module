@@ -60,8 +60,10 @@ it to close.
   map and ping, each with **Join**, and **Find servers** searches Meowy's server index (every Garry's Mod
   server Steam lists, with fake player counts marked). Optionally ("Tell me when Meowy Network is back up") it shows a card
   when our server answers again after a restart.
-- Updates still come with the installer; the launcher will use the pack's signed update channel once
-  it exists.
+- Updates: while the game is closed, the launcher downloads a new pack version from the pack's own signed
+  release (the same document and checks the pack uses in the game) and sets it up for the next start; the
+  start-up stub switches to it. Its window shows the version you run and what's ready. It also follows
+  Meowy Network's signed policy (the kill switch).
 
 ## What it does, and doesn't
 - It talks only to the Discord app on your PC, over Discord's local connection
