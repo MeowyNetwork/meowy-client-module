@@ -21,6 +21,13 @@
   <h2>Servers <button class="ghost small" id="refresh" title="Ask the servers again">Refresh</button></h2>
   <div class="panel servers" id="servers"><span class="muted">Asking the servers...</span></div>
 
+  <h2>Find servers</h2>
+  <div class="panel">
+    <input type="search" id="find" placeholder="Name, gamemode, map or address" autocomplete="off" spellcheck="false" maxlength="100">
+    <small class="muted" id="find-info"></small>
+    <div class="servers" id="found"></div>
+  </div>
+
   <h2>Status</h2>
   <div class="panel">
     <div class="row"><span class="k">Garry's Mod</span><span class="v" id="game"></span></div>

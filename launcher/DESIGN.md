@@ -201,8 +201,19 @@ signed policy (after the pack's K1 lands) and the early-entry prototype (§9).
   Meowy every 30 s; two misses in a row mean down; the first answer after that shows a card with
   **Join**.
 
+**Find servers, from the index (done):**
+- `GET https://meowynetwork.com/api/pack/index` (MR3, the website backend): every GMod server Steam lists,
+  rebuilt each minute, with the honest list's verdicts. Fetched through WinHTTP (the OS's TLS and proxy,
+  no redirects, gzip, a 16 MB cap) only while the window is used, at most once a minute, with
+  `If-None-Match` (a 304 keeps the copy in memory). Measured: 837 KB in 0.18 s, 5,834 servers.
+- Columns are read by name (`a n d m p x b pw h r l`), so the backend may add or reorder them; `v` must
+  be 1. Text is cleaned and capped; only public addresses are kept.
+- Search as you type over name, gamemode, map and address; Meowy first, then by people (Steam's count,
+  which already leaves bots out, or a fake's real count), password servers last; 25 shown.
+- Rows show the honest list's verdict ("FAKE: 128 shown", "verified"). **Join** accepts an address only
+  from the index or the server list the launcher itself holds.
+
 **Later:**
-- Discovery from the server index (MR3, `/api/pack/index`).
 - A pipe `\\.\pipe\meowy-<user SID>` (typed JSON, size caps; never Lua or commands): join while the game
   runs, status, notifications.
 - "Event starting" notifications; MR2 content preparation while GMod is closed.

@@ -79,4 +79,25 @@ check("server row: a password server can't be joined from the launcher (it never
   assert.ok(v.detail.endsWith("· password") && !v.join);
 });
 
+const { foundView } = require(path.join(__dirname, "..", "launcher", "ui", "servers_view.js"));
+const found = (o) => Object.assign({ address: "1.2.3.4:27015", name: "City RP", gamemode: "DarkRP", map: "rp_x",
+  players: 40, max_players: 128, bots: 3, password: 0, honest: "", real: -1, location: "gb" }, o);
+
+check("index row: Steam's count as is (it already leaves bots out), location", () => {
+  const v = foundView(found({}));
+  assert.strictEqual(v.detail, "DarkRP · rp_x · 40/128 players · GB");
+  assert.ok(v.join);
+});
+
+check("index row: a fake shows its real count and what it claims", () => {
+  const v = foundView(found({ honest: "fake", players: 128, real: 3 }));
+  assert.strictEqual(v.detail, "DarkRP · rp_x · 3/128 players · FAKE: 128 shown · GB");
+});
+
+check("index row: verified mark; a password server has no Join", () => {
+  assert.ok(foundView(found({ honest: "verified" })).detail.includes("verified"));
+  const v = foundView(found({ password: 1, name: "" }));
+  assert.ok(!v.join && v.title === "1.2.3.4:27015" && v.detail.endsWith("password"));
+});
+
 console.log(n + " checks passed");
