@@ -1,0 +1,386 @@
+//! The Windows calls: the current user's registry, opening a URL or folder,
+//! and watching the game's processes.
+//!
+//! The watcher opens game processes with `PROCESS_SYNCHRONIZE |
+//! PROCESS_QUERY_LIMITED_INFORMATION` and nothing else: enough to wait for
+//! the exit, read the exit code, the image path and the start time. Never
+//! memory, threads or handles inside the game.
+
+use std::ffi::OsString;
+use std::os::windows::ffi::{OsStrExt, OsStringExt};
+use std::path::{Path, PathBuf};
+use std::ptr::{null, null_mut};
+
+use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0, WAIT_TIMEOUT};
+use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+};
+use windows_sys::Win32::System::Registry::{
+    RegDeleteKeyValueW, RegDeleteTreeW, RegGetValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_SZ,
+};
+use windows_sys::Win32::System::Threading::{
+    GetExitCodeProcess, GetProcessTimes, OpenProcess, QueryFullProcessImageNameW, WaitForMultipleObjects,
+    PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+};
+use windows_sys::Win32::UI::Shell::ShellExecuteW;
+use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+/// The only rights the launcher ever asks a game process for.
+pub const GAME_ACCESS: u32 = PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION;
+
+fn wide(s: &str) -> Vec<u16> {
+    std::ffi::OsStr::new(s).encode_wide().chain(Some(0)).collect()
+}
+
+// --- Registry (HKEY_CURRENT_USER only: no admin) -----------------------------
+
+pub fn reg_get(subkey: &str, value: &str) -> Option<String> {
+    let (k, v) = (wide(subkey), wide(value));
+    let mut size: u32 = 0;
+    // SAFETY: plain Win32 calls with valid NUL-terminated strings and sizes.
+    unsafe {
+        if RegGetValueW(HKEY_CURRENT_USER, k.as_ptr(), v.as_ptr(), RRF_RT_REG_SZ, null_mut(), null_mut(), &mut size) != 0 {
+            return None;
+        }
+        let mut buf = vec![0u16; (size as usize).div_ceil(2) + 1];
+        let mut bytes = (buf.len() * 2) as u32;
+        if RegGetValueW(HKEY_CURRENT_USER, k.as_ptr(), v.as_ptr(), RRF_RT_REG_SZ, null_mut(), buf.as_mut_ptr().cast(), &mut bytes) != 0 {
+            return None;
+        }
+        let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+        Some(String::from_utf16_lossy(&buf[..len]))
+    }
+}
+
+pub fn reg_set(subkey: &str, value: &str, data: &str) -> bool {
+    let (k, v, d) = (wide(subkey), wide(value), wide(data));
+    // SAFETY: as above; RegSetKeyValueW creates the key if needed.
+    unsafe { RegSetKeyValueW(HKEY_CURRENT_USER, k.as_ptr(), v.as_ptr(), REG_SZ, d.as_ptr().cast(), (d.len() * 2) as u32) == 0 }
+}
+
+pub fn reg_delete_value(subkey: &str, value: &str) -> bool {
+    let (k, v) = (wide(subkey), wide(value));
+    // SAFETY: as above.
+    unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, k.as_ptr(), v.as_ptr()) == 0 }
+}
+
+pub fn reg_delete_tree(subkey: &str) -> bool {
+    let k = wide(subkey);
+    // SAFETY: as above.
+    unsafe { RegDeleteTreeW(HKEY_CURRENT_USER, k.as_ptr()) == 0 }
+}
+
+/// Steam's `steam.exe` and its folder, from Steam's own registry values.
+pub fn steam_install() -> Option<(PathBuf, PathBuf)> {
+    let fix = |s: String| PathBuf::from(s.replace('/', "\\"));
+    let exe = reg_get("Software\\Valve\\Steam", "SteamExe").map(fix)?;
+    let path = reg_get("Software\\Valve\\Steam", "SteamPath").map(fix)?;
+    exe.is_file().then_some((exe, path))
+}
+
+// --- meowy:// and start at sign-in -------------------------------------------
+
+const PROTOCOL_KEY: &str = "Software\\Classes\\meowy";
+const RUN_KEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+pub const RUN_VALUE: &str = "MeowyLauncher";
+
+pub fn protocol_command() -> Option<String> {
+    reg_get(&format!("{PROTOCOL_KEY}\\shell\\open\\command"), "")
+}
+
+pub fn protocol_command_for(exe: &Path) -> String {
+    format!("\"{}\" \"%1\"", exe.display())
+}
+
+pub fn register_protocol(exe: &Path) -> bool {
+    reg_set(PROTOCOL_KEY, "", "URL:Meowy Launcher")
+        && reg_set(PROTOCOL_KEY, "URL Protocol", "")
+        && reg_set(&format!("{PROTOCOL_KEY}\\DefaultIcon"), "", &format!("\"{}\",0", exe.display()))
+        && reg_set(&format!("{PROTOCOL_KEY}\\shell\\open\\command"), "", &protocol_command_for(exe))
+}
+
+/// The exe a `"<exe>" ...` command starts.
+pub fn command_exe(command: &str) -> Option<PathBuf> {
+    let rest = command.strip_prefix('"')?;
+    rest.split_once('"').map(|(exe, _)| PathBuf::from(exe))
+}
+
+pub fn run_command_for(exe: &Path) -> String {
+    format!("\"{}\" --tray", exe.display())
+}
+
+pub fn start_at_sign_in() -> bool {
+    reg_get(RUN_KEY, RUN_VALUE).is_some()
+}
+
+pub fn set_start_at_sign_in(exe: &Path, on: bool) -> bool {
+    if on {
+        reg_set(RUN_KEY, RUN_VALUE, &run_command_for(exe))
+    } else {
+        reg_delete_value(RUN_KEY, RUN_VALUE) || !start_at_sign_in()
+    }
+}
+
+/// For tests: remove what `register_protocol` wrote under a test key.
+pub fn delete_protocol_tree() -> bool {
+    reg_delete_tree(PROTOCOL_KEY)
+}
+
+// --- Shell ------------------------------------------------------------------
+
+/// Opens a URL (`steam://...`) or a folder with the shell.
+pub fn shell_open(target: &str) -> bool {
+    let (op, t) = (wide("open"), wide(target));
+    // SAFETY: valid strings; a return above 32 means success.
+    unsafe { ShellExecuteW(null_mut(), op.as_ptr(), t.as_ptr(), null(), null(), SW_SHOWNORMAL) as usize > 32 }
+}
+
+// --- Game processes -----------------------------------------------------------
+
+struct Proc {
+    handle: HANDLE,
+    pid: u32,
+    created: i64,
+}
+
+impl Drop for Proc {
+    fn drop(&mut self) {
+        // SAFETY: a handle we opened and still own.
+        unsafe { CloseHandle(self.handle) };
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Event {
+    Idle,
+    /// The game started (or was already running when the launcher did).
+    Started { created: i64 },
+    /// The last game process exited. `created`: when the session's first one started.
+    Ended { exit_code: u32, created: i64 },
+}
+
+/// Follows `gmod.exe`/`hl2.exe` processes whose image is under the game's
+/// folder. GMod's own Chromium helpers are `gmod.exe` too, with the same
+/// image, so any process whose parent is a followed one with the same image
+/// isn't followed. Steam's 32-bit root `gmod.exe` starts `bin\win64\gmod.exe`
+/// and exits, so a session ends when the last followed process exits; its
+/// exit code is the session's.
+pub struct Watcher {
+    root: String,
+    procs: Vec<Proc>,
+    skipped: Vec<u32>,
+    active: bool,
+    created: i64,
+    last_exit: u32,
+}
+
+fn filetime_unix(ft: &FILETIME) -> i64 {
+    let t = ((ft.dwHighDateTime as u64) << 32) | ft.dwLowDateTime as u64;
+    (t as i64 - 116_444_736_000_000_000) / 10_000_000
+}
+
+fn image_path(handle: HANDLE) -> Option<String> {
+    let mut buf = vec![0u16; 1024];
+    let mut len = buf.len() as u32;
+    // SAFETY: buffer and length match.
+    let ok = unsafe { QueryFullProcessImageNameW(handle, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len) };
+    (ok != 0).then(|| OsString::from_wide(&buf[..len as usize]).to_string_lossy().to_lowercase())
+}
+
+fn created(handle: HANDLE) -> i64 {
+    let zero = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+    let (mut c, mut e, mut k, mut u) = (zero, zero, zero, zero);
+    // SAFETY: four valid out-pointers.
+    if unsafe { GetProcessTimes(handle, &mut c, &mut e, &mut k, &mut u) } != 0 {
+        filetime_unix(&c)
+    } else {
+        0
+    }
+}
+
+/// (pid, parent pid) of every process named gmod.exe or hl2.exe.
+fn candidates() -> Vec<(u32, u32)> {
+    let mut out = Vec::new();
+    // SAFETY: a snapshot handle we close; the entry's size is set as required.
+    unsafe {
+        let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snap == INVALID_HANDLE_VALUE {
+            return out;
+        }
+        let mut e: PROCESSENTRY32W = std::mem::zeroed();
+        e.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        let mut more = Process32FirstW(snap, &mut e) != 0;
+        while more {
+            let len = e.szExeFile.iter().position(|&c| c == 0).unwrap_or(e.szExeFile.len());
+            let name = String::from_utf16_lossy(&e.szExeFile[..len]).to_lowercase();
+            if name == "gmod.exe" || name == "hl2.exe" {
+                out.push((e.th32ProcessID, e.th32ParentProcessID));
+            }
+            more = Process32NextW(snap, &mut e) != 0;
+        }
+        CloseHandle(snap);
+    }
+    out
+}
+
+impl Watcher {
+    pub fn new(game_root: &Path) -> Watcher {
+        let mut root = game_root.to_string_lossy().to_lowercase();
+        if !root.ends_with('\\') {
+            root.push('\\');
+        }
+        Watcher { root, procs: Vec::new(), skipped: Vec::new(), active: false, created: 0, last_exit: 0 }
+    }
+
+    pub fn running(&self) -> bool {
+        self.active
+    }
+
+    fn scan(&mut self) {
+        let mut found: Vec<(Proc, u32, String)> = Vec::new();
+        let known: Vec<u32> = self.procs.iter().map(|p| p.pid).chain(self.skipped.iter().copied()).collect();
+        for (pid, parent) in candidates() {
+            if known.contains(&pid) {
+                continue;
+            }
+            // SAFETY: OpenProcess with wait-and-query rights only.
+            let handle = unsafe { OpenProcess(GAME_ACCESS, 0, pid) };
+            if handle.is_null() {
+                continue;
+            }
+            let proc = Proc { handle, pid, created: created(handle) };
+            match image_path(handle) {
+                Some(path) if path.starts_with(&self.root) => found.push((proc, parent, path)),
+                _ => self.skipped.push(pid),
+            }
+        }
+        // Paths of followed processes, to recognise Chromium helpers.
+        let mut paths: Vec<(u32, String)> = Vec::new();
+        for p in &self.procs {
+            if let Some(path) = image_path(p.handle) {
+                paths.push((p.pid, path));
+            }
+        }
+        paths.extend(found.iter().map(|(p, _, path)| (p.pid, path.clone())));
+        for (proc, parent, path) in found {
+            if paths.iter().any(|(pid, p)| *pid == parent && *p == path) {
+                self.skipped.push(proc.pid);
+            } else {
+                self.procs.push(proc);
+            }
+        }
+    }
+
+    /// Waits up to `timeout_ms` for something to happen.
+    pub fn step(&mut self, timeout_ms: u32) -> Event {
+        if self.procs.is_empty() {
+            self.scan();
+            if self.procs.is_empty() {
+                std::thread::sleep(std::time::Duration::from_millis(timeout_ms as u64));
+                return Event::Idle;
+            }
+        }
+        if !self.active {
+            self.active = true;
+            self.created = self.procs.iter().map(|p| p.created).filter(|&c| c > 0).min().unwrap_or(0);
+            return Event::Started { created: self.created };
+        }
+        let handles: Vec<HANDLE> = self.procs.iter().take(64).map(|p| p.handle).collect();
+        // SAFETY: up to 64 valid handles we own.
+        let r = unsafe { WaitForMultipleObjects(handles.len() as u32, handles.as_ptr(), 0, timeout_ms) };
+        if r == WAIT_TIMEOUT {
+            self.scan();
+            return Event::Idle;
+        }
+        let i = r.wrapping_sub(WAIT_OBJECT_0) as usize;
+        if i < handles.len() {
+            let mut code = 0u32;
+            // SAFETY: a signalled handle we own.
+            unsafe { GetExitCodeProcess(self.procs[i].handle, &mut code) };
+            self.last_exit = code;
+            self.procs.remove(i);
+        } else {
+            // WAIT_FAILED: shouldn't happen; don't spin.
+            std::thread::sleep(std::time::Duration::from_millis(timeout_ms as u64));
+        }
+        self.scan();
+        if self.procs.is_empty() {
+            // Steam's root gmod.exe may exit just before its child shows up.
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            self.scan();
+        }
+        if self.procs.is_empty() {
+            self.active = false;
+            self.skipped.clear();
+            return Event::Ended { exit_code: self.last_exit, created: self.created };
+        }
+        Event::Idle
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn commands() {
+        let exe = Path::new("C:\\Users\\A B\\AppData\\Local\\MeowyClientPack\\launcher\\MeowyLauncher.exe");
+        assert_eq!(protocol_command_for(exe), format!("\"{}\" \"%1\"", exe.display()));
+        assert_eq!(command_exe(&protocol_command_for(exe)).as_deref(), Some(exe));
+        assert_eq!(run_command_for(exe), format!("\"{}\" --tray", exe.display()));
+        assert_eq!(command_exe("no quotes"), None);
+    }
+
+    #[test]
+    fn filetime() {
+        // 2026-11-07 00:00:00 UTC
+        let t: u64 = (1_793_923_200u64 * 10_000_000) + 116_444_736_000_000_000;
+        let ft = FILETIME { dwLowDateTime: t as u32, dwHighDateTime: (t >> 32) as u32 };
+        assert_eq!(filetime_unix(&ft), 1_793_923_200);
+    }
+
+    /// A real child process stands in for the game: the watcher sees it start
+    /// and end, and reads its exit code with wait-and-query rights only.
+    #[test]
+    fn watches_a_process_by_folder() {
+        let dir = std::env::temp_dir().join(format!("meowy_launcher_watch_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // A copy of cmd.exe named gmod.exe, in a folder of our own.
+        let sys = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into());
+        let fake = dir.join("gmod.exe");
+        std::fs::copy(Path::new(&sys).join("System32\\cmd.exe"), &fake).unwrap();
+
+        let mut w = Watcher::new(&dir);
+        assert_eq!(w.step(10), Event::Idle);
+        let mut child = std::process::Command::new(&fake).args(["/c", "ping -n 3 127.0.0.1 >nul & exit 7"]).spawn().unwrap();
+        let mut started = false;
+        let mut ended = None;
+        for _ in 0..200 {
+            match w.step(100) {
+                Event::Started { created } => {
+                    assert!(created > 1_700_000_000);
+                    started = true;
+                }
+                Event::Ended { exit_code, .. } => {
+                    ended = Some(exit_code);
+                    break;
+                }
+                Event::Idle => {}
+            }
+        }
+        let _ = child.wait();
+        assert!(started, "saw it start");
+        assert_eq!(ended, Some(7), "saw it end with its exit code");
+
+        // A process with the same name outside the game folder is ignored.
+        let mut other = Watcher::new(&dir.join("elsewhere"));
+        let mut child = std::process::Command::new(&fake).args(["/c", "ping -n 2 127.0.0.1 >nul"]).spawn().unwrap();
+        for _ in 0..10 {
+            assert_eq!(other.step(50), Event::Idle);
+        }
+        let _ = child.wait();
+        drop(w);
+        drop(other);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

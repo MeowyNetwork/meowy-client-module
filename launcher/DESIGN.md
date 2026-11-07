@@ -51,9 +51,10 @@ MeowyLauncher.exe  (x64, per user, no admin; %LOCALAPPDATA%\MeowyClientPack\laun
   (the installer's `FindGarrysMod`, ported).
 - **Before every launch:** repair (§4). If repair can't fix something, the launch still goes ahead: the
   game must never be blocked by the launcher.
-- **GMod already running** and a join is asked for: `steam://connect/<address>` (Steam passes it to the
-  running game). *Verify in the MVP;* if Steam doesn't forward it, the card says "Garry's Mod is open: join
-  from its server list" until the pipe exists (§10).
+- **Verified 2026-11-07:** `-applaunch` passes our arguments straight to `bin\win64\gmod.exe`, before the
+  player's own options, with no Steam dialog (game process 0.5–2 s after the call).
+- **GMod already running** and a join is asked for: `steam://connect/<address>`. Verified: Steam passes it
+  to the running game, which joins.
 - **Launch flags:** `-disableluarefresh` (measured 0.8–1.6 s per start, start-up #1). Opt-out in settings.
   No other flags in the MVP. `-nojoy` is left out: it would break controllers.
 
@@ -73,8 +74,13 @@ What Steam can undo, and what the launcher does about it:
 - **When:** at launcher start, before every launch, and when Steam's files say it's needed:
   - a 15 s poll of two files' metadata (`appmanifest_4000.acf`, `lua\includes\menu.lua`): a stat each,
     no reads unless one changed;
-  - only when GMod isn't running and `StateFlags` = 4 (fully installed: no update or verify running), and
-    the file has been unchanged for 5 s.
+  - only when GMod isn't running and `StateFlags` = 4 (fully installed), and both files are unchanged
+    across two polls (15 s).
+  - *Measured 2026-11-07:* during a Verify, `StateFlags` in the `.acf` and Steam's
+    `HKCU\...\Steam\Apps\4000\Updating` both stayed at "installed, not updating", so neither shows a
+    Verify. Steam's validation took 21 s and *truncated* the line off `menu.lua` 6 s in; the launcher put
+    it back 60 s in, after Steam's content log said validation had finished. A Verify checks each file
+    once, so a heal after Steam has rewritten `menu.lua` isn't undone by the same Verify.
 - **Never** while the game runs, and never anything outside the pack's line and the pack's own files.
 - The pack keeps healing the line itself when it loads from our server (unchanged), so a player without
   the launcher is no worse off.
@@ -85,7 +91,10 @@ What Steam can undo, and what the launcher does about it:
 is inside the GarrysMod folder (`QueryFullProcessImageNameW` with `PROCESS_QUERY_LIMITED_INFORMATION`).
 Each is opened with `SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION` and waited on. Steam's 32-bit root
 `gmod.exe` exits after starting `bin\win64\gmod.exe`, so a session ends when the last one exits, and that
-one's exit code counts. No other rights are ever asked for: no memory read or write, no thread, no injection.
+one's exit code counts. GMod's own Chromium helpers are `bin\win64\gmod.exe` too (`--type=renderer`, ...);
+they're recognised without reading their command line (that would need memory access): a process whose
+parent is a followed process with the same image isn't followed. No other rights are ever asked for: no
+memory read or write, no thread, no injection.
 
 **Deciding it crashed.** The pack already writes `%LOCALAPPDATA%\MeowyClientPack\on_server.txt`
 (`<address> <unix time>\r\n<name>\r\n`) while connected to our server or a public one, and leaves it when
@@ -97,7 +106,9 @@ the game ends on a server. When the session ends and that file is there:
 | no | not 0 (killed, hung and ended in Task Manager) | crashed: card |
 | no | 0 | quit on purpose: nothing |
 
-*GMod's exit code on a normal quit is checked in the MVP before this table is relied on.*
+*Measured 2026-11-07:* a normal quit (`quit`) exits with 0; ending the game in Task Manager while on our
+server exits with `0xFFFFFFFF`, writes no crash report, and leaves `on_server.txt`. So the pack alone
+(which needs a crash report with a Lua section) doesn't offer Rejoin after a kill or a hang; the launcher does.
 
 **The card** (small window, bottom-right, on top): "Garry's Mod closed unexpectedly while you were on
 <name> (<address>). **[Rejoin] [Details] [Not now]**".
@@ -181,12 +192,37 @@ here that would touch the game, so it's kept apart:
 
 ## 11. Measured claims
 
-Every speed claim in the PR comes from runs on this PC, `-condebug`, game closed between runs, n≥4 each:
+Every speed claim in the PR comes from runs on this PC (`launcher/tools/measure_startup.ps1`), game
+closed between runs, the three modes interleaved, n≥4 each, medians:
 
-1. **Launcher overhead:** click → `[Meowy Client Pack]` console line, Steam `-applaunch` direct vs the
-   launcher's Play with the flag off. Expected: no difference beyond noise (±0.8 s).
+1. **Launcher overhead:** Steam `-applaunch` direct vs the launcher's Play (`--play`, the tray instance
+   doing the launch) with the flag off. Expected: no difference beyond noise (±0.8 s).
 2. **`-disableluarefresh`:** launcher's Play with the flag on vs off.
 3. **Memory at rest:** tray only, no window (private bytes).
+
+The marker is the pack's menu Lua running: it removes `on_server.txt` once per start, so the script plants
+one the pack can't parse (no prompt) and times its removal. No `-condebug` is needed, so the launcher's
+own command line is measured unchanged. Steam's hop (click → game process) varies by seconds on its own,
+so game process → pack is reported apart from click → pack.
+
+**Results (2026-11-07, this PC, n=5 per mode, all runs valid, medians in seconds):**
+
+| Mode | click → game | game → pack | click → pack |
+|---|---|---|---|
+| Steam `-applaunch` | 1.75 | 6.31 | 8.01 |
+| Launcher, Faster start off | 1.50 | 7.09 | 8.57 |
+| Launcher, Faster start on | 1.59 | 5.77 | 7.90 |
+
+- Run-to-run noise is large: game → pack ranged 5.7–8.6 s within one mode, and Steam's own hop
+  1.3–8.6 s. So the conclusions come from **same-round pairs**:
+  - **Launcher overhead:** click → game, launcher off minus Steam: +0.18, +0.10, 0.00 s in the three
+    rounds where Steam's hop wasn't an outlier. Nothing measurable. (Game → pack can't differ: same
+    command line; its pairs scatter −0.2 to +2.3 s, which is noise.)
+  - **`-disableluarefresh`:** game → pack, on minus off: −0.68, −0.79, −0.70, −0.91, −3.54 s (median
+    **−0.79 s**). An earlier, interrupted run gave −1.86, −2.59, −1.01 s (n=3). In line with
+    startup-menu-speed #1's 0.8–1.6 s.
+- **Memory:** tray only 2.3 MB private / 18 MB working set (no WebView2). Window open: +153 MB in
+  WebView2's processes; closing it ends them (launcher 5.4 MB private after).
 
 The ~10 s → ~6 s figure is **not** claimed: it belongs to §9.
 

@@ -239,6 +239,50 @@ static class UninstallSmoke
 			Check(!File.Exists(lnk), "shortcut: uninstall without one is fine");
 			Check(Program.StartMenuShortcut().EndsWith(@"\Programs\Meowy Client Pack.lnk", StringComparison.OrdinalIgnoreCase),
 				"shortcut: the real one goes in the player's own Start menu (" + Program.StartMenuShortcut() + ")");
+
+			// With the Meowy Launcher installed, the shortcut opens it, same AUMID.
+			string launcher = Path.Combine(s, @"launcher\MeowyLauncher.exe");
+			Put(launcher, "not really an exe");
+			Program.CreateShortcut(lnk, garrysmod, launcher);
+			Check(Program.ShortcutAppId(lnk) == "MeowyNetwork.ClientPack", "shortcut: with the launcher, same AUMID");
+			target = Program.ShortcutTarget(lnk).Trim();
+			Check(string.Equals(target, launcher, StringComparison.OrdinalIgnoreCase), "shortcut: opens the launcher (" + target + ")");
+			Program.RemoveShortcut(lnk);
+		}
+
+		// 11. The launcher's registry values, under scratch keys (never the real
+		//     meowy:// or Run key).
+		{
+			string key = @"Software\MeowyClientPackTest\Classes\meowy";
+			string run = @"Software\MeowyClientPackTest\Run";
+			string exe = Path.Combine(root, @"launcher\MeowyLauncher.exe");
+			string other = Path.Combine(root, @"someone-else\app.exe");
+			try
+			{
+				Program.RegisterProtocol(exe, key);
+				Check(Program.ProtocolExe(key) == exe, "meowy://: opens the launcher");
+				using (var k = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(key))
+					Check(k != null && k.GetValue("URL Protocol") as string == "", "meowy://: marked as a URL protocol");
+				using (var k = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(key + @"\shell\open\command"))
+					Check(k.GetValue("") as string == "\"" + exe + "\" \"%1\"", "meowy://: passes the link as one argument");
+				Program.UnregisterProtocol(other, key);
+				Check(Program.ProtocolExe(key) == exe, "meowy://: uninstall leaves it when it isn't ours");
+				Program.UnregisterProtocol(exe, key);
+				Check(Program.ProtocolExe(key) == null, "meowy://: uninstall removes ours");
+
+				Program.SetLauncherAtSignIn(exe, true, run);
+				Check(Program.LauncherAtSignIn(run), "sign-in: Run value set");
+				using (var k = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(run))
+					Check(k.GetValue(Program.LauncherRunValue) as string == "\"" + exe + "\" --tray", "sign-in: starts in the tray");
+				Program.SetLauncherAtSignIn(exe, false, run);
+				Check(!Program.LauncherAtSignIn(run), "sign-in: Run value removed");
+				Program.SetLauncherAtSignIn(exe, false, run);
+				Check(!Program.LauncherAtSignIn(run), "sign-in: removing twice is fine");
+			}
+			finally
+			{
+				Microsoft.Win32.Registry.CurrentUser.DeleteSubKeyTree(@"Software\MeowyClientPackTest", false);
+			}
 		}
 
 		Console.WriteLine(failed > 0 ? "FAILED" : "all passed");
