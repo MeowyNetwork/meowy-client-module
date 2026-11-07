@@ -1522,8 +1522,8 @@ w = world({ settings = ON, menu = true })
 w.concommands.meowy_settings()
 check("fast server list: no toggle without the setting", find(function(p) return p.meowyToggle == "fast_serverlist" end), nil)
 
--- Find servers on the home screen: Steam's list (servers with players) in
--- batches; the page joins by number, the address stays here.
+-- Find servers on the home screen: Steam's list in batches, servers with
+-- players then the empty ones; the page asks for a server by its number.
 w = world({ settings = ON, menu = true, convars = PAGE_ON, joinServer = true })
 w.run(1)
 w.post("browse")
@@ -1540,7 +1540,9 @@ check("browse: a batch sent", batch:find("MeowyBrowse.add(1, [", 1, true) ~= nil
 check("browse: gamemode and category from the tags", batch:find('"g":"darkrp"', 1, true) ~= nil and batch:find('"c":"rp"', 1, true) ~= nil, true)
 check("browse: players and slots without bots", batch:find('"p":10', 1, true) ~= nil and batch:find('"x":62', 1, true) ~= nil, true)
 check("browse: the name cleaned", batch:find('"n":"A server"', 1, true) ~= nil, true)
-check("browse: no address sent", batch:find("1.2.3.4", 1, true) == nil and batch:find("5.6.7.8", 1, true) == nil, true)
+check("browse: the address sent to be shown", batch:find('"a":"1.2.3.4:27015"', 1, true) ~= nil, true)
+check("browse: Workshop ID, flag, description", batch:find('"ws":"1"', 1, true) ~= nil and batch:find('"f":"gb"', 1, true) ~= nil and batch:find('"d":"DarkRP"', 1, true) ~= nil, true)
+check("browse: bots and the stage", batch:find('"b":2', 1, true) ~= nil and batch:match(", 1%);%s*$") ~= nil, true)
 check("browse: private addresses left out", batch:find("LAN box", 1, true) == nil, true)
 check("browse: numbered in order", batch:find('"i":1', 1, true) ~= nil and batch:find('"i":2', 1, true) ~= nil and batch:find('"i":3', 1, true) == nil, true)
 local calls = #w.browseCalls
@@ -1556,18 +1558,57 @@ check("browse: unknown rows join nothing", w.joinServer, 1)
 w.post("browse")
 check("browse: a refresh starts a new list", (w.browseJS or ""):find("MeowyBrowse.reset(2, true)", 1, true) ~= nil, true)
 w.sqDone = true
+w.browseCalls = {}
+w.run(0.3)
+check("browse: with players done, the empty ones asked for", table.concat(w.sqArgs or {}, " "), "internet gamedir garrysmod noplayers 1")
+check("browse: not complete yet, stage 2", (w.browseCalls[1] or ""):find("MeowyBrowse.add(2, [], false", 1, true) ~= nil and (w.browseCalls[1] or ""):find(", 2);", 1, true) ~= nil, true)
 w.run(0.3)
 check("browse: complete", (w.browseJS or ""):find("MeowyBrowse.add(2, [], true", 1, true) ~= nil, true)
-check("browse: logged", (w.logs or ""):find("browse: 0 servers with players in", 1, true) ~= nil, true)
+check("browse: logged", (w.logs or ""):find("browse: 0 servers in", 1, true) ~= nil, true)
+check("browse: each stage let go", w.sqCancels, 3)
 w.sqDone = false
 w.post("browse")
 w.post("browse_stop")
-check("browse: Back stops it", w.sqCancels, 3)
+check("browse: Back stops it", w.sqCancels, 4)
 w.post("browse")
 w.loading = true
 w.run(0.5)
-check("browse: a join elsewhere stops it", w.sqCancels, 4)
+check("browse: a join elsewhere stops it", w.sqCancels, 5)
 w.loading = false
+-- Garry's Mod's blacklist, each address once; the star, right-click and Install.
+w = world({ settings = ON, menu = true, convars = PAGE_ON })
+w.env.IsServerBlacklisted = function(address, name) if name == "Banned" then return "host: Banned" end end
+local favs = { ["1.2.3.4:27015"] = true }
+w.env.serverlist = {
+	IsServerFavorite = function(a) return favs[a] == true end,
+	AddServerToFavorites = function(a) favs[a] = true end,
+	RemoveServerFromFavorites = function(a) favs[a] = nil end,
+}
+local subscribed
+w.env.steamworks.Subscribe = function(id) subscribed = id end
+w.run(1)
+w.post("browse")
+w.sq = {
+	{ address = "1.2.3.4:27015", name = "Fav", map = "m", tags = "gm:ttt gmws:777 ver:251104", desc = "TTT", players = 4, max = 16, bots = 0, ping = 9, pass = false, lastplayed = 1700000000, version = 20250429 },
+	{ address = "1.2.3.4:27015", name = "Fav again", map = "m", tags = "", desc = "TTT", players = 4, max = 16, bots = 0, ping = 9, pass = false },
+	{ address = "9.9.9.9:27015", name = "Banned", map = "m", tags = "", desc = "x", players = 4, max = 16, bots = 0, ping = 9, pass = false },
+}
+w.run(0.3)
+batch = w.browseJS or ""
+check("browse: blacklisted servers left out", batch:find("Banned", 1, true), nil)
+check("browse: each address once", batch:find("Fav again", 1, true), nil)
+check("browse: a favourite marked", batch:find('"fv":true', 1, true) ~= nil, true)
+check("browse: the network version (not the build) and last visit", batch:find('"v":20250429', 1, true) ~= nil and batch:find('"lp":1700000000', 1, true) ~= nil, true)
+w.post("browse_fav", 1)
+check("browse: the star takes it off the favourites", favs["1.2.3.4:27015"], nil)
+w.post("browse_fav", 1)
+check("browse: and puts it back", favs["1.2.3.4:27015"], true)
+w.post("browse_copy", 1)
+check("browse: right-click copies the address", w.clipboard, "1.2.3.4:27015")
+w.post("browse_install", "123")
+check("browse: Install only for a gamemode a server named", subscribed, nil)
+w.post("browse_install", "777")
+check("browse: Install subscribes", subscribed, "777")
 -- Without Steam's lists: the page is told.
 w = world({ settings = ON, menu = true, convars = PAGE_ON })
 w.env.meowy.ServerQueryStart = nil

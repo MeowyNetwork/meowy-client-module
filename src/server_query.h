@@ -30,6 +30,7 @@ namespace server_query
 		bool password = false, secure = false;
 		bool anonymous = false;  // an anonymous game server (no Steam account), as the game's list reports
 		uint32_t lastPlayed = 0;
+		int version = 0;         // its network version (20260429): what the game's list calls netVersion
 		uint64_t steamId = 0;
 	};
 

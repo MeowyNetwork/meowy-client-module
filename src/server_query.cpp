@@ -236,6 +236,7 @@ namespace
 		s.password = item.password;
 		s.secure = item.secure;
 		s.lastPlayed = item.timeLastPlayed;
+		s.version = item.serverVersion;
 		s.steamId = item.steamId;
 		s.anonymous = ((item.steamId >> 52) & 0xF) == 4;   // k_EAccountTypeAnonGameServer
 		++r->total;

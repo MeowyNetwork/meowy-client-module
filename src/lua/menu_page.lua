@@ -39,12 +39,16 @@ local function wanted()
 		and IsValid(pnlMainMenu) and pnlMainMenu.Call ~= nil and shellJs() ~= ""
 end
 
--- Find servers on the home screen (U6): one list straight from Steam
--- (server_query.h, servers with players), sent to the page in batches as the
--- servers answer. The addresses stay here; the page joins a row by its number.
--- Every server string goes to the page as an escaped string and is shown as text.
-local BROWSE_MAX = 6000
-local browse = { gen = 0, rows = {} }
+-- Find servers on the home screen (U6, src/menu/browser.js): every server
+-- straight from Steam (server_query.h), the ones with players first, then the
+-- empty ones, sent to the page in batches as they answer. Servers on Garry's
+-- Mod's own blacklist (mainmenu.lua's IsServerBlacklisted) are left out, as its
+-- browser leaves them out. The addresses stay here; the page asks for a server
+-- by its number. Every server string goes to the page as an escaped string and
+-- is shown as text.
+local BROWSE_MAX = 30000
+local BROWSE_CATS = { rp = true, pvp = true, pve = true, other = true, none = true }
+local browse = { gen = 0, rows = {}, seen = {}, ws = {} }
 local function tagValue(tags, key) return (" " .. (tags or "") .. " "):match(" " .. key .. ":(%S+)") end
 
 local function browseStop()
@@ -52,15 +56,47 @@ local function browseStop()
 	browse.id = nil
 end
 
+-- Stage 1: servers with players; 2: the empty ones.
+local function browseQuery(stage)
+	browse.stage = stage
+	browse.id = meowy.ServerQueryStart
+		and meowy.ServerQueryStart("internet", "gamedir", "garrysmod", stage == 1 and "hasplayers" or "noplayers", "1") or nil
+	return browse.id ~= nil
+end
+
 local function browseStart()
 	browseStop()
 	browse.gen = browse.gen + 1
-	browse.rows, browse.started = {}, SysTime()
-	browse.id = meowy.ServerQueryStart and meowy.ServerQueryStart("internet", "gamedir", "garrysmod", "hasplayers", "1") or nil
+	browse.rows, browse.seen, browse.ws, browse.blocked, browse.full, browse.started = {}, {}, {}, 0, false, SysTime()
+	local ok = browseQuery(1)
 	if IsValid(pnlMainMenu) and pnlMainMenu.Call then
-		pnlMainMenu:Call("if (window.MeowyBrowse) window.MeowyBrowse.reset(" .. browse.gen .. ", " .. tostring(browse.id ~= nil) .. ");")
+		pnlMainMenu:Call("if (window.MeowyBrowse) window.MeowyBrowse.reset(" .. browse.gen .. ", " .. tostring(ok) .. ");")
 	end
-	log("browse: %s", browse.id and "listing servers with players" or "Steam's server list isn't available")
+	log("browse: %s", ok and "listing servers" or "Steam's server list isn't available")
+end
+
+local function blacklisted(s, gm)
+	if not isfunction(IsServerBlacklisted) then return false end
+	local ok, hit = pcall(IsServerBlacklisted, s.address, s.name or "", s.desc or "", gm, s.map or "")
+	return ok and hit ~= nil
+end
+
+-- A server as the page reads it (browser.js's server()).
+local function browseRow(i, s, gm)
+	local bots = math.max(0, tonumber(s.bots) or 0)
+	local ws = tagValue(s.tags, "gmws")
+	ws = ws and #ws <= 20 and ws:match("^%d+$") and ws ~= "0" and ws or ""
+	if ws ~= "" then browse.ws[ws] = true end
+	local cat = tagValue(s.tags, "gmc") or ""
+	local isFav = serverlist and serverlist.IsServerFavorite
+	return {
+		i = i, a = s.address, n = Home.clean(s.name), d = Home.clean(s.desc), m = Home.clean(s.map), g = Home.clean(gm),
+		c = BROWSE_CATS[cat] and cat or "", ws = ws, f = (tagValue(s.tags, "loc") or ""):match("^%a+$") or "",
+		v = math.floor(tonumber(s.version) or 0),   -- the network version, as the game's list compares it
+		p = math.max(0, (tonumber(s.players) or 0) - bots), x = math.max(0, (tonumber(s.max) or 0) - bots), b = bots,
+		ms = tonumber(s.ping) or 0, pw = s.pass == true, an = s.anon == true, lp = tonumber(s.lastplayed) or 0,
+		fv = isfunction(isFav) and isFav(s.address) == true or false,
+	}
 end
 
 local function browsePump(now)
@@ -68,26 +104,33 @@ local function browsePump(now)
 	local list, finished = meowy.ServerQueryTake(browse.id)
 	local batch = {}
 	for _, s in ipairs(istable(list) and list or {}) do
-		if #browse.rows >= BROWSE_MAX then finished = true break end
-		if Home.publicAddress(s.address) then
-			local i = #browse.rows + 1
-			browse.rows[i] = s.address
-			local bots = tonumber(s.bots) or 0
-			batch[#batch + 1] = {
-				i = i, n = Home.clean(s.name), m = Home.clean(s.map),
-				g = Home.clean(tagValue(s.tags, "gm") or s.desc or ""), c = Home.clean(tagValue(s.tags, "gmc") or ""),
-				p = math.max(0, (tonumber(s.players) or 0) - bots), x = math.max(0, (tonumber(s.max) or 0) - bots),
-				ms = tonumber(s.ping) or 0, pw = s.pass == true,
-			}
+		if #browse.rows >= BROWSE_MAX then finished, browse.full = true, true break end
+		local address = s.address
+		if Home.publicAddress(address) and not browse.seen[address] then
+			browse.seen[address] = true
+			local gm = tagValue(s.tags, "gm") or ""
+			if blacklisted(s, gm) then
+				browse.blocked = browse.blocked + 1
+			else
+				local i = #browse.rows + 1
+				browse.rows[i] = address
+				batch[#batch + 1] = browseRow(i, s, gm)
+			end
 		end
+	end
+	local done = finished and (browse.stage == 2 or browse.full)
+	if finished and not done then
+		-- The servers with players are in; now the empty ones.
+		browseStop()
+		if not browseQuery(2) then done = true end
 	end
 	if #batch > 0 or finished then
 		pnlMainMenu:Call("if (window.MeowyBrowse) window.MeowyBrowse.add(" .. browse.gen .. ", "
-			.. (#batch > 0 and Home.encode(batch) or "[]") .. ", " .. tostring(finished == true) .. ", "
-			.. string.format("%.1f", now - browse.started) .. ");")
+			.. (#batch > 0 and Home.encode(batch) or "[]") .. ", " .. tostring(done == true) .. ", "
+			.. string.format("%.1f", now - browse.started) .. ", " .. browse.stage .. ");")
 	end
-	if finished then
-		log("browse: %d servers with players in %.1f s", #browse.rows, now - browse.started)
+	if done then
+		log("browse: %d servers in %.1f s (%d on Garry's Mod's blacklist)", #browse.rows, now - browse.started, browse.blocked)
 		browseStop()
 	end
 end
@@ -106,6 +149,24 @@ local handlers = {
 	browse_intent = function(v)
 		local address = browse.rows[math.floor(tonumber(v) or 0)]
 		if Home.publicAddress(address) and MeowyClientPackWarm then MeowyClientPackWarm(address, "pointer on its row in Find servers") end
+	end,
+	-- The star: a Steam favourite (Garry's Mod's Favourites list), on or off.
+	browse_fav = function(v)
+		local address = browse.rows[math.floor(tonumber(v) or 0)]
+		if not Home.publicAddress(address) or not serverlist or not isfunction(serverlist.IsServerFavorite) then return end
+		if serverlist.IsServerFavorite(address) then serverlist.RemoveServerFromFavorites(address) else serverlist.AddServerToFavorites(address) end
+	end,
+	-- Right-click: the address, copied.
+	browse_copy = function(v)
+		local address = browse.rows[math.floor(tonumber(v) or 0)]
+		if Home.publicAddress(address) and SetClipboardText then SetClipboardText(address) end
+	end,
+	-- Install: subscribe to a gamemode's Workshop item, only one a listed server named.
+	browse_install = function(v)
+		local ws = tostring(v or "")
+		if not browse.ws[ws] or not steamworks or not isfunction(steamworks.Subscribe) then return end
+		log("browse: subscribing to gamemode %s", ws)
+		steamworks.Subscribe(ws)
 	end,
 	join = function(v) MeowyClientPackHomeJoin(tonumber(v)) end,
 	intent = function(v) MeowyClientPackHomeIntent(tonumber(v)) end,
