@@ -69,6 +69,14 @@ the game closes while the pack is starting, the next start skips it once by itse
     everyone.
   - It's switched on only while you join a Meowy Network server and put back as soon as you're
     in game, so other servers you visit in the same session are never affected.
+  - With "Start with the game" on, `meowy_skipmatreload_anyserver 1` skips it on every server you
+    join (off by default). On our map that's ~14 s of every join. The catch: a server whose
+    downloads replace a material that's already loaded shows the old one until the next map.
+- The pack's own settings (`meowy_loadingscreen`, `meowy_data_sandbox`, `meowy_honest_serverlist`,
+  `meowy_serverlist_reports`, `meowy_fast_lua_lookup`, `meowy_fast_fonts`,
+  `meowy_skipmatreload_anyserver`) are kept in `%LOCALAPPDATA%\MeowyClientPack\menu_settings.txt`.
+  The game doesn't save the main menu's settings itself, so before this they were back to their
+  defaults at every start.
 - With "Start with the game" on, every server's Lua loads faster, on any server. For each Lua
   file a server's code loads, Garry's Mod searches the server's file list once per search folder,
   comparing every name in it. That is ~4,000 searches per join, and on our server it was 16 s of

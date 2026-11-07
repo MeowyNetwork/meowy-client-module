@@ -10,4 +10,7 @@ namespace file_util
 	// or the new one, never an empty or half-written one. False on any failure
 	// (then `path` is unchanged).
 	bool WriteAtomic(const std::wstring& path, const std::string& text);
+
+	// The first `max` bytes of `path`, or "" if it can't be read.
+	std::string ReadSmall(const std::wstring& path, size_t max);
 }

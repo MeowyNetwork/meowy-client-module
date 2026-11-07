@@ -151,6 +151,18 @@ static void Logic()
 	t.entries.resize(3);
 	Check("shrunk table re-checked", Index(Resolve(&t, "lua/autorun/a.lua")) == 2 && Count(Resolve(&t, "x")) == 3);
 
+	// Another server's table at the same address, same size, even the same
+	// storage: checked again once a new join starts, so a broken index in it is caught.
+	t.entries = { "paths", "a.lua", "b.lua", "c.lua", "d.lua", "e.lua", "f.lua", "g.lua" };
+	Check("table found", Index(Resolve(&t, "c.lua")) == 3);
+	t.brokenIndex = true;
+	t.entries = { "paths", "a2.lua", "b2.lua", "c2.lua", "d2.lua", "e2.lua", "f2.lua", "g2.lua" };
+	lua_lookup::NewJoin();
+	Check("checked again after a new join: its broken index refused", Resolve(&t, "c2.lua") == kLeaveToGame);
+	t.brokenIndex = false;
+	ResetForTest();
+	t.entries = { "paths", "lua/includes/init.lua", "lua/autorun/a.lua" };
+
 	// Empty table: the game's own path.
 	CNetworkStringTable empty;
 	Check("empty table left to the game", Resolve(&empty, "x") == kLeaveToGame);

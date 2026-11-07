@@ -22,7 +22,7 @@
 //     a plain strcmp;
 //   * the table is an engine.dll CNetworkStringTable (its RTTI says so);
 //   * FindStringIndex finds every entry of the table at its own index (checked
-//     for each new table before it is used).
+//     at every join before the table is used, and for entries added later).
 // In memory only; nothing on disk changes.
 
 #include <cstddef>
@@ -41,6 +41,11 @@ namespace lua_lookup
 	bool Uninstall();
 
 	bool Installed();
+
+	// A join is starting: the next table is checked again before it's used. A
+	// new server's table can be allocated where the last one was, so its
+	// address alone can't tell them apart.
+	void NewJoin();
 
 	// One line for the status command: on/off, and lookups found / not found /
 	// left to the game since the start.

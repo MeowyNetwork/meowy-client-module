@@ -21,6 +21,19 @@ namespace file_util
 		DeleteFileW(temp.c_str());
 		return false;
 	}
+
+	std::string ReadSmall(const std::wstring& path, size_t max)
+	{
+		HANDLE h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+		if (h == INVALID_HANDLE_VALUE)
+			return std::string();
+		std::string buf(max, '\0');
+		DWORD n = 0;
+		BOOL ok = ReadFile(h, &buf[0], static_cast<DWORD>(max), &n, nullptr);
+		CloseHandle(h);
+		buf.resize(ok ? n : 0);
+		return buf;
+	}
 }
 
 #else
@@ -28,6 +41,7 @@ namespace file_util
 namespace file_util
 {
 	bool WriteAtomic(const std::wstring&, const std::string&) { return false; }
+	std::string ReadSmall(const std::wstring&, size_t) { return std::string(); }
 }
 
 #endif

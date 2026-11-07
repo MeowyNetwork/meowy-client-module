@@ -80,6 +80,7 @@
 #include "engine_patches.h"
 #include "lua_lookup.h"
 #include "font_loads.h"
+#include "file_util.h"
 #include "hardware.h"
 #include "connect_watch.h"
 #include "loading_screen.h"
@@ -408,6 +409,21 @@ namespace
 		return 1;
 	}
 
+	// meowy.SkipMaterialReloadAnyServer() -> true | false, reason. Menu realm
+	// only: the player's own opt-in (meowy_skipmatreload_anyserver) for joins to
+	// any server, applied while a join loads and put back once it's in game.
+	int SkipMaterialReloadAnyServer(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		std::string why;
+		const bool ok = engine_patches::SkipMaterialReload(why);
+		LUA->PushBool(ok);
+		if (ok)
+			return 1;
+		LUA->PushString(why.c_str());
+		return 2;
+	}
+
 	int MaterialReloadState(lua_State* L)
 	{
 		L->luabase->PushString(engine_patches::MaterialReloadState());
@@ -438,6 +454,12 @@ namespace
 	{
 		L->luabase->PushString(lua_lookup::Describe().c_str());
 		return 1;
+	}
+
+	int FastLuaLookupNewJoin(lua_State*)
+	{
+		lua_lookup::NewJoin();
+		return 0;
 	}
 
 	// meowy.FastFonts(on) -> true | false, reason (font_loads.h). Menu realm
@@ -1182,6 +1204,29 @@ namespace
 		return 1;
 	}
 
+	// The menu's own settings (meowy.Setting in the menu Lua). The game saves
+	// client-realm Lua convars to cfg/client.vdf but not menu-state ones, so
+	// without this every pack setting was back to its default at each start.
+	constexpr size_t kMaxMenuSettings = 4096;
+
+	int MenuSettingsRead(lua_State* L)
+	{
+		const std::string text = file_util::ReadSmall(DataDir() + L"\\menu_settings.txt", kMaxMenuSettings);
+		L->luabase->PushString(text.c_str(), static_cast<unsigned int>(text.size()));
+		return 1;
+	}
+
+	int MenuSettingsWrite(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		unsigned int len = 0;
+		const char* text = LUA->IsType(1, Type::String) ? LUA->GetString(1, &len) : nullptr;
+		const bool ok = text && len <= kMaxMenuSettings &&
+			file_util::WriteAtomic(DataDir() + L"\\menu_settings.txt", std::string(text, len));
+		LUA->PushBool(ok);
+		return 1;
+	}
+
 	// ResilienceSession(true): on our server now (the address is the engine's,
 	// read here); false: left it.
 	int ResilienceSession(lua_State* L)
@@ -1259,9 +1304,9 @@ namespace
 	// spot boost accounts; meowy_serverlist_reports 0 turns that off.
 	const char* const kServerListLua = R"lua(
 local meowy = meowy
-local enabled = CreateConVar("meowy_honest_serverlist", "1", FCVAR_ARCHIVE,
+local enabled = meowy.Setting("meowy_honest_serverlist", "1",
 	"Meowy Client Pack: check player counts in the server list (0 = off)")
-local reports = CreateConVar("meowy_serverlist_reports", "1", FCVAR_ARCHIVE,
+local reports = meowy.Setting("meowy_serverlist_reports", "1",
 	"Meowy Client Pack: tell Meowy Network who was really on other servers you join, to catch fake counts (0 = off)")
 
 local MIN_PLAYERS, GAP, MIN_FAKE, MIN_SHARE, DUPE_TOLERANCE = 10, 45, 5, 0.2, 15
@@ -1745,7 +1790,34 @@ end)
 	// main thread runs, but draws on its own thread regardless.
 	const char* const kMenuLua = R"lua(
 local meowy = meowy
-local enabled = CreateConVar("meowy_loadingscreen", "1", FCVAR_ARCHIVE,
+
+-- The pack's settings. The game saves client-realm Lua convars, not menu-state
+-- ones, so each is kept in the pack's own menu_settings.txt ("name=value"
+-- lines): read here, before any is created, and written within a second of a
+-- change. Every menu chunk creates its settings with meowy.Setting.
+do
+	local saved, names, written = {}, {}, nil
+	for name, value in string.gmatch(meowy.MenuSettingsRead() or "", "([%w_]+)=([^\r\n]*)") do
+		saved[name] = value
+	end
+	function meowy.Setting(name, default, help)
+		names[#names + 1] = name
+		return CreateConVar(name, saved[name] or default, FCVAR_ARCHIVE, help)
+	end
+	local nextCheck = 0
+	hook.Add("Think", "MeowyClientPack.SaveSettings", function()
+		local now = SysTime()
+		if now < nextCheck then return end
+		nextCheck = now + 1
+		local lines = {}
+		for _, name in ipairs(names) do lines[#lines + 1] = name .. "=" .. GetConVarString(name) end
+		local text = table.concat(lines, "\n")
+		if written == nil then written = text return end -- in effect at start; nothing to write
+		if text ~= written and meowy.MenuSettingsWrite(text) then written = text end
+	end)
+end
+
+local enabled = meowy.Setting("meowy_loadingscreen", "1",
 	"Meowy Client Pack: our own loading screen when joining Meowy Network (0 = Garry's Mod's)")
 local active, sure, lastStatus, details = false, false, nil, nil
 
@@ -1755,7 +1827,7 @@ local panelSince -- SysTime when GMod's loading panel opened, for how long it sh
 
 -- A separate garrysmod/data for each server (data_sandbox.h): a server's Lua
 -- sees only the files it wrote itself, never other servers' or the menu's.
-local sandbox = CreateConVar("meowy_data_sandbox", "1", FCVAR_ARCHIVE,
+local sandbox = meowy.Setting("meowy_data_sandbox", "1",
 	"Meowy Client Pack: give every server its own garrysmod/data (0 = one data folder for all)")
 hook.Add("Think", "MeowyClientPack.DataSandbox", function()
 	meowy.DataSandbox(sandbox:GetBool() and (IsInLoading() or IsInGame()))
@@ -1767,12 +1839,16 @@ end)
 -- Client Lua files are found through the string table's own index instead of
 -- a full scan per include and search path (lua_lookup.h): the same answers,
 -- on any server. Switched only between servers, never while one is loading.
-local fastLookup = CreateConVar("meowy_fast_lua_lookup", "1", FCVAR_ARCHIVE,
+local fastLookup = meowy.Setting("meowy_fast_lua_lookup", "1",
 	"Meowy Client Pack: find a server's Lua files through the string table's index (0 = the game's own scan)")
-local fastLookupApplied
+local fastLookupApplied, wasJoining
 hook.Add("Think", "MeowyClientPack.FastLuaLookup", function()
+	local joining = IsInLoading() or IsInGame()
+	-- Each join's table is checked again before it's used (lua_lookup.h).
+	if joining and not wasJoining then meowy.FastLuaLookupNewJoin() end
+	wasJoining = joining
 	local want = fastLookup:GetBool()
-	if want == fastLookupApplied or IsInLoading() or IsInGame() then return end
+	if want == fastLookupApplied or joining then return end
 	fastLookupApplied = want
 	local ok, why = meowy.FastLuaLookup(want)
 	if not ok then print("[Meowy Client Pack] fast Lua lookup: " .. tostring(why)) end
@@ -1784,7 +1860,7 @@ end)
 -- At every map load the game registers all ~400 custom font files again, and
 -- loads and frees gdi32.dll for each one; the gdi32 that's already loaded is
 -- used instead (font_loads.h).
-local fastFonts = CreateConVar("meowy_fast_fonts", "1", FCVAR_ARCHIVE,
+local fastFonts = meowy.Setting("meowy_fast_fonts", "1",
 	"Meowy Client Pack: don't load gdi32.dll again for every font file on each join (0 = the game's own way)")
 local fastFontsApplied
 hook.Add("Think", "MeowyClientPack.FastFonts", function()
@@ -1796,6 +1872,27 @@ hook.Add("Think", "MeowyClientPack.FastFonts", function()
 end)
 concommand.Add("meowy_fast_fonts_status", function()
 	print("[Meowy Client Pack] fast fonts: " .. meowy.FastFontsState())
+end)
+
+-- At the end of a server's Lua start-up the game throws every material away and
+-- loads them all again (5-17 s on a big map). On our servers the server asks the
+-- pack to skip that; this lets a player opt in for every server. Off by default:
+-- a server whose downloads replace a material that's already loaded would show
+-- the old one until the next map. Applied while a join loads, put back in game.
+local matAnyServer = meowy.Setting("meowy_skipmatreload_anyserver", "0",
+	"Meowy Client Pack: skip the second material load on every server, not just ours (a server's replaced textures can show their old version until the next map)")
+local matPatchedHere
+hook.Add("Think", "MeowyClientPack.MaterialReloadAnyServer", function()
+	if IsInLoading() and not IsInGame() then
+		if matPatchedHere == nil and matAnyServer:GetBool() then
+			local ok, why = meowy.SkipMaterialReloadAnyServer()
+			matPatchedHere = ok and true or false
+			if not ok then print("[Meowy Client Pack] material reload not skipped: " .. tostring(why)) end
+		end
+	elseif matPatchedHere ~= nil then
+		if matPatchedHere then meowy.RestoreMaterialReload() end
+		matPatchedHere = nil
+	end
 end)
 
 local stockGameDetails = GameDetails
@@ -1960,14 +2057,20 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	SetFunction(LUA, "ResilienceSteamOnline", Guarded<ResilienceSteamOnline>);
 	SetFunction(LUA, "ResilienceSettingsRead", Guarded<ResilienceSettingsRead>);
 	SetFunction(LUA, "ResilienceSettingsWrite", Guarded<ResilienceSettingsWrite>);
+	SetFunction(LUA, "MenuSettingsRead", Guarded<MenuSettingsRead>);
+	SetFunction(LUA, "MenuSettingsWrite", Guarded<MenuSettingsWrite>);
 	SetFunction(LUA, "ResilienceSession", Guarded<ResilienceSession>);
 	SetFunction(LUA, "ResilienceCrashedSession", Guarded<ResilienceCrashedSession>);
 	SetFunction(LUA, "DoctorFacts", Guarded<DoctorFacts>);
 	SetFunction(LUA, "DoctorOpen", Guarded<DoctorOpen>);
 	SetFunction(LUA, "FastLuaLookup", Guarded<FastLuaLookup>);
 	SetFunction(LUA, "FastLuaLookupState", Guarded<FastLuaLookupState>);
+	SetFunction(LUA, "FastLuaLookupNewJoin", Guarded<FastLuaLookupNewJoin>);
 	SetFunction(LUA, "FastFonts", Guarded<FastFonts>);
 	SetFunction(LUA, "FastFontsState", Guarded<FastFontsState>);
+	SetFunction(LUA, "SkipMaterialReloadAnyServer", Guarded<SkipMaterialReloadAnyServer>);
+	SetFunction(LUA, "RestoreMaterialReload", Guarded<RestoreMaterialReload>);
+	SetFunction(LUA, "MaterialReloadState", Guarded<MaterialReloadState>);
 	LUA->SetField(-2, "meowy");
 
 	// data/ was put right by the start-up stub (data_sandbox::Recover, under its

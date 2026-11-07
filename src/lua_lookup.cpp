@@ -142,6 +142,8 @@ namespace
 	size_t g_engineSize = 0;
 	void* g_goodVtable = nullptr;       // a vtable that passed the RTTI check
 	void* g_checkedTable = nullptr;     // the table whose entries were checked...
+	const char* g_checkedFirst = nullptr; // ...whose first entry was stored here (a new
+	                                    // table can be allocated at an old one's address)...
 	int g_checkedCount = 0;             // ...up to here
 	std::atomic<bool> g_refused{ false };
 	std::string g_refusal;              // why, once refused (under g_mutex)
@@ -198,13 +200,13 @@ namespace
 	// table (and again for entries added since).
 	bool EntriesIndexed(void* table, int count)
 	{
-		if (table != g_checkedTable)
+		const char* first = GetString(table, 0);
+		if (table != g_checkedTable || first != g_checkedFirst || count < g_checkedCount)
 		{
 			g_checkedTable = table;
+			g_checkedFirst = first;
 			g_checkedCount = 0;
 		}
-		if (count < g_checkedCount)
-			g_checkedCount = 0;
 		for (int i = g_checkedCount; i < count; ++i)
 		{
 			const char* s = GetString(table, i);
@@ -399,6 +401,7 @@ namespace lua_lookup
 			std::lock_guard<std::mutex> lock(g_mutex);
 			g_goodVtable = nullptr;
 			g_checkedTable = nullptr;
+			g_checkedFirst = nullptr;
 			g_checkedCount = 0;
 			g_refused = false;
 			g_refusal.clear();
@@ -555,6 +558,16 @@ namespace lua_lookup
 		return true;
 #else
 		return false;
+#endif
+	}
+
+	void NewJoin()
+	{
+#ifdef _WIN32
+		std::lock_guard<std::mutex> lock(g_mutex);
+		g_checkedTable = nullptr;
+		g_checkedFirst = nullptr;
+		g_checkedCount = 0;
 #endif
 	}
 
