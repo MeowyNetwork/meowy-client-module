@@ -714,7 +714,7 @@ local function open()
 					end
 				end
 				local s = row.line.s or 0
-				local col = s >= 2 and ERROR or s == 1 and C.amber or Color(ConsoleLogic.color(row.line))
+				local col = (s >= 2 or ConsoleLogic.kind(row.line) == "error") and ERROR or s == 1 and C.amber or Color(ConsoleLogic.color(row.line))
 				draw.SimpleText(text, "MeowyPack.Mono", S(12) + tw, y + lh / 2, col, UI.LEFT, UI.CENTER)
 				if row.count > 1 then
 					local span = ConsoleLogic.span(row)
@@ -1066,7 +1066,9 @@ hook.Add("DrawOverlay", "MeowyClientPack.ConsoleOverlay", function()
 		for _, n in pairs(notices) do y = pillAt(S(32), y, n.text, C.amber, now - n.at) end
 	end
 	local mode = overlaySetting and tonumber(overlaySetting:GetString()) or 0
-	if mode == 0 or not IsInGame() or (IsValid(holder) and holder:IsVisible()) then return end
+	-- Not while the window is on screen (in game it shows only with the game's menu).
+	local windowShown = IsValid(holder) and holder:IsVisible() and gui and gui.IsGameUIVisible and gui.IsGameUIVisible()
+	if mode == 0 or not IsInGame() or windowShown then return end
 	if SysTime() > overlayPull then overlayPull = SysTime() + PULL pull() end
 	local shown, now = {}, os.time() * 1000
 	for i = #lines, 1, -1 do
@@ -1083,6 +1085,7 @@ hook.Add("DrawOverlay", "MeowyClientPack.ConsoleOverlay", function()
 		local age = (now - (l.t or 0)) / 1000
 		local alpha = math.Clamp((OVERLAY_SHOW - age) / 3, 0.15, 1)
 		local r, g, b = ConsoleLogic.color(l)
+		if ConsoleLogic.kind(l) == "error" then r, g, b = ERROR.r, ERROR.g, ERROR.b end
 		local text = l.x or ""
 		if #text > 110 then text = text:sub(1, 109) .. "\226\128\166" end
 		draw.SimpleText(text, "MeowyPack.Mono", S(34), y + S(6) + (i - 1) * lh + lh / 2, Color(r, g, b, 255 * alpha), UI.LEFT, UI.CENTER)
