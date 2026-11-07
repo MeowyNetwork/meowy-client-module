@@ -178,6 +178,33 @@ int main(int argc, char** argv)
 		Check("budget: stops at 16 MB", prewarm::Describe().find("warmed 4.4.4.4:27015: 16 MB") != std::string::npos);
 	}
 
+	// A rejoin in the same game start opens only what isn't loaded already: what
+	// the first join learned stays, while it's on disk at its size.
+	{
+		std::vector<prewarm::detail::Item> now = { { "C:\\A.gma", 2 << 20 } }, before = { { "c:\\a.gma", 2 << 20 }, { "c:\\b.gma", 3 << 20 } };
+		std::vector<uint64_t> ws = { 5 }, wsBefore = { 5, 6 };
+		prewarm::detail::Merge(now, ws, before, wsBefore, nullptr);
+		Check("merge: this join first, then what it didn't open (any case)", now.size() == 2 && now[0].path == "C:\\A.gma" && now[1].path == "c:\\b.gma");
+		Check("merge: Workshop items of both, once", ws.size() == 2 && ws[1] == 6);
+		const std::string k1 = root + "\\keep1.gma", k2 = root + "\\keep2.gma", k3 = root + "\\gone2.gma";
+		Put(k1, 2 << 20);
+		Put(k2, 3 << 20);
+		Put(k3, 2 << 20);
+		prewarm::BeginJoin();
+		prewarm::Opened(k1.c_str(), 2 << 20);
+		prewarm::Opened(k2.c_str(), 3 << 20);
+		prewarm::Opened(k3.c_str(), 2 << 20);
+		prewarm::EndJoin(dir, "3.3.3.3:27015");
+		DeleteFileA(k3.c_str());
+		prewarm::BeginJoin();
+		prewarm::Opened(k1.c_str(), 2 << 20);
+		Check("rejoin: the first join's files kept", prewarm::EndJoin(dir, "3.3.3.3:27015") == 2);
+		uint64_t keptBytes = 0;
+		Check("rejoin: a file gone since is dropped", prewarm::Recorded(dir, "3.3.3.3:27015", &keptBytes) && keptBytes == (5ull << 20));
+		DeleteFileA(k1.c_str());
+		DeleteFileA(k2.c_str());
+	}
+
 	for (const std::string& b : bigs)
 		DeleteFileA(b.c_str());
 	DeleteFileA(f1.c_str());
