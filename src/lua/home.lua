@@ -35,14 +35,83 @@ local HOME_JS = [==[
 		+ '#meowy-home .mh-dim{opacity:0.5;}'
 		+ '#meowy-home .mh-stats{float:right;font-size:13px;margin-left:12px;opacity:0.85;line-height:21px;}'
 		+ '#meowy-home .mh-name{font-size:17px;font-weight:bold;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:21px;}'
-		+ '#meowy-home .mh-detail{font-size:13px;opacity:0.75;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}';
+		+ '#meowy-home .mh-detail{font-size:13px;opacity:0.75;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}'
+		+ '#meowy-home .mh-search{display:block;width:100%;box-sizing:border-box;margin:4px 0 2px 0;padding:6px 10px;'
+		+ 'font-size:14px;border:0;border-radius:4px;background:rgba(255,255,255,0.12);color:#fff;outline:none;}'
+		+ '#meowy-home .mh-search:focus{background:rgba(255,255,255,0.2);}'
+		+ '#meowy-home .mh-search::-webkit-input-placeholder{color:rgba(255,255,255,0.55);}'
+		+ '#meowy-home .mh-sel{background:rgba(255,255,255,0.2);}'
+		+ '#meowy-home{overflow-y:auto;}';
+	var MAX_MATCHES = 8;   // rows per section while searching
+	var query = '', selected = 0, rows = [], focused = false;
 	function node(tag, cls, text) {
 		var e = document.createElement(tag);
 		if (cls) e.className = cls;
 		if (text) e.textContent = text;
 		return e;
 	}
-	function join(id) { return function () { lua.Run('MeowyClientPackHomeJoin(' + Number(id) + ')'); }; }
+	function join(id) { lua.Run('MeowyClientPackHomeJoin(' + Number(id) + ')'); }
+	function mark() {
+		for (var i = 0; i < rows.length; i++) {
+			var on = focused && i === selected;   // the row Enter joins, while the search box has the keyboard
+			rows[i].el.className = rows[i].cls + (on ? ' mh-sel' : '');
+			if (on && rows[i].el.scrollIntoView) rows[i].el.scrollIntoView(false);
+		}
+	}
+	// The list: each section's first `show` rows; while searching, every row
+	// whose name or map has the text, at most MAX_MATCHES a section.
+	function render(list) {
+		var data = window.MeowyHomeData, q = query.toLowerCase();
+		while (list.firstChild) list.removeChild(list.firstChild);
+		rows = [];
+		for (var i = 0; i < data.sections.length; i++) {
+			var sec = data.sections[i], picked = [];
+			for (var j = 0; j < sec.rows.length; j++) {
+				var r = sec.rows[j];
+				if (q && (r.name + ' ' + r.detail).toLowerCase().indexOf(q) < 0) continue;
+				picked.push(r);
+				if (picked.length >= (q ? MAX_MATCHES : sec.show)) break;
+			}
+			if (q && !picked.length) continue;
+			list.appendChild(node('div', 'mh-title', sec.title));
+			for (var k = 0; k < picked.length; k++) {
+				var p = picked[k], cls = 'mh-row' + (p.dim ? ' mh-dim' : '');
+				var el = node('div', cls);
+				if (p.stats) el.appendChild(node('span', 'mh-stats', p.stats));
+				el.appendChild(node('div', 'mh-name', p.name));
+				if (p.detail) el.appendChild(node('div', 'mh-detail', p.detail));
+				el.title = p.name;
+				el.onclick = (function (id) { return function () { join(id); }; })(p.id);
+				list.appendChild(el);
+				rows.push({ id: p.id, el: el, cls: cls });
+			}
+			if (!q && sec.note) list.appendChild(node('div', 'mh-note', sec.note));
+		}
+		if (q && !rows.length) list.appendChild(node('div', 'mh-note', 'No server matches'));
+		if (selected >= rows.length) selected = rows.length - 1;
+		if (selected < 0) selected = 0;
+		mark();
+	}
+	// In the search box: arrows move, Enter joins, Esc clears.
+	function keys(e, input, list) {
+		var k = e.keyCode;
+		if (k === 40 || k === 38) {
+			selected = Math.max(0, Math.min(rows.length - 1, selected + (k === 40 ? 1 : -1)));
+			mark();
+		} else if (k === 13) {
+			if (rows[selected]) join(rows[selected].id);
+		} else if (k === 27) {
+			input.value = '';
+			query = '';
+			selected = 0;
+			render(list);
+			input.blur();
+		} else {
+			return;
+		}
+		e.preventDefault();
+		e.stopPropagation();
+	}
 	function draw() {
 		var data = window.MeowyHomeData;
 		var page = document.querySelector('.page[ng-controller="ControllerMain"]');
@@ -55,37 +124,50 @@ local HOME_JS = [==[
 			(document.head || document.body).appendChild(css);
 		}
 		if (box && box.parentNode !== page) { box.parentNode.removeChild(box); box = null; }
-		if (box && box.getAttribute('data-v') === String(window.MeowyHomeVersion)) return;
-		if (!box) { box = node('div'); box.id = 'meowy-home'; page.appendChild(box); }
-		box.setAttribute('data-v', String(window.MeowyHomeVersion));
-		while (box.firstChild) box.removeChild(box.firstChild);
-		for (var i = 0; i < data.sections.length; i++) {
-			var sec = data.sections[i];
-			box.appendChild(node('div', 'mh-title', sec.title));
-			for (var j = 0; j < sec.rows.length; j++) {
-				var r = sec.rows[j];
-				var el = node('div', 'mh-row' + (r.dim ? ' mh-dim' : ''));
-				if (r.stats) el.appendChild(node('span', 'mh-stats', r.stats));
-				el.appendChild(node('div', 'mh-name', r.name));
-				if (r.detail) el.appendChild(node('div', 'mh-detail', r.detail));
-				el.title = r.name;
-				el.onclick = join(r.id);
-				box.appendChild(el);
-			}
-			if (sec.note) box.appendChild(node('div', 'mh-note', sec.note));
+		var v = String(window.MeowyHomeVersion);
+		if (box && box.getAttribute('data-v') === v) return;
+		if (!box) {
+			box = node('div');
+			box.id = 'meowy-home';
+			var input = node('input', 'mh-search');
+			input.type = 'text';
+			input.placeholder = 'Search your servers   ( / )';
+			input.maxLength = 64;
+			input.value = query;
+			var list = node('div', 'mh-list');
+			input.oninput = function () { query = input.value; selected = 0; render(list); };
+			input.onkeydown = function (e) { keys(e, input, list); };
+			input.onfocus = function () { focused = true; mark(); };
+			input.onblur = function () { focused = false; mark(); };
+			box.appendChild(input);
+			box.appendChild(list);
+			page.appendChild(box);
 		}
+		box.setAttribute('data-v', v);
+		render(box.querySelector('.mh-list'));
 	}
 	window.MeowyHome = function (data, version) {
 		window.MeowyHomeData = data;
 		window.MeowyHomeVersion = version;
 		draw();
 	};
+	// "/" anywhere on the main page (not while typing elsewhere) goes to the search box.
+	document.addEventListener('keydown', function (e) {
+		var box = document.getElementById('meowy-home');
+		var t = e.target && e.target.tagName;
+		if (!box || t === 'INPUT' || t === 'TEXTAREA') return;
+		if (e.key === '/' || e.keyCode === 191) {
+			box.querySelector('.mh-search').focus();
+			e.preventDefault();
+		}
+	}, true);
 	var MO = window.MutationObserver || window.WebKitMutationObserver;
 	if (MO && document.body) new MO(draw).observe(document.body, { childList: true, subtree: true });
 })();
 ]==]
 
--- One of the game's lists ("favorite", "history"). The first time, rows fill
+-- One of the game's lists ("friends": servers Steam friends are on, "favorite",
+-- "history"). The first time, rows fill
 -- in as servers answer; after that the old list stays until the new one is done.
 local function ask(kind, now)
 	if not query then return end
@@ -172,6 +254,7 @@ local function tick()
 		if not shown or now >= nextRefresh then
 			nextRefresh = now + REFRESH
 			askOurs()
+			ask("friends", now)
 			ask("favorite", now)
 			ask("history", now)
 		end

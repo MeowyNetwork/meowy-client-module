@@ -11,7 +11,8 @@ local Logic = ...
 
 local M = {}
 
-M.FAVORITES = 5     -- rows per section
+M.FRIENDS = 3      -- rows each section shows before a search
+M.FAVORITES = 5
 M.RECENT = 5
 M.KEEP = 60         -- servers read from one list at most
 M.NAME_MAX = 80     -- bytes of a name or map kept
@@ -144,6 +145,7 @@ function M.model(st, now)
 	if M.validAddress(st.oursAddress) then
 		local ours = st.ours
 		local sec = { title = "Meowy Network", rows = {} }
+		local sec = { title = "Meowy Network", rows = {}, show = 1 }
 		if ours then
 			local r = add(ours, false)
 			if ours.failed or ours.name == "" then r.name = "Meowy Network" end
@@ -155,11 +157,13 @@ function M.model(st, now)
 		sections[#sections + 1] = sec
 	end
 
-	-- Servers that answered, as rows; those that didn't, only counted (a
-	-- favourite that's down is worth a line, not a row each).
-	local function list(title, servers, limit, sort, withAgo, countSilent)
+	-- Every server that answered is a row (the page shows the first `show`, and
+	-- searches them all); those that didn't are only counted (a favourite
+	-- that's down is worth a line, not a row each). A server is listed once, in
+	-- the first section that has it.
+	local function list(title, servers, limit, sort, withAgo, countSilent, checking)
 		if not servers then
-			sections[#sections + 1] = { title = title, rows = {}, note = "Checking..." }
+			if checking then sections[#sections + 1] = { title = title, rows = {}, show = 0, note = "Checking..." } end
 			return
 		end
 		local pick, silent = {}, 0
@@ -170,16 +174,19 @@ function M.model(st, now)
 			end
 		end
 		table.sort(pick, sort)
-		local sec = { title = title, rows = {} }
-		for i = 1, math.min(limit, #pick) do sec.rows[i] = add(pick[i], withAgo) end
+		local sec = { title = title, rows = {}, show = limit }
+		for i = 1, #pick do sec.rows[i] = add(pick[i], withAgo) end
 		if countSilent and silent > 0 then
 			local more = #sec.rows > 0 and " more" or ""
 			sec.note = silent .. more .. (silent == 1 and " isn't answering" or " aren't answering")
 		end
 		if #sec.rows > 0 or sec.note then sections[#sections + 1] = sec end
 	end
-	list("Favourites", st.favorite, M.FAVORITES, byPlayers, false, true)
-	list("Recent", st.history, M.RECENT, byLastPlayed, true, false)
+	-- Servers Steam friends are on: the game's own "friends" list (servers
+	-- only; no friend's name is read).
+	list("Friends are playing on", st.friends, M.FRIENDS, byPlayers, false, false, false)
+	list("Favourites", st.favorite, M.FAVORITES, byPlayers, false, true, true)
+	list("Recent", st.history, M.RECENT, byLastPlayed, true, false, true)
 
 	return { sections = sections, addresses = addresses }
 end

@@ -941,6 +941,9 @@ local LISTS = {
 	history = {
 		{ address = "5.5.5.5:27015", name = "Fresh", players = 5, max = 10, last = 1000000 - 7200 },
 	},
+	friends = {
+		{ address = "8.8.4.4:27015", name = "Pals TTT", players = 9, max = 24 },
+	},
 }
 w = world({ settings = ON, menu = true })
 w.lists = LISTS
@@ -952,7 +955,10 @@ check("home: our count", data:find('"stats":"10/64 \194\183 30 ms"', 1, true) ~=
 check("home: favourites, busiest first", (data:find('"Big RP"', 1, true) or 1e9) < (data:find('"Small"', 1, true) or 0), true)
 check("home: bots left out", data:find("36/64", 1, true) ~= nil, true)
 check("home: recent, with when", data:find('"detail":"gm_x \194\183 2 h ago"', 1, true) ~= nil, true)
-check("home: asked once each", w.queried.favorite == 1 and w.queried.history == 1, true)
+check("home: asked once each", w.queried.favorite == 1 and w.queried.history == 1 and w.queried.friends == 1, true)
+check("home: friends' servers, after ours", (data:find('"Friends are playing on"', 1, true) or 1e9) < (data:find('"Favourites"', 1, true) or 0)
+	and data:find('"Pals TTT"', 1, true) ~= nil, true)
+check("home: each section says how many to show", data:find('"show":5', 1, true) ~= nil and data:find('"show":3', 1, true) ~= nil, true)
 check("home: never through the honest-count wrapper", w.env.serverlist.Query == nil, true)
 check("home: nothing joined on its own", w.connects(), 0)
 w.run(30)
@@ -966,7 +972,9 @@ check("home: unchanged data not resent every frame", w.homeCalls - calls <= 1, t
 w.env.MeowyClientPackHomeJoin(1)
 check("home: row 1 joins our server", w.lastConnect(), "connect " .. OURS)
 w.env.MeowyClientPackHomeJoin(2)
-check("home: row 2 joins the busiest favourite", w.lastConnect(), "connect 2.2.2.2:27015")
+check("home: row 2 joins the friends' server", w.lastConnect(), "connect 8.8.4.4:27015")
+w.env.MeowyClientPackHomeJoin(3)
+check("home: row 3 joins the busiest favourite", w.lastConnect(), "connect 2.2.2.2:27015")
 local before = w.connects()
 w.env.MeowyClientPackHomeJoin(99)
 w.env.MeowyClientPackHomeJoin("2); RunConsoleCommand('quit'")
@@ -975,10 +983,10 @@ check("home: unknown or junk row numbers join nothing", w.connects(), before)
 check("home: logged", (w.logs or ""):find("home: joining 2.2.2.2:27015", 1, true) ~= nil, true)
 w.logs = ""
 w.concommands.meowy_home()
-check("home: meowy_home lists numbered rows", (w.logs or ""):find("  2. Big RP", 1, true) ~= nil, true)
+check("home: meowy_home lists numbered rows", (w.logs or ""):find("  3. Big RP", 1, true) ~= nil, true)
 check("home: meowy_home shows the silent count", (w.logs or ""):find("1 more isn't answering", 1, true) ~= nil, true)
 w.commands = {}
-w.concommands.meowy_home_join(nil, "meowy_home_join", { "3" })
+w.concommands.meowy_home_join(nil, "meowy_home_join", { "4" })
 check("home: meowy_home_join joins that row", w.lastConnect(), "connect 1.1.1.1:27015")
 w.commands = {}
 w.concommands.meowy_home_join(nil, "meowy_home_join", { "x" })

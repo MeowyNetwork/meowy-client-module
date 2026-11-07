@@ -99,7 +99,8 @@ check("model: busiest favourite first", f[1].name, "Big")
 check("model: then by players", f[2].name, "Small")
 check("model: silent favourites counted, not listed", secs[2].note, "1 more isn't answering")
 local r = secs[3].rows
-check("model: recent capped", #r, H.RECENT)
+check("model: recent shows a few", secs[3].show, H.RECENT)
+check("model: but every answering one is a row, for search", #r, 10)
 check("model: recent newest first, no repeats", r[1].name, "New")
 check("model: recent shows when", r[1].detail, "gm_x" .. DOT .. "2 h ago")
 check("model: older after", r[2].name, "Old")
@@ -126,6 +127,20 @@ check("model: password shown", m.sections[1].rows[1].stats, "password" .. DOT ..
 local unnamed = srv("8.8.8.8:27015", "", 1, 2, 3)
 m = H.model({ favorite = { unnamed }, history = {} }, now)
 check("model: no name: the address", m.sections[1].rows[1].name, "8.8.8.8:27015")
+
+-- Friends' servers: first after ours, listed once, hidden when there are none.
+local friends = { srv("2.2.2.2:27015", "Big", 50, 64, 60), srv("9.9.9.9:27015", "Pals", 3, 10, 30) }
+m = H.model({ oursAddress = OURS, ours = srv(OURS, "Meowy", 1, 2, 3), friends = friends, favorite = fav, history = {} }, now)
+check("friends: a section after ours", m.sections[2].title, "Friends are playing on")
+check("friends: shows a few", m.sections[2].show, H.FRIENDS)
+check("friends: busiest first", m.sections[2].rows[1].name, "Big")
+local inFav = false
+for _, row in ipairs(m.sections[3].rows) do if row.name == "Big" then inFav = true end end
+check("friends: not listed again under favourites", m.sections[3].title == "Favourites" and not inFav, true)
+m = H.model({ oursAddress = OURS, friends = nil, favorite = {}, history = {} }, now)
+check("friends: no 'Checking...' section while asking", m.sections[2] == nil or m.sections[2].title ~= "Friends are playing on", true)
+m = H.model({ friends = {}, favorite = {}, history = {} }, now)
+check("friends: none, no section", #m.sections, 0)
 
 -- Encoding for the page
 check("encode: string", H.encode("a\"b"), [["a\x22b"]])
