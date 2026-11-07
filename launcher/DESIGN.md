@@ -213,10 +213,22 @@ signed policy (after the pack's K1 lands) and the early-entry prototype (§9).
 - Rows show the honest list's verdict ("FAKE: 128 shown", "verified"). **Join** accepts an address only
   from the index or the server list the launcher itself holds.
 
+**The pipe (built; live check pending):**
+- `\\.\pipe\meowy-launcher-<SID>`, made by the launcher first (`FILE_FLAG_FIRST_PIPE_INSTANCE`), with a DACL
+  for the current user only, local clients only. The launcher keeps a client only if it's
+  `gmod.exe`/`hl2.exe` in the game folder (query-only rights); the pack keeps the connection only if the
+  pipe's server is the installed `MeowyLauncher.exe`.
+- Lines of JSON, at most 512 bytes. Pack → launcher: `hello` (its version), `state` (menu, joining,
+  ingame) with the engine's own address from `server_gate`, never one from Lua. Launcher → pack: exactly
+  `{"t":"join","a":"a.b.c.d:port"}`, ours or public, which the menu Lua runs as `connect`. Nothing else is
+  taken: no Lua, no commands, no passwords.
+- Each end does all its I/O on one thread (`PeekNamedPipe` before reads), so a read never blocks a write.
+  The pack retries every 5 s while the launcher isn't there.
+- Used for "In the game" in the window, and for joins while the game runs (falling back to
+  `steam://connect` when the pack isn't connected).
+
 **Later:**
-- A pipe `\\.\pipe\meowy-<user SID>` (typed JSON, size caps; never Lua or commands): join while the game
-  runs, status, notifications.
-- "Event starting" notifications; MR2 content preparation while GMod is closed.
+- Notifications from the pack through the pipe; "event starting" notifications; MR2 content preparation while GMod is closed.
 - "Still loading?" for a hung window (`IsHungAppWindow`).
 
 ## 11. Measured claims
