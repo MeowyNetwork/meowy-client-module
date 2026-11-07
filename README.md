@@ -49,7 +49,9 @@ small tray app to `%LOCALAPPDATA%\MeowyClientPack\launcher` and, unless you unti
 you sign in. It never touches the game's memory: it only starts Garry's Mod through Steam and waits for
 it to close.
 - **Play** and **Join Meowy Network** in the tray (and the Start-menu shortcut) start Garry's Mod through
-  Steam with `-disableluarefresh` ("Faster start" in its window turns that off).
+  Steam with `-disableluarefresh` and "lazy fonts" ("Faster start" in its window turns both off): the
+  extracted Workshop fonts in `cache\workshopesourceonts` are moved aside while the game starts and
+  put back as soon as the pack loads; the game registers them again at the first map load anyway.
 - After a Steam update or Verify it puts the start-up line back, once Steam is done and the game is closed
   (never if you turned "Start with the game" off).
 - If the game crashes, or is ended in Task Manager, while you're on a server, a small card offers
