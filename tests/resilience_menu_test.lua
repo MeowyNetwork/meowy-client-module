@@ -174,7 +174,8 @@ local function world(opts)
 	env.IsInLoading = function() return w.loading end
 	-- Convars other parts of the pack own (module.cpp's chunks), only when a test asks.
 	env.GetConVar = opts.engineConVars and function(n)
-		if w.cvars[n] ~= nil then return { GetBool = function() return w.cvars[n] == "1" end } end
+		local value = function() if w.cvars[n] ~= nil then return w.cvars[n] end return w.convars and w.convars[n] end
+		if value() ~= nil then return { GetBool = function() return value() == "1" end } end
 	end or nil
 	-- Engine convars the Escape card reads and sets.
 	w.cvars = { volume = "0.7", voice_scale = "1", fov_desired = "90" }
@@ -188,7 +189,7 @@ local function world(opts)
 	env.SetClipboardText = function(t) w.clipboard = t end
 	env.RunGameUICommand = function(c) w.gameUI = c end
 	-- The Escape menu is open (in game, the menu shows only then).
-	env.gui = { IsGameUIVisible = function() return w.escOpen == true end }
+	env.gui = { IsGameUIVisible = function() return w.escOpen == true end, IsConsoleVisible = function() return w.stockConsole == true end }
 	-- Every Think hook runs each frame, in the order added (resilience, then the Home card).
 	local thinks, order = {}, {}
 	w.hooks = {}
@@ -1608,6 +1609,34 @@ check("console: status command", (w.logs or ""):find("console: spew function", 1
 -- Without the native part: nothing, quietly.
 w = world({ settings = ON, menu = true })
 check("console: capture once per start", w.consoleStarts, 1)
+-- The console key: the game's console showing is hidden again and ours opens,
+-- or closes when open; the key toggles it. Off, the game's console stays.
+local function consoleWindow(ww)
+	for _, p in ipairs(ww.panels or {}) do if rawget(p, "meowyConsole") and not p.removed then return p end end
+end
+w = world({ settings = ON, menu = true })
+w.run(0.5)
+check("console key: nothing while the game's console is shut", consoleWindow(w), nil)
+w.stockConsole = true
+w.run(0.2)
+check("console key: the game's console hidden", w.consoleRuns and w.consoleRuns[#w.consoleRuns], "hideconsole")
+check("console key: ours opens", consoleWindow(w) ~= nil, true)
+w.stockConsole = false
+w.run(0.2)
+w.stockConsole = true
+w.run(0.2)
+check("console key: again closes ours", consoleWindow(w), nil)
+w.stockConsole = false
+w = world({ settings = ON, menu = true, convars = { meowy_console_key = "0" } })
+w.stockConsole = true
+w.run(0.5)
+check("console key off: the game's console left alone", w.consoleRuns, nil)
+w = world({ settings = ON, menu = true, engineConVars = true })
+w.concommands.meowy_settings()
+local ckt = find(function(p) return p.meowyToggle == "console_key" end)
+check("console key: a toggle in settings, on", ckt ~= nil and ckt.on, true)
+if ckt then ckt:SetOn(false) end
+check("console key: turned off through the console", w.convars.meowy_console_key, "0")
 check("no Lua errors", w.errors, nil)
 print(("%d checks, %d failed"):format(count, failures))
 os.exit(failures == 0 and 0 or 1)

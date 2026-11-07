@@ -228,6 +228,16 @@ local function openSettings(startTab)
 			ft.meowyToggle = "fast_serverlist"
 			blocks[#blocks + 1] = ft
 		end
+		-- The console key (console.lua owns the setting).
+		local consoleKey = GetConVar and GetConVar("meowy_console_key")
+		if consoleKey and meowy.ConsoleRun then
+			local ck = UI.Toggle(nil, "The console key opens the Meowy console",
+				"The Meowy console: search, warnings and errors only, repeats collapsed, copy, and commands run as "
+				.. "typed. Off, the key opens Garry's Mod's console; meowy_console still opens this one.",
+				consoleKey:GetBool(), function(on) RunConsoleCommand("meowy_console_key", on and "1" or "0") end)
+			ck.meowyToggle = "console_key"
+			blocks[#blocks + 1] = ck
+		end
 		if UI.Choice and menuScaleSetting then
 			local options = {}
 			for _, pct in ipairs({ 0, 100, 125, 150, 175, 200 }) do

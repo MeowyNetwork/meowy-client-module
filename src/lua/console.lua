@@ -55,9 +55,15 @@ local function fonts()
 end
 
 -- A text box in the kit's style: a surface field, the accent edge while typing.
-local function field(parent, placeholder, inset)
+-- The field (e.box, which callers place) holds the text box set in by `inset`,
+-- so an optional `prefix` mark drawn in that margin never meets the text.
+local function field(parent, placeholder, inset, prefix)
 	inset = inset or S(10)
-	local e = vgui.Create("DTextEntry", parent)
+	local box = vgui.Create("DPanel", parent)
+	local e = vgui.Create("DTextEntry", box)
+	e.box = box
+	e:Dock(FILL)
+	e:DockMargin(inset, 0, S(8), 0)
 	e:SetFont("MeowyPack.Body")
 	e:SetPlaceholderText(placeholder)
 	e:SetPaintBackground(false)
@@ -65,15 +71,19 @@ local function field(parent, placeholder, inset)
 	e:SetCursorColor(C.text)
 	e:SetHighlightColor(C.accentSoft)
 	e:SetPlaceholderColor(C.dim)
+	box.Paint = function(self, w, h)
+		UI.box(S(8), 0, 0, w, h, C.surface, e:HasFocus() and C.accent or C.border)
+		if prefix then draw.SimpleText(prefix, "MeowyPack.Heading", S(12), h / 2 - S(1), C.accent, UI.LEFT, UI.CENTER) end
+		return true
+	end
+	box.OnMousePressed = function() e:RequestFocus() end
 	e.Paint = function(self, w, h)
-		UI.box(S(8), 0, 0, w, h, C.surface, self:HasFocus() and C.accent or C.border)
 		self:DrawTextEntryText(C.text, C.accentSoft, C.text)
 		if self:GetValue() == "" and not self:HasFocus() then
-			draw.SimpleText(placeholder, "MeowyPack.Body", inset, h / 2, C.dim, UI.LEFT, UI.CENTER)
+			draw.SimpleText(placeholder, "MeowyPack.Body", 0, h / 2, C.dim, UI.LEFT, UI.CENTER)
 		end
 		return true
 	end
-	e:SetTextInset(inset, 0)
 	return e
 end
 
@@ -162,7 +172,7 @@ local function open()
 
 	-- The log: a card, monospaced lines, a slim scrollbar.
 	local logPanel = vgui.Create("DPanel", holder)
-	local entry = field(holder, "Type a command and press Enter    (Up and Down: what you typed before)", S(30))
+	local entry = field(holder, "Type a command and press Enter    (Up and Down: what you typed before)", S(30), "\226\128\186")
 	entry:SetFont("MeowyPack.Mono")
 
 	local function maxOffset() return math.max(0, #state.view * lh - (logPanel:GetTall() - S(12))) end
@@ -237,13 +247,7 @@ local function open()
 		state.follow = state.offset >= maxOffset() - 1
 	end
 
-	-- The command line: a prompt mark in the accent, history on Up and Down.
-	local entryPaint = entry.Paint
-	entry.Paint = function(self, w, h)
-		entryPaint(self, w, h)
-		draw.SimpleText("\226\128\186", "MeowyPack.Heading", S(12), h / 2 - S(1), C.accent, UI.LEFT, UI.CENTER)
-		return true
-	end
+	-- The command line: history on Up and Down (its prompt mark is the field's).
 	entry.OnEnter = function(self)
 		run(self:GetValue())
 		self:SetText("")
@@ -286,9 +290,9 @@ local function open()
 		header:SetSize(iw - S(40), S(46))
 		close:SetPos(M + (w - M * 2) - PAD - close:GetWide() + S(6), y + S(8))
 		y = y + S(52)
-		search:SetPos(x, y)
-		search:SetSize(math.min(S(320), iw * 0.35), S(36))
-		bad:SetPos(x + search:GetWide() + S(12), y + S(3))
+		search.box:SetPos(x, y)
+		search.box:SetSize(math.min(S(320), iw * 0.35), S(36))
+		bad:SetPos(x + search.box:GetWide() + S(12), y + S(3))
 		collapse:SetPos(bad.x + bad:GetWide() + S(8), y + S(3))
 		clear:SetPos(x + iw - clear:GetWide(), y - S(1))
 		copy:SetPos(clear.x - copy:GetWide() - S(8), y - S(1))
@@ -296,8 +300,8 @@ local function open()
 		local entryH = S(40)
 		logPanel:SetPos(x, y)
 		logPanel:SetSize(iw, h - M - PAD - entryH - S(10) - y)
-		entry:SetPos(x, h - M - PAD - entryH)
-		entry:SetSize(iw, entryH)
+		entry.box:SetPos(x, h - M - PAD - entryH)
+		entry.box:SetSize(iw, entryH)
 		grip:SetPos(w - M - S(20), h - M - S(20))
 		grip:SetSize(S(18), S(18))
 		rebuild()
@@ -317,6 +321,23 @@ local function open()
 	rebuild()
 	entry:RequestFocus()
 end
+
+-- The console key (` unless rebound) opens this window instead of the game's
+-- console: the moment the game's console shows, it's hidden again and this
+-- window opens, or closes if it's open, so the key toggles it. Off, the key
+-- opens the game's console as before (and meowy_console still opens this).
+local keySetting = meowy.Setting and meowy.Setting("meowy_console_key", "1",
+	"Meowy Client Pack: the console key opens the Meowy console (0 = Garry's Mod's console)")
+local stockShown = false
+hook.Add("Think", "MeowyClientPack.ConsoleKey", function()
+	if not (keySetting and keySetting:GetBool() and gui and gui.IsConsoleVisible and meowy.ConsoleRun) then return end
+	local shown = gui.IsConsoleVisible()
+	if shown and not stockShown then
+		meowy.ConsoleRun("hideconsole")
+		if IsValid(holder) then holder:Remove() else open() end
+	end
+	stockShown = shown
+end)
 
 concommand.Add("meowy_console", function() open() end, nil,
 	"Meowy Client Pack: the console, searchable, with warnings and errors only and repeats collapsed")
