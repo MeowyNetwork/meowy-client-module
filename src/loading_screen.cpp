@@ -33,14 +33,25 @@ namespace
 		L"Starting the city's scripts",
 		L"Almost there",
 	};
+	// Another server (BeginOther): the same stages in general words.
+	const wchar_t* const kOtherStageNames[STAGES] = { L"Connect", L"Content", L"Map", L"Scripts", L"Ready" };
+	const wchar_t* const kOtherStageLines[STAGES] = {
+		L"Connecting to the server",
+		L"Getting the server's content",
+		L"Loading the map",
+		L"Starting the server's scripts",
+		L"Almost there",
+	};
 	// Seconds per stage on a warm join (2026-11-03 profiles), until this PC
 	// has its own times in %LOCALAPPDATA%\MeowyClientPack\join_times.txt.
 	const double kDefaultSecs[STAGES] = { 6, 4, 22, 30, 4 };
+	// Other servers' own times, by address, newest first (join_times_servers.txt).
+	constexpr size_t kMaxServerTimes = 50;
 	// Fade-in is short: while it runs, GMod's own loading page shows through.
 	constexpr ULONGLONG kFadeInMs = 60, kFadeOutMs = 600, kQuickFadeMs = 150;
 	// After the loading panel closes, wait this long for the client Lua's Done
-	// before fading out anyway.
-	constexpr ULONGLONG kInGameTimeoutMs = 15000;
+	// before fading out anyway. Another server never sends Done: a moment, then out.
+	constexpr ULONGLONG kInGameTimeoutMs = 15000, kInGameOtherMs = 1500;
 	// How long the page may hold the fade-out for a game in progress (once).
 	constexpr ULONGLONG kHoldMs = 5000;
 	// The page asked for keyboard focus (a game uses Space): the window may be
@@ -73,6 +84,9 @@ namespace
 		ULONGLONG stageStart[STAGES] = {};
 		double expected[STAGES] = {};
 		std::wstring server = L"Meowy Network", map, status, steamid;
+		bool other = false;             // another server's join: the neutral native screen, no web page
+		std::wstring address;           // that server's, for its own stage times
+		bool knownTimes = true;         // expected[] is this server's own (else no ETA for another server)
 		std::wstring dataDir;
 		FILE* log = nullptr;            // last_join.txt in the pack data folder: what this join went through
 	};
@@ -81,19 +95,67 @@ namespace
 
 	// --- Stage times --------------------------------------------------------
 
+	// Other servers' times: "address t0 t1 t2 t3 t4" lines, newest first.
+	struct ServerTimes
+	{
+		std::string address;
+		double t[STAGES];
+	};
+
+	std::string Ascii(const std::wstring& s)
+	{
+		std::string out;
+		for (wchar_t c : s)
+			if (c > L' ' && c <= L'~')
+				out += static_cast<char>(c);
+		return out;
+	}
+
+	std::vector<ServerTimes> ReadServerTimes()
+	{
+		std::vector<ServerTimes> list;
+		FILE* f = _wfopen((g.dataDir + L"\\join_times_servers.txt").c_str(), L"r");
+		if (!f)
+			return list;
+		char address[80];
+		ServerTimes e;
+		while (list.size() < kMaxServerTimes &&
+			std::fscanf(f, "%79s %lf %lf %lf %lf %lf", address, &e.t[0], &e.t[1], &e.t[2], &e.t[3], &e.t[4]) == 1 + STAGES)
+		{
+			e.address = address;
+			list.push_back(e);
+		}
+		std::fclose(f);
+		return list;
+	}
+
 	void LoadExpected()
 	{
 		for (int i = 0; i < STAGES; ++i)
 			g.expected[i] = kDefaultSecs[i];
-		FILE* f = _wfopen((g.dataDir + L"\\join_times.txt").c_str(), L"r");
-		if (!f)
-			return;
+		g.knownTimes = !g.other;
 		double v[STAGES];
-		if (std::fscanf(f, "%lf %lf %lf %lf %lf", &v[0], &v[1], &v[2], &v[3], &v[4]) == STAGES)
+		bool found = false;
+		if (g.other)
+		{
+			const std::string address = Ascii(g.address);
+			for (const ServerTimes& e : ReadServerTimes())
+				if (!address.empty() && e.address == address)
+				{
+					std::copy(e.t, e.t + STAGES, v);
+					found = g.knownTimes = true;
+					break;
+				}
+		}
+		else if (FILE* f = _wfopen((g.dataDir + L"\\join_times.txt").c_str(), L"r"))
+		{
+			found = std::fscanf(f, "%lf %lf %lf %lf %lf", &v[0], &v[1], &v[2], &v[3], &v[4]) == STAGES;
+			std::fclose(f);
+		}
+		if (found)
 			for (int i = 0; i < STAGES; ++i)
 				if (v[i] > 0.5 && v[i] < 600)
 					g.expected[i] = v[i];
-		std::fclose(f);
 	}
 
 	// Called with g.m held, once the player is in. Stages that were seen get
@@ -112,6 +174,27 @@ namespace
 			out[i] = (next - g.stageStart[i]) / 1000.0;
 		}
 		CreateDirectoryW(g.dataDir.c_str(), nullptr);
+		if (g.other)
+		{
+			const std::string address = Ascii(g.address);
+			if (address.empty() || address.size() > 79)
+				return;
+			std::vector<ServerTimes> list = ReadServerTimes();
+			list.erase(std::remove_if(list.begin(), list.end(), [&](const ServerTimes& e) { return e.address == address; }), list.end());
+			ServerTimes now;
+			now.address = address;
+			std::copy(out, out + STAGES, now.t);
+			list.insert(list.begin(), now);
+			if (list.size() > kMaxServerTimes)
+				list.resize(kMaxServerTimes);
+			FILE* f = _wfopen((g.dataDir + L"\\join_times_servers.txt").c_str(), L"w");
+			if (!f)
+				return;
+			for (const ServerTimes& e : list)
+				std::fprintf(f, "%s %.1f %.1f %.1f %.1f %.1f\n", e.address.c_str(), e.t[0], e.t[1], e.t[2], e.t[3], e.t[4]);
+			std::fclose(f);
+			return;
+		}
 		FILE* f = _wfopen((g.dataDir + L"\\join_times.txt").c_str(), L"w");
 		if (!f)
 			return;
@@ -290,6 +373,7 @@ namespace
 		double expected[STAGES];
 		ULONGLONG starts[STAGES], begin;
 		std::wstring server, map, status;
+		bool other, known;
 		{
 			std::lock_guard<std::mutex> lock(g.m);
 			stage = g.stage;
@@ -302,7 +386,12 @@ namespace
 			server = g.server;
 			map = g.map;
 			status = g.status;
+			other = g.other;
+			known = g.knownTimes;
 		}
+		// Another server: neutral (no Meowy brand, games or rose), its own words.
+		const wchar_t* const* stageNames = other ? kOtherStageNames : kStageNames;
+		const wchar_t* const* stageLines = other ? kOtherStageLines : kStageLines;
 		SetBkMode(dc, TRANSPARENT);
 		// Work in the page's CSS pixels: cw x ch is its viewport.
 		const double k = g_cssScale > 0.5 ? g_cssScale : 1.0;
@@ -311,12 +400,13 @@ namespace
 		auto clampd = [](double lo, double x, double hi) { return std::max(lo, std::min(x, hi)); };
 
 		const COLORREF white = RGB(255, 255, 255), dim = RGB(190, 188, 196), faint = RGB(128, 126, 134),
-			rose = RGB(225, 29, 72), rose2 = RGB(251, 113, 133), glass = RGB(22, 21, 27), glass2 = RGB(30, 28, 36),
+			rose = other ? RGB(79, 70, 229) : RGB(225, 29, 72), rose2 = other ? RGB(165, 180, 252) : RGB(251, 113, 133),
+			glass = RGB(22, 21, 27), glass2 = RGB(30, 28, 36),
 			line = RGB(40, 39, 46), track = RGB(44, 43, 50), done = RGB(205, 204, 210), ready = RGB(34, 197, 94);
 
-		// Background: near black with a faint rose tint at the top.
+		// Background: near black with a faint tint at the top (rose, or blue for another server).
 		TRIVERTEX vert[2] = {
-			{ 0, 0, 0x1C00, 0x0F00, 0x1400, 0xFF00 },
+			{ 0, 0, static_cast<COLOR16>(other ? 0x0E00 : 0x1C00), 0x0F00, static_cast<COLOR16>(other ? 0x1E00 : 0x1400), 0xFF00 },
 			{ w, h, 0x0A00, 0x0A00, 0x0C00, 0xFF00 },
 		};
 		GRADIENT_RECT gr = { 0, 1 };
@@ -328,16 +418,26 @@ namespace
 		// ─── Top bar: brand and the page buttons (the page makes them work) ───
 		int cy = topH / 2;
 		Fill(dc, { pad, cy - S(14), pad + S(28), cy + S(14) }, rose, S(10));
-		Text(dc, FontFor(S(15), FW_BOLD), white, L"MEOWY NETWORK", { pad + S(40), 0, pad + S(260), topH }, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-		int navX = pad + S(40) + S(178) + S(clampd(16, cw * 0.03, 48));
-		Fill(dc, { navX, cy - S(21), navX + S(4) + 3 * S(76) + S(4), cy + S(21) }, RGB(24, 23, 28), S(42));
-		const wchar_t* tabs[] = { L"Home", L"Play", L"City" };
-		for (int i = 0; i < 3; ++i)
+		if (other)
 		{
-			RECT t = { navX + S(4) + i * S(76), cy - S(17), navX + S(4) + i * S(76) + S(76), cy + S(17) };
-			if (i == 0)
-				Fill(dc, t, rose, S(36));
-			Text(dc, FontFor(S(15), FW_SEMIBOLD), i == 0 ? white : dim, tabs[i], t, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+			// The game's name, and whose screen this is (so it can be turned off).
+			Text(dc, FontFor(S(15), FW_BOLD), white, L"GARRY’S MOD", { pad + S(40), 0, pad + S(260), topH }, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+			Text(dc, FontFor(S(13), FW_NORMAL), faint, L"Loading screen by the Meowy Client Pack", { w / 2, 0, w - pad, topH },
+				DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+		}
+		else
+		{
+			Text(dc, FontFor(S(15), FW_BOLD), white, L"MEOWY NETWORK", { pad + S(40), 0, pad + S(260), topH }, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+			int navX = pad + S(40) + S(178) + S(clampd(16, cw * 0.03, 48));
+			Fill(dc, { navX, cy - S(21), navX + S(4) + 3 * S(76) + S(4), cy + S(21) }, RGB(24, 23, 28), S(42));
+			const wchar_t* tabs[] = { L"Home", L"Play", L"City" };
+			for (int i = 0; i < 3; ++i)
+			{
+				RECT t = { navX + S(4) + i * S(76), cy - S(17), navX + S(4) + i * S(76) + S(76), cy + S(17) };
+				if (i == 0)
+					Fill(dc, t, rose, S(36));
+				Text(dc, FontFor(S(15), FW_SEMIBOLD), i == 0 ? white : dim, tabs[i], t, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+			}
 		}
 
 		// ─── Hero (left) ───────────────────────────────────────────────────────
@@ -346,18 +446,49 @@ namespace
 		int leftW = (w - 2 * pad - colGap) * 11 / 21;
 		const int titlePx = S(clampd(34, cw * 0.042, 76));
 		int heroY = pageTop + (pageBottom - pageTop) / 2 - titlePx * 2;
-		std::wstring eyebrow = L"JOINING " + (map.empty() ? std::wstring(L"DOWNTOWN") : map);
+		std::wstring eyebrow = map.empty() ? std::wstring(other ? L"JOINING A SERVER" : L"JOINING DOWNTOWN") : L"JOINING " + map;
 		for (auto& c : eyebrow)
 			c = static_cast<wchar_t>(towupper(c));
 		Text(dc, FontFor(S(13), FW_BOLD), rose2, eyebrow, { pad, heroY, pad + leftW, heroY + S(20) }, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
 		RECT title = { pad, heroY + S(26), pad + leftW, heroY + S(26) + titlePx * 7 / 2 };   // up to three lines
 		Text(dc, FontFor(titlePx, FW_HEAVY), white, server, title, DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS);
 
-		// ─── Game cards (right) ────────────────────────────────────────────────
+		// ─── Game cards (right); for another server, where the time goes ─────
 		int rx = pad + leftW + colGap, rw = w - pad - rx;
+		if (other)
+		{
+			// Each stage: done (its time), now (live), or to come (its usual time, if known).
+			int rowH = S(52), listTop = pageTop + (pageBottom - pageTop - (S(30) + STAGES * rowH)) / 2;
+			Text(dc, FontFor(S(clampd(13, cw * 0.0095, 16)), FW_BOLD), faint, L"WHERE THE TIME GOES", { rx, listTop, rx + rw, listTop + S(24) }, DT_LEFT | DT_SINGLELINE);
+			for (int i = 0; i < STAGES; ++i)
+			{
+				int y = listTop + S(30) + i * rowH;
+				RECT row = { rx, y, rx + rw, y + rowH - S(8) };
+				Fill(dc, row, i == stage ? glass2 : glass, S(12));
+				Fill(dc, { row.left + S(14), (row.top + row.bottom) / 2 - S(5), row.left + S(24), (row.top + row.bottom) / 2 + S(5) },
+					i < stage ? done : i == stage ? (stage == READY ? ready : rose) : track, S(10));
+				Text(dc, FontFor(S(15), i == stage ? FW_BOLD : FW_NORMAL), i <= stage ? white : dim, stageLines[i],
+					{ row.left + S(38), row.top, row.right - S(110), row.bottom }, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+				wchar_t secs[48] = L"";
+				if (starts[i] && (i < stage || i == stage))
+				{
+					ULONGLONG end = now;
+					for (int j = i + 1; j < STAGES; ++j)
+						if (starts[j]) { end = starts[j]; break; }
+					swprintf(secs, 48, L"%.0f s", (end - starts[i]) / 1000.0);
+				}
+				else if (i > stage && known)
+				{
+					swprintf(secs, 48, L"usually %.0f s", expected[i]);
+				}
+				Text(dc, FontFor(S(13), FW_NORMAL), i == stage ? white : faint, secs, { row.right - S(110), row.top, row.right - S(14), row.bottom },
+					DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+			}
+		}
 		int cardH = S(108), cardGap = S(12);
 		int cardsTop = pageTop + (pageBottom - pageTop - (S(30) + 3 * cardH + 2 * cardGap)) / 2;
-		Text(dc, FontFor(S(clampd(13, cw * 0.0095, 16)), FW_BOLD), faint, L"SOMETHING TO DO WHILE YOU WAIT", { rx, cardsTop, rx + rw, cardsTop + S(24) }, DT_LEFT | DT_SINGLELINE);
+		if (!other)
+			Text(dc, FontFor(S(clampd(13, cw * 0.0095, 16)), FW_BOLD), faint, L"SOMETHING TO DO WHILE YOU WAIT", { rx, cardsTop, rx + rw, cardsTop + S(24) }, DT_LEFT | DT_SINGLELINE);
 		const wchar_t* names[] = { L"Where in Downtown?", L"Rooftop run", L"The city cat" };
 		const wchar_t* blurbs[] = {
 			L"A photo from somewhere in the city. Find it on the map.",
@@ -365,7 +496,7 @@ namespace
 			L"Pet the cat. Head, cheeks, nose, belly or tail: she reacts to all of them.",
 		};
 		int y0 = cardsTop + S(30);
-		for (int i = 0; i < 3; ++i)
+		for (int i = 0; i < (other ? 0 : 3); ++i)
 		{
 			int y = y0 + i * (cardH + cardGap);
 			if (y + cardH > pageBottom - S(10))
@@ -412,7 +543,7 @@ namespace
 			detail = L"This is taking longer than usual.";
 		int gapS = S(clampd(12, cw * 0.016, 28));   // .pl-strip gap: clamp(12px, 1.6vw, 28px)
 		int tx = sx + sr + gapS, tw = S(clampd(220, cw * 0.22, 380));
-		Text(dc, FontFor(S(17), FW_BOLD), white, stage == READY ? L"You’re in! Spawning…" : kStageLines[stage],
+		Text(dc, FontFor(S(17), FW_BOLD), white, stage == READY ? L"You’re in! Spawning…" : stageLines[stage],
 			{ tx, sy - S(22), tx + tw, sy }, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
 		Text(dc, FontFor(S(13), FW_NORMAL), dim, detail, { tx, sy + S(2), tx + tw, sy + S(22) }, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
 
@@ -434,7 +565,11 @@ namespace
 			remain += expected[i];
 		ULONGLONG joining = (now - begin) / 1000;
 		wchar_t clock[64], since[64];
-		swprintf(clock, 64, stage == READY ? L"Ready now" : L"Ready around %s", Clock(static_cast<ULONGLONG>(remain * 1000)).c_str());
+		// No guess on a server this PC hasn't joined before: just the time so far.
+		if (!known && stage != READY)
+			swprintf(clock, 64, L"First join here");
+		else
+			swprintf(clock, 64, stage == READY ? L"Ready now" : L"Ready around %s", Clock(static_cast<ULONGLONG>(remain * 1000)).c_str());
 		swprintf(since, 64, L"Joining for %llu:%02llu", joining / 60, joining % 60);
 		int etaR = hide.left - gapS, etaL = etaR - S(150);
 		Text(dc, FontFor(S(16), FW_BOLD), white, clock, { etaL, sy - S(22), etaR, sy }, DT_RIGHT | DT_SINGLELINE);
@@ -455,7 +590,7 @@ namespace
 					full.right = s.left + std::max(static_cast<int>(segW * f), S(7));
 					Fill(dc, full, stage == READY ? ready : i == stage ? rose : done, S(7));
 				}
-				Text(dc, FontFor(S(12), FW_NORMAL), i <= stage ? white : faint, kStageNames[i], { s.left, sy + S(2), s.right, sy + S(20) },
+				Text(dc, FontFor(S(12), FW_NORMAL), i <= stage ? white : faint, stageNames[i], { s.left, sy + S(2), s.right, sy + S(20) },
 					DT_LEFT | DT_SINGLELINE);
 			}
 		}
@@ -753,6 +888,7 @@ namespace
 		bool shown = false;
 		ULONGLONG shownAt = 0;
 		unsigned seenJoin = 0;
+		bool joinOther = false;   // this join is to another server: native drawing only, never the web page
 		// The native drawing's back buffer: `bmp` selected into `mem`, and the
 		// bitmap `mem` came with, put back before `bmp` is deleted (GDI won't
 		// delete a bitmap that's selected into a DC).
@@ -804,6 +940,7 @@ namespace
 				{
 					std::lock_guard<std::mutex> lock(g.m);
 					dataDir = g.dataDir;
+					joinOther = g.other;
 				}
 				shotDir.clear();
 				if (GetFileAttributesW((dataDir + L"\\screenshot_debug").c_str()) != INVALID_FILE_ATTRIBUTES)
@@ -823,7 +960,12 @@ namespace
 				// browser, and the game thread takes g.m every frame. It may also
 				// pump this thread's messages, and WndProc takes g.m.
 				const char* web;
-				if (!webOn && SUCCEEDED(com))
+				if (joinOther)
+				{
+					// The page is Meowy Network's; another server gets the neutral native screen.
+					web = "web not used (another server)";
+				}
+				else if (!webOn && SUCCEEDED(com))
 				{
 					webOn = loading_webview::Start(v.hwnd, PageUrl(), WebProfileDir());
 					web = webOn ? "web start" : "web unavailable";
@@ -836,7 +978,7 @@ namespace
 				Log(web);
 			}
 
-			if (webOn)
+			if (webOn && !joinOther)
 			{
 				double scale = loading_webview::RasterScale();
 				if (scale >= 0.5 && scale <= 4 && std::fabs(scale - g_cssScale) > 0.001)
@@ -908,7 +1050,7 @@ namespace
 				std::lock_guard<std::mutex> lock(g.m);
 				if (!g.finishing && g.done && now - g.doneAt > 300 && now >= g.holdUntil)
 					FinishLocked(false);
-				if (!g.finishing && g.inGame && !g.done && now - g.inGameAt > kInGameTimeoutMs)
+				if (!g.finishing && g.inGame && !g.done && now - g.inGameAt > (g.other ? kInGameOtherMs : kInGameTimeoutMs))
 					FinishLocked(false);
 				if (g.finishing)
 				{
@@ -1072,7 +1214,8 @@ namespace
 
 namespace loading_screen
 {
-	void Begin(const std::wstring& dataDir, double panelOpenMs)
+	void BeginJoin(const std::wstring& dataDir, double panelOpenMs, bool other, const std::wstring& server, const std::wstring& map,
+		const std::wstring& address)
 	{
 		static bool ghostingOff = false;
 		if (!ghostingOff)
@@ -1093,8 +1236,10 @@ namespace loading_screen
 		for (int i = 0; i < STAGES; ++i)
 			g.stageStart[i] = 0;
 		g.stageStart[CONNECT] = now;
-		g.server = L"Meowy Network";
-		g.map.clear();
+		g.other = other;
+		g.server = server;
+		g.map = map;
+		g.address = address;
 		g.steamid.clear();
 		g.status = L"Connecting…";
 		g_cancel = false;
@@ -1102,11 +1247,26 @@ namespace loading_screen
 		CloseLog();
 		CreateDirectoryW(dataDir.c_str(), nullptr);
 		g.log = _wfopen((dataDir + L"\\last_join.txt").c_str(), L"w");
-		Log("begin", "GMod's loading panel open " + std::to_string(static_cast<long long>(panelOpenMs)) + " ms");
+		Log(other ? "begin (another server)" : "begin", "GMod's loading panel open " + std::to_string(static_cast<long long>(panelOpenMs)) + " ms");
 
 		g.joining = true;
 		++g.joinSeq;
 		StartThreadLocked();
+	}
+
+	void Begin(const std::wstring& dataDir, double panelOpenMs)
+	{
+		BeginJoin(dataDir, panelOpenMs, false, L"Meowy Network", L"", L"");
+	}
+
+	void BeginOther(const std::wstring& dataDir, double panelOpenMs, const std::string& serverName, const std::string& map,
+		const std::string& address)
+	{
+		std::wstring name = Widen(serverName);
+		for (wchar_t& c : name)
+			if (c == L'\r' || c == L'\n' || c == L'\t')
+				c = L' ';
+		BeginJoin(dataDir, panelOpenMs, true, name.empty() ? Widen(address) : name, Widen(map), Widen(address));
 	}
 
 	void Prewarm(const std::wstring& dataDir)
@@ -1167,6 +1327,9 @@ namespace loading_screen
 		g.inGame = true;
 		g.inGameAt = now;
 		Advance(READY, now);
+		// Another server never sends Done: its times are kept from here.
+		if (g.other && !g.quick)
+			SaveTimes(now);
 		Log("in game");
 	}
 
@@ -1217,6 +1380,7 @@ namespace loading_screen
 namespace loading_screen
 {
 	void Begin(const std::wstring&, double) {}
+	void BeginOther(const std::wstring&, double, const std::string&, const std::string&, const std::string&) {}
 	void Prewarm(const std::wstring&) {}
 	void Details(const std::string&, const std::string&, const std::string&) {}
 	void Status(const std::string&) {}
