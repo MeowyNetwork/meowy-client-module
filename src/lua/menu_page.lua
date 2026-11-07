@@ -62,6 +62,28 @@ local function post(kind, value)
 	h(value)
 end
 
+-- The subscribed addons, for the home's search (shell.js): titles and IDs as
+-- JSON, sent when the list changes or the page has reloaded, not every second.
+local ADDONS_MAX, ADDONS_LOOK = 2000, 10   -- addons, seconds between looks
+local addonsSent, addonsAt, addonsText = nil, -math.huge, nil
+local function sendAddons(now)
+	if now - addonsAt >= ADDONS_LOOK or not addonsText then
+		addonsAt = now
+		local list = {}
+		local ok, addons = pcall(engine and engine.GetAddons or function() return {} end)
+		for _, a in ipairs(ok and istable(addons) and addons or {}) do
+			if #list >= ADDONS_MAX then break end
+			if isstring(a.title) and a.title ~= "" then
+				list[#list + 1] = { t = a.title:sub(1, 120), w = tostring(a.wsid or ""), m = a.mounted == true }
+			end
+		end
+		addonsText = #list > 0 and Home.encode(list) or "[]"   -- a JavaScript literal, strings escaped
+	end
+	if addonsText == addonsSent then return end
+	pnlMainMenu:Call("window.MeowyAddons = " .. addonsText .. ";\nif (window.MeowyShellLists) window.MeowyShellLists();\n")
+	addonsSent = addonsText
+end
+
 local function tick()
 	local now = SysTime()
 	if now < nextLook then return end
@@ -75,7 +97,7 @@ local function tick()
 		-- not up to a second later, so the stock list and news don't flash.
 		local ready = html.OnDocumentReady
 		html.OnDocumentReady = function(self, url, ...)
-			sent, zoomSent, nextLook = nil, nil, 0
+			sent, zoomSent, nextLook, addonsSent = nil, nil, 0, nil
 			if ready then return ready(self, url, ...) end
 		end
 	end
@@ -103,6 +125,7 @@ local function tick()
 		if want or sent then
 			pnlMainMenu:Call(shellJs() .. "\nwindow.MeowyShell(" .. tostring(want) .. ");\n")
 		end
+		if want then sendAddons(now) end
 		if want ~= sent then log("menu page: %s", want and "our home is on" or "Garry's Mod's main screen") end
 		sent, sentAt = want, now
 	end

@@ -70,13 +70,22 @@ local function setHome(on)
 	RunConsoleCommand("meowy_menu_home", on and "1" or "0")
 end
 
--- Our own main menu page (menu_page.lua), a preview: off unless turned on.
-local menuSetting = meowy.Setting and meowy.Setting("meowy_menu", "0",
-	"Meowy Client Pack: our own main menu page instead of Garry's Mod's (preview; 0 = Garry's Mod's)")
+-- Our own home screen (menu_page.lua), on by default since it left preview.
+local menuSetting = meowy.Setting and meowy.Setting("meowy_menu", "1",
+	"Meowy Client Pack: the Meowy home screen instead of Garry's Mod's main screen (0 = Garry's Mod's)")
 local function menuOn() return menuSetting ~= nil and menuSetting:GetBool() end
 local function setMenu(on)
 	-- Through the console: Garry's Mod refuses ConVar:SetBool on these menu convars.
 	RunConsoleCommand("meowy_menu", on and "1" or "0")
+end
+-- Every setting is saved as soon as any one changes, so while the home screen
+-- was a preview (off by default) most players got "meowy_menu=0" written
+-- without choosing it. Once, when it left preview: on, whatever was saved.
+local menuVersion = meowy.Setting and meowy.Setting("meowy_menu_version", "0",
+	"Meowy Client Pack: internal (which home screen default has been applied)")
+if menuVersion and menuVersion:GetString() ~= "2" then
+	RunConsoleCommand("meowy_menu", "1")
+	RunConsoleCommand("meowy_menu_version", "2")
 end
 -- The menu page's text size (menu_page.lua): "0" auto, or a percentage.
 local menuScaleSetting = meowy.Setting and meowy.Setting("meowy_menu_scale", "0",
@@ -254,10 +263,11 @@ local function openSettings(startTab)
 			blocks[#blocks + 1] = et
 		end
 		if meowy.MenuShellJs then
-			local mt = UI.Toggle(nil, "Meowy home screen (preview)",
-				"Our home in place of Garry's Mod's main screen: Continue, your servers with search, and the usual "
-				.. "links (servers, addons and the rest are Garry's Mod's own screens, as before). \"Use Garry's Mod's "
-				.. "menu\" at the bottom, or turning this off, puts the usual main screen back.",
+			local mt = UI.Toggle(nil, "Meowy home screen",
+				"Our home in place of Garry's Mod's main screen: Continue, your servers, one search for servers, maps, "
+				.. "addons and settings, Garry's Mod's news, and the usual links (servers, addons and the rest are Garry's "
+				.. "Mod's own screens, as before). \"Use Garry's Mod's menu\" at the bottom, or turning this off, puts the "
+				.. "usual main screen back.",
 				menuOn(), function(on) setMenu(on) end)
 			mt.meowyToggle = "menu_page"
 			mt.gapBefore = S(10)

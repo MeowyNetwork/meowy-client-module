@@ -295,11 +295,12 @@ the game closes while the pack is starting, the next start skips it once by itse
   1080p, 133% at 1440p and 200% at 4K. Or pick 100–200% in Meowy settings (`meowy_menu_scale`, 0 =
   auto). It covers the main and Escape menus and every screen in them (Find servers, New game,
   Addons and the rest). The pack's own windows already scale with the screen.
-- **Meowy home screen (preview, off by default).** `meowy_menu 1`, or "Meowy home screen (preview)" in
-  Meowy settings, puts the pack's home in place of Garry's Mod's main screen. It has:
+- **Meowy home screen (on by default).** The pack's home in place of Garry's Mod's main screen ("Meowy home
+  screen" in Meowy settings, `meowy_menu`). It has:
   - **Continue**, and your servers, as on the card below;
-  - **one search box** (`/` to get to it) for your servers and your installed maps. A map opens Start new
-    game with that map chosen;
+  - **one search box** (`/` to get to it) for your servers, installed maps, subscribed addons and settings.
+    A map opens Start new game with that map chosen, an addon opens Addons, and a setting (by its name or
+    what it covers, like "volume") opens Options or Meowy settings;
   - **Garry's Mod's news**, the latest three, from its own feed, opened the way Garry's Mod opens them;
   - **the usual links:** Find servers, Start new game, Addons, Dupes, Saves and Demos are Garry's Mod's own
     screens. Options, Meowy settings and Quit work as usual, and Garry's Mod's bottom bar (Problems,
@@ -316,7 +317,9 @@ the game closes while the pack is starting, the next start skips it once by itse
     Meowy settings, Quit), each with its value checked.
 
   **Use Garry's Mod's menu** at the bottom switches back for the rest of that start; `meowy_menu 0`
-  turns it off. `meowy_menu_status` says which is showing, and why.
+  turns it off. `meowy_menu_status` says which is showing, and why. While it was a preview most players got
+  `meowy_menu=0` saved without choosing it (every setting is saved when any one changes), so it's turned on
+  once for everyone when this version first starts; turning it off after that sticks.
 - **Server card in the Escape menu.** In game, the same spot in the Escape menu shows the server you're
   on, any server, plus three quick settings:
   - **The server:** its name, map and players (its own answer, asked at most every 30 seconds while
