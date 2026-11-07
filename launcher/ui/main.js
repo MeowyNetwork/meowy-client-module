@@ -40,6 +40,8 @@ async function refresh() {
   $("back-up").checked = s.notify_back_up;
   $("sign-in").checked = s.start_at_sign_in;
   $("updates").textContent = s.updates;
+  $("notice").textContent = s.notice || "";
+  $("notice").hidden = !s.notice;
   $("play").disabled = !s.steam;
   $("join").textContent = s.running ? "Join Meowy Network now" : "Join Meowy Network";
 }

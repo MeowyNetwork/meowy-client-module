@@ -11,6 +11,7 @@ pub mod line;
 pub mod links;
 pub mod pipe;
 pub mod log;
+pub mod policy;
 pub mod session;
 pub mod settings;
 pub mod steam;
