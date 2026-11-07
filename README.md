@@ -227,8 +227,14 @@ the game closes while the pack is starting, the next start skips it once by itse
   server, and none is kept while it's off.
 - **Your servers on the main menu.** A card at the bottom right of the main menu, out of game only:
   - Meowy Network's live player count and map;
+  - servers your Steam friends are playing on (the game's own friends server list: servers only, no
+    friend's name is read);
   - your favourites, busiest first;
   - the servers you played on lately, newest first, with when.
+
+  **Search** at the top of the card looks through every server in those lists (name or map), not just
+  the ones shown; the search happens on the page, so nothing you type is sent anywhere. `/` jumps to it,
+  the arrow keys move, Enter joins the marked server, Esc clears.
 
   Each row is the server's own answer (name, map, players without bots, ping); one click joins it, and
   nothing joins on its own. `meowy_home` lists the rows numbered, and `meowy_home_join <n>` joins one.
