@@ -34,8 +34,9 @@ namespace prewarm
 
 	// A join is loading: start a fresh list (and stop any warming).
 	void BeginJoin();
-	// In game on `address` (checked by the caller): keep the list for it.
-	// Returns how many files were kept.
+	// In game on `address` (checked by the caller): keep the list for it, with
+	// what earlier joins of it learned (a rejoin in the same game start opens
+	// only what isn't loaded already). Returns how many files were kept.
 	int EndJoin(const std::wstring& dir, const std::string& address);
 
 	// Whether a list is kept for `address`, and its total size.
@@ -59,6 +60,11 @@ namespace prewarm
 		struct Item { std::string path; int64_t size; };
 		bool Parse(const std::string& text, std::vector<Item>& out, std::vector<uint64_t>* workshop = nullptr);
 		std::string Format(const std::vector<Item>& items, const std::vector<uint64_t>& workshop = {});
+		// A join's list with what earlier joins of the server learned: this join's
+		// files first, then earlier ones it didn't open (any case) that keep(item)
+		// says are still there; the Workshop items of both. At most the usual caps.
+		void Merge(std::vector<Item>& items, std::vector<uint64_t>& workshop, const std::vector<Item>& before,
+			const std::vector<uint64_t>& workshopBefore, bool (*keep)(const Item&));
 		// The Workshop item behind a game file path, or 0: ...\workshop\content\4000\<id>\...
 		// or ...\cache\workshop\<id>.gma (either slash, any case).
 		uint64_t WorkshopId(const std::string& path);

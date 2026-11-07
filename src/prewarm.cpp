@@ -188,6 +188,35 @@ namespace prewarm
 			return !out.empty();
 		}
 
+		void Merge(std::vector<Item>& items, std::vector<uint64_t>& workshop, const std::vector<Item>& before,
+			const std::vector<uint64_t>& workshopBefore, bool (*keep)(const Item&))
+		{
+			const auto lower = [](std::string s) {
+				for (char& c : s)
+					if (c >= 'A' && c <= 'Z')
+						c = static_cast<char>(c - 'A' + 'a');
+				return s;
+			};
+			std::unordered_set<std::string> seen;
+			for (const Item& it : items)
+				seen.insert(lower(it.path));
+			for (const Item& it : before)
+			{
+				if (items.size() >= kMaxItems)
+					break;
+				if (seen.insert(lower(it.path)).second && (!keep || keep(it)))
+					items.push_back(it);
+			}
+			std::unordered_set<uint64_t> ids(workshop.begin(), workshop.end());
+			for (uint64_t id : workshopBefore)
+			{
+				if (workshop.size() >= kMaxWorkshop)
+					break;
+				if (ids.insert(id).second)
+					workshop.push_back(id);
+			}
+		}
+
 		std::string Format(const std::vector<Item>& items, const std::vector<uint64_t>& workshop)
 		{
 			// Workshop items first: they're few and short, so the byte cap never drops them.
@@ -316,6 +345,16 @@ namespace prewarm
 		const std::wstring file = detail::FileFor(dir, address);
 		if (items.empty() || file.empty())
 			return 0;
+		// Earlier joins' files stay while they're on disk at their recorded size.
+		std::vector<Item> before;
+		std::vector<uint64_t> workshopBefore;
+		detail::Parse(file_util::ReadSmall(file, kMaxListBytes), before, &workshopBefore);
+		detail::Merge(items, workshop, before, workshopBefore, [](const Item& it) {
+			WIN32_FILE_ATTRIBUTE_DATA a;
+			if (!GetFileAttributesExW(Widen(it.path).c_str(), GetFileExInfoStandard, &a))
+				return false;
+			return ((static_cast<int64_t>(a.nFileSizeHigh) << 32) | a.nFileSizeLow) == it.size;
+		});
 		const std::wstring joins = dir + L"\\joins";
 		CreateDirectoryW(joins.c_str(), nullptr);
 		if (!file_util::WriteAtomic(file, detail::Format(items, workshop)))
