@@ -2116,6 +2116,12 @@ w = world({ settings = ON, menu = true, convars = { meowy_settings_guard = "0" }
 guardSession(w, { mat_specular = "0" })
 w.run(5)
 check("settings guard: off, no prompt", promptTitle(w), nil)
+-- Meowy Network's own server: its FPS Booster is the player's own choice, not second-guessed.
+w = world({ settings = ON, menu = true })
+guardSession(w, { mat_specular = "0", r_3dsky = "0" }, { address = OURS, name = "Meowy Network" })
+w.run(5)
+check("settings guard: our own server, no prompt", promptTitle(w), nil)
+check("settings guard: our own server, nothing put back", #w.consoleRuns, 0)
 -- The copies' commands.
 w = world({ settings = ON, menu = true })
 w.backupList = { { name = "config-20261107-120000.cfg", when = "2026-11-07 12:00:00", size = 100 } }

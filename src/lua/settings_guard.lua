@@ -4,7 +4,9 @@
 -- and not reconnecting (resilience.lua's card is down). If a watched setting
 -- changed (settings_guard_logic.lua), a prompt lists them: Keep, Put back, or
 -- always put back for that server. Changes you made yourself in that time show
--- too; that's what Keep is for.
+-- too; that's what Keep is for. Meowy Network's own servers aren't second-
+-- guessed: what changes there is the player's own choice in its FPS Booster,
+-- applied again each join (measured on dev: 6 of its settings on every leave).
 --
 -- And config.cfg, the game's saved settings and binds, is copied once per start
 -- (config_backup.h): meowy_settings_backups lists the copies,
@@ -90,6 +92,7 @@ hook.Add("Think", "MeowyClientPack.SettingsGuard", function()
 	local s = session
 	session = nil
 	if not guardOn() then return end
+	if s.address and meowy.IsOurServer and meowy.IsOurServer(s.address) then return end
 	local changes = Guard.diff(s.snap, cvar)
 	if #changes == 0 then return end
 	if s.address and Guard.listHas(alwaysList(), s.address) then
