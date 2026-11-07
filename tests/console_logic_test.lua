@@ -145,5 +145,55 @@ local hist = { "status", "net_graph 1", "retry", "net_graph 0", "status" }
 check("history search", table.concat(M.searchHistory(hist, "net", 8), "|"), "net_graph 0|net_graph 1")
 check("history: all, newest first, once each", table.concat(M.searchHistory(hist, "", 8), "|"), "status|net_graph 0|retry|net_graph 1")
 
+-- kinds, for the source chips
+check("kind: error by severity", M.kind({ s = 3, x = "x" }), "error")
+check("kind: [ERROR] text", M.kind({ s = 0, x = "[ERROR] lua/a.lua:1: oops" }), "error")
+check("kind: warning", M.kind({ s = 1, x = "x" }), "warning")
+check("kind: the pack", M.kind({ s = 0, x = "[Meowy Client Pack] prewarm: ok" }), "pack")
+check("kind: network", M.kind({ s = 0, x = "Connecting to 1.2.3.4:27015..." }), "network")
+check("kind: workshop", M.kind({ s = 0, x = "Mounted 3 of 3 workshop addons!" }), "workshop")
+check("kind: other", M.kind({ s = 0, x = "hello" }), "other")
+local kl = { { s = 3, x = "a" }, { s = 1, x = "b" }, { s = 0, x = "Dropped from server" }, { s = 0, x = "x", marker = true } }
+local counts = M.counts(kl)
+check("counts", counts.error .. counts.warning .. counts.network .. counts.other, "1110")
+
+-- spans: where the search text is
+local sp = M.spans("Net graph NET", "net", false)
+check("spans: any case, every one", #sp .. ":" .. sp[1][1] .. "-" .. sp[1][2] .. "," .. sp[2][1] .. "-" .. sp[2][2], "2:1-3,11-13")
+check("spans: a Lua pattern", #M.spans("rp_downtown_v2 rp_city", "rp_%a+", true), 2)
+check("spans: a broken pattern finds nothing", #M.spans("abc", "[a", true), 0)
+check("spans: plain text keeps pattern characters", #M.spans("100% done", "100%", false), 1)
+check("valid pattern", tostring(M.validPattern("a%d+")) .. tostring(M.validPattern("[a")), "truefalse")
+
+-- rows: filter or mark, kinds, collapse and flood, markers
+local rl = {
+	L(1, 0, "alpha", 1000), L(2, 3, "boom", 2000), L(3, 0, "spam", 3000), L(4, 0, "other", 3500),
+	L(5, 0, "spam", 4000), L(6, 0, "spam", 5000), L(7, 0, "beta", 6000),
+}
+rl[8] = { id = -2, t = 7000, s = 0, x = "Joining 1.2.3.4:27015", marker = true }
+rl[9] = L(9, 0, "spam", 8000)
+local rows = M.rows(rl, { query = "a", find = false })
+check("rows: filter keeps matching lines (and markers)", #rows, 7)
+rows = M.rows(rl, { query = "spam", find = true })
+check("rows: mark keeps every line", #rows, 9)
+check("rows: matches marked", #M.matchRows(rows), 4)
+rows = M.rows(rl, { kinds = { error = true } })
+check("rows: one kind (and markers)", #rows, 2)
+rows = M.rows(rl, { collapse = true })
+check("rows: only next-to-each-other repeats folded", #rows, 8)
+rows = M.rows(rl, { collapse = true, flood = true })
+check("rows: flood folds a repeat a few rows back", #rows, 7)
+local spamRow
+for _, r in ipairs(rows) do if r.line.x == "spam" and not spamRow then spamRow = r end end
+check("rows: flood count", spamRow.count, 3)
+check("rows: a marker ends the flood window", rows[#rows].line.x .. rows[#rows].count, "spam1")
+check("span: how long it went on", M.span({ count = 3, firstT = 3000, lastT = 5000 }), "in 2 s")
+check("span: nothing for one", M.span({ count = 1, firstT = 0, lastT = 9000 }), "")
+check("span: minutes", M.span({ count = 2, firstT = 0, lastT = 300000 }), "in 5 min")
+local old = { L(1, 0, "x", 0) }
+for i = 2, M.FLOOD_ROWS + 5 do old[i] = L(i, 0, "filler " .. i, i) end
+old[#old + 1] = L(99, 0, "x", 100)
+check("rows: too far back isn't flood", #M.rows(old, { collapse = true, flood = true }), #old)
+
 print(("%d checks, %d failed"):format(count, failures))
 os.exit(failures == 0 and 0 or 1)

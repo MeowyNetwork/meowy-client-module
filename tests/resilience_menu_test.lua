@@ -229,7 +229,8 @@ local function world(opts)
 	env.file = { Exists = function(p, where) w.existsAsked = where return not (w.missing or {})[p] end }
 	env.istable = function(v) return type(v) == "table" end
 	env.KEY_UP, env.KEY_DOWN, env.KEY_ENTER, env.KEY_TAB, env.KEY_R, env.KEY_ESCAPE = 88, 90, 64, 67, 28, 70
-	env.input = { IsControlDown = function() return w.ctrl == true end, IsMouseDown = function() return false end }
+	env.KEY_F, env.KEY_C, env.KEY_A, env.KEY_F3, env.MOUSE_LEFT, env.MOUSE_RIGHT = 16, 13, 11, 94, 107, 108
+	env.input = { IsControlDown = function() return w.ctrl == true end, IsShiftDown = function() return w.shift == true end, IsMouseDown = function() return false end }
 	env.unpack = env.unpack or unpack or table.unpack
 	-- The menu state's engine library: your subscribed addons (w.addons).
 	env.engine = { GetAddons = function() return w.addons or {} end }
@@ -1698,6 +1699,62 @@ recallEntry:OnKeyCodeTyped(88)   -- Up
 check("history: kept from the last start", shown, "second")
 local savedPin
 for _, p in ipairs(w.panels or {}) do if rawget(p, "meowyPin") == "status" then savedPin = p end end
-check("pins: kept from the last start", savedPin ~= nil, true)check("no Lua errors", w.errors, nil)
+check("pins: kept from the last start", savedPin ~= nil, true)-- Reading the console: dividers at a join, in game and leaving; the right-click
+-- menu; selected lines copied.
+w = world({ settings = ON, menu = true })
+w.console = { { id = 1, t = 1000, s = 0, c = -1, x = "before" }, { id = 2, t = 2000, s = 3, c = -1, x = "[ERROR] addons/foo/lua/autorun/cl_foo.lua:12: boom" } }
+w.loading = true
+w.run(0.2)
+w.state, w.address, w.loading, w.inGame = "ours", OURS, false, true
+w.run(0.2)
+w.inGame, w.state = false, "none"
+w.run(0.2)
+w.concommands.meowy_console()
+local function panelWith(field, value)
+	for _, p in ipairs(w.panels or {}) do
+		if rawget(p, field) ~= nil and (value == nil or rawget(p, field) == value) and not p.removed then return p end
+	end
+end
+local copyButton
+for _, p in ipairs(w.panels or {}) do if p.class == "DButton" and p.text == "Copy" then copyButton = p end end
+copyButton.DoClick()
+local copiedAll = w.clipboard or ""
+check("markers: a join", copiedAll:find("Joining a server", 1, true) ~= nil or copiedAll:find("Joining " .. OURS, 1, true) ~= nil, true)
+check("markers: in game", copiedAll:find("In game on " .. OURS, 1, true) ~= nil, true)
+check("markers: leaving", copiedAll:find("Left the server", 1, true) ~= nil, true)
+check("markers: in order", (copiedAll:find("before", 1, true) or 99) < (copiedAll:find("Joining", 1, true) or 0), true)
+-- The log panel (the one with keys of its own).
+local logP = panelWith("OnKeyCodePressed")
+for _, p in ipairs(w.panels or {}) do if p.class == "DPanel" and rawget(p, "OnKeyCodePressed") then logP = p end end
+logP.GetWide, logP.GetTall = function() return 800 end, function() return 400 end
+panelWith("meowyConsole"):PerformLayout(1000, 700)   -- the scroll worked out again with that height
+logP.CursorPos = function() return 50, 15 end   -- the first row
+logP:OnMousePressed(108)   -- right-click
+local items = {}
+for _, p in ipairs(w.panels or {}) do if rawget(p, "meowyMenuItem") and not p.removed then items[#items + 1] = p.meowyMenuItem end end
+check("menu: on a line", table.concat(items, "|"), "Copy line|Search for this|Only lines like this")
+local item = panelWith("meowyMenuItem", "Copy line")
+item.DoClick()
+check("menu: copy line", w.clipboard, "before")
+-- A line with a Lua file: which addon has it.
+logP.CursorPos = function() return 50, 35 end   -- the second row
+w.consoleRuns = {}
+logP:OnMousePressed(108)
+local which = panelWith("meowyMenuItem", "Which addon has cl_foo.lua")
+check("menu: which addon has a file", which ~= nil, true)
+if which then which.DoClick() end
+check("menu: asks the game (whereis)", w.consoleRuns[#w.consoleRuns], "whereis addons/foo/lua/autorun/cl_foo.lua")
+-- Select two lines, Ctrl+C.
+logP.CursorPos = function() return 50, 15 end
+logP:OnMousePressed(107)
+w.shift = true
+logP.CursorPos = function() return 50, 35 end
+logP:OnMousePressed(107)
+w.shift = false
+w.ctrl = true
+logP:OnKeyCodePressed(13)   -- C
+w.ctrl = false
+check("select: two lines copied", select(2, (w.clipboard or ""):gsub("\n", "")) + 1, 2)
+check("no Lua errors", w.errors, nil)
 print(("%d checks, %d failed"):format(count, failures))
 os.exit(failures == 0 and 0 or 1)
