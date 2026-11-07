@@ -168,7 +168,11 @@ namespace
 		if (GetFileType(h) != FILE_TYPE_DISK)
 			return false;
 		wchar_t buf[1024];
-		const DWORD n = GetFinalPathNameByHandleW(h, buf, 1024, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+		// The name the file was opened by, not the normalized one: normalizing
+		// queries every folder on the path, once per file the join opens
+		// (measured 2026-11-07: 3.9% of the precache stage). Lists are merged
+		// and compared lower-cased, so the case the game used doesn't matter.
+		const DWORD n = GetFinalPathNameByHandleW(h, buf, 1024, FILE_NAME_OPENED | VOLUME_NAME_DOS);
 		if (n == 0 || n >= 1024)
 			return false;
 		std::wstring w(buf, n);
