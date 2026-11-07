@@ -52,6 +52,14 @@ local HOME_JS = [==[
 		return e;
 	}
 	function join(id) { lua.Run('MeowyClientPackHomeJoin(' + Number(id) + ')'); }
+	// Resting the pointer on a row for a moment: get that server ready (prewarm.h).
+	function intent(el, id) {
+		var timer = null;
+		el.onmouseenter = function () {
+			timer = setTimeout(function () { lua.Run('MeowyClientPackHomeIntent(' + Number(id) + ')'); }, 400);
+		};
+		el.onmouseleave = function () { if (timer) clearTimeout(timer); timer = null; };
+	}
 	function mark() {
 		for (var i = 0; i < rows.length; i++) {
 			var on = focused && i === selected;   // the row Enter joins, while the search box has the keyboard
@@ -83,6 +91,7 @@ local HOME_JS = [==[
 				if (p.detail) el.appendChild(node('div', 'mh-detail', p.detail));
 				el.title = p.name;
 				el.onclick = (function (id) { return function () { join(id); }; })(p.id);
+				intent(el, p.id);
 				list.appendChild(el);
 				rows.push({ id: p.id, el: el, cls: cls });
 			}
@@ -219,6 +228,60 @@ function MeowyClientPackHomeJoin(id)
 	if not Home.validAddress(address) then return end
 	log("home: joining %s", address)
 	join(address)
+end
+
+-- Join pre-warm (prewarm.h): read a server's recorded files into memory when
+-- the player is about to join it. Recorded at every join (any server; native
+-- keeps ours or a public address only); warmed for the Continue server after a
+-- few seconds at the main menu, or for a row the pointer rests on.
+local pw = { joining = false, warmedFor = nil, menuSince = nil }
+
+local function warm(address, why)
+	if not (prewarmOn() and meowy.PrewarmStart and Home.validAddress(address)) then return end
+	if IsInGame() or IsInLoading() or address == pw.warmedFor then return end
+	if not meowy.PrewarmRecorded(address) then return end
+	local ok, reason = meowy.PrewarmStart(address)
+	pw.warmedFor = address
+	log("prewarm: %s %s%s", ok and "warming" or "not warming", address, ok and (" (" .. why .. ")") or (": " .. tostring(reason)))
+end
+
+function MeowyClientPackHomeIntent(id)
+	if not (homeOn() or menuPage.ours) then return end
+	warm(addresses[math.floor(tonumber(id) or 0)], "pointer on its row")
+end
+
+hook.Add("Think", "MeowyClientPack.Prewarm", function()
+	if not meowy.PrewarmBeginJoin then return end
+	local loading = IsInLoading()
+	if loading and not pw.joining then
+		pw.joining = true
+		meowy.PrewarmBeginJoin()   -- also stops any warming: the join's reads come first
+	elseif pw.joining and IsInGame() and not loading then
+		pw.joining = false
+		local kept = meowy.PrewarmEndJoin()
+		pw.warmedFor = nil
+		if kept > 0 then log("prewarm: kept %d files for this server", kept) end
+	elseif not loading and not IsInGame() then
+		pw.joining = false   -- a join that didn't get in: nothing to keep
+	end
+	-- A few seconds at the main menu: the Continue server, once per visit (a
+	-- row the pointer rests on afterwards takes over).
+	if menuVisible() and not IsInGame() and not loading then
+		pw.menuSince = pw.menuSince or SysTime()
+		if not pw.continueDone and SysTime() - pw.menuSince > 3 and meowy.LastServer then
+			pw.continueDone = true
+			local address = meowy.LastServer()
+			if isstring(address) then warm(address, "your Continue server") end
+		end
+	else
+		pw.menuSince, pw.continueDone = nil, false
+	end
+end)
+
+if concommand then
+	concommand.Add("meowy_prewarm_status", function()
+		MsgN("[Meowy Client Pack] prewarm: " .. (meowy.PrewarmState and meowy.PrewarmState() or "unavailable"))
+	end, nil, "Meowy Client Pack: what join pre-warm is doing")
 end
 
 -- The same from the console: meowy_home lists the rows, meowy_home_join <n> joins one.

@@ -87,6 +87,16 @@ local function setMenuScale(v)
 	RunConsoleCommand("meowy_menu_scale", tostring(v))
 end
 
+-- Join pre-warm (home.lua, prewarm.h): read a server's files into memory
+-- before you join it.
+local prewarmSetting = meowy.Setting and meowy.Setting("meowy_prewarm", "1",
+	"Meowy Client Pack: read a server's files into memory when you're about to join it (0 = off)")
+local function prewarmOn() return prewarmSetting == nil or prewarmSetting:GetBool() end
+local function setPrewarm(on)
+	RunConsoleCommand("meowy_prewarm", on and "1" or "0")
+	if not on and meowy.PrewarmCancel then meowy.PrewarmCancel() end
+end
+
 -- Set by menu_page.lua while our home shows on the stock page (its list, with
 -- the settings entry, is hidden then).
 local menuPage = { ours = false }
@@ -171,6 +181,16 @@ local function openSettings(startTab)
 			local label = UI.Label(nil, "Main menu")
 			label.gapBefore = S(22)
 			blocks[#blocks + 1] = label
+		end
+		if meowy.PrewarmStart then
+			local pt = UI.Toggle(nil, "Get servers ready before you join",
+				"When you're about to join a server you've played on (it's your Continue, or you point at it on the main "
+				.. "menu), its big files (Workshop content, the map) are read into memory in the background, so a join "
+				.. "after a restart doesn't wait on the disk. SSDs only, up to 4 GB, and it stops the moment a join starts.",
+				prewarmOn(), function(on) setPrewarm(on) end)
+			pt.meowyToggle = "prewarm"
+			pt.gapBefore = S(10)
+			blocks[#blocks + 1] = pt
 		end
 		if UI.Choice and menuScaleSetting then
 			local options = {}

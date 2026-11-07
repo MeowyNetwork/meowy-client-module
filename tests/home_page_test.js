@@ -72,6 +72,8 @@ class El {
 class Text extends El { constructor(t) { super('#text'); this._text = t; } }
 
 let doc, listeners, luaRuns;
+let timers = [];   // setTimeout callbacks, run by flush()
+function flush() { const t = timers; timers = []; t.forEach(f => f()); }
 function fresh() {
 	listeners = [];
 	luaRuns = [];
@@ -92,7 +94,8 @@ function fresh() {
 	};
 	const win = {};
 	const run = new Function('window', 'document', 'lua', 'setTimeout', block('HOME_JS') + '\n' + block('ESC_JS'));
-	run(win, doc, { Run: s => luaRuns.push(s) }, () => {});
+	timers = [];
+	run(win, doc, { Run: s => luaRuns.push(s) }, fn => { timers.push(fn); return timers.length; });
 	return { win, page };
 }
 function key(target, keyCode, keyName) {
@@ -124,6 +127,15 @@ check('names are text', box.querySelector('.mh-name').textContent, 'Meowy Networ
 // Clicking a row sends only its number.
 box.querySelectorAll('.mh-row')[1].onclick();
 check('click joins by number', luaRuns.pop(), 'MeowyClientPackHomeJoin(2)');
+// Resting the pointer on a row: after a moment, that server is got ready (prewarm.h).
+const hoverRow = box.querySelectorAll('.mh-row')[1];
+hoverRow.onmouseenter();
+check('hover: nothing at once', luaRuns.length, 0);
+flush();
+check('hover: after a moment, the row number', luaRuns.pop(), 'MeowyClientPackHomeIntent(2)');
+hoverRow.onmouseenter();
+hoverRow.onmouseleave();
+check('hover: leaving first sends nothing', luaRuns.length, 0);
 
 // Search: every row is searched, not just the shown ones.
 const input = box.querySelector('.mh-search');
