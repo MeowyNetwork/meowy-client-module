@@ -100,6 +100,7 @@
 #include "steam_ugc.h"
 #include "resilience.h"
 #include "doctor.h"
+#include "audio_watch.h"
 #include "startup_hook.h"
 #include "resource.h"
 
@@ -1168,6 +1169,42 @@ namespace
 			LUA->SetTable(-3);
 		}
 		LUA->SetField(-2, "adapters");
+		// audio = { output, input, comms_input, output_handsfree, input_handsfree, inputs } (audio_watch.h)
+		const audio_watch::Devices d = audio_watch::Read();
+		if (d.ok)
+		{
+			LUA->CreateTable();
+			LUA->PushString(d.output.c_str());
+			LUA->SetField(-2, "output");
+			LUA->PushString(d.input.c_str());
+			LUA->SetField(-2, "input");
+			LUA->PushString(d.commsInput.c_str());
+			LUA->SetField(-2, "comms_input");
+			LUA->PushBool(d.outputHandsFree);
+			LUA->SetField(-2, "output_handsfree");
+			LUA->PushBool(d.inputHandsFree);
+			LUA->SetField(-2, "input_handsfree");
+			LUA->PushNumber(d.inputs);
+			LUA->SetField(-2, "inputs");
+			LUA->SetField(-2, "audio");
+		}
+		return 1;
+	}
+
+	// Menu: meowy.AudioChanges() -> how many times Windows' default output changed
+	// (watching starts on the first call), or nil if it can't be watched.
+	int AudioChanges(lua_State* L)
+	{
+		if (audio_watch::Start())
+			L->luabase->PushNumber(audio_watch::Changes());
+		else
+			L->luabase->PushNil();
+		return 1;
+	}
+
+	int AudioState(lua_State* L)
+	{
+		L->luabase->PushString(audio_watch::Describe().c_str());
 		return 1;
 	}
 
@@ -2778,6 +2815,8 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	SetFunction(LUA, "LastServerForget", Guarded<LastServerForget>);
 	SetFunction(LUA, "DoctorFacts", Guarded<DoctorFacts>);
 	SetFunction(LUA, "DoctorOpen", Guarded<DoctorOpen>);
+	SetFunction(LUA, "AudioChanges", Guarded<AudioChanges>);
+	SetFunction(LUA, "AudioState", Guarded<AudioState>);
 	SetFunction(LUA, "FastLuaLookup", Guarded<FastLuaLookup>);
 	SetFunction(LUA, "FastLuaLookupState", Guarded<FastLuaLookupState>);
 	SetFunction(LUA, "FastLuaLookupNewJoin", Guarded<FastLuaLookupNewJoin>);

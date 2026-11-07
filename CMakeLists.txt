@@ -43,6 +43,7 @@ add_library(meowy SHARED
 	src/resilience.cpp
 	src/resilience_net.cpp
 	src/doctor.cpp
+	src/audio_watch.cpp
 	src/startup_hook.cpp)
 target_include_directories(meowy PRIVATE ${gmod_module_base_SOURCE_DIR}/include)
 if(WIN32)
@@ -155,6 +156,13 @@ if(MEOWY_BUILD_TESTS)
 	endif()
 	# PC doctor's native facts (adapters, GPU time per adapter, power), no game:
 	#   doctor_smoke
+	# Sound devices: the default output and mics as the PC doctor shows them, and the watch:
+	#   audio_watch_smoke [seconds to watch]
+	add_executable(audio_watch_smoke tests/audio_watch_smoke.cpp src/audio_watch.cpp)
+	if(MSVC)
+		set_property(TARGET audio_watch_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+		target_compile_options(audio_watch_smoke PRIVATE /W4 /utf-8)
+	endif()
 	add_executable(doctor_smoke tests/doctor_smoke.cpp src/doctor.cpp)
 	target_link_libraries(doctor_smoke PRIVATE shell32)
 	if(MSVC)

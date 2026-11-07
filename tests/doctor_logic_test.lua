@@ -111,6 +111,29 @@ local text = M.consoleText(tips, report)
 check("console text header", text:match("^[^\n]+"), "[Meowy Client Pack] PC doctor: 5 tips")
 check("console text has the settings page", text:find("ms-settings:display-advancedgraphics", 1, true) ~= nil, true)
 
+-- Sound and the microphone ----------------------------------------------------------
+local function withAudio(audio) return laptop(1, 0, { audio = audio }) end
+local function has(lines, want) for _, l in ipairs(lines) do if l == want then return true end end return false end
+tips, report = M.diagnose(withAudio({ output = "Speakers (Realtek)", input = "Mic (USB)", comms_input = "Mic (USB)", inputs = 1 }), GOOD)
+check("sound: a normal setup, no tip", ids(tips), "")
+check("sound: output reported", has(report, "Sound: Speakers (Realtek)"), true)
+check("sound: mic reported", has(report, "Microphone: Mic (USB)"), true)
+check("sound: one mic, no calls line", has(report, "Calls microphone: Mic (USB)"), false)
+tips = M.diagnose(withAudio({ output = "Headphones (WH-1000XM4 Stereo)", input = "Headset (WH-1000XM4 Hands-Free AG Audio)",
+	comms_input = "Headset (WH-1000XM4 Hands-Free AG Audio)", input_handsfree = true, inputs = 1 }), GOOD)
+check("sound: a hands-free mic gets a tip", ids(tips), "mic_handsfree")
+check("sound: it opens Sound settings", tips[1] and tips[1].action, "sound_settings")
+tips, report = M.diagnose(withAudio({ output = "Speakers", input = "Mic (USB)", comms_input = "Webcam mic", inputs = 2 }), GOOD)
+check("sound: two default mics get a tip", ids(tips), "mic_two")
+check("sound: it names both", tips[1] ~= nil and tips[1].text:find("Mic (USB)", 1, true) ~= nil and tips[1].text:find("Webcam mic", 1, true) ~= nil, true)
+check("sound: it opens Steam's voice settings", tips[1] and tips[1].action, "steam_voice")
+check("sound: calls mic reported", has(report, "Calls microphone: Webcam mic"), true)
+tips, report = M.diagnose(withAudio({ output = "", input = "", comms_input = "", inputs = 0 }), GOOD)
+check("sound: no mic at all is reported, not a tip", ids(tips) .. "|" .. tostring(has(report, "Microphone: none found")), "|true")
+check("sound: no output reported", has(report, "Sound: no output device"), true)
+check("sound: console text points at Steam", M.consoleText((M.diagnose(withAudio({ input = "A", comms_input = "B" }), GOOD)), {}):find("Steam: Settings, Voice", 1, true) ~= nil, true)
+check("sound: no audio facts, no sound lines", has(select(2, M.diagnose(laptop(1, 0), GOOD)), "Microphone: none found"), false)
+
 -- Garbage in: no crash, no tips
 check("nil facts", ids((M.diagnose(nil, nil))), "")
 check("junk adapters", ids((M.diagnose({ gpu_time_known = true, adapters = { 1, "x", { share = "1" } } }, nil))), "")
