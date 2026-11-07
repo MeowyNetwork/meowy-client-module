@@ -35,6 +35,17 @@
 //                                     all of them (on unless turned off; kept in
 //                                     %LOCALAPPDATA%\MeowyClientPack\notify.txt)
 //   meowy.NotifyEnabled()             true | false, or nil, reason
+//   meowy.NotifyCatalogue(body, sig)  true, version | false, reason (1.6+): our
+//                                     signed list of kinds and their words, so
+//                                     kinds added after this release still toast.
+//                                     Taken only if the signature is ours (key
+//                                     compiled in), it parses, and it isn't older
+//                                     than the one already taken; kept in
+//                                     %LOCALAPPDATA%\MeowyClientPack and checked
+//                                     again when read back. Reasons: "only works
+//                                     on Meowy Network servers", "bad signature",
+//                                     "bad catalogue: ...", "older catalogue".
+//                                     See notify_catalogue.h
 //   meowy.TimelineEvent(kind)         true | false, reason: a marker on Steam's
 //                                     game-recording timeline ("Arrested"), whether
 //                                     or not the game is in front. `kind` is one of
@@ -90,14 +101,18 @@
 #include "data_sandbox.h"
 #include "server_rep.h"
 #include "notify.h"
+#include "notify_catalogue.h"
 #include "notify_toast.h"
 #include "timeline.h"
 #include "timeline_steam.h"
 #include "prewarm.h"
 #include "pak_cache.h"
+#include "config_backup.h"
 #include "console_capture.h"
 #include "server_query.h"
+#include "server_index.h"
 #include "steam_ugc.h"
+#include "content_advert.h"
 #include "resilience.h"
 #include "doctor.h"
 #include "audio_watch.h"
@@ -713,6 +728,114 @@ namespace
 #endif
 	}
 
+	// --- The signed notification catalogue (notify_catalogue.h) ------------------
+
+	bool g_catalogueLoaded = false;
+
+#ifdef _WIN32
+	// One file: the signature's 128 hex digits, a newline, then the body. Read
+	// back through the same checks as one from the server.
+	std::wstring CatalogueFile()
+	{
+		return DataDir() + L"\\notify_catalogue.txt";
+	}
+#endif
+
+	// Verifies, parses and installs a catalogue. True when it's in use (a
+	// re-send of the current version included); else false with *why.
+	bool TakeCatalogue(const std::string& body, const std::string& sig, bool persist, std::string* why)
+	{
+		if (!notify_catalogue::Verify(body, sig))
+		{
+			*why = "bad signature";
+			return false;
+		}
+		notify_catalogue::Catalogue c;
+		const char* parseWhy = nullptr;
+		if (!notify_catalogue::Parse(body, &c, &parseWhy))
+		{
+			*why = std::string("bad catalogue: ") + (parseWhy ? parseWhy : "unknown");
+			return false;
+		}
+		uint64_t current = notify::CatalogueVersion();
+		if (c.version < current)
+		{
+			*why = "older catalogue";
+			return false;
+		}
+		if (c.version == current)
+			return true;
+		if (!notify::Install(c))
+		{
+			*why = "older catalogue";
+			return false;
+		}
+		g_notifyLimiter.ResetKinds();
+#ifdef _WIN32
+		if (persist)
+			file_util::WriteAtomic(CatalogueFile(), sig + "\n" + body);
+#else
+		(void)persist;
+#endif
+		return true;
+	}
+
+	// The catalogue kept from an earlier game, once per game. A missing, edited
+	// or older file just leaves the compiled list (or what the server sends).
+	void EnsureCatalogueLoaded()
+	{
+		if (g_catalogueLoaded)
+			return;
+		g_catalogueLoaded = true;
+#ifdef _WIN32
+		std::string saved = file_util::ReadSmall(CatalogueFile(), notify_catalogue::kSigHexLen + 1 + notify_catalogue::kMaxBody);
+		if (saved.size() <= notify_catalogue::kSigHexLen + 1 || saved[notify_catalogue::kSigHexLen] != '\n')
+			return;
+		std::string why;
+		TakeCatalogue(saved.substr(notify_catalogue::kSigHexLen + 1), saved.substr(0, notify_catalogue::kSigHexLen),
+			false, &why);
+#endif
+	}
+
+	// meowy.NotifyCatalogue(body, sig) -> true, version | false, reason
+	int NotifyCatalogue(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		int results = 0;
+		if (Refuse(LUA, results))
+			return results;
+		std::string why;
+		bool ok = false;
+		try
+		{
+			unsigned int bodyLen = 0, sigLen = 0;
+			const char* body = LUA->IsType(1, Type::String) ? LUA->GetString(1, &bodyLen) : nullptr;
+			const char* sig = LUA->IsType(2, Type::String) ? LUA->GetString(2, &sigLen) : nullptr;
+			if (!body || !sig || bodyLen == 0 || bodyLen > notify_catalogue::kMaxBody ||
+				sigLen != notify_catalogue::kSigHexLen)
+				why = "bad catalogue: bad arguments";
+			else
+			{
+				EnsureCatalogueLoaded();
+				ok = TakeCatalogue(std::string(body, bodyLen), std::string(sig, sigLen), true, &why);
+			}
+		}
+		catch (...)
+		{
+			ok = false;
+			why = "internal error";
+		}
+		if (!ok)
+		{
+			LUA->PushBool(false);
+			LUA->PushString(why.c_str());
+			return 2;
+		}
+		LUA->PushBool(true);
+		LUA->PushNumber(static_cast<double>(notify::CatalogueVersion()));
+		return 2;
+	}
+
 	// meowy.Notify(kind) -> true | false, reason. Only the kind is read; the
 	// words shown are the pack's. Never blocks: the worker thread shows it.
 	int Notify(lua_State* L)
@@ -731,6 +854,7 @@ namespace
 			// The rest only matters (and is only worked out) for our server.
 			if (in.ourServer)
 			{
+				EnsureCatalogueLoaded();
 				in.enabled = NotifyEnabledSetting();
 				in.focused = notify_toast::GameFocused();
 #ifdef _WIN32
@@ -937,10 +1061,21 @@ namespace
 		return 0;
 	}
 
+	// Menu: load the screen's page (WebView2) now, hidden, so a join shows it at once.
 	int LoadingPrewarm(lua_State*)
 	{
 #ifdef _WIN32
 		loading_screen::Prewarm(DataDir());
+#endif
+		return 0;
+	}
+
+	// Menu: unload it once no join is on screen (in game, or a menu left in the
+	// background); the next LoadingPrewarm or join starts it again.
+	int LoadingPark(lua_State*)
+	{
+#ifdef _WIN32
+		loading_screen::Park();
 #endif
 		return 0;
 	}
@@ -1430,6 +1565,167 @@ namespace
 		return 0;
 	}
 
+	// --- Convars the pack changes for a while -----------------------------------------
+	// fps_max_nofocus while a join loads, fps_max_menu at a menu left in the
+	// background (home.lua): the player's own value is kept in cvar_restore.txt
+	// ("name value" lines) while it's changed, so a crash or a quit in between
+	// (the game saves config.cfg at quit) is put right at the next start. Only
+	// these names, and only numbers, since the values are run as commands.
+	const char* const kHeldCvars[] = { "fps_max_nofocus", "fps_max_menu" };
+	std::wstring HeldCvarFile() { return DataDir() + L"\\cvar_restore.txt"; }
+
+	bool HeldCvarName(const std::string& name)
+	{
+		for (const char* n : kHeldCvars)
+			if (name == n)
+				return true;
+		return false;
+	}
+
+	bool NumberText(const std::string& v)
+	{
+		return !v.empty() && v.size() <= 12 && v.find_first_not_of("0123456789.") == std::string::npos;
+	}
+
+	using HeldCvars = std::vector<std::pair<std::string, std::string>>;
+
+	HeldCvars ReadHeldCvars()
+	{
+		HeldCvars held;
+		const std::string text = file_util::ReadSmall(HeldCvarFile(), 1024);
+		size_t at = 0;
+		while (at < text.size())
+		{
+			size_t end = text.find('\n', at);
+			if (end == std::string::npos)
+				end = text.size();
+			std::string line = text.substr(at, end - at);
+			at = end + 1;
+			if (!line.empty() && line.back() == '\r')
+				line.pop_back();
+			const size_t space = line.find(' ');
+			if (space == std::string::npos)
+				continue;
+			std::string name = line.substr(0, space), value = line.substr(space + 1);
+			bool dup = false;
+			for (const auto& h : held)
+				dup = dup || h.first == name;
+			if (!dup && HeldCvarName(name) && NumberText(value))
+				held.emplace_back(std::move(name), std::move(value));
+		}
+		return held;
+	}
+
+	void WriteHeldCvars(const HeldCvars& held)
+	{
+		if (held.empty())
+		{
+			DeleteFileW(HeldCvarFile().c_str());
+			return;
+		}
+		std::string text;
+		for (const auto& h : held)
+			text += h.first + " " + h.second + "\n";
+		file_util::WriteAtomic(HeldCvarFile(), text);
+	}
+
+	// meowy.CvarHold(name, value) -> whether it's kept: the player's own value,
+	// before the pack changes it. A name already kept keeps its first value.
+	int CvarHold(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		const std::string name = LUA->CheckString(1), value = LUA->CheckString(2);
+		if (!HeldCvarName(name) || !NumberText(value))
+		{
+			LUA->PushBool(false);
+			return 1;
+		}
+		HeldCvars held = ReadHeldCvars();
+		bool there = false;
+		for (const auto& h : held)
+			there = there || h.first == name;
+		if (!there)
+		{
+			held.emplace_back(name, value);
+			WriteHeldCvars(held);
+		}
+		LUA->PushBool(true);
+		return 1;
+	}
+
+	// meowy.CvarRelease(name): the caller put it back; no longer kept.
+	int CvarRelease(lua_State* L)
+	{
+		const std::string name = L->luabase->CheckString(1);
+		HeldCvars held = ReadHeldCvars();
+		const size_t before = held.size();
+		held.erase(std::remove_if(held.begin(), held.end(),
+			[&](const std::pair<std::string, std::string>& h) { return h.first == name; }), held.end());
+		if (held.size() != before)
+			WriteHeldCvars(held);
+		return 0;
+	}
+
+	// meowy.CvarHeld() -> { name = value }: values a quit or a crash left to put back.
+	int CvarHeld(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		LUA->CreateTable();
+		for (const auto& h : ReadHeldCvars())
+		{
+			LUA->PushString(h.second.c_str());
+			LUA->SetField(-2, h.first.c_str());
+		}
+		return 1;
+	}
+
+	// --- Join priority guard ---------------------------------------------------------
+	// While a join loads, the game asks Windows for full speed: its own QoS tag
+	// (otherwise Windows lowers an unfocused or minimised game to Medium or Low:
+	// efficiency clocks or cores on battery, and its 1 ms timer ignored once
+	// occluded). Its fps_max_nofocus (20 by default) is lifted in Lua and kept
+	// with CvarHold. The tag belongs to the process: it ends with it.
+	bool SetJoinQoS(bool on)
+	{
+		using SetInfoFn = BOOL(WINAPI*)(HANDLE, PROCESS_INFORMATION_CLASS, LPVOID, DWORD);
+		static const SetInfoFn set = reinterpret_cast<SetInfoFn>(
+			GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "SetProcessInformation"));
+		if (!set)
+			return false;
+		PROCESS_POWER_THROTTLING_STATE s = {};
+		s.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+		// EXECUTION_SPEED (1) | IGNORE_TIMER_RESOLUTION (4), state 0: never throttle,
+		// always honour the timer resolution. Off: both back to Windows' own policy.
+		s.ControlMask = on ? (PROCESS_POWER_THROTTLING_EXECUTION_SPEED | 0x4) : 0;
+		s.StateMask = 0;
+		if (set(GetCurrentProcess(), ProcessPowerThrottling, &s, sizeof(s)))
+			return true;
+		if (!on)
+			return false;
+		s.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;   // Windows 10: no timer flag
+		return set(GetCurrentProcess(), ProcessPowerThrottling, &s, sizeof(s)) != FALSE;
+	}
+
+	// meowy.JoinBoost(on) -> whether Windows took the QoS tag.
+	int JoinBoost(lua_State* L)
+	{
+		L->luabase->PushBool(SetJoinQoS(L->luabase->GetBool(1)));
+		return 1;
+	}
+
+	// meowy.JoinBoostState() -> "on" / "off": what Windows has for the game now.
+	int JoinBoostState(lua_State* L)
+	{
+		using GetInfoFn = BOOL(WINAPI*)(HANDLE, PROCESS_INFORMATION_CLASS, LPVOID, DWORD);
+		static const GetInfoFn get = reinterpret_cast<GetInfoFn>(
+			GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "GetProcessInformation"));
+		PROCESS_POWER_THROTTLING_STATE s = {};
+		s.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+		const bool ok = get && get(GetCurrentProcess(), ProcessPowerThrottling, &s, sizeof(s));
+		L->luabase->PushString(!ok ? "unknown" : (s.ControlMask & PROCESS_POWER_THROTTLING_EXECUTION_SPEED) && !(s.StateMask & PROCESS_POWER_THROTTLING_EXECUTION_SPEED) ? "on" : "off");
+		return 1;
+	}
+
 	// In game: keep the list for this server (ours or public, the engine's own
 	// address). -> files kept.
 	int PrewarmEndJoin(lua_State* L)
@@ -1492,22 +1788,26 @@ namespace
 		return 1;
 	}
 
+	// A Workshop ID passed as a decimal string (steamworks' way), or 0.
+	uint64_t WorkshopIdArg(ILuaBase* LUA, int at)
+	{
+		const char* s = LUA->IsType(at, Type::String) ? LUA->GetString(at) : nullptr;
+		uint64_t id = 0;
+		for (const char* p = s; p && *p; ++p)
+		{
+			if (*p < '0' || *p > '9' || id > 1000000000000000000ull)
+				return 0;
+			id = id * 10 + static_cast<uint64_t>(*p - '0');
+		}
+		return id;
+	}
+
 	// WorkshopItemState(id) -> installed, needsUpdate, busy, legacy, updated |
 	// nil: what Steam knows about a Workshop item here (steam_ugc.h). Read-only.
 	int WorkshopItemState(lua_State* L)
 	{
 		ILuaBase* LUA = L->luabase;
-		const char* s = LUA->IsType(1, Type::String) ? LUA->GetString(1) : nullptr;
-		uint64_t id = 0;
-		for (const char* p = s; p && *p; ++p)
-		{
-			if (*p < '0' || *p > '9' || id > 1000000000000000000ull)
-			{
-				id = 0;
-				break;
-			}
-			id = id * 10 + static_cast<uint64_t>(*p - '0');
-		}
+		const uint64_t id = WorkshopIdArg(LUA, 1);
 		steam_ugc::ItemState st;
 		if (!id || !steam_ugc::State(id, st))
 		{
@@ -1520,6 +1820,66 @@ namespace
 		LUA->PushBool(st.legacy);
 		LUA->PushNumber(static_cast<double>(st.updated));
 		return 5;
+	}
+
+	// WorkshopItemProgress(id) -> bytes done, bytes in all | nil: a download's
+	// progress, as Steam reports it (steam_ugc.h). Read-only.
+	int WorkshopItemProgress(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		const uint64_t id = WorkshopIdArg(LUA, 1);
+		uint64_t done = 0, total = 0;
+		if (!id || !steam_ugc::Progress(id, done, total))
+		{
+			LUA->PushNil();
+			return 1;
+		}
+		LUA->PushNumber(static_cast<double>(done));
+		LUA->PushNumber(static_cast<double>(total));
+		return 2;
+	}
+
+	// --- Content platform (content_advert.h, docs/CONTENT_PLATFORM.md) ------------
+	// ContentAsk(address) -> true | false: read a public server's `meowy_content`
+	// rule (A2S_RULES) on a worker thread.
+	int ContentAsk(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		LUA->PushBool(LUA->IsType(1, Type::String) && content_advert::Ask(LUA->GetString(1)));
+		return 1;
+	}
+
+	// ContentTake() -> { { address =, answered = bool, value = string | nil }, ... }:
+	// the answers since the last call. `value` is the server's own text
+	// (printable ASCII, at most 4 KB); content_logic.lua checks it.
+	int ContentTake(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		const std::vector<content_advert::Answer> answers = content_advert::Take();
+		LUA->CreateTable();
+		int i = 0;
+		for (const content_advert::Answer& a : answers)
+		{
+			LUA->PushNumber(++i);
+			LUA->CreateTable();
+			LUA->PushString(a.address.c_str());
+			LUA->SetField(-2, "address");
+			LUA->PushBool(a.answered);
+			LUA->SetField(-2, "answered");
+			if (a.found)
+			{
+				LUA->PushString(a.value.c_str(), static_cast<unsigned int>(a.value.size()));
+				LUA->SetField(-2, "value");
+			}
+			LUA->SetTable(-3);
+		}
+		return 1;
+	}
+
+	int ContentState(lua_State* L)
+	{
+		L->luabase->PushString(content_advert::Describe().c_str());
+		return 1;
 	}
 
 	int PrewarmCancel(lua_State*)
@@ -1773,6 +2133,56 @@ namespace
 		return 1;
 	}
 
+	// --- Meowy's server index (server_index.h, MR3) ---------------------------------
+	// ServerIndexFetch() -> true when a fetch started (false: one is running).
+	int ServerIndexFetch(lua_State* L)
+	{
+		L->luabase->PushBool(server_index::Fetch());
+		return 1;
+	}
+
+	// ServerIndexTake() -> nil while nothing finished; else status ("ok", "same",
+	// "error: ..."), body (JSON for "ok", else ""), geo ("lat,lon" or ""), seconds.
+	// The body is the backend's; menu_page.lua checks every row it uses.
+	int ServerIndexTake(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		server_index::Result r = server_index::Take();
+		if (!r.ready)
+		{
+			LUA->PushNil();
+			return 1;
+		}
+		LUA->PushString(r.status.c_str(), static_cast<unsigned int>(r.status.size()));
+		LUA->PushString(r.body.c_str(), static_cast<unsigned int>(r.body.size()));
+		LUA->PushString(r.geo.c_str(), static_cast<unsigned int>(r.geo.size()));
+		LUA->PushNumber(r.seconds);
+		return 4;
+	}
+
+	int ServerIndexState(lua_State* L)
+	{
+		L->luabase->PushString(server_index::Describe().c_str());
+		return 1;
+	}
+
+	// PingMemoryLoad() -> the ping memory's JSON, or "" (server_index.h: kept out
+	// of garrysmod/data and the game's cookies, which any server's Lua can read).
+	int PingMemoryLoad(lua_State* L)
+	{
+		const std::string json = server_index::LoadPings(DataDir());
+		L->luabase->PushString(json.c_str(), static_cast<unsigned int>(json.size()));
+		return 1;
+	}
+
+	// PingMemorySave(json) -> true | false
+	int PingMemorySave(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		LUA->PushBool(LUA->IsType(1, Type::String) && server_index::SavePings(DataDir(), LUA->GetString(1)));
+		return 1;
+	}
+
 	int PrewarmState(lua_State* L)
 	{
 		L->luabase->PushString(prewarm::Describe().c_str());
@@ -1804,6 +2214,56 @@ namespace
 	{
 		L->luabase->PushString(pak_cache::Describe().c_str());
 		return 1;
+	}
+
+	// --- Copies of config.cfg (config_backup.h), menu only ---------------------------
+	std::wstring ConfigBackupDir() { return DataDir() + L"\\config_backups"; }
+
+	// meowy.ConfigBackup() -> true, "copied" | "unchanged"; or false, why. Once per start.
+	int ConfigBackup(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		SYSTEMTIME t;
+		GetLocalTime(&t);
+		char stamp[32];
+		std::snprintf(stamp, sizeof stamp, "%04u%02u%02u-%02u%02u%02u", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond);
+		std::string result;
+		const bool ok = config_backup::Backup(GarrysModDir() + L"\\cfg\\config.cfg", ConfigBackupDir(), stamp, result);
+		LUA->PushBool(ok);
+		LUA->PushString(result.c_str());
+		return 2;
+	}
+
+	// meowy.ConfigBackups() -> { { name, when, size } }, newest first.
+	int ConfigBackups(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		LUA->CreateTable();
+		double i = 0;
+		for (const config_backup::Entry& e : config_backup::List(ConfigBackupDir()))
+		{
+			LUA->PushNumber(++i);
+			LUA->CreateTable();
+			LUA->PushString(e.name.c_str());
+			LUA->SetField(-2, "name");
+			LUA->PushString(e.when.c_str());
+			LUA->SetField(-2, "when");
+			LUA->PushNumber(static_cast<double>(e.size));
+			LUA->SetField(-2, "size");
+			LUA->SetTable(-3);
+		}
+		return 1;
+	}
+
+	// meowy.ConfigRestore(name) -> true, "meowy_restore.cfg" (for exec); or false, why.
+	int ConfigRestore(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		std::string why;
+		const bool ok = config_backup::Restore(ConfigBackupDir(), LUA->CheckString(1), GarrysModDir() + L"\\cfg", why);
+		LUA->PushBool(ok);
+		LUA->PushString(why.c_str());
+		return 2;
 	}
 
 	// LastServerMark(name) -> ok: the player is in the game on a server now; kept
@@ -1878,14 +2338,21 @@ namespace
 		// home.lua in a function of its own, which sees resilience.lua's locals).
 		std::string homeLogic = ResourceText(IDR_HOME_LOGIC_LUA);
 		std::string homeGlue = ResourceText(IDR_HOME_LUA);
+		// The content platform's rules (content_logic.lua as `Content`), which
+		// home.lua uses to prepare a server's Workshop items before a join.
+		std::string contentLogic = ResourceText(IDR_CONTENT_LOGIC_LUA);
 		std::string home;
-		if (!homeLogic.empty() && !homeGlue.empty())
+		if (!homeLogic.empty() && !homeGlue.empty() && !contentLogic.empty())
 		{
-			home = "\nlocal Home = (function(...)\n" + homeLogic + "\nend)(Logic);\n(function()\n" + homeGlue + "\nend)();\n";
-			// Our own main menu page (preview, menu_page.lua), in a function of its own too.
+			home = "\nlocal Home = (function(...)\n" + homeLogic + "\nend)(Logic);\n"
+				"local Content = (function()\n" + contentLogic + "\nend)();\n"
+				"(function()\n" + homeGlue + "\nend)();\n";
+			// Our own main menu page (preview, menu_page.lua), in a function of its own too,
+			// with Find servers' index rules (browse_logic.lua) as its local `BrowseLogic`.
 			std::string menuPage = ResourceText(IDR_MENU_PAGE_LUA);
-			if (!menuPage.empty())
-				home += "(function()\n" + menuPage + "\nend)()\n";
+			std::string browseLogic = ResourceText(IDR_BROWSE_LOGIC_LUA);
+			if (!menuPage.empty() && !browseLogic.empty())
+				home += "(function()\nlocal BrowseLogic = (function()\n" + browseLogic + "\nend)()\n" + menuPage + "\nend)()\n";
 		}
 		// The Meowy console (console_logic.lua as `ConsoleLogic`, then console.lua),
 		// in a function of its own that sees resilience.lua's locals.
@@ -1894,6 +2361,12 @@ namespace
 		if (!consoleLogic.empty() && !consoleGlue.empty())
 			// The leading ";": after "end)()" a "(" would call its result.
 			home += ";(function()\nlocal ConsoleLogic = (function()\n" + consoleLogic + "\nend)()\n" + consoleGlue + "\nend)()\n";
+		// The settings guard (settings_guard_logic.lua as `SettingsGuard`, then
+		// settings_guard.lua), likewise.
+		std::string guardLogic = ResourceText(IDR_SETTINGS_GUARD_LOGIC_LUA);
+		std::string guardGlue = ResourceText(IDR_SETTINGS_GUARD_LUA);
+		if (!guardLogic.empty() && !guardGlue.empty())
+			home += ";(function()\nlocal SettingsGuard = (function()\n" + guardLogic + "\nend)()\n" + guardGlue + "\nend)()\n";
 		return "local UI = (function()\n" + ui + "\nend)()\n"
 			"local Logic = (function()\n" + logic + "\nend)()\n" + doctor + glue + home;
 	}
@@ -2501,8 +2974,8 @@ local enabled = meowy.Setting("meowy_loadingscreen", "1",
 	"Meowy Client Pack: our own loading screen when joining Meowy Network (0 = Garry's Mod's)")
 local active, sure, lastStatus, details = false, false, nil, nil
 
--- Load the screen's page now, hidden, so a join shows it at once.
-if enabled:GetBool() and system.IsWindowed() then meowy.LoadingPrewarm() end
+-- The screen's page is loaded ahead (hidden, so a join shows it at once) and
+-- unloaded while you play or the game sits in the background: home.lua.
 local panelSince -- SysTime when GMod's loading panel opened, for how long it showed before ours
 
 -- A separate garrysmod/data for each server (data_sandbox.h): a server's Lua
@@ -2694,6 +3167,7 @@ GMOD_MODULE_OPEN()
 	SetFunction(LUA, "Notify", Guarded<Notify>);
 	SetFunction(LUA, "SetNotifyEnabled", Guarded<SetNotifyEnabled>);
 	SetFunction(LUA, "NotifyEnabled", Guarded<NotifyEnabled>);
+	SetFunction(LUA, "NotifyCatalogue", Guarded<NotifyCatalogue>);
 	SetFunction(LUA, "TimelineEvent", Guarded<TimelineEvent>);
 	SetFunction(LUA, "ExpectRestart", Guarded<ExpectRestart>);
 
@@ -2760,6 +3234,7 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	SetFunction(LUA, "LoadingInGame", Guarded<LoadingInGame>);
 	SetFunction(LUA, "LoadingEnd", Guarded<LoadingEnd>);
 	SetFunction(LUA, "LoadingPrewarm", Guarded<LoadingPrewarm>);
+	SetFunction(LUA, "LoadingPark", Guarded<LoadingPark>);
 	SetFunction(LUA, "ServerRepFetch", Guarded<ServerRepFetch>);
 	SetFunction(LUA, "ServerRepTake", Guarded<ServerRepTake>);
 	SetFunction(LUA, "ServerRepReport", Guarded<ServerRepReport>);
@@ -2794,6 +3269,10 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	SetFunction(LUA, "PrewarmStart", Guarded<PrewarmStart>);
 	SetFunction(LUA, "PrewarmWorkshop", Guarded<PrewarmWorkshop>);
 	SetFunction(LUA, "WorkshopItemState", Guarded<WorkshopItemState>);
+	SetFunction(LUA, "WorkshopItemProgress", Guarded<WorkshopItemProgress>);
+	SetFunction(LUA, "ContentAsk", Guarded<ContentAsk>);
+	SetFunction(LUA, "ContentTake", Guarded<ContentTake>);
+	SetFunction(LUA, "ContentState", Guarded<ContentState>);
 	SetFunction(LUA, "PrewarmCancel", Guarded<PrewarmCancel>);
 	SetFunction(LUA, "ConsoleCaptureStart", Guarded<ConsoleCaptureStart>);
 	SetFunction(LUA, "ConsoleRead", Guarded<ConsoleRead>);
@@ -2807,9 +3286,22 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	SetFunction(LUA, "ServerQueryTake", Guarded<ServerQueryTake>);
 	SetFunction(LUA, "ServerQueryCancel", Guarded<ServerQueryCancel>);
 	SetFunction(LUA, "ServerQueryState", Guarded<ServerQueryState>);
+	SetFunction(LUA, "ServerIndexFetch", Guarded<ServerIndexFetch>);
+	SetFunction(LUA, "ServerIndexTake", Guarded<ServerIndexTake>);
+	SetFunction(LUA, "ServerIndexState", Guarded<ServerIndexState>);
+	SetFunction(LUA, "PingMemoryLoad", Guarded<PingMemoryLoad>);
+	SetFunction(LUA, "PingMemorySave", Guarded<PingMemorySave>);
 	SetFunction(LUA, "PrewarmState", Guarded<PrewarmState>);
 	SetFunction(LUA, "PakCache", Guarded<PakCache>);
 	SetFunction(LUA, "PakCacheState", Guarded<PakCacheState>);
+	SetFunction(LUA, "ConfigBackup", Guarded<ConfigBackup>);
+	SetFunction(LUA, "ConfigBackups", Guarded<ConfigBackups>);
+	SetFunction(LUA, "ConfigRestore", Guarded<ConfigRestore>);
+	SetFunction(LUA, "JoinBoost", Guarded<JoinBoost>);
+	SetFunction(LUA, "CvarHold", Guarded<CvarHold>);
+	SetFunction(LUA, "CvarRelease", Guarded<CvarRelease>);
+	SetFunction(LUA, "CvarHeld", Guarded<CvarHeld>);
+	SetFunction(LUA, "JoinBoostState", Guarded<JoinBoostState>);
 	SetFunction(LUA, "LastServerMark", Guarded<LastServerMark>);
 	SetFunction(LUA, "LastServer", Guarded<LastServer>);
 	SetFunction(LUA, "LastServerForget", Guarded<LastServerForget>);

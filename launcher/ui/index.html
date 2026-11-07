@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Meowy Launcher</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="main.js" defer></script>
+</head>
+<body>
+  <h1>Meowy Launcher</h1>
+  <p class="sub" id="version"></p>
+
+  <div class="actions">
+    <button class="primary" id="play">Play Garry's Mod</button>
+    <button id="join">Join Meowy Network</button>
+    <button class="ghost" id="repair">Repair now</button>
+  </div>
+  <div id="message" role="status"></div>
+
+  <h2>Status</h2>
+  <div class="panel">
+    <div class="row"><span class="k">Garry's Mod</span><span class="v" id="game"></span></div>
+    <div class="row"><span class="k">Starts with the game</span><span class="v" id="line"></span></div>
+    <div class="row"><span class="k">Pack files</span><span class="v" id="modules"></span></div>
+    <div class="row"><span class="k">Last repair</span><span class="v" id="last"></span></div>
+  </div>
+
+  <h2>Settings</h2>
+  <div class="panel">
+    <label class="toggle">
+      <input type="checkbox" id="lua-refresh">
+      <span>Faster start
+        <small>Starts Garry's Mod with -disableluarefresh (about 1 s faster). Turn it off if you make addons and need Lua autorefresh.</small>
+      </span>
+    </label>
+    <label class="toggle">
+      <input type="checkbox" id="sign-in">
+      <span>Start the Meowy Launcher when I sign in
+        <small>It waits in the tray: repairs the pack after Steam updates and offers Rejoin after a crash.</small>
+      </span>
+    </label>
+  </div>
+
+  <h2>Updates</h2>
+  <div class="panel"><span id="updates"></span></div>
+</body>
+</html>
