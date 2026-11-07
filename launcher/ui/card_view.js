@@ -29,6 +29,16 @@ function cardView(card) {
           { label: "Join", action: "join", style: "primary" },
         ],
       };
+    case "back_up":
+      return {
+        title: "Meowy Network is back up",
+        text: (card.name || "The server") + " answers again.",
+        extra: "",
+        buttons: [
+          { label: "Not now", action: "dismiss", style: "ghost" },
+          { label: "Join", action: "join", style: "primary" },
+        ],
+      };
     case "notice":
       return { title: card.title, text: card.text, extra: "", buttons: [{ label: "OK", action: "dismiss", style: "primary" }] };
     default:

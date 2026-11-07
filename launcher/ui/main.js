@@ -36,6 +36,7 @@ async function refresh() {
   else set("modules", "Installed", "ok");
   set("last", s.last_repair || "-");
   $("lua-refresh").checked = s.disable_lua_refresh;
+  $("back-up").checked = s.notify_back_up;
   $("sign-in").checked = s.start_at_sign_in;
   $("updates").textContent = s.updates;
   $("play").disabled = !s.steam;
@@ -61,6 +62,51 @@ $("lua-refresh").onchange = (e) =>
   invoke("set_lua_refresh", { on: e.target.checked }).catch((err) => say(String(err), "bad")).finally(refresh);
 $("sign-in").onchange = (e) =>
   invoke("set_sign_in", { on: e.target.checked }).catch((err) => say(String(err), "bad")).finally(refresh);
+$("back-up").onchange = (e) =>
+  invoke("set_back_up", { on: e.target.checked }).catch((err) => say(String(err), "bad")).finally(refresh);
+
+// Servers: Meowy Network, then the player's Steam favourites and recent
+// Garry's Mod servers. Asked when the window opens, on Refresh, and every 30 s.
+let asking = false;
+async function servers() {
+  if (asking) return;
+  asking = true;
+  $("refresh").disabled = true;
+  try {
+    const rows = await invoke("server_list");
+    const box = $("servers");
+    box.replaceChildren();
+    for (const row of rows) {
+      const v = serverView(row);
+      const el = document.createElement("div");
+      el.className = "server" + (v.up ? "" : " down");
+      const text = document.createElement("div");
+      const title = document.createElement("div");
+      title.className = "name";
+      title.textContent = v.title;
+      const detail = document.createElement("small");
+      detail.textContent = v.detail;
+      text.append(title, detail);
+      el.appendChild(text);
+      if (v.join) {
+        const b = document.createElement("button");
+        b.textContent = "Join";
+        b.onclick = () => run(b, () => invoke("join_server", { address: row.address }));
+        el.appendChild(b);
+      }
+      box.appendChild(el);
+    }
+    if (!rows.length) box.textContent = "No servers to show.";
+  } catch (e) {
+    $("servers").textContent = String(e);
+  } finally {
+    asking = false;
+    $("refresh").disabled = false;
+  }
+}
+$("refresh").onclick = servers;
+setInterval(() => { if (!document.hidden) servers(); }, 30000);
 
 listen("status", refresh);
 refresh();
+servers();

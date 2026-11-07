@@ -9,11 +9,13 @@ use std::path::{Path, PathBuf};
 pub struct Settings {
     /// Add `-disableluarefresh` to launches (start-up #1: 0.8-1.6 s per start).
     pub disable_lua_refresh: bool,
+    /// Show a card when Meowy Network answers again after being down (off by default).
+    pub notify_back_up: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { disable_lua_refresh: true }
+        Settings { disable_lua_refresh: true, notify_back_up: false }
     }
 }
 
@@ -55,7 +57,11 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("meowy_launcher_settings_{}", std::process::id()));
         assert_eq!(Settings::load(&dir), Settings::default());
         assert!(Settings::default().disable_lua_refresh, "on by default, with an opt-out");
-        let off = Settings { disable_lua_refresh: false };
+        assert!(!Settings::default().notify_back_up, "off by default");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("settings.json"), "{\"disable_lua_refresh\": false}").unwrap();
+        assert_eq!(Settings::load(&dir), Settings { disable_lua_refresh: false, notify_back_up: false }, "older file");
+        let off = Settings { disable_lua_refresh: false, notify_back_up: true };
         off.save(&dir).unwrap();
         assert_eq!(Settings::load(&dir), off);
         std::fs::write(dir.join("settings.json"), "{ not json").unwrap();

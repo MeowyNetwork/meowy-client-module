@@ -182,12 +182,30 @@ here that would touch the game, so it's kept apart:
 - Nothing in the MVP depends on this, and nothing in the MVP opens the game with more than
   `SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION`.
 
-## 10. Later (v2)
+## 10. v2
 
+Agreed order (2026-11-07): servers while GMod is closed → discovery from the index → the pipe. Then the
+signed policy (after the pack's K1 lands) and the early-entry prototype (§9).
+
+**Servers while GMod is closed (done):**
+- The window lists Meowy Network first, then the signed-in Steam account's favourites and its 12 most
+  recent servers, from Steam's own `userdata\<ActiveUser>\7\remote\serverbrowser_hist.vdf`.
+- That file is shared by every Source game (entries say `appid 0`), so each server is asked over A2S
+  (`core/src/a2s.rs`, the pack's rules: public addresses only, two challenge rounds, one resend, a
+  bounded reply). A recent server shows only if it answers as Garry's Mod (app 4000); Meowy and
+  favourites show even when not answering.
+- Asked when the window opens, on Refresh and every 30 s while it's visible (at most 32 servers, ~3 s).
+  **Join** only accepts an address from the list the launcher itself last returned. A server with a
+  password has no Join (the launcher never handles passwords).
+- **"Tell me when Meowy Network is back up"** (off by default): while the game is closed, one A2S to
+  Meowy every 30 s; two misses in a row mean down; the first answer after that shows a card with
+  **Join**.
+
+**Later:**
+- Discovery from the server index (MR3, `/api/pack/index`).
 - A pipe `\\.\pipe\meowy-<user SID>` (typed JSON, size caps; never Lua or commands): join while the game
   runs, status, notifications.
-- "Server back up" / "event starting" notifications while GMod is closed.
-- MR3 discovery and favourites with live A2S; MR2 content preparation while GMod is closed.
+- "Event starting" notifications; MR2 content preparation while GMod is closed.
 - "Still loading?" for a hung window (`IsHungAppWindow`).
 
 ## 11. Measured claims
