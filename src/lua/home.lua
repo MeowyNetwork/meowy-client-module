@@ -20,6 +20,7 @@ local addresses = {}          -- row number -> address, from the model last sent
 local nextLook, nextRefresh, shown = 0, 0, false
 local tickEsc                 -- the Escape menu's card, below
 local sentText, sentAt, version = nil, 0, 0
+local lastOurs = false        -- menuPage.ours when last sent
 
 local HOME_JS = [==[
 (function () {
@@ -213,7 +214,7 @@ end
 
 -- A row, clicked on the page: its address from this side, checked, then joined.
 function MeowyClientPackHomeJoin(id)
-	if IsInGame() or IsInLoading() or not homeOn() then return end
+	if IsInGame() or IsInLoading() or not (homeOn() or menuPage.ours) then return end
 	local address = addresses[math.floor(tonumber(id) or 0)]
 	if not Home.validAddress(address) then return end
 	log("home: joining %s", address)
@@ -241,14 +242,19 @@ local function send(text)
 	if not (IsValid(pnlMainMenu) and pnlMainMenu.Call) then return end
 	if text ~= sentText then version = version + 1 end
 	sentText, sentAt = text, SysTime()
-	pnlMainMenu:Call(HOME_JS .. "window.MeowyHome(" .. text .. "," .. version .. ");\n")
+	pnlMainMenu:Call(HOME_JS .. "window.MeowyHome(" .. text .. "," .. version .. ");\n"
+		.. "if (window.MeowyShellLists) window.MeowyShellLists();\n")   -- the Meowy home screen's lists (shell.js)
 end
 
 local function tick()
 	local now = SysTime()
 	if now < nextLook then return end
 	nextLook = now + 0.5
-	local visible = homeOn() and menuVisible() and not IsInGame() and not IsInLoading()
+	-- Our own menu page (menu_page.lua) shows the same lists, whatever the card's setting.
+	if menuPage.ours ~= lastOurs then
+		lastOurs, sentText, sentAt = menuPage.ours, nil, 0   -- a new page: send it everything now
+	end
+	local visible = (homeOn() or menuPage.ours) and menuVisible() and not IsInGame() and not IsInLoading()
 		and IsValid(pnlMainMenu) and pnlMainMenu.Call ~= nil
 	if visible then
 		if not shown or now >= nextRefresh then

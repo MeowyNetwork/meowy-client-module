@@ -51,6 +51,12 @@ class El {
 	get textContent() { return this._text + this.children.map(c => c.textContent).join(''); }
 	matches(sel) {
 		let m;
+		if (sel.includes(',')) return sel.split(',').some(s => this.matches(s.trim()));
+		if ((m = sel.match(/^#([\w-]+) a\[data-act\]$/))) {
+			let p = this.parentNode;
+			while (p && p.id !== m[1]) p = p.parentNode;
+			return this.tagName === 'A' && 'data-act' in this.attrs && !!p;
+		}
 		if ((m = sel.match(/^\.page\[ng-controller="(\w+)"\]$/))) return this.className === 'page' && this.attrs['ng-controller'] === m[1];
 		if ((m = sel.match(/^\.([\w-]+)$/))) return this.className.split(' ').includes(m[1]);
 		if ((m = sel.match(/^#([\w-]+)$/))) return this.id === m[1];
@@ -81,6 +87,7 @@ function fresh() {
 		createTextNode: t => new Text(t),
 		getElementById: id => [head, body].map(r => r.all().find(e => e.id === id)).find(Boolean) || null,
 		querySelector: sel => body.querySelector(sel),
+		querySelectorAll: sel => body.querySelectorAll(sel),
 		addEventListener: (type, fn) => listeners.push({ type, fn }),
 	};
 	const win = {};
@@ -232,6 +239,96 @@ win.MeowyEsc({ server: null, settings: [] }, 3);
 check('redrawn once let go', box.children.length, 0);
 win.MeowyEsc(null, 4);
 check('null removes the escape card', doc.getElementById('meowy-esc'), null);
+
+// ---------------------------------------------------------------------------
+// The Meowy home screen (src/menu/shell.js): our home inside the stock page.
+const shellSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'menu', 'shell.js'), 'utf8');
+function stockPage() {
+	fresh();
+	const view = new El('div'); // ng-view
+	doc.body.appendChild(view);
+	const main = new El('div');
+	main.className = 'page';
+	main.setAttribute('ng-controller', 'ControllerMain');
+	const options = new El('div'); options.className = 'options';
+	const news = new El('div'); news.className = 'news';
+	main.appendChild(options); main.appendChild(news);
+	// fresh() put a main page in the body already; this one is in the view instead.
+	doc.body.children.filter(c => c !== view).forEach(c => doc.body.removeChild(c));
+	view.appendChild(main);
+	doc.body.className = 'ng-scope';
+	const posts = [];
+	const win = { meowy: { post: (k, v) => posts.push([k, v]) } };
+	const loc = { hash: '#/' };
+	new Function('window', 'document', 'location', 'lua', shellSrc)(win, doc, loc, { Run: s => luaRuns.push(s) });
+	return { win, posts, loc, view, main };
+}
+let S = stockPage();
+const shellEl = () => doc.getElementById('meowy-shell');
+check('shell: nothing until asked', shellEl(), null);
+S.win.MeowyShell(true);
+check('shell: put into the main screen', shellEl() && shellEl().parentNode === S.main, true);
+check('shell: the stock list and news hidden by a rule on <body>', doc.body.className.split(' ').includes('meowy-shell'), true);
+check('shell: the rule is there once', !!doc.getElementById('meowy-shell-style'), true);
+check('shell: the rule hides the stock list and news', /meowy-shell .*> \.options/.test(doc.getElementById('meowy-shell-style').textContent), true);
+check('shell: body keeps its own classes', doc.body.className.split(' ').includes('ng-scope'), true);
+S.win.MeowyShell(true);
+check('shell: sent again, still one', S.main.querySelectorAll('#meowy-shell').length, 1);
+// Links: the page's own routes (no reload) or fixed posts.
+const navs = shellEl().querySelectorAll('.ms-link').filter(a => a.textContent && !a.className.includes('ms-cont'));
+const byText = t => navs.find(a => a.textContent === t);
+byText('Find servers').onclick();
+check('shell: Find servers is the page\'s own route', S.loc.hash, '#/servers/');
+byText('Start new game').onclick();
+check('shell: Start new game', S.loc.hash, '#/newgame/');
+byText('Options').onclick();
+check('shell: Options posts', JSON.stringify(S.posts.pop()), '["options",""]');
+byText('Quit').onkeydown({ keyCode: 13, preventDefault() {} });
+check('shell: Enter on a link', JSON.stringify(S.posts.pop()), '["quit",""]');
+shellEl().querySelector('.ms-foot').onclick();
+check('shell: the escape hatch posts', JSON.stringify(S.posts.pop()), '["stock",""]');
+// Going to a screen and back: the stock main screen is redrawn, ours goes straight back in.
+S.view.removeChild(S.main);
+const servers = new El('div'); servers.className = 'page'; servers.setAttribute('ng-controller', 'ControllerServers');
+S.view.appendChild(servers);
+S.win.MeowyShell(true);
+check('shell: on another screen, nothing put in', shellEl(), null);
+S.view.removeChild(servers);
+const main2 = new El('div'); main2.className = 'page'; main2.setAttribute('ng-controller', 'ControllerMain');
+S.view.appendChild(main2);
+S.win.MeowyShell(true);
+check('shell: the redrawn main screen gets ours back', shellEl() && shellEl().parentNode === main2, true);
+// Data: the lists and Continue, as the stock-page cards get them.
+S.win.MeowyHomeData = data;
+S.win.MeowyShellLists();
+check('shell: lists drawn', shellEl().querySelectorAll('.ms-name').length >= 8, true);
+shellEl().querySelectorAll('.ms-row')[1].onclick();
+check('shell: a row posts its number', JSON.stringify(S.posts.pop()), '["join",2]');
+const ssearch = shellEl().querySelector('.ms-search');
+ssearch.value = 'server 1';
+ssearch.oninput();
+check('shell: search', shellEl().querySelectorAll('.ms-name').map(e => e.textContent).join(','), 'Server 1,Server 10,Server 11');
+ssearch.focus();
+ssearch.onkeydown(key(ssearch, 40));
+ssearch.onkeydown(key(ssearch, 13));
+check('shell: arrows and Enter', JSON.stringify(S.posts.pop()), '["join",20]');
+ssearch.onkeydown(key(ssearch, 27));
+check('shell: Esc clears', ssearch.value, '');
+S.win.MeowyShellContinue();
+check('shell: no Continue without a server', shellEl().querySelector('.ms-cont').className.includes(' on'), false);
+S.win.MeowyContinue = ['Continue', '<b>Meowy</b>', ' · 2 h ago'];
+S.win.MeowyShellContinue();
+check('shell: Continue shown', shellEl().querySelector('.ms-cont').className.includes(' on'), true);
+check('shell: its server as text', shellEl().querySelector('.ms-cserver').textContent, '<b>Meowy</b>');
+check('shell: no element made from it', shellEl().all().some(e => e.tagName === 'B'), false);
+shellEl().querySelector('.ms-cont').onclick();
+check('shell: Continue posts', JSON.stringify(S.posts.pop()), '["continue",""]');
+// Off (in game, or switched off): taken out, the stock screen back.
+S.win.MeowyShell(false);
+check('shell: off takes it out', shellEl(), null);
+check('shell: and the rule off', doc.body.className.split(' ').includes('meowy-shell'), false);
+check('shell: body keeps its own classes after', doc.body.className, 'ng-scope');
+check('shell: never lua.Run', luaRuns.length, 0);
 
 console.log(`${count} checks, ${failures} failed`);
 process.exit(failures ? 1 : 0);

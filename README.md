@@ -245,6 +245,24 @@ the game closes while the pack is starting, the next start skips it once by itse
   - **Safety:** names are only ever shown as text; a click sends the page's row number, and the
     address comes from the pack's own list.
   - **Turning it off:** in Meowy settings, or `meowy_menu_home 0`.
+- **Meowy home screen (preview, off by default).** `meowy_menu 1`, or "Meowy home screen (preview)" in
+  Meowy settings, puts the pack's home in place of Garry's Mod's main screen. It has:
+  - **Continue**, and your servers with search, as on the card below;
+  - **the usual links:** Find servers, Start new game, Addons, Dupes, Saves and Demos are Garry's Mod's own
+    screens. Options, Meowy settings and Quit work as usual, and Garry's Mod's bottom bar (Problems,
+    games, language, gamemode) stays.
+
+  How it works:
+  - **Inside Garry's Mod's own menu page:** nothing is reloaded. While it's on, a style rule hides the
+    main screen's list and news, the pack's home takes their place, and the links are the page's own
+    screens, so going there and back is instant.
+  - **In game:** the Escape menu is Garry's Mod's, with the server card.
+  - **What it can do:** every server's text is shown as text. The home asks the pack for anything only
+    through `meowy.post(kind, value)`, a fixed list of message types (join a row, Continue, Options,
+    Meowy settings, Quit), each with its value checked.
+
+  **Use Garry's Mod's menu** at the bottom switches back for the rest of that start; `meowy_menu 0`
+  turns it off. `meowy_menu_status` says which is showing, and why.
 - **Server card in the Escape menu.** In game, the same spot in the Escape menu shows the server you're
   on, any server, plus three quick settings:
   - **The server:** its name, map and players (its own answer, asked at most every 30 seconds while

@@ -9,3 +9,5 @@
 #define IDR_UI_LUA 107                 // src/lua/ui.lua: the menu UI kit (cards, buttons, prompts)
 #define IDR_HOME_LOGIC_LUA 108        // src/lua/home_logic.lua: the main menu's Home card, its rules
 #define IDR_HOME_LUA 109              // src/lua/home.lua: the Home card on the menu page
+#define IDR_MENU_PAGE_LUA 110         // src/lua/menu_page.lua: the Meowy home screen (preview), its Lua side
+#define IDR_MENU_SHELL_JS 111         // src/menu/shell.js: that home, put into the stock menu page

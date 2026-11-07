@@ -70,6 +70,18 @@ local function setHome(on)
 	RunConsoleCommand("meowy_menu_home", on and "1" or "0")
 end
 
+-- Our own main menu page (menu_page.lua), a preview: off unless turned on.
+local menuSetting = meowy.Setting and meowy.Setting("meowy_menu", "0",
+	"Meowy Client Pack: our own main menu page instead of Garry's Mod's (preview; 0 = Garry's Mod's)")
+local function menuOn() return menuSetting ~= nil and menuSetting:GetBool() end
+local function setMenu(on)
+	-- Through the console: Garry's Mod refuses ConVar:SetBool on these menu convars.
+	RunConsoleCommand("meowy_menu", on and "1" or "0")
+end
+-- Set by menu_page.lua while our home shows on the stock page (its list, with
+-- the settings entry, is hidden then).
+local menuPage = { ours = false }
+
 -- The Escape menu's card (home.lua): the server you're on, Reconnect, quick volume and FOV.
 local escapeSetting = meowy.Setting and meowy.Setting("meowy_menu_escape", "1",
 	"Meowy Client Pack: a card in the Escape menu with the server you're on and quick settings (0 = none)")
@@ -177,6 +189,16 @@ local function openSettings(startTab)
 			et.meowyToggle = "menu_escape"
 			et.gapBefore = S(10)
 			blocks[#blocks + 1] = et
+		end
+		if meowy.MenuShellJs then
+			local mt = UI.Toggle(nil, "Meowy home screen (preview)",
+				"Our home in place of Garry's Mod's main screen: Continue, your servers with search, and the usual "
+				.. "links (servers, addons and the rest are Garry's Mod's own screens, as before). \"Use Garry's Mod's "
+				.. "menu\" at the bottom, or turning this off, puts the usual main screen back.",
+				menuOn(), function(on) setMenu(on) end)
+			mt.meowyToggle = "menu_page"
+			mt.gapBefore = S(10)
+			blocks[#blocks + 1] = mt
 		end
 		return blocks
 	end
@@ -353,6 +375,7 @@ local ENTRY_JS = [==[
 -- data, then the entries put in.
 local function entryJS(continueData)
 	return ENTRY_JS .. "window.MeowyContinue = " .. continueData .. ";\nwindow.MeowyEntry();\n"
+		.. "if (window.MeowyShellContinue) window.MeowyShellContinue();\n"   -- the Meowy home screen's Continue (shell.js)
 end
 
 -- What Continue shows now, as a JS value: [title, second line] or null.
@@ -422,8 +445,9 @@ local function updateMenuEntry(now, hideContinue)
 			pnlMainMenu:Call(entryJS(continueData(hideContinue)))
 		end
 	end
-	-- The pill only when the entry hasn't shown up within 6 s of the menu being there.
-	updatePill(visible and not entry.ok and (not IsValid(pnlMainMenu) or now - entry.since > 6))
+	-- The pill only when the entry hasn't shown up within 6 s of the menu being
+	-- there (our own page has its own Meowy settings link).
+	updatePill(visible and not entry.ok and not menuPage.ours and (not IsValid(pnlMainMenu) or now - entry.since > 6))
 end
 
 if concommand then

@@ -1414,9 +1414,24 @@ namespace
 		std::string homeGlue = ResourceText(IDR_HOME_LUA);
 		std::string home;
 		if (!homeLogic.empty() && !homeGlue.empty())
-			home = "\nlocal Home = (function(...)\n" + homeLogic + "\nend)(Logic);\n(function()\n" + homeGlue + "\nend)()\n";
+		{
+			home = "\nlocal Home = (function(...)\n" + homeLogic + "\nend)(Logic);\n(function()\n" + homeGlue + "\nend)();\n";
+			// Our own main menu page (preview, menu_page.lua), in a function of its own too.
+			std::string menuPage = ResourceText(IDR_MENU_PAGE_LUA);
+			if (!menuPage.empty())
+				home += "(function()\n" + menuPage + "\nend)()\n";
+		}
 		return "local UI = (function()\n" + ui + "\nend)()\n"
 			"local Logic = (function()\n" + logic + "\nend)()\n" + doctor + glue + home;
+	}
+
+	// MenuShellJs() -> the Meowy home screen's script (src/menu/shell.js), which
+	// menu_page.lua puts into the stock menu page; "" if missing.
+	int MenuShellJs(lua_State* L)
+	{
+		const std::string js = ResourceText(IDR_MENU_SHELL_JS);
+		L->luabase->PushString(js.c_str(), static_cast<unsigned int>(js.size()));
+		return 1;
 	}
 #endif
 
@@ -2204,6 +2219,7 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	SetFunction(LUA, "IsOurServer", Guarded<IsOurServer>);
 	SetFunction(LUA, "OurServerAddress", Guarded<OurServerAddress>);
 	SetFunction(LUA, "ServerNow", Guarded<ServerNow>);
+	SetFunction(LUA, "MenuShellJs", Guarded<MenuShellJs>);
 	SetFunction(LUA, "OtherServerAddress", Guarded<OtherServerAddress>);
 	SetFunction(LUA, "StatusCaptureBegin", Guarded<StatusCaptureBegin>);
 	SetFunction(LUA, "StatusCaptureEnd", Guarded<StatusCaptureEnd>);
