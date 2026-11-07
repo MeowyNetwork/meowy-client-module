@@ -24,6 +24,7 @@ add_library(meowy SHARED
 	src/font_loads.cpp
 	src/fs_cache.cpp
 	src/prewarm.cpp
+	src/console_capture.cpp
 	src/server_query.cpp
 	src/steam_ugc.cpp
 	src/server_gate.cpp
@@ -202,6 +203,12 @@ if(MEOWY_BUILD_TESTS)
 	if(MSVC)
 		set_property(TARGET lua_find_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 		target_compile_options(lua_find_smoke PRIVATE /W4 /utf-8)
+	endif()
+	# The console capture's lines, no game (console_capture_smoke).
+	add_executable(console_capture_smoke tests/console_capture_smoke.cpp src/console_capture.cpp)
+	if(MSVC)
+		set_property(TARGET console_capture_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+		target_compile_options(console_capture_smoke PRIVATE /W4 /utf-8)
 	endif()
 	# Server lists from Steam: the filters passed on, no game (server_query_smoke).
 	add_executable(server_query_smoke tests/server_query_smoke.cpp src/server_query.cpp)

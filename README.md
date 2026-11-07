@@ -191,6 +191,21 @@ the game closes while the pack is starting, the next start skips it once by itse
   - `meowy_honest_serverlist 0` turns the whole check off; `meowy_serverlist_reports 0` keeps the
     checks but stops the reports. Our own servers are never checked. What each report did (counts and
     the HTTP result, never SteamIDs) goes to `%LOCALAPPDATA%\MeowyClientPack\serverlist.log`.
+- **The Meowy console.** The console key (or `meowy_console`) opens the game's console in the pack's look, at
+  the main menu or over the game:
+  - **Lines:** the last 50,000 console lines with their time and colour, kept from the moment the game
+    starts. Warnings show in amber and errors in red, and text that isn't valid UTF-8 is cleaned.
+  - **Finding things:** search as you type, "Warnings and errors" only, and "Collapse repeats" (the same
+    line again just adds to a count).
+  - **Copying:** Copy takes what's shown; clicking a line copies that line.
+  - **Commands:** a typed line runs exactly as if typed into the game's console, through the engine.
+    The menu's `RunConsoleCommand` refuses some commands, the console doesn't. Up and Down go through what
+    you typed.
+  - **Window:** drag it by the title, resize it from the corner; the console key or Esc closes it.
+  - **The console key:** when Garry's Mod's console shows, it's hidden at once and this one opens. Off in Meowy
+    settings ("The console key opens the Meowy console", `meowy_console_key 0`) for the game's console.
+  - It reads tier0's output through its own listener (the logging system or the spew function, whichever
+    this build has). `meowy_console_status` says which, and how many lines are kept.
 - **Find servers, faster.** Find servers' Internet list comes straight from Steam, and Steam's master server
   leaves out empty servers before anything is pinged. Steam pings at most about 5,000 servers a minute, so
   the full list of ~4,800 took 88 s here. The servers with players (964) are complete in 20 s, and the first

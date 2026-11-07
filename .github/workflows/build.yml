@@ -27,6 +27,7 @@ jobs:
           lua5.1 tests/resilience_menu_test.lua
           lua5.1 tests/doctor_logic_test.lua
           lua5.1 tests/home_logic_test.lua
+          lua5.1 tests/console_logic_test.lua
           node tests/home_page_test.js
 
   windows:
@@ -70,6 +71,12 @@ jobs:
           ./buildtest/Release/lua_find_smoke.exe
           cmake --build buildtest32 --config Release --target lua_find_smoke
           ./buildtest32/Release/lua_find_smoke.exe
+      - name: Console capture (console_capture_smoke, both bitnesses)
+        run: |
+          cmake --build buildtest --config Release --target console_capture_smoke
+          ./buildtest/Release/console_capture_smoke.exe
+          cmake --build buildtest32 --config Release --target console_capture_smoke
+          ./buildtest32/Release/console_capture_smoke.exe
       - name: Server lists from Steam (server_query_smoke, both bitnesses)
         run: |
           cmake --build buildtest --config Release --target server_query_smoke

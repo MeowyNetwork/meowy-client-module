@@ -15,6 +15,9 @@ local chunkText = "local UI = (function()\n" .. readFile(here .. "/../src/lua/ui
 	.. "\nlocal Home = (function(...)\n" .. readFile(here .. "/../src/lua/home_logic.lua") .. "\nend)(Logic);\n"
 	.. "(function()\n" .. readFile(here .. "/../src/lua/home.lua") .. "\nend)();\n"
 	.. "(function()\n" .. readFile(here .. "/../src/lua/menu_page.lua") .. "\nend)()\n"
+	-- The Meowy console, as module.cpp appends it.
+	.. ";(function()\nlocal ConsoleLogic = (function()\n" .. readFile(here .. "/../src/lua/console_logic.lua") .. "\nend)()\n"
+	.. readFile(here .. "/../src/lua/console.lua") .. "\nend)()\n"
 local loadstring = loadstring or load
 
 local failures, count = 0, 0
@@ -106,6 +109,18 @@ local function world(opts)
 		ServerQueryStart = function(...) w.sqArgs = { ... } w.sqStarts = (w.sqStarts or 0) + 1 return w.sqStarts end,
 		ServerQueryTake = function() local l = w.sq or {} w.sq = {} return l, w.sqDone == true, 0 end,
 		ServerQueryCancel = function() w.sqCancels = (w.sqCancels or 0) + 1 end,
+		-- The console's lines (w.console), read after an id.
+		ConsoleCaptureStart = function() w.consoleStarts = (w.consoleStarts or 0) + 1 return true end,
+		ConsoleRead = function(after, max)
+			w.consoleReads = (w.consoleReads or 0) + 1
+			local out, last = {}, after
+			for _, l in ipairs(w.console or {}) do
+				if l.id > after then out[#out + 1] = l last = l.id end
+			end
+			return out, last
+		end,
+		ConsoleState = function() return "spew function; 3 lines kept" end,
+		ConsoleRun = function(line) w.consoleRuns = w.consoleRuns or {} w.consoleRuns[#w.consoleRuns + 1] = line return not w.noEngine end,
 		PrewarmWorkshop = function(a) local ids = {} for i, id in ipairs((w.workshop or {})[a] or {}) do ids[i] = id end return ids end,
 		-- Steam's view of an item: installed, needsUpdate, busy, legacy, updated
 		-- (w.wsState[id] = false: Steam can't say; default: installed, the version of 1600000000).
@@ -159,7 +174,8 @@ local function world(opts)
 	env.IsInLoading = function() return w.loading end
 	-- Convars other parts of the pack own (module.cpp's chunks), only when a test asks.
 	env.GetConVar = opts.engineConVars and function(n)
-		if w.cvars[n] ~= nil then return { GetBool = function() return w.cvars[n] == "1" end } end
+		local value = function() if w.cvars[n] ~= nil then return w.cvars[n] end return w.convars and w.convars[n] end
+		if value() ~= nil then return { GetBool = function() return value() == "1" end } end
 	end or nil
 	-- Engine convars the Escape card reads and sets.
 	w.cvars = { volume = "0.7", voice_scale = "1", fov_desired = "90" }
@@ -173,7 +189,7 @@ local function world(opts)
 	env.SetClipboardText = function(t) w.clipboard = t end
 	env.RunGameUICommand = function(c) w.gameUI = c end
 	-- The Escape menu is open (in game, the menu shows only then).
-	env.gui = { IsGameUIVisible = function() return w.escOpen == true end }
+	env.gui = { IsGameUIVisible = function() return w.escOpen == true end, IsConsoleVisible = function() return w.stockConsole == true end }
 	-- Every Think hook runs each frame, in the order added (resilience, then the Home card).
 	local thinks, order = {}, {}
 	w.hooks = {}
@@ -210,6 +226,8 @@ local function world(opts)
 	-- The game's files: everything there but w.missing[path].
 	env.file = { Exists = function(p, where) w.existsAsked = where return not (w.missing or {})[p] end }
 	env.istable = function(v) return type(v) == "table" end
+	env.KEY_UP, env.KEY_DOWN, env.KEY_ENTER = 88, 90, 64
+	env.unpack = env.unpack or unpack or table.unpack
 	-- The menu state's engine library: your subscribed addons (w.addons).
 	env.engine = { GetAddons = function() return w.addons or {} end }
 	w.think = function() for _, id in ipairs(order) do thinks[id]() end end
@@ -1559,6 +1577,66 @@ w.sq = { { address = "1.2.3.4:27015", name = "A", map = "m", tags = "", desc = "
 w.run(0.3)
 w.post("browse_intent", 1)
 check("browse: a row pointed at is got ready", w.pwStarts and w.pwStarts[1], "1.2.3.4:27015")
+-- The Meowy console: the capture starts with the menu; meowy_console opens the
+-- window, reads the lines, and a typed line runs as the console would run it.
+w = world({ settings = ON, menu = true })
+check("console: capture started", w.consoleStarts, 1)
+w.console = { { id = 1, t = 1000, s = 0, c = -1, x = "hello" }, { id = 2, t = 2000, s = 3, c = -1, x = "[ERROR] boom" } }
+w.concommands.meowy_console()
+local consoleFrame
+for _, p in ipairs(w.panels or {}) do if rawget(p, "meowyConsole") then consoleFrame = p end end
+check("console: a window", consoleFrame ~= nil, true)
+check("console: its lines read", w.consoleReads, 1)
+local cmdEntry
+for _, p in ipairs(w.panels or {}) do if p.class == "DTextEntry" and rawget(p, "OnEnter") then cmdEntry = p end end
+check("console: a command line", cmdEntry ~= nil, true)
+if cmdEntry then
+	cmdEntry.GetValue = function() return 'net_graph 1; say "a; b"' end
+	cmdEntry:OnEnter()
+	check("console: the line run as typed, through the engine", w.consoleRuns and w.consoleRuns[1], 'net_graph 1; say "a; b"')
+	w.noEngine = true
+	local before = #w.commands
+	cmdEntry:OnEnter()
+	check("console: without the engine, each command through RunConsoleCommand", table.concat(w.commands, "/", before + 1), "net_graph 1/say a; b")
+	w.noEngine = nil
+	local recalled
+	cmdEntry.SetText = function(_, v) recalled = v end
+	cmdEntry:OnKeyCodeTyped(88)   -- Up
+	check("console: Up recalls what was typed", recalled, 'net_graph 1; say "a; b"')
+end
+w.concommands.meowy_console_status()
+check("console: status command", (w.logs or ""):find("console: spew function", 1, true) ~= nil, true)
+-- Without the native part: nothing, quietly.
+w = world({ settings = ON, menu = true })
+check("console: capture once per start", w.consoleStarts, 1)
+-- The console key: the game's console showing is hidden again and ours opens,
+-- or closes when open; the key toggles it. Off, the game's console stays.
+local function consoleWindow(ww)
+	for _, p in ipairs(ww.panels or {}) do if rawget(p, "meowyConsole") and not p.removed then return p end end
+end
+w = world({ settings = ON, menu = true })
+w.run(0.5)
+check("console key: nothing while the game's console is shut", consoleWindow(w), nil)
+w.stockConsole = true
+w.run(0.2)
+check("console key: the game's console hidden", w.consoleRuns and w.consoleRuns[#w.consoleRuns], "hideconsole")
+check("console key: ours opens", consoleWindow(w) ~= nil, true)
+w.stockConsole = false
+w.run(0.2)
+w.stockConsole = true
+w.run(0.2)
+check("console key: again closes ours", consoleWindow(w), nil)
+w.stockConsole = false
+w = world({ settings = ON, menu = true, convars = { meowy_console_key = "0" } })
+w.stockConsole = true
+w.run(0.5)
+check("console key off: the game's console left alone", w.consoleRuns, nil)
+w = world({ settings = ON, menu = true, engineConVars = true })
+w.concommands.meowy_settings()
+local ckt = find(function(p) return p.meowyToggle == "console_key" end)
+check("console key: a toggle in settings, on", ckt ~= nil and ckt.on, true)
+if ckt then ckt:SetOn(false) end
+check("console key: turned off through the console", w.convars.meowy_console_key, "0")
 check("no Lua errors", w.errors, nil)
 print(("%d checks, %d failed"):format(count, failures))
 os.exit(failures == 0 and 0 or 1)
