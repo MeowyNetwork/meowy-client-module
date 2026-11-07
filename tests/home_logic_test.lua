@@ -142,6 +142,18 @@ check("friends: no 'Checking...' section while asking", m.sections[2] == nil or 
 m = H.model({ friends = {}, favorite = {}, history = {} }, now)
 check("friends: none, no section", #m.sections, 0)
 
+-- The menu page's zoom
+check("zoom: auto at 1080p", H.menuZoom("0", 1080), 1)
+check("zoom: auto at 1440p", H.menuZoom("0", 1440), 1.33)
+check("zoom: auto at 4K", H.menuZoom("0", 2160), 2)
+check("zoom: auto never below 1", H.menuZoom("0", 768), 1)
+check("zoom: auto, capped", H.menuZoom("0", 4320), 2.5)
+check("zoom: a chosen size", H.menuZoom("150", 1440), 1.5)
+check("zoom: a chosen size, clamped low", H.menuZoom("10", 1440), 0.75)
+check("zoom: a chosen size, clamped high", H.menuZoom("900", 1440), 2.5)
+check("zoom: junk is auto", H.menuZoom("big", 1440), 1.33)
+check("zoom: no height", H.menuZoom("0", nil), 1)
+
 -- Encoding for the page
 check("encode: string", H.encode("a\"b"), [["a\x22b"]])
 check("encode: number", H.encode(12), "12")

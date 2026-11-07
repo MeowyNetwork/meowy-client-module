@@ -245,6 +245,11 @@ the game closes while the pack is starting, the next start skips it once by itse
   - **Safety:** names are only ever shown as text; a click sends the page's row number, and the
     address comes from the pack's own list.
   - **Turning it off:** in Meowy settings, or `meowy_menu_home 0`.
+- **Menu text size.** Garry's Mod draws its menu at the same pixel size on any screen, so it's small at 1440p
+  and tiny at 4K. The pack zooms the whole menu page: Auto is the screen height over 1080, so 100% at
+  1080p, 133% at 1440p and 200% at 4K. Or pick 100–200% in Meowy settings (`meowy_menu_scale`, 0 =
+  auto). It covers the main and Escape menus and every screen in them (Find servers, New game,
+  Addons and the rest). The pack's own windows already scale with the screen.
 - **Meowy home screen (preview, off by default).** `meowy_menu 1`, or "Meowy home screen (preview)" in
   Meowy settings, puts the pack's home in place of Garry's Mod's main screen. It has:
   - **Continue**, and your servers with search, as on the card below;

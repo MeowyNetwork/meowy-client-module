@@ -11,8 +11,14 @@
 --
 -- The page asks for actions through meowy.post(kind, value): a fixed table of
 -- message types, each checking its value, and only while our home is on.
+--
+-- Also, on or off: the menu page's zoom (meowy_menu_scale, U1). Garry's Mod
+-- draws the page at the same pixel size on any screen; a CSS zoom on the root
+-- makes it readable at 1440p and 4K (auto: screen height / 1080).
 local REFRESH = 1   -- seconds between sends (the script is safe to run again)
 
+local ZOOM_RESEND = 3         -- seconds
+local zoomSent, zoomAt = nil, 0
 local hatch = false           -- "Use Garry's Mod's menu": stock for the rest of this start
 local bridged                 -- the menu's browser panel the bridge is on
 local nextLook, sent, sentAt, wasOn, failedTick = 0, nil, 0, false, false
@@ -72,6 +78,17 @@ local function tick()
 	local want = wanted()
 	menuPage.ours = want
 	if not (IsValid(pnlMainMenu) and pnlMainMenu.Call) then return end
+
+	-- The page's zoom (meowy_menu_scale), on whatever it shows. Sent again every
+	-- few seconds: the page may have been reloaded (a language change does).
+	local zoom = Home.menuZoom(menuScale(), ScrH())
+	if zoom ~= zoomSent or (zoom ~= 1 and now - zoomAt >= ZOOM_RESEND) then
+		if zoom ~= 1 or zoomSent then
+			pnlMainMenu:Call("document.documentElement.style.zoom = '" .. string.format("%.2f", zoom) .. "';")
+		end
+		if zoom ~= zoomSent then log("menu page: zoom %s", string.format("%.2f", zoom)) end
+		zoomSent, zoomAt = zoom, now
+	end
 	if want ~= sent or (want and now - sentAt >= REFRESH) then
 		-- When off, the script may never have been sent: then there's nothing to take out.
 		if want or sent then

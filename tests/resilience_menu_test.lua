@@ -102,6 +102,7 @@ local function world(opts)
 			-- console sets them (RunConsoleCommand below).
 			return {
 				GetBool = function() return w.convars[name] == "1" end,
+				GetString = function() return w.convars[name] end,
 				SetBool = function() error("calling 'SetBool' on bad self (attempted to modify ConVar not created by Lua)", 2) end,
 			}
 		end,
@@ -186,6 +187,7 @@ local function world(opts)
 			if js:find("window.MeowyHome(", 1, true) then w.homeJS = js w.homeCalls = (w.homeCalls or 0) + 1
 			elseif js:find("window.MeowyEsc(", 1, true) then w.escJS = js
 			elseif js:find("window.MeowyShell(", 1, true) then w.shellJS = js w.shellSends = (w.shellSends or 0) + 1
+			elseif js:find("style.zoom", 1, true) then w.zoomCalls = w.zoomCalls or {} w.zoomCalls[#w.zoomCalls + 1] = js
 			else w.js = js end
 		end }
 		-- The menu's browser (DHTML): its callbacks, the bridge, what it loads.
@@ -1208,6 +1210,48 @@ check("shell: a toggle in settings, off", mt ~= nil and mt.on, false)
 if mt then mt:SetOn(true) end
 w.run(1)
 check("shell: turned on from settings (through the console)", shellState(w), "true")
+
+-- The menu's text size (meowy_menu_scale): a zoom on the page, on or off.
+local function zoomJS(w)
+	local z
+	for _, js in ipairs(w.zoomCalls or {}) do z = js:match("style%.zoom = '([%d%.]+)'") end
+	return z
+end
+w = world({ settings = ON, menu = true })
+w.run(4)
+check("zoom: auto at 1080p, nothing sent", zoomJS(w), nil)
+w = world({ settings = ON, menu = true })
+w.env.ScrH = function() return 1440 end
+w.run(1)
+check("zoom: auto at 1440p", zoomJS(w), "1.33")
+local zc = #w.zoomCalls
+w.run(4)
+check("zoom: sent again every few seconds (the page may reload)", #w.zoomCalls > zc, true)
+w.play(2)
+check("zoom: in game too (the Escape menu)", zoomJS(w), "1.33")
+w = world({ settings = ON, menu = true, convars = { meowy_menu_scale = "150" } })
+w.run(1)
+check("zoom: a chosen size", zoomJS(w), "1.50")
+w.concommands.meowy_settings()
+local sc = find(function(p) return p.meowyChoice == "menu_scale" end)
+check("zoom: a choice in settings, showing the size", sc and sc.value, "150")
+check("zoom: six choices", sc and #sc.options, 6)
+check("zoom: settings window paints", w.paintAll(), "")
+-- Which segment a click lands on: 600 wide, 18 padding, 6 segments of 94.
+if sc then
+	sc:Fit(600)
+	check("zoom: a click on the 4th segment is 150%", sc.options[sc:SegmentAt(18 + 94 * 3 + 10, sc.segY + 5)][2], "150")
+	check("zoom: a click on the first is Auto", sc.options[sc:SegmentAt(20, sc.segY + 5)][2], "0")
+	check("zoom: a click on the text above picks nothing", sc:SegmentAt(300, sc.segY - 5), nil)
+	check("zoom: a click in the padding picks nothing", sc:SegmentAt(5, sc.segY + 5), nil)
+end
+if sc then sc:SetValue("100") end
+w.run(1)
+check("zoom: chosen through the console", w.convars.meowy_menu_scale, "100")
+check("zoom: back to 1", zoomJS(w), "1.00")
+local n2 = #w.zoomCalls
+w.run(5)
+check("zoom: 1 isn't sent again and again", #w.zoomCalls, n2)
 
 check("no Lua errors", w.errors, nil)
 print(("%d checks, %d failed"):format(count, failures))

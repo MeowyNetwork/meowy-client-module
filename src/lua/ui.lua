@@ -318,6 +318,66 @@ function UI.Toggle(parent, label, description, on, onChange)
 	return p
 end
 
+-- A setting row with a choice of a few values: title and description above a
+-- row of segments, on a surface card. options: { { label, value }, ... }.
+-- Clicking a segment picks it. :Fit(width) -> height.
+function UI.Choice(parent, label, description, options, value, onChange)
+	UI.fonts()
+	local p = vgui.Create("DButton", parent)
+	p:SetText("")
+	p.options, p.value = options, value
+	p.title = UI.Text(p, label, "MeowyPack.Heading", C.text)
+	p.desc = description and UI.Text(p, description, "MeowyPack.Small", C.dim) or nil
+	p.pad, p.segH = S(18), S(32)
+	function p:Fit(width)
+		local textW = width - self.pad * 2
+		local h = self.title:Fit(textW)
+		self.title:SetPos(self.pad, self.pad)
+		if self.desc then
+			self.desc:SetPos(self.pad, self.pad + h + S(4))
+			h = h + S(4) + self.desc:Fit(textW)
+		end
+		self.segY = self.pad + h + S(12)
+		self.h = self.segY + self.segH + self.pad
+		self:SetSize(width, self.h)
+		return self.h
+	end
+	-- The segment under x (panel-local), or nil.
+	function p:SegmentAt(x, y)
+		if not x or not self.segY then return nil end
+		if y and (y < self.segY or y > self.segY + self.segH) then return nil end
+		local w = self:GetWide() - self.pad * 2
+		local i = math.floor((x - self.pad) / (w / #self.options)) + 1
+		if i >= 1 and i <= #self.options then return i end
+	end
+	function p:SetValue(v)
+		self.value = v
+		if onChange then onChange(v) end
+	end
+	p.DoClick = function(self)
+		local x, y = self:CursorPos()
+		local i = self:SegmentAt(x, y)
+		if i and self.options[i][2] ~= self.value then self:SetValue(self.options[i][2]) end
+	end
+	p.Paint = function(self, w, h)
+		UI.box(S(10), 0, 0, w, h, C.surface, C.border)
+		local n = #self.options
+		local sw = (w - self.pad * 2) / n
+		local mx, my = self:CursorPos()
+		local over = self:IsHovered() and self:SegmentAt(mx, my)
+		surface.SetFont("MeowyPack.Button")
+		for i, o in ipairs(self.options) do
+			local x = math.floor(self.pad + (i - 1) * sw)
+			local selected = o[2] == self.value
+			local fill = selected and C.accent or (over == i and C.raised or Color(36, 37, 42))
+			draw.RoundedBox(S(6), x + 1, self.segY, math.floor(sw) - 2, self.segH, fill)
+			draw.SimpleText(o[1], "MeowyPack.Button", x + sw / 2, self.segY + self.segH / 2, selected and C.white or C.body, UI.CENTER, UI.CENTER)
+		end
+		return true
+	end
+	return p
+end
+
 -- Lays panels out top to bottom at x, from y, `width` wide, with `gap`
 -- between them. Each needs :Fit(width) or a .h. Returns the y below the last.
 function UI.stack(panels, x, y, width, gap)

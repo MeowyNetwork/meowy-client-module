@@ -267,6 +267,26 @@ function M.escapeModel(info)
 	return out
 end
 
+-- The menu page's zoom ---------------------------------------------------------------
+
+-- Garry's Mod draws its menu page at the same pixel size on any screen, so it
+-- shrinks as the screen grows. setting: "0" (auto) or a percentage; scrH: the
+-- screen's height. Auto is the height over 1080 (1440p: 1.33, 4K: 2), never
+-- below 1. Returns the zoom (0.75..2.5, two decimals).
+M.MENU_SIZES = { 0, 100, 125, 150, 175, 200 }
+function M.menuZoom(setting, scrH)
+	local pct = tonumber(setting)
+	local z
+	if pct and pct > 0 then
+		z = pct / 100
+	else
+		z = math.max(1, (tonumber(scrH) or 1080) / 1080)
+	end
+	if z ~= z then z = 1 end
+	z = math.max(0.75, math.min(2.5, z))
+	return math.floor(z * 100 + 0.5) / 100
+end
+
 -- A Lua value as a JavaScript literal: strings through Logic.jsString, numbers,
 -- booleans, nil as null; a table with [1] as an array, otherwise an object
 -- (keys sorted, so the same model always reads the same).
