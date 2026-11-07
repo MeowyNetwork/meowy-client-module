@@ -19,6 +19,9 @@
 --   Network?"; after a crash on any other public server, "Rejoin the server?"
 --   with its name (the engine's address; the name only as text). Neither ever
 --   joins without the click; automatic rejoin stays Meowy-only.
+-- * The main menu's list gets "Continue" with the last server the player got
+--   into the game on, any server (kept natively, ours or a public address
+--   only); one click joins it. Off in Meowy settings: none is kept.
 local meowy, Logic = meowy, Logic
 
 local settings = Logic.parseSettings(meowy.ResilienceSettingsRead())
@@ -44,6 +47,18 @@ local function setEnabled(on)
 	end
 	settings.enabled, settings.asked = on and true or false, true
 	save()
+end
+
+-- The main menu's "Continue": the last server the player got into the game on
+-- (any server; native keeps it in last_server.txt, and only for ours or a
+-- public address). Off: none is kept, and the one kept is forgotten.
+local continueSetting = meowy.Setting and meowy.Setting("meowy_menu_continue", "1",
+	"Meowy Client Pack: a Continue entry in the main menu that joins the last server you played on (0 = none, and none kept)")
+local function continueOn() return continueSetting == nil or continueSetting:GetBool() end
+local function setContinue(on)
+	if continueSetting and continueSetting.SetBool then continueSetting:SetBool(on)
+	else RunConsoleCommand("meowy_menu_continue", on and "1" or "0") end
+	if not on and meowy.LastServerForget then meowy.LastServerForget() end
 end
 
 -- UI (ui.lua's kit) ----------------------------------------------------------------
@@ -112,6 +127,18 @@ local function openSettings(startTab)
 			st.meowyToggle = "start_with_game"
 			st.gapBefore = S(10)
 			blocks[#blocks + 1] = st
+		end
+		if meowy.LastServer then
+			local label = UI.Label(nil, "Main menu")
+			label.gapBefore = S(22)
+			blocks[#blocks + 1] = label
+			local ct = UI.Toggle(nil, "Continue where you left off",
+				"Shows Continue in the main menu with the last server you played on, any server. One click joins it; "
+				.. "nothing joins on its own. Off: the pack doesn't keep which server it was.",
+				continueOn(), function(on) setContinue(on) end)
+			ct.meowyToggle = "menu_continue"
+			ct.gapBefore = S(10)
+			blocks[#blocks + 1] = ct
 		end
 		return blocks
 	end
@@ -212,14 +239,54 @@ end
 -- entry's look, plus a small accent dot. It's put back whenever the menu
 -- page redraws (a MutationObserver, and the Lua side asks again every second),
 -- and it reports back through lua.Run so we know it's there.
+-- "Continue" goes before Start New Game, out of game only: window.MeowyContinue
+-- is [title, server, when] or null, set by the Lua side every second, and only
+-- ever shown as text. A long server name is cut short; the time always shows.
 local ENTRY_JS = [==[
 (function () {
 	if (!window.MeowyEntry) {
+		window.MeowyContinueEntry = function (ul) {
+			var c = ul.querySelector('.meowy-continue-entry');
+			var data = window.MeowyContinue;
+			if (!data) { if (c) c.parentNode.removeChild(c); return; }
+			if (!c) {
+				var start = ul.querySelector('a[ng-href="#/newgame/"]') || ul.querySelector('a[href="#/newgame/"]');
+				if (!start) return;
+				c = document.createElement('li');
+				c.className = 'meowy-continue-entry';
+				var a = document.createElement('a');
+				a.style.cursor = 'pointer';
+				var title = document.createElement('span');
+				title.className = 'meowy-continue-title';
+				var sub = document.createElement('span');
+				sub.style.cssText = 'display:block;font-size:14px;letter-spacing:0;font-weight:normal;opacity:0.85;'
+					+ 'white-space:nowrap;margin:-3px 0 6px 0;';
+				var server = document.createElement('span');
+				server.className = 'meowy-continue-server';
+				server.style.cssText = 'display:inline-block;max-width:260px;overflow:hidden;text-overflow:ellipsis;'
+					+ 'white-space:nowrap;vertical-align:bottom;';
+				var when = document.createElement('span');
+				when.className = 'meowy-continue-when';
+				sub.appendChild(server);
+				sub.appendChild(when);
+				a.appendChild(title);
+				a.appendChild(sub);
+				a.onclick = function () { lua.Run('MeowyClientPackContinue()'); };
+				c.appendChild(a);
+				start.parentNode.parentNode.insertBefore(c, start.parentNode);
+			}
+			var t = c.querySelector('.meowy-continue-title'), s = c.querySelector('.meowy-continue-server'),
+				w = c.querySelector('.meowy-continue-when');
+			if (t.textContent !== data[0]) t.textContent = data[0];
+			if (s.textContent !== data[1]) { s.textContent = data[1]; s.title = data[1]; }
+			if (w.textContent !== data[2]) w.textContent = data[2];
+		};
 		window.MeowyEntry = function () {
 			var lists = document.querySelectorAll('.options ul');
 			var added = false;
 			for (var i = 0; i < lists.length; i++) {
 				var ul = lists[i];
+				window.MeowyContinueEntry(ul);
 				if (ul.querySelector('.meowy-settings-entry')) continue;
 				var links = ul.querySelectorAll('a'), after = null;
 				for (var j = 0; j < links.length; j++) {
@@ -241,9 +308,23 @@ local ENTRY_JS = [==[
 		var MO = window.MutationObserver || window.WebKitMutationObserver;
 		if (MO && document.body) new MO(function () { window.MeowyEntry(); }).observe(document.body, { childList: true, subtree: true });
 	}
-	window.MeowyEntry();
 })();
 ]==]
+
+-- The whole call: the functions (once per page), then this second's Continue
+-- data, then the entries put in.
+local function entryJS(continueData)
+	return ENTRY_JS .. "window.MeowyContinue = " .. continueData .. ";\nwindow.MeowyEntry();\n"
+end
+
+-- What Continue shows now, as a JS value: [title, second line] or null.
+local function continueData(hide)
+	if hide or not continueOn() or IsInGame() or IsInLoading() or not meowy.LastServer then return "null" end
+	local address, name, since = meowy.LastServer()
+	local e = Logic.continueEntry(address, name, since, os.time())
+	if not e then return "null" end
+	return "[" .. Logic.jsString(e.title) .. "," .. Logic.jsString(e.name) .. "," .. Logic.jsString(e.ago) .. "]"
+end
 
 -- Called from the menu page (lua.Run): menu state only, no arguments.
 function MeowyClientPackOpenSettings() openSettings() end
@@ -291,7 +372,8 @@ local function updatePill(show)
 	pill:SetVisible(true)
 end
 
-local function updateMenuEntry(now)
+-- hideContinue: a rejoin is under way, so no Continue next to its card.
+local function updateMenuEntry(now, hideContinue)
 	local visible = menuVisible()
 	if visible and IsValid(pnlMainMenu) and pnlMainMenu.Call then
 		if entry.menu ~= pnlMainMenu then
@@ -299,7 +381,7 @@ local function updateMenuEntry(now)
 		end
 		if now >= entry.nextCall then
 			entry.nextCall = now + 1
-			pnlMainMenu:Call(ENTRY_JS)
+			pnlMainMenu:Call(entryJS(continueData(hideContinue)))
 		end
 	end
 	-- The pill only when the entry hasn't shown up within 6 s of the menu being there.
@@ -417,8 +499,23 @@ local function join(address)
 	RunConsoleCommand("connect", address)
 end
 
+-- Continue, clicked (the menu page's lua.Run, or meowy_continue): joins the
+-- last server, read again here (native checks its address again). Never on its own.
+function MeowyClientPackContinue()
+	if IsInGame() or IsInLoading() or not continueOn() or not meowy.LastServer then return end
+	local address = meowy.LastServer()
+	if not isstring(address) or address == "" then return end
+	log("continue: joining %s", address)
+	join(address)
+end
+if concommand then
+	concommand.Add("meowy_continue", function() MeowyClientPackContinue() end, nil,
+		"Meowy Client Pack: join the last server you played on (the main menu's Continue)")
+end
+
 local onOurs, ourAddress = false, nil
 local onOther, markedName = false, nil   -- on another (public) server, and the name it was marked with
+local continueMarked                     -- the name this connection was kept for Continue with
 local armed = false      -- got into the game on our server since the last rejoin try
 local last               -- { timingOut, silence, at }: the engine's latest sample of our connection
 local episode            -- { s, address, phase = "waiting" | "probing" | "joining", ... }
@@ -716,6 +813,18 @@ hook.Add("Think", "MeowyClientPack.Resilience", function()
 		if state == "none" then meowy.ResilienceSession(false) end
 	end
 
+	-- Continue: kept once the player is in the game on a server (again when its
+	-- name arrives or changes); native keeps only ours or a public address.
+	if state == "ours" or state == "other" then
+		local name = meowy.JoiningName or ""
+		if IsInGame() and not IsInLoading() and continueMarked ~= name and continueOn() and meowy.LastServerMark then
+			continueMarked = name
+			meowy.LastServerMark(name)
+		end
+	else
+		continueMarked = nil
+	end
+
 	if ended then
 		local mode, needDown = Logic.classifyEnd(ended)
 		local decision
@@ -752,7 +861,7 @@ hook.Add("Think", "MeowyClientPack.Resilience", function()
 	if now < nextLook then return end
 	nextLook = now + 0.2
 
-	local okEntry, entryErr = pcall(updateMenuEntry, now)
+	local okEntry, entryErr = pcall(updateMenuEntry, now, episode ~= nil)
 	if not okEntry and not entryFailed then
 		entryFailed = true   -- report once, not five times a second
 		ErrorNoHalt("[Meowy Client Pack] settings entry: " .. tostring(entryErr) .. "\n")

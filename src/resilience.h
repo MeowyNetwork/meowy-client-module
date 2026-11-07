@@ -51,6 +51,15 @@ namespace resilience
 	// caller checks the address again before offering anything.
 	std::string CrashedSession(const std::wstring& dir, std::string* name = nullptr);
 
+	// last_server.txt: the last server the player got into the game on (same
+	// format and checks as on_server.txt), for the main menu's "Continue". Kept
+	// until the next one, or until the player forgets it.
+	void MarkLastServer(const std::wstring& dir, const std::string& address, const std::string& name);
+	// Its address ("" if none), name and unix time. The caller checks the address
+	// again before offering it.
+	std::string LastServer(const std::wstring& dir, std::string* name = nullptr, long long* since = nullptr);
+	void ForgetLastServer(const std::wstring& dir);
+
 	// A server name to keep in on_server.txt: no control characters or line
 	// breaks, at most 64 bytes, cut at a UTF-8 character boundary.
 	std::string CleanName(const std::string& name);

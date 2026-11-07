@@ -84,15 +84,42 @@ namespace resilience
 		return WriteSmallFile(dir + L"\\resilience.txt", text);
 	}
 
-	// "<address> <unix time>\r\n<name>\r\n". The address is the engine's, checked
-	// by the caller (ours, or a public a.b.c.d:port); the name is the server's
-	// own text, cleaned, and only ever shown as text.
-	void MarkSession(const std::wstring& dir, const std::string& address, const std::string& name)
+	// on_server.txt and last_server.txt: "<address> <unix time>\r\n<name>\r\n".
+	// The address is the engine's, checked by the caller (ours, or a public
+	// a.b.c.d:port); the name is the server's own text, cleaned, and only ever
+	// shown as text.
+	static bool WriteServerFile(const std::wstring& path, const std::string& address, const std::string& name)
 	{
 		if (address.empty() || address.find_first_of(" \r\n") != std::string::npos)
-			return;
-		WriteSmallFile(dir + L"\\on_server.txt", address + " " + std::to_string(static_cast<long long>(std::time(nullptr))) +
+			return false;
+		return WriteSmallFile(path, address + " " + std::to_string(static_cast<long long>(std::time(nullptr))) +
 			"\r\n" + CleanName(name) + "\r\n");
+	}
+
+	// The address ("" if the text isn't such a file), its time and the name.
+	static std::string ParseServerFile(const std::string& text, long long* since, std::string* name)
+	{
+		const size_t space = text.find(' ');
+		if (space == std::string::npos)
+			return std::string();
+		std::string address = text.substr(0, space);
+		const long long t = std::atoll(text.c_str() + space + 1);
+		if (t <= 0 || address.empty())
+			return std::string();
+		if (since)
+			*since = t;
+		if (name)
+		{
+			const size_t line = text.find('\n');
+			const size_t end = line == std::string::npos ? std::string::npos : text.find_first_of("\r\n", line + 1);
+			*name = line == std::string::npos ? std::string() : CleanName(text.substr(line + 1, end == std::string::npos ? std::string::npos : end - line - 1));
+		}
+		return address;
+	}
+
+	void MarkSession(const std::wstring& dir, const std::string& address, const std::string& name)
+	{
+		WriteServerFile(dir + L"\\on_server.txt", address, name);
 	}
 
 	void ClearSession(const std::wstring& dir)
@@ -103,25 +130,34 @@ namespace resilience
 	std::string CrashedSession(const std::wstring& dir, std::string* name)
 	{
 		const std::wstring file = dir + L"\\on_server.txt";
-		std::string text = ReadSmallFile(file, 256);
+		const std::string text = ReadSmallFile(file, 256);
 		DeleteFileW(file.c_str());
-		const size_t space = text.find(' ');
-		if (space == std::string::npos)
-			return std::string();
-		std::string address = text.substr(0, space);
-		long long since = std::atoll(text.c_str() + space + 1);
-		if (since <= 0 || address.empty())
+		long long since = 0;
+		std::string found;
+		const std::string address = ParseServerFile(text, &since, &found);
+		if (address.empty())
 			return std::string();
 		// Only a crash: closing the game on a server leaves the file too, but no report.
 		if (crashes::Since(since, 1).empty())
 			return std::string();
 		if (name)
-		{
-			const size_t line = text.find('\n');
-			const size_t end = line == std::string::npos ? std::string::npos : text.find_first_of("\r\n", line + 1);
-			*name = line == std::string::npos ? std::string() : CleanName(text.substr(line + 1, end == std::string::npos ? std::string::npos : end - line - 1));
-		}
+			*name = found;
 		return address;
+	}
+
+	void MarkLastServer(const std::wstring& dir, const std::string& address, const std::string& name)
+	{
+		WriteServerFile(dir + L"\\last_server.txt", address, name);
+	}
+
+	std::string LastServer(const std::wstring& dir, std::string* name, long long* since)
+	{
+		return ParseServerFile(ReadSmallFile(dir + L"\\last_server.txt", 256), since, name);
+	}
+
+	void ForgetLastServer(const std::wstring& dir)
+	{
+		DeleteFileW((dir + L"\\last_server.txt").c_str());
 	}
 #else
 	std::string ReadSettings(const std::wstring&) { return std::string(); }
@@ -129,6 +165,9 @@ namespace resilience
 	void MarkSession(const std::wstring&, const std::string&, const std::string&) {}
 	void ClearSession(const std::wstring&) {}
 	std::string CrashedSession(const std::wstring&, std::string*) { return std::string(); }
+	void MarkLastServer(const std::wstring&, const std::string&, const std::string&) {}
+	std::string LastServer(const std::wstring&, std::string*, long long*) { return std::string(); }
+	void ForgetLastServer(const std::wstring&) {}
 #endif
 
 	std::string CleanName(const std::string& name)

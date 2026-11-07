@@ -51,6 +51,25 @@ local function world(opts)
 		ResilienceSettingsWrite = function(t) w.settingsText = t return true end,
 		ResilienceSession = function(on, name) w.session = on w.sessionName = name w.marks = (w.marks or 0) + 1 end,
 		ResilienceCrashedSession = function() return w.crashed, w.crashedName end,
+		-- Continue: native keeps the engine's address (w.otherAddress on another server).
+		LastServerMark = function(name)
+			w.lastMarks = (w.lastMarks or 0) + 1
+			local address = w.state == "ours" and OURS or w.otherAddress
+			if not address then return false end
+			w.last = { address, name, w.osTime }
+			return true
+		end,
+		LastServer = function() if w.last then return w.last[1], w.last[2], w.last[3] end end,
+		LastServerForget = function() w.last = nil w.forgot = (w.forgot or 0) + 1 end,
+		-- Menu settings (module.cpp's meowy.Setting): a convar-like value.
+		Setting = function(name, default)
+			w.convars = w.convars or {}
+			if w.convars[name] == nil then w.convars[name] = (opts.convars and opts.convars[name]) or default end
+			return {
+				GetBool = function() return w.convars[name] == "1" end,
+				SetBool = function(_, on) w.convars[name] = on and "1" or "0" end,
+			}
+		end,
 		DoctorFacts = function() return opts.facts or { arch = "x64", gpu_time_known = false, adapters = {} } end,
 		DoctorOpen = function(id) w.opened = id return true end,
 		ResilienceProbe = opts.native and function(a) w.pinged = a w.probeAsked = true return true end or nil,
@@ -74,6 +93,8 @@ local function world(opts)
 	env.math = setmetatable({ random = function() return 0.5 end,
 		Clamp = function(v, lo, hi) return v < lo and lo or (v > hi and hi or v) end }, { __index = math })
 	env.SysTime = function() return w.now end
+	w.osTime = 1000000
+	env.os = setmetatable({ time = function() return w.osTime end }, { __index = os })
 	env.IsInGame = function() return w.inGame end
 	env.IsInLoading = function() return w.loading end
 	env.GetConVar = nil
@@ -782,6 +803,91 @@ check("other server: not marked every frame", w.marks, marks)
 w.state = "none"
 w.run(2)
 check("left the other server: cleared", w.session, false)
+
+-- Continue: the main menu's entry for the last server the player was in the game on.
+local function continueJS(w) return (w.js or ""):match("window%.MeowyContinue = (.-);\n") end
+w = world({ settings = ON, menu = true })
+w.run(4)
+check("continue: nothing kept, none shown", continueJS(w), "null")
+check("continue: the page code is still sent", (w.js or ""):find("OpenOptionsDialog", 1, true) ~= nil, true)
+w.env.meowy.JoiningName = "Meowy Network | DarkRP"
+w.state, w.address, w.loading = "ours", OURS, true
+w.run(3)
+check("continue: not kept while loading", w.lastMarks, nil)
+w.play(5)
+check("continue: kept once in the game", w.lastMarks, 1)
+check("continue: with the server's name", w.last and w.last[2], "Meowy Network | DarkRP")
+w.run(5)
+check("continue: kept once, not every frame", w.lastMarks, 1)
+check("continue: not shown in game", continueJS(w), "null")
+w.osTime = w.osTime + 7200
+w.cut()
+w.run(2)
+check("continue: shown in the menu after leaving", continueJS(w), '["Continue","Meowy Network | DarkRP"," \194\183 2 h ago"]')
+check("continue: the entry goes before Start New Game", (w.js or ""):find("#/newgame/", 1, true) ~= nil, true)
+check("continue: nothing joined on its own", w.connects(), 0)
+w.env.MeowyClientPackContinue()
+check("continue: click joins our server", w.lastConnect(), "connect " .. OURS)
+check("continue: logged", (w.logs or ""):find("continue: joining " .. OURS, 1, true) ~= nil, true)
+w.loading = true
+local before = w.connects()
+w.env.MeowyClientPackContinue()
+check("continue: not while a join loads", w.connects(), before)
+w.loading = false
+-- Through the engine's JoinServer when the menu has it, like the rejoin.
+w = world({ settings = ON, menu = true, joinServer = true })
+w.last = { OURS, "Meowy", w.osTime }
+w.run(2)
+w.env.MeowyClientPackContinue()
+check("continue: joins through JoinServer", w.joinedVia, OURS)
+-- Any other public server too, by the engine's address; the name only as text.
+w = world({ settings = ON, menu = true })
+w.otherAddress = "1.2.3.4:27015"
+w.env.meowy.JoiningName = [[Evil "RP" </script><script>lua.Run('x')]]
+w.state, w.inGame = "other", true
+w.run(2)
+check("continue: another server kept", w.last and w.last[1], "1.2.3.4:27015")
+w.state, w.inGame = "none", false
+w.run(2)
+local data = continueJS(w) or ""
+check("continue: the name can't break out of the script", data:find("</script>", 1, true) == nil and data:find("'", 1, true) == nil, true)
+check("continue: the name escaped", data:find([[Evil \x22RP\x22 \x3c/script\x3e]], 1, true) ~= nil, true)
+w.env.MeowyClientPackContinue()
+check("continue: click joins that server", w.lastConnect(), "connect 1.2.3.4:27015")
+-- The console command does the same.
+w.commands = {}
+w.concommands.meowy_continue()
+check("continue: meowy_continue joins it", w.lastConnect(), "connect 1.2.3.4:27015")
+-- Not shown while a rejoin is under way (its own card has the buttons).
+w = world({ settings = ON, menu = true })
+w.play(10)
+check("continue: kept for our server", w.last ~= nil, true)
+w.drop(60)
+w.run(1)
+check("continue: hidden during a rejoin", continueJS(w), "null")
+-- Off: nothing kept, nothing shown, and the kept one forgotten.
+w = world({ settings = ON, menu = true, convars = { meowy_menu_continue = "0" } })
+w.play(5)
+w.cut()
+w.run(2)
+check("continue off: nothing kept", w.lastMarks, nil)
+check("continue off: none shown", continueJS(w), "null")
+w.last = { OURS, "Meowy", w.osTime }
+w.env.MeowyClientPackContinue()
+check("continue off: the command does nothing", w.connects(), 0)
+w = world({ settings = ON, menu = true })
+w.play(5)
+w.cut()
+w.run(2)
+w.concommands.meowy_settings()
+local ct = find(function(p) return p.meowyToggle == "menu_continue" end)
+check("continue: a toggle in settings, on", ct and ct.on, true)
+if ct then ct:SetOn(false) end
+check("continue: toggled off", w.convars.meowy_menu_continue, "0")
+check("continue: toggled off forgets the server", w.last == nil and w.forgot == 1, true)
+w.run(2)
+check("continue: toggled off, none shown", continueJS(w), "null")
+check("continue: settings window paints", w.paintAll(), "")
 
 check("no Lua errors", w.errors, nil)
 print(("%d checks, %d failed"):format(count, failures))
