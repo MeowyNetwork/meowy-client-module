@@ -94,5 +94,56 @@ at, line = M.recall(h, 1, -1)
 check("down past the newest: empty", line .. "|" .. at, "|0")
 check("no history", select(2, M.recall({}, 0, 1)), "")
 
+-- parseCvar: the engine's cvarlist lines
+local e = M.parseCvar('net_graph                                : 1        : , "a", "cl"      : Draw the network usage graph, = 2 draws data')
+check("cvar: name", e and e.name, "net_graph")
+check("cvar: value", e and e.value, "1")
+check("cvar: flags", e and table.concat(e.flags, ","), "a,cl")
+check("cvar: help keeps commas", e and e.help, "Draw the network usage graph, = 2 draws data")
+check("cvar: not a command", e and e.cmd, false)
+local cmd = M.parseCvar("retry                                    : cmd      :                  : Retry connection to last server.")
+check("command: no flags", cmd and #cmd.flags, 0)
+check("command: marked", cmd and cmd.cmd, true)
+check("no help: empty", M.parseCvar('net_graphpos : 1 : , "a" : ').help, "")
+check("headers aren't entries", M.parseCvar("cvar list"), nil)
+check("rules aren't entries", M.parseCvar("--------------"), nil)
+check("the count isn't an entry", M.parseCvar("  9 convars/concommands for [net_graph]"), nil)
+check("flag words", table.concat(M.flagWords({ "a", "cheat", "weird" }), ","), "saved,cheat,weird")
+
+-- suggest: starting with it, then containing it, then letters in order
+local cat = {
+	M.parseCvar('net_graph : 1 : , "a" : g'), M.parseCvar('net_graphheight : 64 : , "a" : h'),
+	M.parseCvar('cl_showfps : 0 : , "cl" : fps'), M.parseCvar('mat_queue_mode : -1 : , "a" : q'),
+	M.parseCvar('r_drawviewmodel : 1 : , "cl" : vm'),
+}
+local function names(list) local out = {} for _, s in ipairs(list) do out[#out + 1] = s.name end return table.concat(out, ",") end
+check("suggest: starting with it, shortest first", names(M.suggest(cat, "net", 8)), "net_graph,net_graphheight")
+check("suggest: any case", names(M.suggest(cat, "NET_GRAPHH", 8)), "net_graphheight")
+check("suggest: containing it, after", names(M.suggest(cat, "fps", 8)), "cl_showfps")
+check("suggest: letters in order (3 or more)", names(M.suggest(cat, "mqm", 8)), "mat_queue_mode")
+check("suggest: not for two letters", names(M.suggest(cat, "mq", 8)), "")
+check("suggest: at most max", #M.suggest(cat, "e", 1), 1)
+check("suggest: pattern characters are plain", names(M.suggest(cat, "%.", 8)), "")
+check("suggest: nothing typed", #M.suggest(cat, "", 8), 0)
+
+-- firstWord
+local w1, more1 = M.firstWord("  net_graph 1")
+check("first word", w1 .. "|" .. tostring(more1), "net_graph|true")
+local w2, more2 = M.firstWord("retry")
+check("first word alone", w2 .. "|" .. tostring(more2), "retry|false")
+check("first word before ;", (M.firstWord("status;echo hi")), "status")
+
+-- saved lists
+local list = M.parseList("a\r\nb\n\nc\n" .. string.rep("x", 1100) .. "\n", 200)
+check("list: blank and long lines dropped", table.concat(list, ","), "a,b,c")
+check("list: at most max, the newest kept", table.concat(M.parseList("1\n2\n3\n4", 2), ","), "3,4")
+check("list: back to text", M.formatList({ "a", "b\nc" }, 10), "a\nb c")
+check("list: round trip", table.concat(M.parseList(M.formatList({ "x", "y" }, 10), 10), ","), "x,y")
+
+-- searchHistory: newest first, each once
+local hist = { "status", "net_graph 1", "retry", "net_graph 0", "status" }
+check("history search", table.concat(M.searchHistory(hist, "net", 8), "|"), "net_graph 0|net_graph 1")
+check("history: all, newest first, once each", table.concat(M.searchHistory(hist, "", 8), "|"), "status|net_graph 0|retry|net_graph 1")
+
 print(("%d checks, %d failed"):format(count, failures))
 os.exit(failures == 0 and 0 or 1)

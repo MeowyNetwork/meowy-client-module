@@ -121,6 +121,8 @@ local function world(opts)
 		end,
 		ConsoleState = function() return "spew function; 3 lines kept" end,
 		ConsoleRun = function(line) w.consoleRuns = w.consoleRuns or {} w.consoleRuns[#w.consoleRuns + 1] = line return not w.noEngine end,
+		ConsoleFileRead = function(kind) return (w.consoleFiles or opts.consoleFiles or {})[kind] or "" end,
+		ConsoleFileWrite = function(kind, text) w.consoleFiles = w.consoleFiles or {} w.consoleFiles[kind] = text return true end,
 		PrewarmWorkshop = function(a) local ids = {} for i, id in ipairs((w.workshop or {})[a] or {}) do ids[i] = id end return ids end,
 		-- Steam's view of an item: installed, needsUpdate, busy, legacy, updated
 		-- (w.wsState[id] = false: Steam can't say; default: installed, the version of 1600000000).
@@ -175,7 +177,7 @@ local function world(opts)
 	-- Convars other parts of the pack own (module.cpp's chunks), only when a test asks.
 	env.GetConVar = opts.engineConVars and function(n)
 		local value = function() if w.cvars[n] ~= nil then return w.cvars[n] end return w.convars and w.convars[n] end
-		if value() ~= nil then return { GetBool = function() return value() == "1" end } end
+		if value() ~= nil then return { GetBool = function() return value() == "1" end, GetString = function() return value() end, GetDefault = function() return (w.cvarDefaults or {})[n] end } end
 	end or nil
 	-- Engine convars the Escape card reads and sets.
 	w.cvars = { volume = "0.7", voice_scale = "1", fov_desired = "90" }
@@ -226,7 +228,8 @@ local function world(opts)
 	-- The game's files: everything there but w.missing[path].
 	env.file = { Exists = function(p, where) w.existsAsked = where return not (w.missing or {})[p] end }
 	env.istable = function(v) return type(v) == "table" end
-	env.KEY_UP, env.KEY_DOWN, env.KEY_ENTER = 88, 90, 64
+	env.KEY_UP, env.KEY_DOWN, env.KEY_ENTER, env.KEY_TAB, env.KEY_R, env.KEY_ESCAPE = 88, 90, 64, 67, 28, 70
+	env.input = { IsControlDown = function() return w.ctrl == true end, IsMouseDown = function() return false end }
 	env.unpack = env.unpack or unpack or table.unpack
 	-- The menu state's engine library: your subscribed addons (w.addons).
 	env.engine = { GetAddons = function() return w.addons or {} end }
@@ -1593,7 +1596,7 @@ check("console: a command line", cmdEntry ~= nil, true)
 if cmdEntry then
 	cmdEntry.GetValue = function() return 'net_graph 1; say "a; b"' end
 	cmdEntry:OnEnter()
-	check("console: the line run as typed, through the engine", w.consoleRuns and w.consoleRuns[1], 'net_graph 1; say "a; b"')
+	check("console: the line run as typed, through the engine", w.consoleRuns and w.consoleRuns[#w.consoleRuns], 'net_graph 1; say "a; b"')
 	w.noEngine = true
 	local before = #w.commands
 	cmdEntry:OnEnter()
@@ -1619,7 +1622,7 @@ w.run(0.5)
 check("console key: nothing while the game's console is shut", consoleWindow(w), nil)
 w.stockConsole = true
 w.run(0.2)
-check("console key: the game's console hidden", w.consoleRuns and w.consoleRuns[#w.consoleRuns], "hideconsole")
+check("console key: the game's console hidden", table.concat(w.consoleRuns or {}, "|"):find("hideconsole", 1, true) ~= nil, true)
 check("console key: ours opens", consoleWindow(w) ~= nil, true)
 w.stockConsole = false
 w.run(0.2)
@@ -1637,6 +1640,64 @@ local ckt = find(function(p) return p.meowyToggle == "console_key" end)
 check("console key: a toggle in settings, on", ckt ~= nil and ckt.on, true)
 if ckt then ckt:SetOn(false) end
 check("console key: turned off through the console", w.convars.meowy_console_key, "0")
-check("no Lua errors", w.errors, nil)
+-- Typing in the console: the command list (cvarlist between two markers, kept
+-- out of the window), Tab completes, the inspector resets, pins and history.
+w = world({ settings = ON, menu = true, engineConVars = true })
+w.consoleFiles = nil
+w.concommands.meowy_console()
+check("typing: the command list asked for", table.concat(w.consoleRuns or {}, "|"), "echo __meowy_cvars_begin__|cvarlist|echo __meowy_cvars_end__")
+w.console = {
+	{ id = 1, t = 1, s = 0, c = -1, x = "__meowy_cvars_begin__ " },   -- echo adds a space
+	{ id = 2, t = 1, s = 0, c = -1, x = "cvar list" },
+	{ id = 3, t = 1, s = 0, c = -1, x = 'net_graph                                : 1        : , "a", "cl"      : Draw the network usage graph' },
+	{ id = 4, t = 1, s = 0, c = -1, x = 'net_graphheight                          : 64       : , "a", "cl"      : Height of netgraph panel' },
+	{ id = 5, t = 1, s = 0, c = -1, x = "retry                                    : cmd      :                  : Retry connection to last server." },
+	{ id = 6, t = 1, s = 0, c = -1, x = "__meowy_cvars_end__ " },
+	{ id = 7, t = 1, s = 0, c = -1, x = "after the list" },
+}
+w.cvars.net_graph, w.cvarDefaults = "1", { net_graph = "0" }
+local typed
+for _, p in ipairs(w.panels or {}) do if p.class == "DTextEntry" and rawget(p, "OnEnter") then typed = p end end
+local holderPanel
+for _, p in ipairs(w.panels or {}) do if rawget(p, "meowyConsole") then holderPanel = p end end
+holderPanel.Think()   -- reads the list
+local text = "net_g"
+typed.GetValue = function() return text end
+typed.SetText = function(_, v) text = v end
+typed.OnChange()
+typed:OnKeyCodeTyped(67)   -- Tab
+check("typing: Tab completes the best match", text, "net_graph ")
+typed.OnChange()
+local resetButton
+for _, p in ipairs(w.panels or {}) do if p.class == "DButton" and p.text == "Reset to default" then resetButton = p end end
+check("typing: the inspector offers a reset", resetButton ~= nil, true)
+if resetButton then resetButton.DoClick() end
+check("typing: reset runs it with its default", w.consoleRuns[#w.consoleRuns], 'net_graph "0"')
+-- Pins: "+ Pin" pins what's typed; a pin runs; right-click unpins; kept in a file.
+local function pinChip(label)
+	local found
+	for _, p in ipairs(w.panels or {}) do if rawget(p, "meowyPin") == label and not p.removed then found = p end end
+	return found
+end
+text = "retry"
+pinChip("+").DoClick()
+check("pins: saved", w.consoleFiles and w.consoleFiles.pins, "retry")
+check("pins: shown", pinChip("retry") ~= nil, true)
+pinChip("retry").DoClick()
+check("pins: a click runs it", w.consoleRuns[#w.consoleRuns], "retry")
+pinChip("retry").DoRightClick()
+check("pins: right-click unpins", w.consoleFiles.pins, "")
+-- History: kept between starts; Up recalls the last; Ctrl+R lists them.
+check("history: what was run is saved", (w.consoleFiles.history or ""):find("retry", 1, true) ~= nil, true)
+w = world({ settings = ON, menu = true, consoleFiles = { history = "first\nsecond", pins = "status" } })
+w.concommands.meowy_console()
+local recallEntry, shown
+for _, p in ipairs(w.panels or {}) do if p.class == "DTextEntry" and rawget(p, "OnEnter") then recallEntry = p end end
+recallEntry.SetText = function(_, v) shown = v end
+recallEntry:OnKeyCodeTyped(88)   -- Up
+check("history: kept from the last start", shown, "second")
+local savedPin
+for _, p in ipairs(w.panels or {}) do if rawget(p, "meowyPin") == "status" then savedPin = p end end
+check("pins: kept from the last start", savedPin ~= nil, true)check("no Lua errors", w.errors, nil)
 print(("%d checks, %d failed"):format(count, failures))
 os.exit(failures == 0 and 0 or 1)

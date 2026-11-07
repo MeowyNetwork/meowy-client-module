@@ -198,6 +198,12 @@ the game closes while the pack is starting, the next start skips it once by itse
   - **Finding things:** search as you type, "Warnings and errors" only, and "Collapse repeats" (the same
     line again just adds to a count).
   - **Copying:** Copy takes what's shown; clicking a line copies that line.
+  - **Typing:** as you type a command's name, the matches show with their current values and what they do
+    (from the engine's own command list, read once in the background), and Tab completes. Once a setting is
+    typed, its value, default, flags and help show above the line, with "Reset to default". Ctrl+R searches
+    what you typed before, and that history is kept between starts.
+  - **Pinned commands:** "+ Pin a command" keeps what's typed (or the last command) as a one-click chip;
+    right-click a chip to unpin it. Kept between starts.
   - **Commands:** a typed line runs exactly as if typed into the game's console, through the engine.
     The menu's `RunConsoleCommand` refuses some commands, the console doesn't. Up and Down go through what
     you typed.
