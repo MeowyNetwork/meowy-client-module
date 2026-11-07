@@ -75,6 +75,19 @@ button.small { padding: 2px 10px; font-size: 12px; text-transform: none; letter-
 .server small { color: var(--muted); }
 .server.down .name { color: var(--muted); }
 .server button { flex: none; padding: 6px 12px; }
+input[type="search"] {
+  width: 100%;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-bottom: 6px;
+  user-select: text;
+}
+input[type="search"]:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+#found { max-height: 360px; overflow-y: auto; margin-top: 4px; }
 
 /* The card window */
 body.card { padding: 16px 18px; }

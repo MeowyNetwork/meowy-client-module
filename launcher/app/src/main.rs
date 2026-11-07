@@ -13,7 +13,7 @@ use std::time::{Duration, SystemTime};
 
 use launcher_core::links::Link;
 use launcher_core::settings::{self, Settings};
-use launcher_core::{a2s, address, line, links, log, servers, session, steam, updater, win};
+use launcher_core::{a2s, address, http, index, line, links, log, servers, session, steam, updater, win};
 use serde::Serialize;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -41,8 +41,10 @@ struct Inner {
     running: bool,
     last_repair: String,
     card: Option<Card>,
-    /// The server list last shown: the only addresses the window may join.
+    /// The server list last shown: with the index, the only addresses the window may join.
     servers: Vec<servers::Row>,
+    /// Meowy's server index, when it was fetched, and its ETag.
+    index: Option<(index::Index, std::time::Instant, Option<String>)>,
 }
 
 struct AppState(Mutex<Inner>);
@@ -431,10 +433,67 @@ async fn server_list(app: AppHandle) -> Vec<servers::Row> {
     rows
 }
 
-/// Joins a server from the list last shown (the page can't name any other).
+#[derive(Serialize)]
+struct Found {
+    /// When the backend built the index (unix seconds).
+    at: i64,
+    total: usize,
+    servers: Vec<index::Server>,
+}
+
+/// Searches Meowy's server index (fetched when the window asks, at most once
+/// a minute, with If-None-Match; it's only fetched while the window is used).
+#[tauri::command]
+async fn find_servers(app: AppHandle, query: String) -> Result<Found, String> {
+    let (stale, etag) = {
+        let state = app.state::<AppState>();
+        let inner = state.0.lock().unwrap();
+        match &inner.index {
+            Some((_, at, etag)) => (at.elapsed() > Duration::from_secs(60), etag.clone()),
+            None => (true, None),
+        }
+    };
+    if stale {
+        let fetched = tauri::async_runtime::spawn_blocking(move || -> Result<Option<(index::Index, Option<String>)>, String> {
+            let r = http::get(index::HOST, index::PATH, etag.as_deref(), index::MAX_BYTES, 15000)?;
+            match r.status {
+                304 => Ok(None),
+                200 => Ok(Some((index::parse(&r.body)?, r.etag))),
+                s => Err(format!("the server index answered {s}")),
+            }
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+        let state = app.state::<AppState>();
+        let mut inner = state.0.lock().unwrap();
+        match fetched {
+            Ok(Some((idx, etag))) => inner.index = Some((idx, std::time::Instant::now(), etag)),
+            Ok(None) => {
+                if let Some(entry) = inner.index.as_mut() {
+                    entry.1 = std::time::Instant::now();
+                }
+            }
+            // Keep showing an older copy if there is one.
+            Err(e) if inner.index.is_none() => return Err(format!("Couldn't get the server list: {e}")),
+            Err(e) => log::line(&format!("index: {e}; showing the older copy")),
+        }
+    }
+    let state = app.state::<AppState>();
+    let inner = state.0.lock().unwrap();
+    let (idx, _, _) = inner.index.as_ref().ok_or("No server list yet.")?;
+    let query: String = query.chars().take(100).collect();
+    Ok(Found { at: idx.at, total: idx.servers.len(), servers: index::search(idx, &query, 25).into_iter().cloned().collect() })
+}
+
+/// Joins a server from the list or the index last shown (the page can't name any other).
 #[tauri::command]
 async fn join_server(app: AppHandle, address: String) -> Result<String, String> {
-    let listed = app.state::<AppState>().0.lock().unwrap().servers.iter().any(|r| r.address == address);
+    let listed = {
+        let state = app.state::<AppState>();
+        let inner = state.0.lock().unwrap();
+        inner.servers.iter().any(|r| r.address == address)
+            || inner.index.as_ref().is_some_and(|(idx, _, _)| idx.servers.iter().any(|s| s.address == address))
+    };
     if !listed {
         return Err("That server isn't in the list.".into());
     }
@@ -555,6 +614,7 @@ fn main() {
         last_repair: String::new(),
         card: None,
         servers: Vec::new(),
+        index: None,
     };
     locate(&mut inner);
     // Links aren't logged as given: a refused one may carry a password.
@@ -578,6 +638,7 @@ fn main() {
             set_back_up,
             set_sign_in,
             server_list,
+            find_servers,
             join_server,
             card,
             card_answer

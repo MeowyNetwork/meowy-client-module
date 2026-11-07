@@ -57,7 +57,8 @@ it to close.
 - `meowy://connect/<a.b.c.d>:<port>` links join a server: Meowy Network's directly, any other public
   server after you confirm. A link can't carry a password, launch options or commands.
 - Its window lists Meowy Network, your Steam favourites and recent Garry's Mod servers with live players,
-  map and ping, each with **Join**. Optionally ("Tell me when Meowy Network is back up") it shows a card
+  map and ping, each with **Join**, and **Find servers** searches Meowy's server index (every Garry's Mod
+  server Steam lists, with fake player counts marked). Optionally ("Tell me when Meowy Network is back up") it shows a card
   when our server answers again after a restart.
 - Updates still come with the installer; the launcher will use the pack's signed update channel once
   it exists.
