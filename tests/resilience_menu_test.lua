@@ -20,6 +20,9 @@ local chunkText = "local UI = (function()\n" .. readFile(here .. "/../src/lua/ui
 	-- The Meowy console, as module.cpp appends it.
 	.. ";(function()\nlocal ConsoleLogic = (function()\n" .. readFile(here .. "/../src/lua/console_logic.lua") .. "\nend)()\n"
 	.. readFile(here .. "/../src/lua/console.lua") .. "\nend)()\n"
+	-- The settings guard, likewise.
+	.. ";(function()\nlocal SettingsGuard = (function()\n" .. readFile(here .. "/../src/lua/settings_guard_logic.lua") .. "\nend)()\n"
+	.. readFile(here .. "/../src/lua/settings_guard.lua") .. "\nend)()\n"
 local loadstring = loadstring or load
 
 local failures, count = 0, 0
@@ -123,6 +126,10 @@ local function world(opts)
 		end,
 		ConsoleState = function() return "spew function; 3 lines kept" end,
 		ConsoleRun = function(line) w.consoleRuns = w.consoleRuns or {} w.consoleRuns[#w.consoleRuns + 1] = line return not w.noEngine end,
+		-- Copies of config.cfg: made (w.backups counts), listed (w.backupList), put back (w.restored).
+		ConfigBackup = function() w.backups = (w.backups or 0) + 1 return true, "copied" end,
+		ConfigBackups = function() return w.backupList or {} end,
+		ConfigRestore = function(name) w.restored = name return true, "meowy_restore.cfg" end,
 		JoinBoost = function(on) w.boost = on return true end,
 		-- cvar_restore.txt: the player's own values while the pack has them changed
 		-- (opts.held: what the last session left).
@@ -2232,6 +2239,116 @@ check("errors: paths hidden", report:find("Jane", 1, true) == nil and report:fin
 check("errors: disable offered at the menu", disableButton ~= nil, true)
 if disableButton then disableButton.DoClick() end
 check("errors: disabling asks first", w.mounted, nil)
+
+-- The settings guard: a session from a join's start until a few seconds back
+-- at the menu (not reconnecting); what changed is listed, put back in one click.
+local function guardSession(w, changes, opts)
+	opts = opts or {}
+	w.cvars.mat_specular, w.cvars.r_3dsky, w.cvars.cl_interp = "1", "1", opts.interp or "0.1"
+	w.otherNow = opts.address or "1.2.3.4:27015"
+	w.state, w.loading, w.inGame = "other", true, false
+	w.run(1)
+	for k, v in pairs(changes) do w.cvars[k] = v end   -- the server's Lua
+	w.loading, w.inGame = false, true
+	w.env.meowy.JoiningName = opts.name or "Foo RP"
+	w.run(2)
+	w.cut()
+	w.consoleRuns = {}
+end
+-- The newest prompt's title (an answered prompt's text panels stay in w.panels).
+local function promptTitle(w)
+	for i = #(w.panels or {}), 1, -1 do
+		local p = w.panels[i]
+		if not p.removed and type(p.text) == "string" and p.text:find("of your settings", 1, true) then return p.text end
+	end
+end
+w = world({ settings = ON, menu = true })
+check("settings backup: a copy at start", w.backups, 1)
+guardSession(w, { mat_specular = "0", r_3dsky = "0" })
+w.run(1)
+check("settings guard: not at once (it could be reconnecting)", promptTitle(w), nil)
+w.run(3)
+check("settings guard: names the server and how many", promptTitle(w), "Foo RP changed 2 of your settings")
+local listed = find(function(p) return type(p.text) == "string" and p.text:find("Specular reflections (mat_specular): 1, now 0", 1, true) ~= nil end)
+check("settings guard: lists each change", listed ~= nil, true)
+w.click("Put back")
+local ran = table.concat(w.consoleRuns, "|")
+check("settings guard: put back", ran, "mat_specular 1|r_3dsky 1")
+-- Keep: nothing run.
+w = world({ settings = ON, menu = true })
+guardSession(w, { mat_specular = "0" })
+w.run(4)
+w.click("Keep")
+check("settings guard: Keep runs nothing", #w.consoleRuns, 0)
+-- Nothing changed: no prompt.
+w = world({ settings = ON, menu = true })
+guardSession(w, {})
+w.run(5)
+check("settings guard: nothing changed, no prompt", promptTitle(w), nil)
+-- Reconnecting in between: one session, one prompt at its end.
+w = world({ settings = ON, menu = true })
+guardSession(w, { r_3dsky = "0" })
+w.run(1)
+w.state, w.loading = "other", true
+w.run(1)
+w.cvars.mat_specular = "0"
+w.loading, w.inGame = false, true
+w.run(2)
+w.cut()
+w.run(1)
+check("settings guard: a reconnect keeps the session going", promptTitle(w), nil)
+w.run(3)
+check("settings guard: both changes, at the end", promptTitle(w), "Foo RP changed 2 of your settings")
+-- Always put back for that server: next time without asking.
+w = world({ settings = ON, menu = true })
+guardSession(w, { mat_specular = "0" })
+w.run(4)
+w.click("Always put back here")
+check("settings guard: always: put back now", table.concat(w.consoleRuns, "|"), "mat_specular 1")
+check("settings guard: always: the server remembered", w.convars.meowy_settings_guard_always, "1.2.3.4:27015")
+guardSession(w, { mat_specular = "0" })
+w.run(4)
+check("settings guard: always: put back next time", table.concat(w.consoleRuns, "|"), "mat_specular 1")
+guardSession(w, { mat_specular = "0" }, { address = "5.6.7.8:27015", name = "Bar RP" })
+w.run(4)
+check("settings guard: always: other servers still ask", promptTitle(w), "Bar RP changed 1 of your settings")
+-- A value that isn't a plain number is never run back.
+w = world({ settings = ON, menu = true })
+guardSession(w, { cl_interp = "0.0152" }, { interp = "0;quit" })
+w.run(4)
+w.click("Put back")
+check("settings guard: only plain numbers run", #w.consoleRuns, 0)
+-- Off: no prompt.
+w = world({ settings = ON, menu = true, convars = { meowy_settings_guard = "0" } })
+guardSession(w, { mat_specular = "0" })
+w.run(5)
+check("settings guard: off, no prompt", promptTitle(w), nil)
+-- Meowy Network's own server: its FPS Booster is the player's own choice, not second-guessed.
+w = world({ settings = ON, menu = true })
+guardSession(w, { mat_specular = "0", r_3dsky = "0" }, { address = OURS, name = "Meowy Network" })
+w.run(5)
+check("settings guard: our own server, no prompt", promptTitle(w), nil)
+check("settings guard: our own server, nothing put back", #w.consoleRuns, 0)
+-- A join cut short while loading (never in game): the server is still named.
+w = world({ settings = ON, menu = true })
+w.cvars.cl_new_impact_effects = "0"
+w.otherNow, w.state, w.loading = "5.6.7.8:27015", "other", true
+w.env.meowy.JoiningName = "Bar RP"
+w.run(1)
+w.cvars.cl_new_impact_effects = "1"
+w.run(1)
+w.state, w.loading = "none", false
+w.run(5)
+check("settings guard: a join cut short still names the server", promptTitle(w), "Bar RP changed 1 of your settings")
+-- The copies' commands.
+w = world({ settings = ON, menu = true })
+w.backupList = { { name = "config-20261107-120000.cfg", when = "2026-11-07 12:00:00", size = 100 } }
+w.concommands.meowy_settings_restore(nil, nil, { "1" })
+check("settings restore: that copy", w.restored, "config-20261107-120000.cfg")
+check("settings restore: run through exec", w.consoleRuns and w.consoleRuns[#w.consoleRuns], "exec meowy_restore.cfg")
+w.restored = nil
+w.concommands.meowy_settings_restore(nil, nil, { "2" })
+check("settings restore: a number that isn't listed does nothing", w.restored, nil)
 check("no Lua errors", w.errors, nil)
 
 -- Find servers: the picked server's content line, and its "Get ready" button.

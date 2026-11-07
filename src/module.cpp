@@ -107,6 +107,7 @@
 #include "timeline_steam.h"
 #include "prewarm.h"
 #include "pak_cache.h"
+#include "config_backup.h"
 #include "console_capture.h"
 #include "server_query.h"
 #include "server_index.h"
@@ -2178,6 +2179,56 @@ namespace
 		return 1;
 	}
 
+	// --- Copies of config.cfg (config_backup.h), menu only ---------------------------
+	std::wstring ConfigBackupDir() { return DataDir() + L"\\config_backups"; }
+
+	// meowy.ConfigBackup() -> true, "copied" | "unchanged"; or false, why. Once per start.
+	int ConfigBackup(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		SYSTEMTIME t;
+		GetLocalTime(&t);
+		char stamp[32];
+		std::snprintf(stamp, sizeof stamp, "%04u%02u%02u-%02u%02u%02u", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond);
+		std::string result;
+		const bool ok = config_backup::Backup(GarrysModDir() + L"\\cfg\\config.cfg", ConfigBackupDir(), stamp, result);
+		LUA->PushBool(ok);
+		LUA->PushString(result.c_str());
+		return 2;
+	}
+
+	// meowy.ConfigBackups() -> { { name, when, size } }, newest first.
+	int ConfigBackups(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		LUA->CreateTable();
+		double i = 0;
+		for (const config_backup::Entry& e : config_backup::List(ConfigBackupDir()))
+		{
+			LUA->PushNumber(++i);
+			LUA->CreateTable();
+			LUA->PushString(e.name.c_str());
+			LUA->SetField(-2, "name");
+			LUA->PushString(e.when.c_str());
+			LUA->SetField(-2, "when");
+			LUA->PushNumber(static_cast<double>(e.size));
+			LUA->SetField(-2, "size");
+			LUA->SetTable(-3);
+		}
+		return 1;
+	}
+
+	// meowy.ConfigRestore(name) -> true, "meowy_restore.cfg" (for exec); or false, why.
+	int ConfigRestore(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		std::string why;
+		const bool ok = config_backup::Restore(ConfigBackupDir(), LUA->CheckString(1), GarrysModDir() + L"\\cfg", why);
+		LUA->PushBool(ok);
+		LUA->PushString(why.c_str());
+		return 2;
+	}
+
 	// LastServerMark(name) -> ok: the player is in the game on a server now; kept
 	// for the main menu's "Continue" when it's ours or a public one (the engine's
 	// address, read here; the name is the server's, only ever shown as text).
@@ -2273,6 +2324,12 @@ namespace
 		if (!consoleLogic.empty() && !consoleGlue.empty())
 			// The leading ";": after "end)()" a "(" would call its result.
 			home += ";(function()\nlocal ConsoleLogic = (function()\n" + consoleLogic + "\nend)()\n" + consoleGlue + "\nend)()\n";
+		// The settings guard (settings_guard_logic.lua as `SettingsGuard`, then
+		// settings_guard.lua), likewise.
+		std::string guardLogic = ResourceText(IDR_SETTINGS_GUARD_LOGIC_LUA);
+		std::string guardGlue = ResourceText(IDR_SETTINGS_GUARD_LUA);
+		if (!guardLogic.empty() && !guardGlue.empty())
+			home += ";(function()\nlocal SettingsGuard = (function()\n" + guardLogic + "\nend)()\n" + guardGlue + "\nend)()\n";
 		return "local UI = (function()\n" + ui + "\nend)()\n"
 			"local Logic = (function()\n" + logic + "\nend)()\n" + doctor + glue + home;
 	}
@@ -3200,6 +3257,9 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	SetFunction(LUA, "PrewarmState", Guarded<PrewarmState>);
 	SetFunction(LUA, "PakCache", Guarded<PakCache>);
 	SetFunction(LUA, "PakCacheState", Guarded<PakCacheState>);
+	SetFunction(LUA, "ConfigBackup", Guarded<ConfigBackup>);
+	SetFunction(LUA, "ConfigBackups", Guarded<ConfigBackups>);
+	SetFunction(LUA, "ConfigRestore", Guarded<ConfigRestore>);
 	SetFunction(LUA, "JoinBoost", Guarded<JoinBoost>);
 	SetFunction(LUA, "CvarHold", Guarded<CvarHold>);
 	SetFunction(LUA, "CvarRelease", Guarded<CvarRelease>);
