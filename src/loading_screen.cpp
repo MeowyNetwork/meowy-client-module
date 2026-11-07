@@ -61,6 +61,8 @@ namespace
 	{
 		std::mutex m;
 		bool running = false;           // the window thread is alive (for the session, once started)
+		bool webWanted = false;         // keep the page loaded between joins (Prewarm; Park clears it)
+		unsigned webAsk = 0;            // counts Prewarms that asked anew, so a failed start isn't retried every frame
 		bool joining = false;           // a join is on screen
 		unsigned joinSeq = 0;           // counts joins, so the thread notices a new one
 		bool finishing = false;         // fading out; the thread exits when done
@@ -696,10 +698,12 @@ namespace
 		SetWindowPos(v.hwnd, after, 0, 0, 0, 0, flags);
 	}
 
-	// The screen's thread. Started at game start (Prewarm) or at the first join,
-	// and then kept for the session: the window and the web page stay loaded,
-	// hidden, so a join only has to show them. Between joins the page is
-	// hidden (WebView2 throttles it) and reloaded fresh for the next one.
+	// The screen's thread. Started at the menu (Prewarm) or at the first join,
+	// and then kept for the session: the window stays, hidden, and the web page
+	// is kept loaded while the menu wants it (Prewarm), so a join only has to
+	// show it. Between joins the page is hidden (WebView2 throttles it) and
+	// reloaded fresh for the next one; parked (Park: in game, or the menu in
+	// the background), it's stopped and its processes freed instead.
 	DWORD WINAPI Run(void*)
 	{
 		// WebView2 needs a single-threaded COM apartment with a message loop: this thread.
@@ -724,11 +728,14 @@ namespace
 		}
 		SetLayeredWindowAttributes(v.hwnd, 0, 0, LWA_ALPHA);
 
-		// The web page. If it isn't ready when a join starts, the native drawing
-		// shows until it is; if it fails (also while it's showing: its browser
-		// died), the native drawing takes over and the next join starts it again.
-		bool webOn = SUCCEEDED(com) && loading_webview::Start(v.hwnd, PageUrl(), WebProfileDir());
+		// The web page: started between joins when Prewarm asks, or by a join. If
+		// it isn't ready when a join starts, the native drawing shows until it is;
+		// if it fails (also while it's showing: its browser died), the native
+		// drawing takes over and the next join starts it again. Parked, it's
+		// stopped once no join is on screen.
+		bool webOn = false;
 		bool webShown = false;
+		unsigned webTried = 0;
 
 		// The page's scale from last time, so the fallback matches it from the
 		// first frame (WebView2 only reports it once its controller is up).
@@ -779,13 +786,31 @@ namespace
 				join = g.joinSeq;
 			}
 
-			// ─── Between joins: hidden, page loaded and waiting ────────────────
+			// ─── Between joins: hidden, page loaded and waiting (or parked) ─────
 			if (!joining)
 			{
 				if (shown)
 				{
 					ShowWindow(v.hwnd, SW_HIDE);
 					shown = false;
+				}
+				bool wanted;
+				unsigned ask;
+				{
+					std::lock_guard<std::mutex> lock(g.m);
+					wanted = g.webWanted;
+					ask = g.webAsk;
+				}
+				// Outside g.m, as at a join's start: WebView2 may pump this thread's messages.
+				if (webOn && !wanted)
+				{
+					loading_webview::Stop();
+					webOn = false;
+				}
+				else if (!webOn && wanted && ask != webTried && SUCCEEDED(com))
+				{
+					webTried = ask;
+					webOn = loading_webview::Start(v.hwnd, PageUrl(), WebProfileDir());
 				}
 				Sleep(50);
 				continue;
@@ -945,8 +970,20 @@ namespace
 				// the next join places it again (KeepAboveGame) before showing it.
 				if (IsTopmost(v.hwnd))
 					SetWindowPos(v.hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-				if (webOn)
+				bool wanted;
+				{
+					std::lock_guard<std::mutex> lock(g.m);
+					wanted = g.webWanted;
+				}
+				if (webOn && wanted)
+				{
 					loading_webview::Reload();   // fresh for the next join
+				}
+				else if (webOn)
+				{
+					loading_webview::Stop();     // parked: in game, its processes are freed
+					webOn = false;
+				}
 				continue;
 			}
 
@@ -1114,7 +1151,18 @@ namespace loading_screen
 		std::lock_guard<std::mutex> lock(g.m);
 		if (g.dataDir.empty())
 			g.dataDir = dataDir;
+		if (!g.webWanted)
+		{
+			g.webWanted = true;
+			++g.webAsk;
+		}
 		StartThreadLocked();
+	}
+
+	void Park()
+	{
+		std::lock_guard<std::mutex> lock(g.m);
+		g.webWanted = false;
 	}
 
 	void Details(const std::string& serverName, const std::string& map, const std::string& steamid)
@@ -1218,6 +1266,7 @@ namespace loading_screen
 {
 	void Begin(const std::wstring&, double) {}
 	void Prewarm(const std::wstring&) {}
+	void Park() {}
 	void Details(const std::string&, const std::string&, const std::string&) {}
 	void Status(const std::string&) {}
 	void ClientLuaStarted() {}

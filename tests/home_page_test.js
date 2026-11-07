@@ -745,5 +745,53 @@ check('settings: only valid regions', side2().querySelectorAll('.mb-flagchip').m
 const tags2 = doc.getElementById('meowy-shell').querySelectorAll('.mb-srow').map(r => r.querySelector('.mb-c-name').children.filter(c => c.tagName === '#TEXT')[0].textContent + '=' + r.querySelector('.mb-tag').textContent + ':' + r.querySelector('.mb-tag').className);
 check('honest: tags, unverified ranked lower', tags2.join(' | '), 'Honest=VERIFIED:mb-tag good | Faker=FAKE - 5 real:mb-tag bad | Unknown=UNVERIFIED:mb-tag');
 
+// Meowy's server index (MR3): the list at once with ping hints, then Steam's
+// answers update the same rows; a newer index each minute while it's open.
+const BL3 = S.win.MeowyBrowserLogic;
+check('ping text: measured', BL3.pingText({ ping: 40, hint: 0 }), '40');
+check('ping text: a hint', BL3.pingText({ ping: 40, hint: 2 }), '~40');
+check('ping text: unknown', BL3.pingText({ ping: 150, hint: 3 }), '…');
+S = stockPage();
+S.win.MeowyShell(true);
+S.win.MeowyBrowse.open();
+check('index: the internet list asked for', JSON.stringify(S.posts.pop()), '["browse","internet"]');
+S.win.MeowyBrowse.reset(20, true, 'internet', '');
+S.win.MeowyBrowse.source(20, { idx: 'waiting', age: -1, geo: false, n: 0 });
+S.win.MeowyBrowse.flush();
+const side3 = () => doc.getElementById('meowy-shell').querySelector('.mb-side');
+check('index: waiting for it', side3().querySelector('.mb-status').textContent, "Asking Meowy's index and Steam… 0 s");
+S.win.MeowyBrowse.add(20, [
+	{ i: 200, a: '20.0.0.1:27015', n: 'Index RP', d: 'DarkRP', m: 'rp_a', g: 'darkrp', p: 40, x: 64, ms: 35, ph: 1 },
+	{ i: 201, a: '20.0.0.2:27015', n: 'Index TTT', d: '', m: 'ttt_a', g: 'terrortown', p: 10, x: 32, ms: 120, ph: 2 },
+	{ i: 202, a: '20.0.0.3:27015', n: 'Index box', d: '', m: 'gm_c', g: 'sandbox', p: 0, x: 16, ms: 150, ph: 3 },
+], false, 0.6, 1);
+S.win.MeowyBrowse.source(20, { idx: 'shown', age: 12, geo: true, n: 3 });
+S.win.MeowyBrowse.flush();
+check('index: shown, Steam still checking', side3().querySelector('.mb-status').textContent, "From Meowy's index (12 s old) · checking with Steam… 0.6 s");
+check('index: DB-IP credited', side3().querySelector('.mb-status').title, 'Ping estimates use IP Geolocation by DB-IP (db-ip.com)');
+doc.getElementById('meowy-shell').querySelectorAll('.mb-gm').find(t => t.querySelector('.mb-gmname')._text === 'Every gamemode').onclick();
+const pingCells = () => doc.getElementById('meowy-shell').querySelectorAll('.mb-srow').map(r => r.querySelector('.mb-c-ping'));
+check('index: hints shown as hints', pingCells().map(c => c.textContent + ':' + c.className).join(' '), '~35:mb-c-ping mb-hint ~120:mb-c-ping mb-hint …:mb-c-ping mb-hint');
+// Steam answers for the first two: the same rows, Steam's numbers.
+S.win.MeowyBrowse.update(20, [
+	{ i: 200, a: '20.0.0.1:27015', n: 'Index RP', d: 'DarkRP', m: 'rp_b', g: 'darkrp', p: 44, x: 64, ms: 31 },
+	{ i: 201, a: '20.0.0.2:27015', n: 'Index TTT', d: 'Trouble in Terrorist Town', m: 'ttt_a', g: 'terrortown', p: 9, x: 32, ms: 95 },
+	{ i: 201, a: '6.6.6.6:27015', n: 'Wrong address for the row', g: 'x', p: 1, x: 2, ms: 1 },
+	{ i: 999, a: '20.0.0.9:27015', n: 'Not in the list', g: 'x', p: 1, x: 2, ms: 1 },
+]);
+S.win.MeowyBrowse.add(20, [], true, 18.2, 1);
+S.win.MeowyBrowse.flush();
+check('index: updated in place', pingCells().map(c => c.textContent + ':' + c.className).join(' '), '31:mb-c-ping 95:mb-c-ping …:mb-c-ping mb-hint');
+check('index: counts follow', doc.getElementById('meowy-shell').querySelector('.mb-main').querySelector('.mb-small').textContent, '53 players on 3 servers');
+check('index: rows that don\'t match aren\'t touched', doc.getElementById('meowy-shell').querySelectorAll('.mb-srow').map(r => r.querySelector('.mb-c-name').textContent).join('|').indexOf('Wrong') < 0, true);
+check('index: done', side3().querySelector('.mb-status').textContent, "From Meowy's index (12 s old) · checked with Steam in 18.2 s");
+S.posts.length = 0;
+flush();
+check('index: a newer index asked for each minute', S.posts.some(p => p[0] === 'browse_refresh'), true);
+S.win.MeowyBrowse.reset(21, true, 'internet', '');
+S.win.MeowyBrowse.source(21, { idx: 'failed', age: -1, geo: false, n: 0 });
+S.win.MeowyBrowse.flush();
+check('index: unreachable, Steam alone', side3().querySelector('.mb-status').textContent, "Listing servers with players… 0 s · Meowy's index didn't answer: Steam's list alone");
+
 console.log(`${count} checks, ${failures} failed`);
 process.exit(failures ? 1 : 0);

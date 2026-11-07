@@ -2,3 +2,5 @@ build*/
 dist/
 *.exe
 build-observer/
+launcher/target/
+launcher/app/gen/

@@ -17,3 +17,4 @@
 #define IDR_SETTINGS_GUARD_LOGIC_LUA 130   // src/lua/settings_guard_logic.lua: what servers changed in your settings, its rules
 #define IDR_SETTINGS_GUARD_LUA 131         // src/lua/settings_guard.lua: its prompt, and the config.cfg copies' commands
 #define IDR_CONTENT_LOGIC_LUA 115     // src/lua/content_logic.lua: the content platform's rules (adverts, plans, consent)
+#define IDR_BROWSE_LOGIC_LUA 116      // src/lua/browse_logic.lua: Find servers' rules for Meowy's server index (BrowseLogic)
