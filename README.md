@@ -121,6 +121,22 @@ the game closes while the pack is starting, the next start skips it once by itse
   - It changes two entries in `vguimatsurface.dll`'s import table, in memory. No code changes.
   - Turn it off with `meowy_fast_fonts 0`. `meowy_fast_fonts_status` shows the loads saved and
     how long the last font pass took.
+- With "Start with the game" on, the pack gets a server ready before you join, on any server. A join
+  reads the same big files every time (the map, its content, the biggest addons). If Windows has thrown
+  them out of memory since, it reads them from disk while you wait on the loading screen. So:
+  - **While you join,** the pack writes down which files of 1 MB or more the game opens, with their sizes
+    (`%LOCALAPPDATA%\MeowyClientPack\joins\<address>.txt`, the last 60 servers). Nothing about the files
+    themselves is kept.
+  - **When you're likely to join that server again,** it reads them into Windows' memory in the background,
+    at low priority: 3 s after the menu shows your Continue server, or when you hold the mouse over a
+    server for 0.4 s on the home card or home screen. It reads at most 4 GB, stops the moment a join
+    starts, and only on an SSD (on a hard drive the reads would get in the way of everything else).
+  - Measured on our dev server, from a fresh start of the game with Windows' memory cleared: in game after
+    46.2 s without it and 30.0 s with it. It had read 1,516 MB in 42 files, in 2.7 s, before the join.
+  - It reads files only. Nothing is changed, and the game opens the same files as before.
+  - It needs the fast file checks (`meowy_fast_file_checks`, on by default) to see which files a join
+    opens. Turn it off in Meowy settings ("Get servers ready before you join") or with `meowy_prewarm 0`.
+    `meowy_prewarm_status` shows what it has written down and read.
 - With "Start with the game" on, joins to a Meowy Network server get the pack's own loading
   screen instead of Garry's Mod's. It's a separate window over the game, drawn on its own thread,
   so it keeps moving while the game is busy (Garry's Mod's own screen freezes for most of a join).
@@ -386,8 +402,10 @@ notification rules), `notify_manual` (a real notification on this PC; see `tests
 `timeline_smoke` (the Steam Timeline marker rules), `lua_lookup_smoke [GarrysMod folder] [stub file]`
 (the fast Lua lookup gives the game's answers on a fake string table, and finds its patch site in the
 installed `client.dll` of the same bitness) `font_loads_smoke <scratch folder>` (the font pass's
-gdi32 loads, on the test's own imports and a real font file) and `fs_cache_smoke <scratch folder>` (which
-paths the missing-file cache answers for, and its answers against real folders).
+gdi32 loads, on the test's own imports and a real font file), `fs_cache_smoke <scratch folder>` (which
+paths the missing-file cache answers for, and its answers against real folders), `prewarm_smoke <scratch
+folder>` (the join pre-warm's file lists, budget and cancelling) and `lua_find_smoke` (the fast `file.Find`'s
+prefix rules and its patch stubs on a copy of the game's code).
 
 Staying connected's and the PC doctor's menu Lua is in `src/lua/` (built into the DLL as resources). Their rules and menu
 glue have offline tests, run by CI with Lua 5.1:
