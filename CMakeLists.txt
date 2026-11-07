@@ -21,6 +21,7 @@ add_library(meowy SHARED
 	src/engine_patches.cpp
 	src/lua_lookup.cpp
 	src/font_loads.cpp
+	src/fs_cache.cpp
 	src/server_gate.cpp
 	src/discord_ipc.cpp
 	src/loading_screen.cpp
@@ -182,6 +183,13 @@ if(MEOWY_BUILD_TESTS)
 	if(MSVC)
 		set_property(TARGET lua_lookup_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 		target_compile_options(lua_lookup_smoke PRIVATE /W4 /utf-8)
+	endif()
+	# The missing-file cache's rules against real folders, no game:
+	#   fs_cache_smoke <scratch folder>
+	add_executable(fs_cache_smoke tests/fs_cache_smoke.cpp src/fs_cache.cpp)
+	if(MSVC)
+		set_property(TARGET fs_cache_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+		target_compile_options(fs_cache_smoke PRIVATE /W4 /utf-8)
 	endif()
 	# The font pass's gdi32 loads, on this program's own imports and a real font file:
 	#   font_loads_smoke <scratch folder>
