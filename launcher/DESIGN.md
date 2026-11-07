@@ -171,9 +171,32 @@ It obeys `off launcher` (all of its own features) and `off launcher_repair`, `la
 The policy's notice shows in the window. (2026-11-07 the URLs still return the website's page, so nothing
 is kept yet.)
 
-**Until the updater lands** `updater.rs` is a stub marked `UPDATER-STUB`: it reports "updates come with the
-pack" and does no network I/O. Its interface (check → stage → report) is fixed so the real one drops in.
-Before writing update code, check the main session's PR in the repo.
+**The updater (built 2026-11-07, after the pack's U1 merged as #65):** `core/src/release.rs` and
+`core/src/updater.rs` mirror `src/updater.cpp`, agreed with the main session:
+- the same document (`/pack/v1/release-stable.txt` + `.sig`), taken only if signed by the **release** key;
+- the same `ShouldTake` checks, in the same order and words: the `release_seq.txt` floor, `expires`, newer
+  than what runs, not in `bad_<arch>.txt`, the policy's `VersionAllowed`, the stub version, the rollout slot
+  (SHA-256 of `install_token` + salt, the token made the same way and never sent), a file for this arch;
+- the same staging: exactly `size` bytes from meowynetwork.com without redirects, into
+  `bin\<version>.partial\`, SHA-256 checked, renamed to `bin\<version>`, then `pending_<arch>.txt` written
+  atomically, then `release_seq.txt`; unreferenced folders cleaned up. `current`, `previous` and `bad` are
+  the stub's: the launcher never writes them;
+- only while the game is closed (the pack stages while it runs), a minute after start and every 6 hours;
+  the architecture the player runs (`bin\win64\gmod.exe` present → win64).
+
+From outside the game two facts need care:
+- **The running version:** the stub's choice (current, then previous, if hash, bad list and policy allow),
+  else the installed copy in `lua\bin`, by its own version resource (FileVersion from the pack's
+  VERSIONINFO, `src/version.h`, the pack's #68; read with `GetFileVersionInfoW`/`VerQueryValueW`). A copy
+  without one (installed before #68) is "not known": nothing is staged, and the pack still updates itself in
+  the game. The DLL carries its own version, so no file next to it can go stale after a Steam check, a
+  manual copy or an install. A wrong guess could make the stub prefer an older update over a newer install,
+  so "not known" never stages.
+- **The stub's version:** 1 if `gmsv_meowy_boot_<arch>.dll`'s export table (read from the file, never
+  loaded) names `meowy_stub_version`, else 0 (an old stub that can't load updates).
+
+The window's Updates panel shows the running version, a staged one ("starts next time"), previous, bad,
+and the last check's reason with the release seq.
 
 ## 9. Early entry point (start-up #9): a later opt-in, designed now
 

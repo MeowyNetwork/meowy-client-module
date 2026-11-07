@@ -1,0 +1,3 @@
+// gmsv_meowy_boot's version resource (the pack's version, version.h).
+#define MEOWY_FILE_DESCRIPTION "Meowy Client Pack start-up stub"
+#include "../version.rc"

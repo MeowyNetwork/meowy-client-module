@@ -50,6 +50,8 @@ struct Inner {
     pack: Option<PackState>,
     /// The pack's signed policy as kept in its state folder (None: none, all on).
     policy: Option<policy::Policy>,
+    /// What the last update check said (core/src/updater.rs).
+    update_check: String,
 }
 
 impl Inner {
@@ -373,6 +375,55 @@ fn watch_policy(app: AppHandle) {
     }
 }
 
+/// The pack's signed updater (core/src/updater.rs, the same document and
+/// checks as src/updater.cpp): a minute after start, then every 6 hours, and
+/// only staged while the game is closed (the pack does it while it runs).
+/// The start-up stub takes a staged version at the next start.
+fn watch_updates(app: AppHandle) {
+    let keys = policy::Keys::production();
+    std::thread::sleep(Duration::from_secs(60));
+    loop {
+        let (game, pol) = {
+            let state = app.state::<AppState>();
+            let inner = state.0.lock().unwrap();
+            (inner.game.clone(), inner.policy.clone())
+        };
+        let said = match game {
+            None => "Garry's Mod wasn't found".to_string(),
+            Some(_) if !keys.any() => "no release key in this build".to_string(),
+            Some(g) => {
+                let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+                let a = app.clone();
+                let running = move || a.state::<AppState>().0.lock().unwrap().running;
+                let fetch = |path: &str, cap: u64| -> Result<Vec<u8>, String> {
+                    let r = http::get(updater::HOST, path, None, cap as usize, 30_000)?;
+                    if r.status == 200 {
+                        Ok(r.body)
+                    } else {
+                        Err(format!("HTTP {}", r.status))
+                    }
+                };
+                let (said, staged) =
+                    updater::check_once(&keys, &data_dir(), &g.garrysmod, g.arch(), pol.as_ref(), now, &running, &fetch);
+                if let Some(v) = staged {
+                    log::line(&format!("update: staged {v} for the next start"));
+                }
+                said
+            }
+        };
+        {
+            let state = app.state::<AppState>();
+            let mut inner = state.0.lock().unwrap();
+            if inner.update_check != said {
+                log::line(&format!("update check: {said}"));
+                inner.update_check = said;
+            }
+        }
+        let _ = app.emit("status", ());
+        std::thread::sleep(Duration::from_secs(6 * 60 * 60));
+    }
+}
+
 /// Every 15 s, one stat each of `appmanifest_4000.acf` and `menu.lua`. When
 /// either changed and then stayed the same for a whole interval, with the
 /// game closed and Steam done with it, the start-up line is checked.
@@ -466,7 +517,7 @@ struct Status {
     start_at_sign_in: bool,
     last_repair: String,
     pack: Option<PackState>,
-    updates: &'static str,
+    updates: updater::Status,
     /// The policy's notice for players, if it has one.
     notice: String,
 }
@@ -498,7 +549,11 @@ fn status(app: AppHandle) -> Status {
         start_at_sign_in: win::start_at_sign_in(),
         last_repair: inner.last_repair.clone(),
         pack: inner.pack.clone(),
-        updates: updater::status(),
+        updates: {
+            let game = inner.game.as_ref();
+            let arch = game.map_or("win64", |g| g.arch());
+            updater::status(&data_dir(), game.map(|g| g.garrysmod.as_path()), arch, inner.policy.as_ref(), &inner.update_check)
+        },
         notice: inner.policy.as_ref().map(|p| p.notice.clone()).unwrap_or_default(),
     }
 }
@@ -752,6 +807,7 @@ fn main() {
         pipe_tx: None,
         pack: None,
         policy: None,
+        update_check: "not checked yet".into(),
     };
     locate(&mut inner);
     // Links aren't logged as given: a refused one may carry a password.
@@ -799,6 +855,8 @@ fn main() {
             std::thread::spawn(move || watch_back_up(h));
             let h = handle.clone();
             std::thread::spawn(move || watch_policy(h));
+            let h = handle.clone();
+            std::thread::spawn(move || watch_updates(h));
             handle_args(&handle, &std::env::args().collect::<Vec<_>>());
             Ok(())
         })

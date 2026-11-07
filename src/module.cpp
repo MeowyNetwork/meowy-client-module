@@ -109,6 +109,8 @@
 #include "prewarm.h"
 #include "pak_cache.h"
 #include "policy.h"
+#include "version.h"
+#include "updater.h"
 #include "mouse_confine.h"
 #include "config_backup.h"
 #include "console_capture.h"
@@ -137,7 +139,7 @@ using namespace GarrysMod::Lua;
 
 namespace
 {
-	const char* const VERSION = "1.6.0";
+	const char* const VERSION = MEOWY_VERSION;   // version.h, also the DLL's version resource
 
 	// Discord's own limits; anything longer makes it reject the whole activity.
 	constexpr size_t MAX_TEXT = 128;
@@ -2295,6 +2297,40 @@ namespace
 		return s;
 	}
 
+	// --- The signed updater (updater.h) ------------------------------------------------
+	// The start-up stub's version (meowy_stub_version; 0 for a stub from before updates).
+	int StubVersion()
+	{
+		HMODULE stub = GetModuleHandleW(sizeof(void*) == 8 ? L"gmsv_meowy_boot_win64.dll" : L"gmsv_meowy_boot_win32.dll");
+		using Fn = int (*)();
+		Fn f = stub ? reinterpret_cast<Fn>(GetProcAddress(stub, "meowy_stub_version")) : nullptr;
+		return f ? f() : 0;
+	}
+
+	// meowy.UpdaterStart(): check for signed updates (meowy_updates on).
+	int UpdaterStart(lua_State*)
+	{
+		updater::Start(DataDir(), VERSION, StubVersion());
+		return 0;
+	}
+
+	int UpdaterState(lua_State* L)
+	{
+		L->luabase->PushString(updater::Describe().c_str());
+		return 1;
+	}
+
+	// meowy.UpdaterReady() -> the version staged this session, once; else nil.
+	int UpdaterReady(lua_State* L)
+	{
+		const std::string v = updater::TakeReadyNotice();
+		if (v.empty())
+			L->luabase->PushNil();
+		else
+			L->luabase->PushString(v.c_str());
+		return 1;
+	}
+
 	// meowy.PolicyState() -> { seq, allowed, pack_enabled, off = { setting names }, notice, describe }.
 	int PolicyState(lua_State* L)
 	{
@@ -3130,6 +3166,27 @@ do
 	end)
 end
 
+-- Signed updates (updater.h): checked a minute after start and every 6 hours;
+-- a new version is downloaded, checked against Meowy Network's signature, and
+-- starts the next time the game opens (never mid-session).
+local updates = meowy.Setting("meowy_updates", "1",
+	"Meowy Client Pack: get new versions of the pack, signed by Meowy Network; one starts the next time you open the game (0 = off)")
+local updaterAsked, nextUpdateCheck = false, 0
+hook.Add("Think", "MeowyClientPack.Updates", function()
+	local now = SysTime()
+	if now < nextUpdateCheck then return end
+	nextUpdateCheck = now + 10
+	if not updaterAsked and updates:GetBool() then
+		updaterAsked = true
+		meowy.UpdaterStart()
+	end
+	local ready = meowy.UpdaterReady()
+	if ready then print("[Meowy Client Pack] Client Pack " .. ready .. " is ready; it starts the next time you open Garry's Mod") end
+end)
+concommand.Add("meowy_update_status", function()
+	print("[Meowy Client Pack] updates: " .. meowy.UpdaterState())
+end)
+
 local enabled = meowy.Setting("meowy_loadingscreen", "1",
 	"Meowy Client Pack: our own loading screen when joining Meowy Network (0 = Garry's Mod's)")
 -- Other servers get the same screen, neutral (loading_screen.h BeginOther),
@@ -3336,9 +3393,35 @@ hook.Add("Think", "MeowyClientPack.Loading", function()
 	end
 end)
 )lua";
+
+#ifdef _WIN32
+	// The copy the start-up stub loaded, when it isn't this one (pack_versions.h):
+	// the stub loads an update from %LOCALAPPDATA% and says where in
+	// MEOWY_PACK_MODULE, while a server's require("meowy") loads the installed
+	// copy from lua\bin. That copy hands the client realm over to the stub's
+	// (its exported `name`), so both realms share one copy. Only a module that's
+	// already loaded is used; nothing is ever loaded from that variable.
+	using ClientFn = int (*)(ILuaBase*);
+	ClientFn HandOver(const char* name)
+	{
+		wchar_t path[MAX_PATH * 2];
+		const DWORD n = GetEnvironmentVariableW(L"MEOWY_PACK_MODULE", path, MAX_PATH * 2);
+		if (n == 0 || n >= MAX_PATH * 2)
+			return nullptr;
+		HMODULE self = nullptr;
+		GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+			reinterpret_cast<LPCWSTR>(&HandOver), &self);
+		HMODULE other = GetModuleHandleW(path);
+		if (!other || other == self)
+			return nullptr;
+		return reinterpret_cast<ClientFn>(GetProcAddress(other, name));
+	}
+#endif
 }
 
-GMOD_MODULE_OPEN()
+namespace
+{
+int ClientOpen(ILuaBase* LUA)
 {
 #ifdef _WIN32
 	// Switched off by the signed policy (policy.h): only the version, nothing runs.
@@ -3412,6 +3495,35 @@ GMOD_MODULE_OPEN()
 	return 0;
 }
 
+int ClientClose(ILuaBase* LUA)
+{
+	(void)LUA;
+	// The client realm closes as the player leaves the server (cancelled,
+	// kicked or dropped before InitPostEntity put it back, too): the material
+	// reload is never skipped for whatever is joined next. Unpinned (the pack
+	// didn't start with the game), the DLL is freed after this, and with it the
+	// only record of where the patch is.
+	engine_patches::RestoreMaterialReload();
+	discord::Shutdown();
+	// No more notifications; the badge and the toasts' click handlers go.
+	notify_toast::Shutdown();
+	return 0;
+}
+}
+
+// The client realm's entry points, also for an installed copy handing over (HandOver).
+GMOD_DLL_EXPORT int meowy_client_open(ILuaBase* LUA) { return ClientOpen(LUA); }
+GMOD_DLL_EXPORT int meowy_client_close(ILuaBase* LUA) { return ClientClose(LUA); }
+
+GMOD_MODULE_OPEN()
+{
+#ifdef _WIN32
+	if (ClientFn other = HandOver("meowy_client_open"))
+		return other(LUA);
+#endif
+	return ClientOpen(LUA);
+}
+
 #ifdef _WIN32
 // Menu-state entry point, called by gmsv_meowy_boot when the game starts
 // (src/boot/boot.cpp). Only the version is exposed there for now; the menu
@@ -3437,8 +3549,14 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	LUA->PushString("menu");
 	LUA->SetField(-2, "REALM");
 	SetFunction(LUA, "PolicyState", Guarded<PolicyState>);
+	SetFunction(LUA, "UpdaterStart", Guarded<UpdaterStart>);
+	SetFunction(LUA, "UpdaterState", Guarded<UpdaterState>);
+	SetFunction(LUA, "UpdaterReady", Guarded<UpdaterReady>);
 	if (!allowed)
 	{
+		// This version is revoked or too old, not the whole pack: a fixed one may come.
+		if (policy::Effective().packEnabled)
+			updater::Start(DataDir(), VERSION, StubVersion());
 		LUA->SetField(-2, "meowy");
 		LUA->Pop();
 		PrintLine(LUA, PolicyOffLine());
@@ -3596,15 +3714,9 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 
 GMOD_MODULE_CLOSE()
 {
-	(void)LUA;
-	// The client realm closes as the player leaves the server (cancelled,
-	// kicked or dropped before InitPostEntity put it back, too): the material
-	// reload is never skipped for whatever is joined next. Unpinned (the pack
-	// didn't start with the game), the DLL is freed after this, and with it the
-	// only record of where the patch is.
-	engine_patches::RestoreMaterialReload();
-	discord::Shutdown();
-	// No more notifications; the badge and the toasts' click handlers go.
-	notify_toast::Shutdown();
-	return 0;
+#ifdef _WIN32
+	if (ClientFn other = HandOver("meowy_client_close"))
+		return other(LUA);
+#endif
+	return ClientClose(LUA);
 }

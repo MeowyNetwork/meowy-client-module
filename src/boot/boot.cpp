@@ -24,6 +24,8 @@
 
 #include "GarrysMod/Lua/Interface.h"
 #include "../data_sandbox.h"
+#include "../file_util.h"
+#include "../pack_versions.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -169,33 +171,67 @@ GMOD_MODULE_OPEN()
 
 	const std::wstring lock = dataDir.empty() ? L"" : dataDir + L"\\boot.lock";
 
+	// An update downloaded last session (pack_versions.h) is taken now.
+	if (!dataDir.empty())
+	{
+		const std::string promoted = pack_versions::Promote(dataDir);
+		if (!promoted.empty())
+			Print(LUA, ("[Meowy Client Pack] " + promoted).c_str());
+	}
+
 	if (!lock.empty() && GetFileAttributesW(lock.c_str()) != INVALID_FILE_ATTRIBUTES)
 	{
+		// The lock holds the version that was starting. A fresh update that took
+		// the game down goes back to the version before it; anything else is
+		// skipped this once, as before updates existed.
+		std::string version = file_util::ReadSmall(lock, 64);
+		while (!version.empty() && (version.back() == '\n' || version.back() == '\r'))
+			version.pop_back();
 		DeleteFileW(lock.c_str());
-		Print(LUA, "[Meowy Client Pack] the game closed while the pack was starting last time; "
-			"skipping it at start-up this once (it still loads when you join Meowy Network)");
-		return 0;
+		std::string said;
+		if (pack_versions::RevertAfterCrash(dataDir, version, said))
+		{
+			Print(LUA, ("[Meowy Client Pack] " + said).c_str());
+		}
+		else
+		{
+			Print(LUA, "[Meowy Client Pack] the game closed while the pack was starting last time; "
+				"skipping it at start-up this once (it still loads when you join Meowy Network)");
+			return 0;
+		}
 	}
+
+	// The newest copy that verifies and the policy allows, else the installed one.
+	pack_versions::Choice choice = dataDir.empty() ? pack_versions::Choice() : pack_versions::Choose(dataDir);
+	if (!choice.why.empty())
+		Print(LUA, ("[Meowy Client Pack] " + choice.why).c_str());
+	const std::wstring installed = bin + pack_versions::DllName();
+	std::wstring module = choice.path.empty() ? installed : choice.path;
 
 	if (!lock.empty())
-	{
-		HANDLE h = CreateFileW(lock.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-		if (h != INVALID_HANDLE_VALUE)
-			CloseHandle(h);
-	}
+		file_util::WriteAtomic(lock, choice.version + "\n");
 
-#ifdef _WIN64
-	const std::wstring module = bin + L"gmcl_meowy_win64.dll";
-#else
-	const std::wstring module = bin + L"gmcl_meowy_win32.dll";
-#endif
 	HMODULE pack = LoadLibraryExW(module.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+	if (!pack && module != installed)
+	{
+		// An update that won't even load: never again, and the installed copy now.
+		pack_versions::MarkBad(dataDir, choice.version);
+		Print(LUA, ("[Meowy Client Pack] " + choice.version + " wouldn't load; using the installed copy").c_str());
+		choice = pack_versions::Choice();
+		module = installed;
+		if (!lock.empty())
+			file_util::WriteAtomic(lock, choice.version + "\n");
+		pack = LoadLibraryExW(module.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+	}
 	if (!pack)
 	{
 		DeleteFileW(lock.c_str());
 		Print(LUA, "[Meowy Client Pack] couldn't load the pack at start-up (is it installed?)");
 		return 0;
 	}
+	// The client realm's require("meowy") loads the installed copy from lua\bin;
+	// it hands over to this one (module.cpp), so both realms share one copy.
+	SetEnvironmentVariableW(L"MEOWY_PACK_MODULE", module.c_str());
 
 	auto open = reinterpret_cast<MenuOpen>(GetProcAddress(pack, "meowy_menu_open"));
 	if (open)
@@ -204,7 +240,16 @@ GMOD_MODULE_OPEN()
 		Print(LUA, "[Meowy Client Pack] the installed pack is too old to start with the game");
 
 	DeleteFileW(lock.c_str());
+	if (!dataDir.empty() && choice.version != "installed")
+		pack_versions::NoteLoaded(dataDir, choice.version);
 	return 0;
+}
+
+// The pack's updater only stages versions a stub can load: this one is 1 (it
+// loads %LOCALAPPDATA%\MeowyClientPack\bin\<version>, pack_versions.h).
+extern "C" __declspec(dllexport) int meowy_stub_version()
+{
+	return 1;
 }
 
 GMOD_MODULE_CLOSE()

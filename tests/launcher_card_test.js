@@ -109,4 +109,15 @@ check("pack over the pipe: menu, joining, playing, not connected", () => {
   assert.strictEqual(packView({ running: true, pack: { version: "1.6.0", state: "ingame", address: null } }), "Playing on a server");
 });
 
+const { updatesView } = require(path.join(__dirname, "..", "launcher", "ui", "servers_view.js"));
+check("updates: running, ready, last check", () => {
+  const v = updatesView({ arch: "win64", running: "1.6.0", current: null, pending: "1.7.0", previous: null, bad: [],
+    release_seq: 7, last_check: "1.7.0 is ready: it starts next time you open Garry's Mod" });
+  assert.deepStrictEqual(v, ["Pack 1.6.0 (win64)", "1.7.0 is ready: it starts next time you open Garry's Mod",
+    "Last check: 1.7.0 is ready: it starts next time you open Garry's Mod (release 7)"]);
+  const w = updatesView({ arch: "win64", running: null, bad: ["1.7.1"], release_seq: 0, last_check: "no release published yet" });
+  assert.strictEqual(w[0], "Pack version: not known here (it updates itself in the game)");
+  assert.ok(w.includes("Not loaded again (failed to start): 1.7.1"));
+});
+
 console.log(n + " checks passed");

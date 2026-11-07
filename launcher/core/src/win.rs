@@ -188,6 +188,64 @@ pub fn verify_p256(key_xy: &[u8; 64], body: &[u8], sig: &[u8]) -> bool {
     }
 }
 
+/// SHA-256 through BCrypt.
+pub fn sha256(data: &[u8]) -> [u8; 32] {
+    use windows_sys::Win32::Security::Cryptography::{BCryptCloseAlgorithmProvider, BCryptHash, BCryptOpenAlgorithmProvider, BCRYPT_SHA256_ALGORITHM};
+    let mut out = [0u8; 32];
+    // SAFETY: a provider we open and close; buffers sized.
+    unsafe {
+        let mut alg = null_mut();
+        if BCryptOpenAlgorithmProvider(&mut alg, BCRYPT_SHA256_ALGORITHM, null(), 0) == 0 {
+            BCryptHash(alg, null(), 0, data.as_ptr(), data.len() as u32, out.as_mut_ptr(), 32);
+            BCryptCloseAlgorithmProvider(alg, 0);
+        }
+    }
+    out
+}
+
+/// `n` bytes from the system's preferred RNG.
+pub fn random_bytes(n: usize) -> Option<Vec<u8>> {
+    use windows_sys::Win32::Security::Cryptography::{BCryptGenRandom, BCRYPT_USE_SYSTEM_PREFERRED_RNG};
+    let mut buf = vec![0u8; n];
+    // SAFETY: a buffer of n bytes.
+    (unsafe { BCryptGenRandom(null_mut(), buf.as_mut_ptr(), n as u32, BCRYPT_USE_SYSTEM_PREFERRED_RNG) } == 0).then_some(buf)
+}
+
+/// A file's own version resource (VS_FIXEDFILEINFO FileVersion) as "a.b.c"
+/// (or "a.b.c.d" when the fourth part isn't 0), or None without one.
+pub fn file_version(path: &Path) -> Option<String> {
+    use windows_sys::Win32::Storage::FileSystem::{GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW, VS_FIXEDFILEINFO};
+    let p = wide(&path.to_string_lossy());
+    // SAFETY: a buffer of the size Windows asks for; the fixed-info pointer
+    // points into it and is read only while the buffer lives.
+    unsafe {
+        let mut handle = 0u32;
+        let size = GetFileVersionInfoSizeW(p.as_ptr(), &mut handle);
+        if size == 0 || size > 1 << 20 {
+            return None;
+        }
+        let mut buf = vec![0u8; size as usize];
+        if GetFileVersionInfoW(p.as_ptr(), 0, size, buf.as_mut_ptr().cast()) == 0 {
+            return None;
+        }
+        let root = wide("\\");
+        let mut info: *mut core::ffi::c_void = null_mut();
+        let mut len = 0u32;
+        if VerQueryValueW(buf.as_ptr().cast(), root.as_ptr(), &mut info, &mut len) == 0
+            || info.is_null()
+            || (len as usize) < std::mem::size_of::<VS_FIXEDFILEINFO>()
+        {
+            return None;
+        }
+        let f = std::ptr::read_unaligned(info as *const VS_FIXEDFILEINFO);
+        if f.dwSignature != 0xFEEF04BD {
+            return None;
+        }
+        let (a, b, c, d) = (f.dwFileVersionMS >> 16, f.dwFileVersionMS & 0xFFFF, f.dwFileVersionLS >> 16, f.dwFileVersionLS & 0xFFFF);
+        Some(if d == 0 { format!("{a}.{b}.{c}") } else { format!("{a}.{b}.{c}.{d}") })
+    }
+}
+
 // --- Shell ------------------------------------------------------------------
 
 /// Opens a URL (`steam://...`) or a folder with the shell.

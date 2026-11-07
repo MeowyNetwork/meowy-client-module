@@ -38,4 +38,15 @@ function packView(s) {
   return (p.state === "joining" ? "Joining " : "Playing on ") + (p.address || "a server");
 }
 
-if (typeof module !== "undefined") module.exports = { serverView, foundView, packView };
+// The Updates panel (status.updates, core/src/updater.rs Status).
+function updatesView(u) {
+  const lines = [];
+  lines.push(u.running ? "Pack " + u.running + " (" + u.arch + ")" : "Pack version: not known here (it updates itself in the game)");
+  if (u.pending) lines.push(u.pending + " is ready: it starts next time you open Garry's Mod");
+  if (u.previous) lines.push("Previous: " + u.previous);
+  if (u.bad && u.bad.length) lines.push("Not loaded again (failed to start): " + u.bad.join(", "));
+  lines.push("Last check: " + u.last_check + (u.release_seq ? " (release " + u.release_seq + ")" : ""));
+  return lines;
+}
+
+if (typeof module !== "undefined") module.exports = { serverView, foundView, packView, updatesView };

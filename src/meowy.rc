@@ -3,6 +3,10 @@
 // installer's Start-menu shortcut uses it as "gmcl_meowy_win64.dll,0".
 #include "resource.h"
 
+// The pack's version (version.h), readable from the file (GetFileVersionInfo).
+#define MEOWY_FILE_DESCRIPTION "Meowy Client Pack"
+#include "version.rc"
+
 IDI_MEOWY ICON "../assets/meowy.ico"
 IDR_NOTIFY_PNG RCDATA "../assets/notify.png"
 // Connection resilience's menu Lua, kept as .lua files so tests/resilience_logic_test.lua
