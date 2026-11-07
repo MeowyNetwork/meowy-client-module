@@ -51,9 +51,10 @@ MeowyLauncher.exe  (x64, per user, no admin; %LOCALAPPDATA%\MeowyClientPack\laun
   (the installer's `FindGarrysMod`, ported).
 - **Before every launch:** repair (§4). If repair can't fix something, the launch still goes ahead: the
   game must never be blocked by the launcher.
-- **GMod already running** and a join is asked for: `steam://connect/<address>` (Steam passes it to the
-  running game). *Verify in the MVP;* if Steam doesn't forward it, the card says "Garry's Mod is open: join
-  from its server list" until the pipe exists (§10).
+- **Verified 2026-11-07:** `-applaunch` passes our arguments straight to `bin\win64\gmod.exe`, before the
+  player's own options, with no Steam dialog (game process 0.5–2 s after the call).
+- **GMod already running** and a join is asked for: `steam://connect/<address>`. Verified: Steam passes it
+  to the running game, which joins.
 - **Launch flags:** `-disableluarefresh` (measured 0.8–1.6 s per start, start-up #1). Opt-out in settings.
   No other flags in the MVP. `-nojoy` is left out: it would break controllers.
 
@@ -74,7 +75,7 @@ What Steam can undo, and what the launcher does about it:
   - a 15 s poll of two files' metadata (`appmanifest_4000.acf`, `lua\includes\menu.lua`): a stat each,
     no reads unless one changed;
   - only when GMod isn't running and `StateFlags` = 4 (fully installed: no update or verify running), and
-    the file has been unchanged for 5 s.
+    both files are unchanged across two polls (15 s).
 - **Never** while the game runs, and never anything outside the pack's line and the pack's own files.
 - The pack keeps healing the line itself when it loads from our server (unchanged), so a player without
   the launcher is no worse off.
@@ -85,7 +86,10 @@ What Steam can undo, and what the launcher does about it:
 is inside the GarrysMod folder (`QueryFullProcessImageNameW` with `PROCESS_QUERY_LIMITED_INFORMATION`).
 Each is opened with `SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION` and waited on. Steam's 32-bit root
 `gmod.exe` exits after starting `bin\win64\gmod.exe`, so a session ends when the last one exits, and that
-one's exit code counts. No other rights are ever asked for: no memory read or write, no thread, no injection.
+one's exit code counts. GMod's own Chromium helpers are `bin\win64\gmod.exe` too (`--type=renderer`, ...);
+they're recognised without reading their command line (that would need memory access): a process whose
+parent is a followed process with the same image isn't followed. No other rights are ever asked for: no
+memory read or write, no thread, no injection.
 
 **Deciding it crashed.** The pack already writes `%LOCALAPPDATA%\MeowyClientPack\on_server.txt`
 (`<address> <unix time>\r\n<name>\r\n`) while connected to our server or a public one, and leaves it when
@@ -97,7 +101,9 @@ the game ends on a server. When the session ends and that file is there:
 | no | not 0 (killed, hung and ended in Task Manager) | crashed: card |
 | no | 0 | quit on purpose: nothing |
 
-*GMod's exit code on a normal quit is checked in the MVP before this table is relied on.*
+*Measured 2026-11-07:* a normal quit (`quit`) exits with 0; ending the game in Task Manager while on our
+server exits with `0xFFFFFFFF`, writes no crash report, and leaves `on_server.txt`. So the pack alone
+(which needs a crash report with a Lua section) doesn't offer Rejoin after a kill or a hang; the launcher does.
 
 **The card** (small window, bottom-right, on top): "Garry's Mod closed unexpectedly while you were on
 <name> (<address>). **[Rejoin] [Details] [Not now]**".

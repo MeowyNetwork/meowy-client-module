@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "The launcher's own pages: its commands and events, nothing else.",
+  "windows": ["main", "card"],
+  "permissions": ["core:default"]
+}

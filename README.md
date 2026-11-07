@@ -41,7 +41,23 @@ Lua starts. This is what later join speed-ups and our own loading screen need. U
 the old behaviour. If the game ever fails to start with it, hold **Shift** while Garry's Mod
 starts (or add `-meowy_safe` to its launch options) and the pack isn't loaded at start-up. If
 the game closes while the pack is starting, the next start skips it once by itself. A Steam
-"Verify integrity of game files" removes the line; run the installer again to add it back.
+"Verify integrity of game files" or a game update removes the line; the Meowy Launcher puts it back
+(below), and so does running the installer again.
+
+**The Meowy Launcher** (`launcher/`, design in `launcher/DESIGN.md`): the installer also installs a
+small tray app to `%LOCALAPPDATA%\MeowyClientPack\launcher` and, unless you untick it, starts it when
+you sign in. It never touches the game's memory: it only starts Garry's Mod through Steam and waits for
+it to close.
+- **Play** and **Join Meowy Network** in the tray (and the Start-menu shortcut) start Garry's Mod through
+  Steam with `-disableluarefresh` ("Faster start" in its window turns that off).
+- After a Steam update or Verify it puts the start-up line back, once Steam is done and the game is closed
+  (never if you turned "Start with the game" off).
+- If the game crashes, or is ended in Task Manager, while you're on a server, a small card offers
+  **Rejoin**, and the pack doesn't ask again at the next start.
+- `meowy://connect/<a.b.c.d>:<port>` links join a server: Meowy Network's directly, any other public
+  server after you confirm. A link can't carry a password, launch options or commands.
+- Updates still come with the installer; the launcher will use the pack's signed update channel once
+  it exists.
 
 ## What it does, and doesn't
 - It talks only to the Discord app on your PC, over Discord's local connection
@@ -498,6 +514,16 @@ cmake -S . -B build64 -A x64   && cmake --build build64 --config Release
 cmake -S . -B build32 -A Win32 && cmake --build build32 --config Release
 installer/build.ps1 -Win32 build32/Release/gmcl_meowy_win32.dll -Win64 build64/Release/gmcl_meowy_win64.dll
 ```
+The Meowy Launcher (Rust, Tauri 2; no tauri-cli or Node needed) and its tests; pass it to the installer
+with `-Launcher launcher/target/release/MeowyLauncher.exe`:
+```
+cd launcher
+cargo test -p meowy-launcher-core
+cargo build -p meowy-launcher --release
+```
+`node tests/launcher_card_test.js` checks its crash card's text; `launcher/tools/measure_startup.ps1` times
+click to pack start-up with and without it.
+
 `-DMEOWY_BUILD_TESTS=ON` adds `ipc_smoke`, which checks the Discord connection without the game:
 `ipc_smoke <discord application id> [seconds]`. It also adds `notify_smoke <scratch folder>` (the
 notification rules), `notify_manual` (a real notification on this PC; see `tests/NOTIFY_MANUAL.md`),
