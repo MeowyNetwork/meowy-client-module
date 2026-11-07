@@ -1376,9 +1376,18 @@ namespace
 	// --- Join pre-warm (prewarm.h) ---------------------------------------------------
 	constexpr uint64_t kPrewarmBudget = 4ull << 30;   // bytes read per warm, at most
 
-	// A join is loading: start recording its big files (and stop any warming).
+	// A join is loading: start recording its big files and the blocks it reads
+	// (and stop any warming). The read hook goes in on the first join; if it
+	// can't, meowy_prewarm_status says "read hook off".
 	int PrewarmBeginJoin(lua_State*)
 	{
+		static bool hookTried = false;
+		if (!hookTried)
+		{
+			hookTried = true;
+			std::string why;
+			prewarm::InstallReadHook(why);
+		}
 		prewarm::BeginJoin();
 		return 0;
 	}

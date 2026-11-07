@@ -5,6 +5,7 @@
 // Exit code 0 when every check passes.
 
 #include "../src/prewarm.h"
+#include "../src/file_util.h"
 
 #include <chrono>
 #include <cstdio>
@@ -176,6 +177,75 @@ int main(int argc, char** argv)
 		for (int i = 0; i < 300 && prewarm::Describe().find("warmed 4.4.4.4") == std::string::npos; ++i)
 			std::this_thread::sleep_for(std::chrono::milliseconds(10));
 		Check("budget: stops at 16 MB", prewarm::Describe().find("warmed 4.4.4.4:27015: 16 MB") != std::string::npos);
+	}
+
+	// Ranges: the blocks a join reads of files not on the list whole (the base
+	// game's archives, small loose files), kept as "range" lines and warmed.
+	{
+		using prewarm::detail::Range;
+		const std::vector<Range> one = { { "c:\\v.vpk", 10 << 20, { { 0, 2 }, { 5, 6 } } } };
+		const std::string text = prewarm::detail::Format({}, {}, one);
+		Check("ranges: written as a range line", text == "range\tc:\\v.vpk\t10485760\t0-2,5-6\r\n");
+		std::vector<prewarm::detail::Item> noItems;
+		std::vector<Range> parsed;
+		Check("ranges: read back", prewarm::detail::Parse(text, noItems, nullptr, &parsed) && parsed.size() == 1 &&
+			parsed[0].path == "c:\\v.vpk" && parsed[0].runs.size() == 2 && parsed[0].runs[1].first == 5 && parsed[0].runs[1].second == 6);
+		parsed.clear();
+		prewarm::detail::Parse("range\tc:\\x\t100\t1-0\r\nrange\tc:\\y\t1048576\t0-5\r\nrange\tc:\\z\t0\t0-1\r\nrange\tc:\\w\t5\t\r\n", noItems, nullptr, &parsed);
+		Check("ranges: odd lines left out", parsed.empty());
+
+		const std::string vpk = root + "\\base_000.vpk", small = root + "\\tiny.vtf";
+		Put(vpk, 5 << 20);
+		Put(small, 1000);
+		prewarm::BeginJoin();
+		prewarm::detail::NoteRead(vpk, 5 << 20, 0, 100);
+		prewarm::detail::NoteRead(vpk, 5 << 20, (7 << 20) / 2, 1 << 20);   // 3.5 MB on: blocks 3 and 4
+		prewarm::detail::NoteRead(small, 1000, 0, 1000);
+		prewarm::detail::NoteRead(small, 1000, 5000, 10);                   // past its end: nothing
+		Check("ranges: kept with the join", prewarm::EndJoin(dir, "6.6.6.6:27015") == 2);
+		uint64_t rb = 0;
+		Check("ranges: their size counts, only the blocks read", prewarm::Recorded(dir, "6.6.6.6:27015", &rb) && rb == (3ull << 20) + 1000);
+		prewarm::BeginJoin();
+		prewarm::detail::NoteRead(vpk, 5 << 20, 1 << 20, 10);
+		prewarm::EndJoin(dir, "6.6.6.6:27015");
+		std::vector<Range> list;
+		prewarm::detail::Parse(file_util::ReadSmall(prewarm::detail::FileFor(dir, "6.6.6.6:27015"), 4 << 20), noItems, nullptr, &list);
+		const Range* v = nullptr;
+		for (const Range& r : list)
+			if (r.path == vpk)
+				v = &r;
+		Check("ranges: a later join's blocks join the earlier ones", v && v->runs.size() == 2 && v->runs[0].first == 0 && v->runs[0].second == 2 &&
+			v->runs[1].first == 3 && v->runs[1].second == 5);
+		Check("ranges: a file the later join didn't read stays", list.size() == 2);
+		prewarm::BeginJoin();
+		prewarm::Opened(vpk.c_str(), 5 << 20);
+		prewarm::detail::NoteRead(vpk, 5 << 20, 0, 10);
+		prewarm::EndJoin(dir, "6.6.6.6:27015");
+		list.clear();
+		std::vector<prewarm::detail::Item> wholes;
+		prewarm::detail::Parse(file_util::ReadSmall(prewarm::detail::FileFor(dir, "6.6.6.6:27015"), 4 << 20), wholes, nullptr, &list);
+		Check("ranges: a file on the list whole has no range", wholes.size() == 1 && list.size() == 1 && list[0].path == small);
+		std::vector<Range> now = { { "c:\\q.vpk", 4 << 20, { { 0, 1 } } } }, earlier = { { "C:\\Q.VPK", 8 << 20, { { 5, 6 } } } };
+		prewarm::detail::MergeRanges(now, earlier, {}, nullptr);
+		Check("ranges: a file that changed size keeps this join's blocks", now.size() == 1 && now[0].size == (4 << 20) && now[0].runs.size() == 1);
+
+		// Warmed: the ranges' blocks.
+		const int ssdHere = NoSeekPenalty(std::wstring(root.begin(), root.end()));
+		prewarm::BeginJoin();
+		prewarm::detail::NoteRead(vpk, 5 << 20, 0, 100);
+		prewarm::detail::NoteRead(small, 1000, 0, 1000);
+		prewarm::EndJoin(dir, "6.6.6.7:27015");
+		std::string whyRanges;
+		const bool startedRanges = prewarm::Start(dir, "6.6.6.7:27015", 1ull << 30, whyRanges);
+		if (ssdHere == 1)
+		{
+			Check("ranges: warming starts", startedRanges);
+			for (int i = 0; i < 300 && prewarm::Describe().find("warmed 6.6.6.7") == std::string::npos; ++i)
+				std::this_thread::sleep_for(std::chrono::milliseconds(10));
+			Check("ranges: only their blocks read", prewarm::Describe().find("warmed 6.6.6.7:27015: 1 MB in 2 files") != std::string::npos);
+		}
+		DeleteFileA(vpk.c_str());
+		DeleteFileA(small.c_str());
 	}
 
 	// A rejoin in the same game start opens only what isn't loaded already: what
