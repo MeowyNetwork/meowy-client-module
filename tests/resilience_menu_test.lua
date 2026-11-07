@@ -101,6 +101,7 @@ local function world(opts)
 		PrewarmStart = function(a) w.pwStarts = w.pwStarts or {} w.pwStarts[#w.pwStarts + 1] = a return true end,
 		PrewarmCancel = function() w.pwCancels = (w.pwCancels or 0) + 1 end,
 		PrewarmState = function() return "idle" end,
+		ServerQueryStart = function() return 1 end,
 		PrewarmWorkshop = function(a) local ids = {} for i, id in ipairs((w.workshop or {})[a] or {}) do ids[i] = id end return ids end,
 		-- Steam's view of an item: installed, needsUpdate, busy, legacy, updated
 		-- (w.wsState[id] = false: Steam can't say; default: installed, the version of 1600000000).
@@ -152,7 +153,10 @@ local function world(opts)
 	env.os = setmetatable({ time = function() return w.osTime end }, { __index = os })
 	env.IsInGame = function() return w.inGame end
 	env.IsInLoading = function() return w.loading end
-	env.GetConVar = nil
+	-- Convars other parts of the pack own (module.cpp's chunks), only when a test asks.
+	env.GetConVar = opts.engineConVars and function(n)
+		if w.cvars[n] ~= nil then return { GetBool = function() return w.cvars[n] == "1" end } end
+	end or nil
 	-- Engine convars the Escape card reads and sets.
 	w.cvars = { volume = "0.7", voice_scale = "1", fov_desired = "90" }
 	env.GetConVarString = function(n) if n == "cl_timeout" then return w.cl_timeout end return w.cvars[n] or "" end
@@ -1477,6 +1481,18 @@ check("addons: sent again when they change", w.addonsSends, sendsNow + 1)
 w.env.pnlMainMenu.HTML.OnDocumentReady(w.env.pnlMainMenu.HTML, "asset://garrysmod/html/menu.html")
 w.run(1.1)
 check("addons: sent again after the page reloads", w.addonsSends, sendsNow + 2)
+-- Find servers, faster: its switch in settings (the setting is module.cpp's).
+w = world({ settings = ON, menu = true, engineConVars = true })
+w.cvars.meowy_fast_serverlist = "1"
+w.concommands.meowy_settings()
+local ft = find(function(p) return p.meowyToggle == "fast_serverlist" end)
+check("fast server list: a toggle in settings, on", ft ~= nil and ft.on, true)
+if ft then ft:SetOn(false) end
+check("fast server list: turned off through the console", w.cvars.meowy_fast_serverlist, "0")
+w = world({ settings = ON, menu = true })
+w.concommands.meowy_settings()
+check("fast server list: no toggle without the setting", find(function(p) return p.meowyToggle == "fast_serverlist" end), nil)
+
 check("no Lua errors", w.errors, nil)
 print(("%d checks, %d failed"):format(count, failures))
 os.exit(failures == 0 and 0 or 1)
