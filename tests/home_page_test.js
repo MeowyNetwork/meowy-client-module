@@ -295,11 +295,7 @@ check('shell: sent again, still one', S.main.querySelectorAll('#meowy-shell').le
 const navs = shellEl().querySelectorAll('.ms-link').filter(a => a.textContent && !a.className.includes('ms-cont'));
 const byText = t => navs.find(a => a.textContent === t);
 byText('Find servers').onclick();
-check("shell: Find servers opens Garry's Mod's browser", S.loc.hash, '#/servers/');
-check('shell: not the browse view', shellEl().className, '');
-S.loc.hash = '#/';
-S.win.MeowyBrowse.open();
-check('shell: the browse view opens', shellEl().className, 'ms-browsing');
+check('shell: Find servers opens the new browser', shellEl().className, 'ms-browsing');
 check('shell: and asks for the list', JSON.stringify(S.posts.pop()), '["browse",""]');
 // Find servers (src/menu/browser.js), in the home: the list in batches, the
 // gamemodes, a gamemode's servers in columns; rows asked for by number.

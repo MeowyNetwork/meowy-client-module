@@ -360,9 +360,18 @@ the game closes while the pack is starting, the next start skips it once by itse
     A map opens Start new game with that map chosen, an addon opens Addons, and a setting (by its name or
     what it covers, like "volume") opens Options or Meowy settings;
   - **Garry's Mod's news**, the latest three, from its own feed, opened the way Garry's Mod opens them;
-  - **the usual links:** Find servers, Start new game, Addons, Dupes, Saves and Demos are Garry's Mod's
-    own screens (Find servers with the faster list and the Friends tab, above; the pack's own server
-    browser is being rebuilt to do everything Garry's Mod's does, and more).
+  - **Find servers, the pack's own:** every server straight from Steam (as in Find servers above), the
+    ones with players first, then the empty ones. It opens on the gamemodes, each with its players and
+    servers, sorted by players, servers or name, filtered by category (click once: only it, twice: hide
+    it), with a search and **Install** for a gamemode you don't have. A gamemode's servers are in columns
+    (name, map, players, ping, ranking): click a header to sort by it, again to turn it around; the
+    default is Garry's Mod's own ranking. Rows show the favourite star (a click adds or removes it),
+    region flag, password, an outdated or newer version, your last visit, and missing maps in red. A
+    click picks a row, a double-click or Enter joins, right-click copies the address, and Up and Down
+    move. Servers on Garry's Mod's blacklist are left out, as its own browser leaves them out. Filters,
+    the selected server's players and the Favourites, History and LAN tabs are on their way;
+    "Garry's Mod's list" opens the game's own browser (with the Friends tab).
+  - **the usual links:** Start new game, Addons, Dupes, Saves and Demos are Garry's Mod's own screens.
     Options, Meowy settings and Quit work as usual, and Garry's Mod's bottom bar (Problems, games,
     language, gamemode) stays.
 

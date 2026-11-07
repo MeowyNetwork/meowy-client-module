@@ -47,7 +47,7 @@
 		+ '#meowy-shell.ms-browsing .ms-home, #meowy-shell.ms-browsing .ms-nav, #meowy-shell.ms-browsing .ms-foot { display: none; }';
 	// [label, kind, value]: "route" goes to the page's own screen; the rest are posts.
 	var LINKS = [
-		['Find servers', 'route', 'servers'], ['Start new game', 'route', 'newgame'], null,
+		['Find servers', 'browse', ''], ['Start new game', 'route', 'newgame'], null,
 		['Addons', 'route', 'addons'], ['Dupes', 'route', 'dupes'], ['Saves', 'route', 'saves'], ['Demos', 'route', 'demos'], null,
 		['Options', 'options', ''], ['Meowy settings', 'settings', ''], null,
 		['Quit', 'quit', '']
@@ -92,7 +92,7 @@
 		a.tabIndex = 0;
 		var act = function () {
 			if (kind === 'route') location.hash = '#/' + value + '/';
-			else if (kind === 'browse') browseOpen(true);
+			else if (kind === 'browse' && browser()) browser().open(true);
 			else post(kind, value);
 		};
 		a.onclick = act;
