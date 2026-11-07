@@ -13,7 +13,7 @@ use std::time::{Duration, SystemTime};
 
 use launcher_core::links::Link;
 use launcher_core::settings::{self, Settings};
-use launcher_core::{a2s, address, http, index, line, links, log, servers, session, steam, updater, win};
+use launcher_core::{a2s, address, http, index, line, links, log, pipe, servers, session, steam, updater, win};
 use serde::Serialize;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -45,6 +45,17 @@ struct Inner {
     servers: Vec<servers::Row>,
     /// Meowy's server index, when it was fetched, and its ETag.
     index: Option<(index::Index, std::time::Instant, Option<String>)>,
+    /// Lines to the pack over the pipe, and what it last said (None: not connected).
+    pipe_tx: Option<std::sync::mpsc::Sender<String>>,
+    pack: Option<PackState>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+struct PackState {
+    version: String,
+    /// "menu", "joining" or "ingame".
+    state: String,
+    address: Option<String>,
 }
 
 struct AppState(Mutex<Inner>);
@@ -106,6 +117,15 @@ fn launch(app: &AppHandle, connect: Option<String>) -> Result<String, String> {
     locate(&mut inner);
     if inner.running {
         let Some(address) = connect else { return Ok("Garry's Mod is already running.".into()) };
+        // The pack is connected: it joins itself (and checks the address again).
+        if let (Some(tx), Some(_)) = (inner.pipe_tx.as_ref(), inner.pack.as_ref()) {
+            if let Some(line) = pipe::join_line(&address) {
+                if tx.send(line).is_ok() {
+                    log::line(&format!("join through the pack: {address}"));
+                    return Ok(format!("Joining {address}..."));
+                }
+            }
+        }
         let url = steam::connect_url(&address).ok_or("That isn't a public server address.")?;
         log::line(&format!("join in the running game: {address}"));
         return if win::shell_open(&url) { Ok(format!("Joining {address}...")) } else { Err("Steam didn't take the join.".into()) };
@@ -324,6 +344,45 @@ fn watch_steam(app: AppHandle) {
     }
 }
 
+/// The pipe to the pack in the game (core/src/pipe.rs). Only the game's own
+/// gmod.exe may connect; what it says shows in the window.
+fn serve_pipe(app: AppHandle) {
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    app.state::<AppState>().0.lock().unwrap().pipe_tx = Some(tx);
+    let a = app.clone();
+    let check: pipe::ClientCheck = Box::new(move |image| {
+        let root = a.state::<AppState>().0.lock().unwrap().game.as_ref().map(|g| g.root.clone());
+        root.is_some_and(|r| pipe::is_game_client(image, &r))
+    });
+    let b = app.clone();
+    let result = pipe::serve(check, rx, move |msg| {
+        {
+            let state = b.state::<AppState>();
+            let mut inner = state.0.lock().unwrap();
+            match msg {
+                Some(pipe::Msg::Hello { version }) => {
+                    log::line(&format!("pack {version} connected"));
+                    inner.pack = Some(PackState { version, state: "menu".into(), address: None });
+                }
+                Some(pipe::Msg::State { state, address }) => {
+                    let pack = inner.pack.get_or_insert_with(PackState::default);
+                    pack.state = state;
+                    pack.address = address;
+                }
+                None => {
+                    log::line("pack disconnected");
+                    inner.pack = None;
+                }
+            }
+        }
+        let _ = b.emit("status", ());
+    });
+    if let Err(e) = result {
+        log::line(&format!("pipe: {e}"));
+        app.state::<AppState>().0.lock().unwrap().pipe_tx = None;
+    }
+}
+
 // --- Commands for the pages -------------------------------------------------------
 
 #[derive(Serialize)]
@@ -342,6 +401,7 @@ struct Status {
     notify_back_up: bool,
     start_at_sign_in: bool,
     last_repair: String,
+    pack: Option<PackState>,
     updates: &'static str,
 }
 
@@ -371,6 +431,7 @@ fn status(app: AppHandle) -> Status {
         notify_back_up: inner.settings.notify_back_up,
         start_at_sign_in: win::start_at_sign_in(),
         last_repair: inner.last_repair.clone(),
+        pack: inner.pack.clone(),
         updates: updater::status(),
     }
 }
@@ -615,6 +676,8 @@ fn main() {
         card: None,
         servers: Vec::new(),
         index: None,
+        pipe_tx: None,
+        pack: None,
     };
     locate(&mut inner);
     // Links aren't logged as given: a refused one may carry a password.
@@ -654,6 +717,8 @@ fn main() {
             }
             let h = handle.clone();
             std::thread::spawn(move || watch_game(h));
+            let h = handle.clone();
+            std::thread::spawn(move || serve_pipe(h));
             let h = handle.clone();
             std::thread::spawn(move || watch_steam(h));
             let h = handle.clone();

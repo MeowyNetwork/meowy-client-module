@@ -100,6 +100,7 @@
 #include "server_gate.h"
 #include "data_sandbox.h"
 #include "server_rep.h"
+#include "launcher_pipe.h"
 #include "notify.h"
 #include "notify_catalogue.h"
 #include "notify_toast.h"
@@ -1269,6 +1270,32 @@ namespace
 	// someone else's (not ours, not singleplayer); else nil.
 	// Only a public a.b.c.d:port: a Steam P2P game or a LAN server is someone's
 	// own game, never reported.
+	// LauncherState(state): the menu Lua's "menu", "joining" or "ingame" for the
+	// Meowy Launcher's pipe, with the engine's own address (never one from Lua).
+	int LauncherState(lua_State* L)
+	{
+		if (!L->luabase->IsType(1, Type::String))
+			return 0;
+		const std::string state = L->luabase->GetString(1);
+		std::string address;
+		if (state != "menu")
+			server_gate::Check(&address);
+		launcher_pipe::SetState(state, address);
+		return 0;
+	}
+
+	// LauncherTakeJoin() -> an address the launcher asked to join (checked: ours
+	// or public), or nil.
+	int LauncherTakeJoin(lua_State* L)
+	{
+		const std::string join = launcher_pipe::TakeJoin();
+		if (join.empty())
+			L->luabase->PushNil();
+		else
+			L->luabase->PushString(join.c_str());
+		return 1;
+	}
+
 	int OtherServerAddress(lua_State* L)
 	{
 		std::string address;
@@ -3521,16 +3548,20 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	SetFunction(LUA, "SkipMaterialReloadAnyServer", Guarded<SkipMaterialReloadAnyServer>);
 	SetFunction(LUA, "RestoreMaterialReload", Guarded<RestoreMaterialReload>);
 	SetFunction(LUA, "MaterialReloadState", Guarded<MaterialReloadState>);
+	SetFunction(LUA, "LauncherState", Guarded<LauncherState>);
+	SetFunction(LUA, "LauncherTakeJoin", Guarded<LauncherTakeJoin>);
 	LUA->SetField(-2, "meowy");
 
 	// data/ was put right by the start-up stub (data_sandbox::Recover, under its
 	// crash guard) before this was loaded.
 	connect_watch::Start();
+	launcher_pipe::Start(VERSION);
 
 	const std::string resilienceLua = ResilienceChunk();
 	for (const auto& chunk : { std::make_pair(kMenuLua, "meowy_client_pack/menu"),
 		std::make_pair(kServerListLua, "meowy_client_pack/serverlist"),
-		std::make_pair(resilienceLua.c_str(), "meowy_client_pack/resilience") })
+		std::make_pair(resilienceLua.c_str(), "meowy_client_pack/resilience"),
+		std::make_pair(launcher_pipe::kLua, "meowy_client_pack/launcher") })
 	{
 		if (!*chunk.first)
 			continue;

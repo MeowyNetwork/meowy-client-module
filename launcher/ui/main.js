@@ -35,6 +35,7 @@ async function refresh() {
   else if (s.missing_modules.length) set("modules", "Missing: run MeowyClientPack.exe again", "bad");
   else set("modules", "Installed", "ok");
   set("last", s.last_repair || "-");
+  set("pack", packView(s));
   $("lua-refresh").checked = s.disable_lua_refresh;
   $("back-up").checked = s.notify_back_up;
   $("sign-in").checked = s.start_at_sign_in;

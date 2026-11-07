@@ -100,4 +100,13 @@ check("index row: verified mark; a password server has no Join", () => {
   assert.ok(!v.join && v.title === "1.2.3.4:27015" && v.detail.endsWith("password"));
 });
 
+const { packView } = require(path.join(__dirname, "..", "launcher", "ui", "servers_view.js"));
+check("pack over the pipe: menu, joining, playing, not connected", () => {
+  assert.strictEqual(packView({ running: false, pack: null }), "-");
+  assert.strictEqual(packView({ running: true, pack: null }), "Running (the pack isn't connected)");
+  assert.strictEqual(packView({ running: true, pack: { version: "1.6.0", state: "menu", address: null } }), "Main menu (pack 1.6.0)");
+  assert.strictEqual(packView({ running: true, pack: { version: "1.6.0", state: "joining", address: "1.2.3.4:27015" } }), "Joining 1.2.3.4:27015");
+  assert.strictEqual(packView({ running: true, pack: { version: "1.6.0", state: "ingame", address: null } }), "Playing on a server");
+});
+
 console.log(n + " checks passed");
