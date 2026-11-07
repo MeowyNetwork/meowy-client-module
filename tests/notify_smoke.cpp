@@ -56,6 +56,20 @@ namespace
 		{ "server_restart", L"The server is restarting soon." },
 		{ "lockdown_started", L"A lockdown started." },
 		{ "lockdown_ended", L"The lockdown ended." },
+		// 1.6: meowy_police and the first hour (the compiled fallback; newer
+		// kinds arrive in the signed catalogue, tests/notify_catalogue_smoke.cpp).
+		{ "dispatch_911", L"A new 911 call came in." },
+		{ "dispatch_panic", L"An officer pressed the panic button." },
+		{ "dispatch_accepted", L"An officer is on the way." },
+		{ "dispatch_taken", L"Another officer took a call." },
+		{ "dispatch_expired", L"No officer answered your 911 call." },
+		{ "warrant_approval", L"An officer needs your approval for a warrant." },
+		{ "warrant_decision", L"Your warrant request was answered." },
+		{ "booked", L"You were booked by the police." },
+		{ "police_fine", L"You received a police fine." },
+		{ "milestone_done", L"You completed a first-hour milestone." },
+		{ "guide_complete", L"You finished the first-hour guide." },
+		{ "staff_newplayer_kill", L"A new player was killed. Logged for staff review." },
 	};
 
 	notify::Inputs Ours(uint64_t now)
@@ -101,7 +115,7 @@ int wmain(int argc, wchar_t** argv)
 	size_t count = 0;
 	const notify::Kind* kinds = notify::Kinds(&count);
 	const size_t expectedCount = sizeof(kExpected) / sizeof(kExpected[0]);
-	Check(count == expectedCount, "kinds: exactly the 24 agreed kinds");
+	Check(count == expectedCount, "kinds: exactly the 36 agreed kinds");
 	bool same = count == expectedCount;
 	for (size_t i = 0; same && i < count; ++i)
 		same = std::strcmp(kinds[i].id, kExpected[i].id) == 0 && std::wcscmp(kinds[i].text, kExpected[i].text) == 0;

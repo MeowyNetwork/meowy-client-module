@@ -441,6 +441,11 @@ the game closes while the pack is starting, the next start skips it once by itse
   - Only while you're on a Meowy Network server. Our server can switch them off for you
     (`meowy.SetNotifyEnabled(false)`, kept in `notify.txt`); a switch for it in the game's settings
     comes later.
+  - New kinds of notification don't need a new pack (1.6+). Our server hands the pack a list of
+    kinds and their words, signed with Meowy Network's own key, which is kept offline. The pack
+    checks that signature against the key built into it and never takes an older list, so no other
+    server or addon can change what a notification says. The list is kept as `notify_catalogue.txt`
+    and checked again each time it's read.
 - **Markers on Steam's game recording.** If you record with Steam (Steam settings, Game Recording), the
   pack adds a marker to the recording's timeline when you're arrested or released, your printer is
   destroyed, you complete a contract, or you become wanted, so you can jump straight to the moment
@@ -481,6 +486,9 @@ end
 --   if not system.HasFocus() then pcall(meowy.Notify, "printer_attacked") end. Reasons: "only works on
 --   Meowy Network servers", "unknown kind", "disabled", "focused", "rate limited". Kinds: src/notify.cpp)
 -- meowy.SetNotifyEnabled(bool) -> true | false, reason;  meowy.NotifyEnabled() -> bool | nil, reason
+-- meowy.NotifyCatalogue(body, sig) -> true, version | false, reason   (1.6+; our signed kind list from
+--   DarkRP's tools/notify_catalogue/build.py. Reasons: "bad signature", "bad catalogue: ...",
+--   "older catalogue". See src/notify_catalogue.h)
 -- meowy.TimelineEvent(kind) -> true | false, reason   (a Steam Timeline marker, focused or not, e.g.
 --   pcall(meowy.TimelineEvent, "arrested"). Kinds: arrested, released, printer_destroyed, hit_completed,
 --   wanted_on_you. Reasons: "only works on Meowy Network servers", "unknown kind", "timeline unavailable",

@@ -35,6 +35,17 @@
 //                                     all of them (on unless turned off; kept in
 //                                     %LOCALAPPDATA%\MeowyClientPack\notify.txt)
 //   meowy.NotifyEnabled()             true | false, or nil, reason
+//   meowy.NotifyCatalogue(body, sig)  true, version | false, reason (1.6+): our
+//                                     signed list of kinds and their words, so
+//                                     kinds added after this release still toast.
+//                                     Taken only if the signature is ours (key
+//                                     compiled in), it parses, and it isn't older
+//                                     than the one already taken; kept in
+//                                     %LOCALAPPDATA%\MeowyClientPack and checked
+//                                     again when read back. Reasons: "only works
+//                                     on Meowy Network servers", "bad signature",
+//                                     "bad catalogue: ...", "older catalogue".
+//                                     See notify_catalogue.h
 //   meowy.TimelineEvent(kind)         true | false, reason: a marker on Steam's
 //                                     game-recording timeline ("Arrested"), whether
 //                                     or not the game is in front. `kind` is one of
@@ -90,6 +101,7 @@
 #include "data_sandbox.h"
 #include "server_rep.h"
 #include "notify.h"
+#include "notify_catalogue.h"
 #include "notify_toast.h"
 #include "timeline.h"
 #include "timeline_steam.h"
@@ -712,6 +724,114 @@ namespace
 #endif
 	}
 
+	// --- The signed notification catalogue (notify_catalogue.h) ------------------
+
+	bool g_catalogueLoaded = false;
+
+#ifdef _WIN32
+	// One file: the signature's 128 hex digits, a newline, then the body. Read
+	// back through the same checks as one from the server.
+	std::wstring CatalogueFile()
+	{
+		return DataDir() + L"\\notify_catalogue.txt";
+	}
+#endif
+
+	// Verifies, parses and installs a catalogue. True when it's in use (a
+	// re-send of the current version included); else false with *why.
+	bool TakeCatalogue(const std::string& body, const std::string& sig, bool persist, std::string* why)
+	{
+		if (!notify_catalogue::Verify(body, sig))
+		{
+			*why = "bad signature";
+			return false;
+		}
+		notify_catalogue::Catalogue c;
+		const char* parseWhy = nullptr;
+		if (!notify_catalogue::Parse(body, &c, &parseWhy))
+		{
+			*why = std::string("bad catalogue: ") + (parseWhy ? parseWhy : "unknown");
+			return false;
+		}
+		uint64_t current = notify::CatalogueVersion();
+		if (c.version < current)
+		{
+			*why = "older catalogue";
+			return false;
+		}
+		if (c.version == current)
+			return true;
+		if (!notify::Install(c))
+		{
+			*why = "older catalogue";
+			return false;
+		}
+		g_notifyLimiter.ResetKinds();
+#ifdef _WIN32
+		if (persist)
+			file_util::WriteAtomic(CatalogueFile(), sig + "\n" + body);
+#else
+		(void)persist;
+#endif
+		return true;
+	}
+
+	// The catalogue kept from an earlier game, once per game. A missing, edited
+	// or older file just leaves the compiled list (or what the server sends).
+	void EnsureCatalogueLoaded()
+	{
+		if (g_catalogueLoaded)
+			return;
+		g_catalogueLoaded = true;
+#ifdef _WIN32
+		std::string saved = file_util::ReadSmall(CatalogueFile(), notify_catalogue::kSigHexLen + 1 + notify_catalogue::kMaxBody);
+		if (saved.size() <= notify_catalogue::kSigHexLen + 1 || saved[notify_catalogue::kSigHexLen] != '\n')
+			return;
+		std::string why;
+		TakeCatalogue(saved.substr(notify_catalogue::kSigHexLen + 1), saved.substr(0, notify_catalogue::kSigHexLen),
+			false, &why);
+#endif
+	}
+
+	// meowy.NotifyCatalogue(body, sig) -> true, version | false, reason
+	int NotifyCatalogue(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		int results = 0;
+		if (Refuse(LUA, results))
+			return results;
+		std::string why;
+		bool ok = false;
+		try
+		{
+			unsigned int bodyLen = 0, sigLen = 0;
+			const char* body = LUA->IsType(1, Type::String) ? LUA->GetString(1, &bodyLen) : nullptr;
+			const char* sig = LUA->IsType(2, Type::String) ? LUA->GetString(2, &sigLen) : nullptr;
+			if (!body || !sig || bodyLen == 0 || bodyLen > notify_catalogue::kMaxBody ||
+				sigLen != notify_catalogue::kSigHexLen)
+				why = "bad catalogue: bad arguments";
+			else
+			{
+				EnsureCatalogueLoaded();
+				ok = TakeCatalogue(std::string(body, bodyLen), std::string(sig, sigLen), true, &why);
+			}
+		}
+		catch (...)
+		{
+			ok = false;
+			why = "internal error";
+		}
+		if (!ok)
+		{
+			LUA->PushBool(false);
+			LUA->PushString(why.c_str());
+			return 2;
+		}
+		LUA->PushBool(true);
+		LUA->PushNumber(static_cast<double>(notify::CatalogueVersion()));
+		return 2;
+	}
+
 	// meowy.Notify(kind) -> true | false, reason. Only the kind is read; the
 	// words shown are the pack's. Never blocks: the worker thread shows it.
 	int Notify(lua_State* L)
@@ -730,6 +850,7 @@ namespace
 			// The rest only matters (and is only worked out) for our server.
 			if (in.ourServer)
 			{
+				EnsureCatalogueLoaded();
 				in.enabled = NotifyEnabledSetting();
 				in.focused = notify_toast::GameFocused();
 #ifdef _WIN32
@@ -2657,6 +2778,7 @@ GMOD_MODULE_OPEN()
 	SetFunction(LUA, "Notify", Guarded<Notify>);
 	SetFunction(LUA, "SetNotifyEnabled", Guarded<SetNotifyEnabled>);
 	SetFunction(LUA, "NotifyEnabled", Guarded<NotifyEnabled>);
+	SetFunction(LUA, "NotifyCatalogue", Guarded<NotifyCatalogue>);
 	SetFunction(LUA, "TimelineEvent", Guarded<TimelineEvent>);
 	SetFunction(LUA, "ExpectRestart", Guarded<ExpectRestart>);
 
