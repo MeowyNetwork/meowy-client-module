@@ -145,7 +145,21 @@ the game closes while the pack is starting, the next start skips it once by itse
       or an item whose Workshop version (`steamworks.FileInfo`) is newer than the one installed.
     - **What happens:** only those go to the menu's own `steamworks.DownloadUGC`, one at a time, so Garry's
       Mod's download box shows only for real work. It stops asking when a join starts; anything already
-      downloading carries on, and the join uses it. Only for servers you've joined before.
+      downloading carries on, and the join uses it.
+    - **Servers you've never joined** (the content platform, `docs/CONTENT_PLATFORM.md`): a server can say
+      which Workshop items its join will ask for, in a `meowy_content` rule the game's standard server query
+      returns (Meowy Network's servers do). The pack reads it at the same moments, for any server, and adds
+      what the last join learned.
+      - Meowy Network's servers and servers you've joined before are got ready without asking: a first join
+        then only checks the items instead of downloading them on the loading screen. Measured on our dev
+        server with ~600 MB of Workshop content this PC didn't have: in game after 27.2 s instead of ~51.9 s.
+        The content had downloaded at the main menu in 14.6 s, and each prepared item cost the join 0.03 s.
+      - Any other server's row (the home card, and the server picked in Find servers) shows **Get ready ·
+        1.3 GB** instead; nothing downloads until you click it. Over 4 GB always waits for the click.
+      - While it downloads, the row shows **Getting ready · 412 MB of 1.3 GB**. `meowy_content_get_ready
+        <address>` does the same from the console.
+      - The rule is only a list of Workshop IDs: all it can make the pack do is download Workshop items, which
+        Steam checks and the join checks again. The query is the one the server browser already makes.
     - **Measured** on our dev server, fresh start, with one 94 MB legacy item's unpacked copy deleted: the
       loading screen's Workshop step took 4.7 s without the check and 2.1 s with it (it unpacked the item
       at the menu; checking all 29 items took 3.0 s). An update day's downloads move the same way.
@@ -441,6 +455,11 @@ the game closes while the pack is starting, the next start skips it once by itse
   - Only while you're on a Meowy Network server. Our server can switch them off for you
     (`meowy.SetNotifyEnabled(false)`, kept in `notify.txt`); a switch for it in the game's settings
     comes later.
+  - New kinds of notification don't need a new pack (1.6+). Our server hands the pack a list of
+    kinds and their words, signed with Meowy Network's own key, which is kept offline. The pack
+    checks that signature against the key built into it and never takes an older list, so no other
+    server or addon can change what a notification says. The list is kept as `notify_catalogue.txt`
+    and checked again each time it's read.
 - **Markers on Steam's game recording.** If you record with Steam (Steam settings, Game Recording), the
   pack adds a marker to the recording's timeline when you're arrested or released, your printer is
   destroyed, you complete a contract, or you become wanted, so you can jump straight to the moment
@@ -481,6 +500,9 @@ end
 --   if not system.HasFocus() then pcall(meowy.Notify, "printer_attacked") end. Reasons: "only works on
 --   Meowy Network servers", "unknown kind", "disabled", "focused", "rate limited". Kinds: src/notify.cpp)
 -- meowy.SetNotifyEnabled(bool) -> true | false, reason;  meowy.NotifyEnabled() -> bool | nil, reason
+-- meowy.NotifyCatalogue(body, sig) -> true, version | false, reason   (1.6+; our signed kind list from
+--   DarkRP's tools/notify_catalogue/build.py. Reasons: "bad signature", "bad catalogue: ...",
+--   "older catalogue". See src/notify_catalogue.h)
 -- meowy.TimelineEvent(kind) -> true | false, reason   (a Steam Timeline marker, focused or not, e.g.
 --   pcall(meowy.TimelineEvent, "arrested"). Kinds: arrested, released, printer_destroyed, hit_completed,
 --   wanted_on_you. Reasons: "only works on Meowy Network servers", "unknown kind", "timeline unavailable",
