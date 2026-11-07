@@ -201,6 +201,8 @@ the game closes while the pack is starting, the next start skips it once by itse
   - It reads Steam's server list through the game's own `steam_api`, `ISteamMatchmakingServers`.
   - Off in Meowy settings ("Find servers: only servers with players") or with `meowy_fast_serverlist 0`
     for every server, the game's way. `meowy_fast_serverlist_status` shows the lists open.
+  - **A Friends tab**, after Local Network: the servers your Steam friends are on (the game's own friends
+    list: servers only, no names), shown like the other tabs. It's there with the home screen on or off.
 - Its only other network traffic is the loading page and its data, from meowynetwork.com, through WebView2. It
   writes only in `%LOCALAPPDATA%\MeowyClientPack` (`boot.lock` and `recover.lock` for a moment at start-up; for the
   loading screen `join_times.txt`, how long each stage of your last join took, `last_join.txt`,

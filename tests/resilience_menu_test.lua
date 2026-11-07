@@ -1189,7 +1189,7 @@ check("escape: settings window paints", w.paintAll(), "")
 local function shellState(w) return w.shellJS and w.shellJS:match("window%.MeowyShell%((%a+)%);\n$") end
 w = world({ settings = ON, menu = true })
 w.run(3)
-check("shell: turned off, nothing sent", w.shellJS, nil)
+check("shell: turned off, the script loads once with the home off (for the Friends tab)", shellState(w) .. "/" .. tostring(w.shellSends), "false/1")
 check("shell: the bridge is on the browser anyway", w.bridges, 1)
 check("shell: a post while it's off is ignored", (function() w.post("quit") return w.gameUI end)(), nil)
 check("shell: the stock page is never reloaded", w.loads, nil)
@@ -1464,7 +1464,7 @@ check("home default: a preview-days 0 turned on once", w.convars.meowy_menu, "1"
 check("home default: and shown", shellState(w), "true")
 w = world({ settings = ON, menu = true })   -- turned off after release
 w.run(1)
-check("home default: a choice made since is kept", w.convars.meowy_menu .. "/" .. tostring(shellState(w)), "0/nil")
+check("home default: a choice made since is kept", w.convars.meowy_menu .. "/" .. tostring(shellState(w)), "0/false")
 -- Its search gets your subscribed addons: sent when they change or the page reloads.
 w = world({ settings = ON, menu = true, convars = PAGE_ON })
 w.addons = { { title = "Wiremod", wsid = "160250458", mounted = true }, { title = "<b>Bad</b>\"", wsid = "1", mounted = false }, { title = "" } }

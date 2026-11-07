@@ -36,6 +36,7 @@ class El {
 		this.value = '';
 	}
 	get firstChild() { return this.children[0] || null; }
+	get nextSibling() { const p = this.parentNode; return p ? p.children[p.children.indexOf(this) + 1] || null : null; }
 	appendChild(c) { if (c.parentNode) c.parentNode.removeChild(c); c.parentNode = this; this.children.push(c); return c; }
 	insertBefore(c, ref) {
 		if (c.parentNode) c.parentNode.removeChild(c);
@@ -58,6 +59,7 @@ class El {
 			return this.tagName === 'A' && 'data-act' in this.attrs && !!p;
 		}
 		if ((m = sel.match(/^\.page\[ng-controller="(\w+)"\]$/))) return this.className === 'page' && this.attrs['ng-controller'] === m[1];
+		if ((m = sel.match(/^(\w+)\[([\w-]+)="(.*)"\]$/))) return this.tagName === m[1].toUpperCase() && this.attrs[m[2]] === m[3];
 		if ((m = sel.match(/^\.([\w-]+)$/))) return this.className.split(' ').includes(m[1]);
 		if ((m = sel.match(/^#([\w-]+)$/))) return this.id === m[1];
 		return false;
@@ -405,6 +407,38 @@ check('shell: off takes it out', shellEl(), null);
 check('shell: and the rule off', doc.body.className.split(' ').includes('meowy-shell'), false);
 check('shell: body keeps its own classes after', doc.body.className, 'ng-scope');
 check('shell: never lua.Run', luaRuns.length, 0);
+
+// Find servers' Friends tab: after Local Network, home on or off, through the page's own SwitchType.
+function serversPage() {
+	const ul = new El('ul');
+	const tab = type => { const li = new El('li'); const a = new El('a'); a.setAttribute('ng-click', `SwitchType( '${type}' )`); li.appendChild(a); ul.appendChild(li); return li; };
+	tab('internet'); tab('favorite'); tab('history');
+	const lanLi = tab('lan');
+	const refresh = new El('li'); ul.appendChild(refresh);
+	S.view.appendChild(ul);
+	return { ul, lanLi, refresh };
+}
+const SP = serversPage();
+S.win.MeowyFriendsTab();
+const ftab = () => doc.getElementById('meowy-friends-tab');
+check('friends tab: added', ftab() && ftab().textContent, 'Friends');
+check('friends tab: right after Local Network', SP.ul.children.indexOf(ftab().parentNode), SP.ul.children.indexOf(SP.lanLi) + 1);
+S.win.MeowyFriendsTab();
+check('friends tab: once', doc.body.all().filter(e => e.id === 'meowy-friends-tab').length, 1);
+const switched = [];
+let applied = 0;
+S.win.RootScope = { ServerType: 'internet' };
+S.win.Scope = { SwitchType: t => { switched.push(t); S.win.RootScope.ServerType = t; }, $apply: fn => { applied++; fn(); } };
+check('friends tab: not active on another list', ftab().className, '');
+ftab().onclick();
+check('friends tab: the page switches to the friends list', switched.join(','), 'friends');
+check('friends tab: inside a digest', applied, 1);
+S.win.MeowyFriendsTab();
+check('friends tab: shown as active', ftab().className, 'active');
+S.win.RootScope.ServerType = 'favorite';
+S.win.MeowyFriendsTab();
+check('friends tab: not active once another list is chosen', ftab().className, '');
+check('friends tab: never lua.Run', luaRuns.length, 0);
 
 console.log(`${count} checks, ${failures} failed`);
 process.exit(failures ? 1 : 0);

@@ -22,6 +22,7 @@ local zoomSent, zoomAt = nil, 0
 local hatch = false           -- "Use Garry's Mod's menu": stock for the rest of this start
 local bridged                 -- the menu's browser panel the bridge is on
 local nextLook, sent, sentAt, wasOn, failedTick = 0, nil, 0, false, false
+local loaded                  -- the script is in this page (shell.js; it stays until the page reloads)
 
 local js
 local function shellJs()
@@ -97,9 +98,10 @@ local function tick()
 		-- not up to a second later, so the stock list and news don't flash.
 		local ready = html.OnDocumentReady
 		html.OnDocumentReady = function(self, url, ...)
-			sent, zoomSent, nextLook, addonsSent = nil, nil, 0, nil
+			sent, zoomSent, nextLook, addonsSent, loaded = nil, nil, 0, nil, nil
 			if ready then return ready(self, url, ...) end
 		end
+		loaded = nil
 	end
 	-- Turned on again: try again, even after "Use Garry's Mod's menu".
 	local on = menuOn()
@@ -120,10 +122,12 @@ local function tick()
 		if zoom ~= zoomSent then log("menu page: zoom %s", string.format("%.2f", zoom)) end
 		zoomSent, zoomAt = zoom, now
 	end
-	if want ~= sent or (want and now - sentAt >= REFRESH) then
-		-- When off, the script may never have been sent: then there's nothing to take out.
-		if want or sent then
+	if want ~= sent or (want and now - sentAt >= REFRESH) or (not loaded and shellJs() ~= "") then
+		-- Sent to every page once, the home off too: the script also adds Find
+		-- servers' Friends tab. After that, while off, there's nothing to send.
+		if want or sent or (not loaded and shellJs() ~= "") then
 			pnlMainMenu:Call(shellJs() .. "\nwindow.MeowyShell(" .. tostring(want) .. ");\n")
+			loaded = shellJs() ~= ""
 		end
 		if want then sendAddons(now) end
 		if want ~= sent then log("menu page: %s", want and "our home is on" or "Garry's Mod's main screen") end
