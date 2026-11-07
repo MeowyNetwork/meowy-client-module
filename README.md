@@ -217,7 +217,19 @@ the game closes while the pack is starting, the next start skips it once by itse
   - **Commands:** a typed line runs exactly as if typed into the game's console, through the engine.
     The menu's `RunConsoleCommand` refuses some commands, the console doesn't. Up and Down go through what
     you typed.
-  - **Window:** drag it by the title, resize it from the corner; the console key or Esc closes it.
+  - **Window:** drag it by the title, resize it from the corner; the console key or Esc closes it. The header
+    shows the frame rate and, in game, ping, loss and the server. Save writes the lines shown to
+    `%LOCALAPPDATA%\MeowyClientPack\logs\console_<date>.txt` (paths hidden; the newest 20 kept).
+  - **Errors tab:** every Lua error since the game started, grouped by the addon it came from (with its
+    Workshop ID and when it was last updated): the error, how often, first and last time, the realm, the
+    server you were on, and the stack.
+    - **Copy report** puts a ready-made bug report on the clipboard, with paths hidden.
+    - **Open on Workshop** goes to the addon. At the main menu, **Disable addon** (asked first) turns it off.
+  - **Error badge:** in place of Garry's Mod's error notices, a small pill says how many errors and from
+    which addon. Garry's Mod's other two notices (a serious problem; the pause menu blocked) show the same
+    way. `meowy_console_badge 0` brings Garry's Mod's notices back.
+  - **Overlay:** `meowy_console_overlay 1` shows the newest warnings and errors over the game (2: every line),
+    see-through, click-through and fading; off (0) by default.
   - **The console key:** when Garry's Mod's console shows, it's hidden at once and this one opens. Off in Meowy
     settings ("The console key opens the Meowy console", `meowy_console_key 0`) for the game's console.
   - It reads tier0's output through its own listener (the logging system or the spew function, whichever
