@@ -94,6 +94,7 @@
 #include "timeline.h"
 #include "timeline_steam.h"
 #include "prewarm.h"
+#include "pak_cache.h"
 #include "console_capture.h"
 #include "server_query.h"
 #include "steam_ugc.h"
@@ -1741,6 +1742,33 @@ namespace
 		return 1;
 	}
 
+	// meowy.PakCache(on) -> true | false, reason (pak_cache.h). On while a join
+	// loads (patched in on the first); off empties it.
+	int PakCache(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		const bool on = LUA->GetBool(1);
+		if (on)
+		{
+			std::string why;
+			if (!pak_cache::Install(why))
+			{
+				LUA->PushBool(false);
+				LUA->PushString(why.c_str());
+				return 2;
+			}
+		}
+		pak_cache::SetActive(on);
+		LUA->PushBool(true);
+		return 1;
+	}
+
+	int PakCacheState(lua_State* L)
+	{
+		L->luabase->PushString(pak_cache::Describe().c_str());
+		return 1;
+	}
+
 	// LastServerMark(name) -> ok: the player is in the game on a server now; kept
 	// for the main menu's "Continue" when it's ours or a public one (the engine's
 	// address, read here; the name is the server's, only ever shown as text).
@@ -2743,6 +2771,8 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	SetFunction(LUA, "ServerQueryCancel", Guarded<ServerQueryCancel>);
 	SetFunction(LUA, "ServerQueryState", Guarded<ServerQueryState>);
 	SetFunction(LUA, "PrewarmState", Guarded<PrewarmState>);
+	SetFunction(LUA, "PakCache", Guarded<PakCache>);
+	SetFunction(LUA, "PakCacheState", Guarded<PakCacheState>);
 	SetFunction(LUA, "LastServerMark", Guarded<LastServerMark>);
 	SetFunction(LUA, "LastServer", Guarded<LastServer>);
 	SetFunction(LUA, "LastServerForget", Guarded<LastServerForget>);

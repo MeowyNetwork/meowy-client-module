@@ -65,6 +65,12 @@ jobs:
           ./buildtest/Release/prewarm_smoke.exe "$env:RUNNER_TEMP"
           cmake --build buildtest32 --config Release --target prewarm_smoke
           ./buildtest32/Release/prewarm_smoke.exe "$env:RUNNER_TEMP"
+      - name: LZMA pak cache (pak_cache_smoke, both bitnesses)
+        run: |
+          cmake --build buildtest --config Release --target pak_cache_smoke
+          ./buildtest/Release/pak_cache_smoke.exe
+          cmake --build buildtest32 --config Release --target pak_cache_smoke
+          ./buildtest32/Release/pak_cache_smoke.exe
       - name: Fast file.Find rules (lua_find_smoke, both bitnesses)
         run: |
           cmake --build buildtest --config Release --target lua_find_smoke

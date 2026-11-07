@@ -24,6 +24,7 @@ add_library(meowy SHARED
 	src/font_loads.cpp
 	src/fs_cache.cpp
 	src/prewarm.cpp
+	src/pak_cache.cpp
 	src/console_capture.cpp
 	src/server_query.cpp
 	src/steam_ugc.cpp
@@ -195,6 +196,13 @@ if(MEOWY_BUILD_TESTS)
 	if(MSVC)
 		set_property(TARGET prewarm_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 		target_compile_options(prewarm_smoke PRIVATE /W4 /utf-8)
+	endif()
+	# The LZMA pak cache: hits, misses, the memory cap, with a stand-in decoder:
+	#   pak_cache_smoke
+	add_executable(pak_cache_smoke tests/pak_cache_smoke.cpp src/pak_cache.cpp)
+	if(MSVC)
+		set_property(TARGET pak_cache_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+		target_compile_options(pak_cache_smoke PRIVATE /W4 /utf-8)
 	endif()
 	# The fast file.Find on "LUA": the walk visits every entry the game's matcher
 	# accepts, in order, on a fake table; and the loop found in the installed client.dll:
