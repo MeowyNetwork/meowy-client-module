@@ -25,11 +25,12 @@ This page says who it is, so anyone who wants to can check.
 ## When it visits
 
 - Only servers the public checks flagged or showed a warning sign on (a block of players
-  connected for six hours or more or online around the clock, or a count pinned at full for hours), or that we queued by hand
-  to check a report.
+  connected for six hours or more or online around the clock, or a count pinned at full for
+  hours), or that we queued by hand to check a report.
 - At most once every three hours per server, for about ten minutes, plus its download time.
 - A server that refuses it (a kick, a VPN or region block, a lobby-only server) isn't visited
-  again for a day. A refusal about our address counts for every server on that machine.
+  again for a day. A refusal about our address counts for every server on that machine, and
+  so do refusals from two of its servers.
 
 ## What it does on your server
 
