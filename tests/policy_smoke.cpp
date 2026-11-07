@@ -77,7 +77,12 @@ int main(int argc, char** argv)
 		DeleteFileW((dir + L"\\" + f).c_str());
 
 	using policy::Key;
-	Check("no keys: nothing verifies", policy::SignedBy(P1.body, P1.sig) == Key::None && !policy::HaveKeys());
+	// The built-in production keys: the first real policy (seq 1, all on), signed
+	// with the release key in the TPM, verifies; the test vectors don't.
+	Check("production keys built in", policy::HaveKeys());
+	Check("the real first policy: release key", policy::SignedBy("meowy-pack-policy 1\nseq 1\npack_enabled 1\n",
+		"2fe5a03a75b75fefd541d0db5578fb8b77708b3a336e6038c1e83ce39a994f0a211ab51eb34b7bba73b7e5093bd336824a2401abf97dc6b951af0b5e8ac2ea46") == Key::Release);
+	Check("test vectors: not production keys", policy::SignedBy(P1.body, P1.sig) == Key::None);
 	const std::vector<uint8_t> release = Bytes(kRelease), ops = Bytes(kOps), recovery = Bytes(kRecovery);
 	policy::detail::SetKeys(release.data(), ops.data(), recovery.data());
 	Check("keys set", policy::HaveKeys());

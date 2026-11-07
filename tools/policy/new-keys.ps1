@@ -41,7 +41,8 @@ function Format-Cpp([string]$name, [byte[]]$xy) {
 }
 
 # Release: TPM-bound (or user key store), non-exportable, PIN on use.
-if ([System.Security.Cryptography.CngKey]::Exists($releaseName)) {
+$tpmProvider = [System.Security.Cryptography.CngProvider]::new("Microsoft Platform Crypto Provider")
+if ([System.Security.Cryptography.CngKey]::Exists($releaseName) -or [System.Security.Cryptography.CngKey]::Exists($releaseName, $tpmProvider)) {
 	throw "A key named $releaseName already exists in this account; not replacing it."
 }
 $params = [System.Security.Cryptography.CngKeyCreationParameters]::new()

@@ -35,7 +35,11 @@ if (-not ($lines -match '^seq [1-9][0-9]{0,18}$')) { throw "The policy needs a s
 if (-not ($lines -match '^pack_enabled [01]$')) { throw "The policy needs a pack_enabled line." }
 
 if ($Key -eq "release") {
-	$cng = [System.Security.Cryptography.CngKey]::Open("MeowyPackPolicyRelease")
+	# In the TPM (new-keys.ps1's default), else the user's key store (-NoTpm).
+	$tpm = [System.Security.Cryptography.CngProvider]::new("Microsoft Platform Crypto Provider")
+	$soft = [System.Security.Cryptography.CngProvider]::MicrosoftSoftwareKeyStorageProvider
+	$provider = if ([System.Security.Cryptography.CngKey]::Exists("MeowyPackPolicyRelease", $tpm)) { $tpm } else { $soft }
+	$cng = [System.Security.Cryptography.CngKey]::Open("MeowyPackPolicyRelease", $provider)
 	$signer = [System.Security.Cryptography.ECDsaCng]::new($cng)
 } else {
 	if (-not $KeyFile) { throw "-KeyFile is needed for the $Key key." }
