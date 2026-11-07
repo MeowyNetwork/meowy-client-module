@@ -182,14 +182,61 @@ local function open()
 		UI.box(R, M, M, w - M * 2, h - M * 2, C.window, C.border)
 	end
 
-	-- Header: title, how many lines (or a short note), close.
+	-- Header: the two tabs (Console, Errors), how many lines (or a short note),
+	-- live numbers on the right (frame rate; in game ping, loss and the server),
+	-- close.
+	state.tab, state.fps, state.frames, state.framesAt = "console", nil, 0, SysTime()
 	local header = vgui.Create("DPanel", holder)
+	local tabs = {}
+	local setTab
+	for i, t in ipairs({ { "console", "Console" }, { "errors", "Errors" } }) do
+		local b = vgui.Create("DButton", header)
+		b:SetText("")
+		b.meowyTab = t[1]
+		b.Paint = function(self, w, h)
+			local on, hv = state.tab == t[1], UI.hover(self, self:IsHovered())
+			if on then draw.RoundedBox(S(8), 0, 0, w, h, C.raised) elseif hv > 0.01 then draw.RoundedBox(S(8), 0, 0, w, h, Color(255, 255, 255, 10 * hv)) end
+			local label = t[2]
+			draw.SimpleText(label, "MeowyPack.Heading", S(12), h / 2, on and C.text or C.body, UI.LEFT, UI.CENTER)
+			if t[1] == "errors" then
+				local n = ConsoleLogic.errorCount(errorGroups)
+				if n > 0 then
+					local lw = UI.textW(label, "MeowyPack.Heading")
+					local cw = UI.textW(tostring(n), "MeowyPack.Small") + S(12)
+					draw.RoundedBox(S(8), S(12) + lw + S(8), h / 2 - S(9), cw, S(18), ERROR)
+					draw.SimpleText(tostring(n), "MeowyPack.Small", S(12) + lw + S(8) + cw / 2, h / 2, C.white, UI.CENTER, UI.CENTER)
+				end
+			end
+			return true
+		end
+		b.DoClick = function() setTab(t[1]) end
+		local extra = t[1] == "errors" and S(44) or 0
+		b:SetSize(UI.textW(t[2], "MeowyPack.Heading") + S(24) + extra, S(34))
+		tabs[i] = b
+	end
+	header.PerformLayout = function(self, w, h)
+		local x = 0
+		for _, b in ipairs(tabs) do
+			b:SetPos(x, math.floor((h - b:GetTall()) / 2))
+			x = x + b:GetWide() + S(4)
+		end
+		self.textX = x + S(10)
+	end
 	header.Paint = function(self, w, h)
-		draw.SimpleText("Console", "MeowyPack.Title", 0, h / 2, C.text, UI.LEFT, UI.CENTER)
-		local tw = UI.textW("Console", "MeowyPack.Title")
 		local note = (state.note and SysTime() < state.noteUntil) and state.note
+			or (state.tab == "errors" and (ConsoleLogic.errorCount(errorGroups) .. " Lua errors since the game started"))
 			or (#state.view == #lines and (#lines .. " lines") or (#state.view .. " of " .. #lines .. " lines"))
-		draw.SimpleText(note, "MeowyPack.Small", tw + S(14), h / 2 + S(2), C.dim, UI.LEFT, UI.CENTER)
+		draw.SimpleText(note, "MeowyPack.Small", self.textX or S(200), h / 2 + S(1), C.dim, UI.LEFT, UI.CENTER)
+		-- Live numbers.
+		local facts = {}
+		if state.fps then facts[#facts + 1] = state.fps .. " fps" end
+		if IsInGame() and meowy.ServerNow then
+			local address, rtt, loss = meowy.ServerNow()
+			if isnumber(rtt) then facts[#facts + 1] = math.floor(rtt + 0.5) .. " ms" end
+			if isnumber(loss) then facts[#facts + 1] = math.floor(loss * 100 + 0.5) .. "% loss" end
+			if isstring(address) then facts[#facts + 1] = address end
+		end
+		draw.SimpleText(table.concat(facts, "  \194\183  "), "MeowyPack.Small", w - S(12), h / 2 + S(1), C.dim, UI.RIGHT, UI.CENTER)
 	end
 	-- Dragging by the header.
 	header.OnMousePressed = function(self, code)
@@ -270,6 +317,112 @@ local function open()
 		for i = #lines, 1, -1 do lines[i] = nil end
 		rebuild()
 	end)
+	-- Save: the lines shown, paths masked, to a file of its own (logs\).
+	local save = UI.Button(holder, "Save", "ghost", function()
+		local path = meowy.ConsoleSaveLog and meowy.ConsoleSaveLog(ConsoleLogic.copyText(state.view, ConsoleLogic.MAX_KEEP))
+		if isstring(path) then
+			SetClipboardText(path)
+			state.note, state.noteUntil = "Saved " .. #state.view .. " lines (path copied): " .. (path:match("[^\\/]+$") or path), SysTime() + 4
+		else
+			state.note, state.noteUntil = "Couldn't save the log", SysTime() + 3
+		end
+	end)
+
+	-- The Errors tab: Lua errors since the game started, by addon, newest first.
+	local errorsPanel = vgui.Create("DScrollPanel", holder)
+	errorsPanel:SetVisible(false)
+	errorsPanel.Paint = function(self, w, h) UI.box(S(10), 0, 0, w, h, C.surface, C.border) end
+	local bar = errorsPanel.GetVBar and errorsPanel:GetVBar()
+	if bar then
+		bar:SetWide(S(10))
+		bar.Paint = function() end
+		if bar.btnUp then bar.btnUp.Paint = function() end end
+		if bar.btnDown then bar.btnDown.Paint = function() end end
+		if bar.btnGrip then bar.btnGrip.Paint = function(self, w, h) draw.RoundedBox(S(3), S(3), 0, S(5), h, C.raised) end end
+	end
+	local updatedCache, builtFor = {}, -1
+	local gameLine = "Garry's Mod " .. tostring(VERSIONSTR or "?") .. " (" .. tostring(BRANCH or "?") .. ")"
+		.. ((meowy.Version and (", Meowy Client Pack " .. tostring(meowy.Version()))) or "")
+	local function buildErrors()
+		builtFor = errorsChanged
+		if errorsPanel.Clear then errorsPanel:Clear() end
+		local list = ConsoleLogic.errorList(errorGroups)
+		if #list == 0 then
+			local empty = errorsPanel:Add("DPanel")
+			empty:Dock(TOP)
+			empty:SetTall(S(120))
+			empty.Paint = function(self, w, h)
+				draw.SimpleText("No Lua errors since the game started", "MeowyPack.Body", w / 2, h / 2, C.dim, UI.CENTER, UI.CENTER)
+			end
+			return
+		end
+		for _, item in ipairs(list) do
+			local g = item.group
+			if g.id and not updatedCache[g.id] and steamworks and steamworks.FileInfo then
+				updatedCache[g.id] = "?"
+				steamworks.FileInfo(g.id, function(info)
+					if istable(info) and tonumber(info.updated) then updatedCache[g.id] = os.date("%Y-%m-%d", tonumber(info.updated)) end
+				end)
+			end
+			local head = errorsPanel:Add("DPanel")
+			head:Dock(TOP)
+			head:DockMargin(S(12), S(10), S(12), 0)
+			head:SetTall(S(40))
+			head.meowyErrorGroup = g.key
+			head.Paint = function(self, w, h)
+				draw.SimpleText(g.title or "An unknown addon", "MeowyPack.Heading", 0, S(12), C.text, UI.LEFT, UI.CENTER)
+				local sub = (g.id and ("Workshop " .. g.id .. ((updatedCache[g.id] and updatedCache[g.id] ~= "?") and (", updated " .. updatedCache[g.id]) or "") .. "  \194\183  ") or "")
+					.. g.count .. (g.count == 1 and " error" or " errors")
+				draw.SimpleText(sub, "MeowyPack.Small", 0, S(31), C.dim, UI.LEFT, UI.CENTER)
+			end
+			if g.id then
+				local open = UI.Button(head, "Open on Workshop", "ghost", function()
+					gui.OpenURL("https://steamcommunity.com/sharedfiles/filedetails/?id=" .. g.id)
+				end)
+				open:Dock(RIGHT)
+				if not IsInGame() and steamworks and steamworks.SetShouldMountAddon then
+					local off = UI.Button(head, "Disable addon", "ghost", function()
+						UI.Prompt({ title = "Disable " .. (g.title or g.id) .. "?",
+							body = "It won't load at the next start or join. Turn it back on in Addons.",
+							buttons = { { "Disable", "primary", function()
+								steamworks.SetShouldMountAddon(g.id, false)
+								steamworks.ApplyAddons()
+								state.note, state.noteUntil = (g.title or g.id) .. " disabled", SysTime() + 3
+							end }, { "Cancel", "secondary" } }, closable = true })
+					end)
+					off:Dock(RIGHT)
+					off:DockMargin(0, 0, S(6), 0)
+					off.meowyDisable = g.id
+				end
+			end
+			for _, e in ipairs(item.errors) do
+				local stack = ConsoleLogic.stackLines(e.stack, 6)
+				local card = errorsPanel:Add("DPanel")
+				card:Dock(TOP)
+				card:DockMargin(S(12), S(6), S(12), 0)
+				card:SetTall(S(20) + lh * (2 + #stack) + S(8))
+				card.Paint = function(self, w, h)
+					UI.box(S(8), 0, 0, w, h, C.window, C.border)
+					local msg = e.message:gsub("[\r\n]+", "  ")
+					if #msg > 160 then msg = msg:sub(1, 159) .. "\226\128\166" end
+					draw.SimpleText(msg, "MeowyPack.Mono", S(12), S(10) + lh / 2, ERROR, UI.LEFT, UI.CENTER)
+					local meta = "x" .. e.count .. "  \194\183  first " .. ConsoleLogic.clock(e.first * 1000) .. ", last " .. ConsoleLogic.clock(e.last * 1000)
+						.. "  \194\183  " .. tostring(e.realm or "?") .. "  \194\183  " .. (e.server and ("on " .. e.server) or "at the main menu")
+					draw.SimpleText(meta, "MeowyPack.Small", S(12), S(10) + lh * 1.5, C.dim, UI.LEFT, UI.CENTER)
+					for i, s in ipairs(stack) do
+						draw.SimpleText(s, "MeowyPack.Mono", S(24), S(10) + lh * (1.5 + i), C.body, UI.LEFT, UI.CENTER)
+					end
+				end
+				local rep = UI.Button(card, "Copy report", "secondary", function()
+					local text = ConsoleLogic.report(g, e, { updated = updatedCache[g.id] ~= "?" and updatedCache[g.id] or nil, game = gameLine })
+					SetClipboardText(meowy.MaskPaths and meowy.MaskPaths(text) or text)
+					state.note, state.noteUntil = "Report copied (paths hidden)", SysTime() + 2
+				end)
+				rep.meowyReport = e.message
+				card.PerformLayout = function(self, w, h) rep:SetPos(w - rep:GetWide() - S(10), S(8)) end
+			end
+		end
+	end
 
 	-- Pinned commands: one click runs one; right-click takes it off.
 	local pinsRow = vgui.Create("DPanel", holder)
@@ -729,18 +882,39 @@ local function open()
 		holder:SetSize(math.Clamp(gui.MouseX() - self.size[1], S(560) + M * 2, ScrW()), math.Clamp(gui.MouseY() - self.size[2], S(340) + M * 2, ScrH()))
 	end
 
+	-- The tabs: the console's own rows, or the Errors list in their place.
+	setTab = function(tab)
+		state.tab = tab
+		local console = tab == "console"
+		for _, b in ipairs(kindChips) do b:SetVisible(console) end
+		for _, panel in ipairs({ collapse, findPill, patternPill, search.box, copy, clear, save, pinsRow, logPanel }) do
+			panel:SetVisible(console)
+		end
+		errorsPanel:SetVisible(not console)
+		if not console then
+			buildErrors()
+			p.mode = nil
+			layoutPop()
+		end
+		holder:InvalidateLayout()
+	end
+
 	holder.PerformLayout = function(self, w, h)
 		local x, y, iw = M + PAD, M + S(10), w - M * 2 - PAD * 2
 		header:SetPos(x, y)
 		header:SetSize(iw - S(40), S(46))
 		close:SetPos(M + (w - M * 2) - PAD - close:GetWide() + S(6), y + S(8))
 		y = y + S(52)
+		local topY = y
 		search.box:SetPos(x, y)
 		search.box:SetSize(math.min(S(320), iw * 0.35), S(36))
 		findPill:SetPos(x + search.box:GetWide() + S(12), y + S(3))
 		patternPill:SetPos((findPill.x or 0) + findPill:GetWide() + S(8), y + S(3))
 		clear:SetPos(x + iw - clear:GetWide(), y - S(1))
 		copy:SetPos((clear.x or 0) - copy:GetWide() - S(8), y - S(1))
+		save:SetPos((copy.x or 0) - save:GetWide() - S(4), y - S(1))
+		errorsPanel:SetPos(x, topY)
+		errorsPanel:SetSize(iw, h - M - PAD - S(40) - S(10) - topY)
 		y = y + S(44)
 		-- The kinds of lines, then repeats.
 		local cx = x
@@ -769,8 +943,15 @@ local function open()
 	local nextPull = 0
 	holder.Think = function()
 		local now = SysTime()
+		-- The frame rate, counted here (the menu state has no FrameTime).
+		state.frames = state.frames + 1
+		if now - state.framesAt >= 1 then
+			state.fps = math.floor(state.frames / (now - state.framesAt) + 0.5)
+			state.frames, state.framesAt = 0, now
+		end
 		if now < nextPull then return end
 		nextPull = now + PULL
+		if state.tab == "errors" and builtFor ~= errorsChanged then buildErrors() end
 		local hadCatalog = catalogAt
 		local added = pull()
 		if added > 0 then
@@ -809,6 +990,99 @@ hook.Add("Think", "MeowyClientPack.ConsoleMarkers", function()
 		elseif ingame and not wasInGame then mark("In game on " .. where)
 		elseif wasInGame and not ingame and not loading then mark("Left the server") end
 		wasLoading, wasInGame = loading, ingame
+	end
+end)
+
+-- Lua errors, from the same hook the game's own notices use (OnLuaError: the
+-- message, realm, stack, and the addon it came from), grouped by addon for the
+-- Errors tab; with the server you were on.
+local errorGroups, errorsChanged, lastErrorAt = {}, 0, nil
+hook.Add("OnLuaError", "MeowyClientPack.ConsoleErrors", function(message, realm, stack, title, id)
+	local address = IsInGame() and meowy.ServerNow and meowy.ServerNow() or nil
+	ConsoleLogic.recordError(errorGroups, message, realm, stack, title, id, os.time(), isstring(address) and address or nil)
+	errorsChanged, lastErrorAt = errorsChanged + 1, SysTime()
+end)
+
+-- The badge: in place of the game's own error notices (its DrawOverlay hook
+-- MenuDrawLuaErrors, put back when this is off), a small pill: how many errors,
+-- from which addon, and which key shows them. The game's two other notices it
+-- drew (a serious problem; the pause menu blocked) show as pills too.
+local badgeSetting = meowy.Setting and meowy.Setting("meowy_console_badge", "1",
+	"Meowy Client Pack: a small error badge in place of Garry's Mod's error notices (0 = Garry's Mod's)")
+local notices = {}
+hook.Add("OnProblemReceived", "MeowyClientPack.ConsoleNotices", function(problem)
+	if istable(problem) and problem.severity == 2 and isstring(problem.text) then
+		notices.problem = { text = string.match(problem.text, "([^\n]+)") or problem.text, at = SysTime() }
+	end
+end)
+hook.Add("OnPauseMenuBlockedTooManyTimes", "MeowyClientPack.ConsoleNotices", function()
+	notices.blocked = { text = "Something keeps blocking the pause menu: Shift+Esc opens it anyway", at = SysTime() }
+end)
+local stockNotices
+local function badgeOn() return badgeSetting ~= nil and badgeSetting:GetBool() end
+local BADGE_SHOW = 10   -- seconds a pill stays after its last error
+local function pillAt(x, y, text, tone, age)
+	local alpha = math.Clamp((BADGE_SHOW - age) / 1.5, 0, 1)
+	if alpha <= 0 then return y end
+	surface.SetFont("MeowyPack.Small")
+	local tw = surface.GetTextSize(text)
+	local h = S(28)
+	draw.RoundedBox(h / 2, x, y, tw + S(34), h, Color(20, 21, 24, 225 * alpha))
+	draw.RoundedBox(S(4), x + S(10), y + h / 2 - S(4), S(8), S(8), Color(tone.r, tone.g, tone.b, 255 * alpha))
+	draw.SimpleText(text, "MeowyPack.Small", x + S(24), y + h / 2, Color(232, 233, 236, 255 * alpha), UI.LEFT, UI.CENTER)
+	return y + h + S(6)
+end
+
+-- Overlay mode: while playing, the newest console lines in the top-left corner,
+-- see-through and click-through, fading after a while (meowy_console_overlay:
+-- 0 off, 1 warnings and errors, 2 everything).
+local overlaySetting = meowy.Setting and meowy.Setting("meowy_console_overlay", "0",
+	"Meowy Client Pack: show the newest console lines over the game (0 off, 1 warnings and errors, 2 everything)")
+local OVERLAY_LINES, OVERLAY_SHOW = 8, 20
+local overlayPull = 0
+
+hook.Add("DrawOverlay", "MeowyClientPack.ConsoleOverlay", function()
+	-- The game's notices off while the badge is on (and back when it's off).
+	local hooks = hook.GetTable and hook.GetTable().DrawOverlay
+	if hooks then
+		if badgeOn() and hooks.MenuDrawLuaErrors then
+			stockNotices = hooks.MenuDrawLuaErrors
+			hook.Remove("DrawOverlay", "MenuDrawLuaErrors")
+		elseif not badgeOn() and stockNotices and not hooks.MenuDrawLuaErrors then
+			hook.Add("DrawOverlay", "MenuDrawLuaErrors", stockNotices)
+		end
+	end
+	local drawHud = GetConVar and GetConVar("cl_drawhud")
+	if drawHud and not drawHud:GetBool() then return end
+	fonts()
+	local y = S(32)
+	if badgeOn() then
+		local now = SysTime()
+		local text = ConsoleLogic.badgeText(errorGroups)
+		if text and lastErrorAt then y = pillAt(S(32), y, text .. "  \194\183  ` shows them", ERROR, now - lastErrorAt) end
+		for _, n in pairs(notices) do y = pillAt(S(32), y, n.text, C.amber, now - n.at) end
+	end
+	local mode = overlaySetting and tonumber(overlaySetting:GetString()) or 0
+	if mode == 0 or not IsInGame() or (IsValid(holder) and holder:IsVisible()) then return end
+	if SysTime() > overlayPull then overlayPull = SysTime() + PULL pull() end
+	local shown, now = {}, os.time() * 1000
+	for i = #lines, 1, -1 do
+		local l = lines[i]
+		if (now - (l.t or 0)) > OVERLAY_SHOW * 1000 or #shown >= OVERLAY_LINES then break end
+		local k = ConsoleLogic.kind(l)
+		if not l.marker and (mode >= 2 or k == "error" or k == "warning") then table.insert(shown, 1, l) end
+	end
+	if #shown == 0 then return end
+	local lh = S(18)
+	local w = S(640)
+	draw.RoundedBox(S(8), S(24), y, w, #shown * lh + S(12), Color(10, 10, 12, 150))
+	for i, l in ipairs(shown) do
+		local age = (now - (l.t or 0)) / 1000
+		local alpha = math.Clamp((OVERLAY_SHOW - age) / 3, 0.15, 1)
+		local r, g, b = ConsoleLogic.color(l)
+		local text = l.x or ""
+		if #text > 110 then text = text:sub(1, 109) .. "\226\128\166" end
+		draw.SimpleText(text, "MeowyPack.Mono", S(34), y + S(6) + (i - 1) * lh + lh / 2, Color(r, g, b, 255 * alpha), UI.LEFT, UI.CENTER)
 	end
 end)
 
