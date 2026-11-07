@@ -16,6 +16,9 @@ local chunkText = "local UI = (function()\n" .. readFile(here .. "/../src/lua/ui
 	.. "(function()\n" .. readFile(here .. "/../src/lua/home.lua") .. "\nend)();\n"
 	.. "(function()\nlocal BrowseLogic = (function()\n" .. readFile(here .. "/../src/lua/browse_logic.lua") .. "\nend)()\n"
 	.. readFile(here .. "/../src/lua/menu_page.lua") .. "\nend)()\n"
+	-- Parties, as module.cpp appends them.
+	.. ";(function()\nlocal PartyLogic = (function()\n" .. readFile(here .. "/../src/lua/party_logic.lua") .. "\nend)()\n"
+	.. readFile(here .. "/../src/lua/party.lua") .. "\nend)()\n"
 	-- The Meowy console, as module.cpp appends it.
 	.. ";(function()\nlocal ConsoleLogic = (function()\n" .. readFile(here .. "/../src/lua/console_logic.lua") .. "\nend)()\n"
 	.. readFile(here .. "/../src/lua/console.lua") .. "\nend)()\n"
@@ -260,6 +263,8 @@ local function world(opts)
 		SetFont = function(f) w.font = f end,
 		GetTextSize = function(t) return #tostring(t) * 8, 16 end,
 		SetDrawColor = function() end, DrawLine = function() end,
+		DrawRect = function() end, SetTextColor = function() end, SetTextPos = function() end,
+		DrawText = function(t) w.drawnText = t end,
 	}
 	env.ScrW = function() return 1920 end
 	env.ScrH = function() return 1080 end
@@ -1761,6 +1766,115 @@ check("index: unreachable, Steam's second stage as before", table.concat(w.sqArg
 w = indexWorld({ meowy_menu = "1", meowy_server_index = "0" })
 w.post("browse")
 check("index: switched off, never asked", w.indexFetches, nil)
+-- Parties (party.lua): Steam's lobby stubbed. The leader moves the party; a
+-- member counts down, then follows (or stays); invites accepted in Steam join.
+local function partyWorld(convars)
+	local pw = world({ settings = ON, menu = true, convars = convars or PAGE_ON, joinServer = true })
+	pw.sets, pw.partyJoins = {}, {}
+	local m = pw.env.meowy
+	m.PartyAvailable = function() return true, "" end
+	m.PartyStart = function() pw.partyStarted = true end
+	m.PartyPoll = function() local e = pw.events or {} pw.events = {} return e end
+	m.PartyState = function() return pw.party end
+	m.PartySet = function(kind, key, value) pw.sets[kind .. "." .. key] = value return true end
+	m.PartyCreate = function() pw.creates = (pw.creates or 0) + 1 return true end
+	m.PartyJoin = function(id) pw.partyJoins[#pw.partyJoins + 1] = id return true end
+	m.PartyLeave = function() pw.leaves = (pw.leaves or 0) + 1 pw.party = nil end
+	m.PartyFriends = function() return { { id = "7656", name = "Dee", ingmod = true, pack = false } } end
+	m.PartyInviteToServer = function(id, address) pw.serverInvite = id .. " " .. address return true end
+	m.PartyInvite = function(id) pw.invited = id return true end
+	m.PartyInviteDialog = function() pw.dialog = true return true end
+	m.PartyStatus = function() return "parties: test" end
+	m.VERSION = "1.9.0"
+	pw.run(1)
+	return pw
+end
+-- The page's party model goes out with the browser's calls (it names window.MeowyBrowserParty).
+local function partyJS(pw)
+	local calls = pw.browseCalls or {}
+	for i = #calls, 1, -1 do if calls[i]:find("window.MeowyParty = ", 1, true) then return calls[i] end end
+	return ""
+end
+local function lobby(owner, go)
+	return { lobby = "109775241000000001", owner = owner, self = "2", srv = "5.6.7.8:27015", srvname = "Big RP", go = go or "",
+		members = { { id = "1", name = "Ann", at = "1.2.3.4:27015", atname = "Small RP", pack = "1.9.0" }, { id = "2", name = "Me", at = "", atname = "", pack = "1.9.0" } } }
+end
+w = partyWorld()
+check("party: the invite callback registered", w.partyStarted, true)
+check("party: friends see the pack (Rich Presence)", w.sets["presence.meowy_pack"], "1.9.0")
+w.post("party", "create")
+check("party: Start a party", w.creates, 1)
+w.events = { "created" }
+w.party = lobby("2")
+w.run(1)
+check("party: Steam's friends list groups it", (w.sets["presence.steam_player_group"] or "") .. "/" .. (w.sets["presence.steam_player_group_size"] or ""), "109775241000000001/2")
+check("party: the page gets the model", partyJS(w):find('"leader":true', 1, true) ~= nil, true)
+check("party: where the members are", partyJS(w):find('"w":"Small RP"', 1, true) ~= nil, true)
+-- The leader takes the party to a server from Find servers.
+w.post("browse")
+w.sq = { { address = "9.9.9.9:27015", name = "Target", map = "m", tags = "", desc = "D", players = 3, max = 8, bots = 0, ping = 9, pass = false } }
+w.run(0.3)
+w.post("party_go", 1)
+check("party: the target set", (w.sets["lobby.srv"] or "") .. " " .. (w.sets["lobby.go"] or ""), "9.9.9.9:27015 1|9.9.9.9:27015")
+check("party: the leader goes", w.joinedVia, "9.9.9.9:27015")
+-- A member: nothing on the first look, then a countdown, then the join.
+w = partyWorld()
+w.events = { "joined" }
+w.party = lobby("1", "3|5.6.7.8:27015")
+w.run(1)
+check("party: an earlier move isn't followed", w.joinedVia, nil)
+w.party.go = "4|5.6.7.8:27015"
+w.inGame, w.state, w.otherNow = true, "other", "1.2.3.4:27015"
+w.run(1)
+check("party: counting down", partyJS(w):find('"follow":', 1, true) ~= nil, true)
+w.fire("DrawOverlay")
+check("party: the banner over the game", (w.drawnText or ""):find("Party: following Ann to Big RP in", 1, true) ~= nil, true)
+check("party: not joined yet", w.joinedVia, nil)
+w.run(10)
+check("party: joined after the countdown", w.joinedVia, "5.6.7.8:27015")
+check("party: where I am, for the others", w.sets["member.at"], "1.2.3.4:27015")
+-- Stay, and the gap between follows.
+w = partyWorld()
+w.party = lobby("1", "1|5.6.7.8:27015")
+w.run(1)
+w.party.go = "2|5.6.7.8:27015"
+w.run(1)
+w.post("party", "stay")
+w.run(12)
+check("party: Stay stays", w.joinedVia, nil)
+w.party.go = "3|9.9.9.9:27015"
+w.run(12)
+check("party: the next move is followed", w.joinedVia, "9.9.9.9:27015")
+w.joinedVia = nil
+w.party.go = "4|5.6.7.8:27015"
+w.run(12)
+check("party: never twice in 30 s", w.joinedVia, nil)
+-- Invites accepted in Steam join that party; a friend without the pack gets the server.
+w = partyWorld()
+w.events = { "invite 109775241000000009" }
+w.run(1)
+check("party: an accepted invite joins it", w.partyJoins[1], "109775241000000009")
+w.party = lobby("2")
+w.run(1)
+w.post("party_friend", 1)
+check("party: a friend without the pack gets the server", w.serverInvite, "7656 5.6.7.8:27015")
+w.post("party", "invite")
+check("party: Steam's invite dialog", w.dialog, true)
+w.post("party", "leave")
+check("party: leave", w.leaves, 1)
+-- A lobby we're no longer in ends the party.
+w = partyWorld()
+w.party = lobby("2")
+w.run(1)
+w.party.members = {}
+w.run(1)
+check("party: an empty lobby ends it", w.leaves, 1)
+-- Switched off: nothing joined, nothing published.
+w = partyWorld({ meowy_menu = "1", meowy_party = "0" })
+w.events = { "invite 109775241000000009" }
+w.run(1)
+check("party: off, invites ignored", #w.partyJoins, 0)
+check("party: off, no pack in Rich Presence", w.sets["presence.meowy_pack"], "")
 -- The Meowy console: the capture starts with the menu; meowy_console opens the
 -- window, reads the lines, and a typed line runs as the console would run it.
 w = world({ settings = ON, menu = true })

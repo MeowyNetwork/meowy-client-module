@@ -253,6 +253,14 @@ win.MeowyEsc({ server: null, settings: [] }, 3);
 check('redrawn once let go', box.children.length, 0);
 win.MeowyEsc(null, 4);
 check('null removes the escape card', doc.getElementById('meowy-esc'), null);
+win.MeowyEsc({ server: null, settings: [], party: { text: 'Following <b>Ann</b> to X in 5 s', stay: true } }, 5);
+box = doc.getElementById('meowy-esc');
+check('escape: the party line as text', box.querySelector('.me-name').textContent.endsWith('Following <b>Ann</b> to X in 5 s'), true);
+box.querySelector('.me-btn').onclick();
+check('escape: Stay sends its fixed name', luaRuns.pop(), 'MeowyClientPackEscAction("party_stay")');
+win.MeowyEsc({ server: null, settings: [], party: { text: '3 members', stay: false } }, 6);
+check('escape: no Stay without a countdown', doc.getElementById('meowy-esc').querySelectorAll('.me-btn').length, 0);
+win.MeowyEsc(null, 7);
 
 // ---------------------------------------------------------------------------
 // The Meowy home screen (src/menu/shell.js): our home inside the stock page.
@@ -792,6 +800,55 @@ S.win.MeowyBrowse.reset(21, true, 'internet', '');
 S.win.MeowyBrowse.source(21, { idx: 'failed', age: -1, geo: false, n: 0 });
 S.win.MeowyBrowse.flush();
 check('index: unreachable, Steam alone', side3().querySelector('.mb-status').textContent, "Listing servers with players… 0 s · Meowy's index didn't answer: Steam's list alone");
+
+// Parties (party.lua's window.MeowyParty): the home's card, and Take the party here.
+S = stockPage();
+S.win.MeowyShell(true);
+const pcard = () => doc.getElementById('meowy-shell').querySelector('.ms-party');
+const pbtns = () => pcard().querySelectorAll('.ms-pbtn');
+check('party: nothing without a model', pcard().children.length, 0);
+S.win.MeowyParty = { on: true, friends: [{ n: 'Dee', p: true }] };
+S.win.MeowyShellParty();
+check('party: Start a party', pbtns().map(b => b.textContent).join(','), 'Start a party');
+check('party: no friends list before a party', pcard().textContent.indexOf('Friends playing') < 0, true);
+pbtns()[0].onclick({});
+check('party: start posts', JSON.stringify(S.posts.pop()), '["party","create"]');
+S.win.MeowyParty = { on: true, notice: 'Party started', friends: [{ n: 'Dee', p: true }, { n: '<i>Eve</i>', p: false }], party: {
+	leader: false, leaderName: 'Ann', target: 'Big RP', follow: { by: 'Ann', to: 'Big RP', left: 7 },
+	members: [{ n: 'Ann', w: 'Big RP', l: true, j: true }, { n: 'Me', w: '', me: true }] } };
+S.win.MeowyShellParty();
+check('party: the countdown', pcard().querySelector('.ms-pfollow').textContent, 'StayFollowing Ann to Big RP in 7 s');
+pcard().querySelector('.ms-pfollow').querySelector('.ms-pbtn').onclick({});
+check('party: Stay posts', JSON.stringify(S.posts.pop()), '["party","stay"]');
+const prow = pcard().querySelectorAll('.ms-prow');
+check('party: members and where', prow[0].textContent + ' | ' + prow[1].textContent, 'JoinAnn (leader)on Big RP | Me (you)in the menu');
+prow[0].querySelector('.ms-pbtn').onclick({});
+check("party: a member's server by number", JSON.stringify(S.posts.pop()), '["party_member",1]');
+check('party: friends, an invite each', prow[2].textContent + ' | ' + prow[3].textContent, 'InviteDee | Invite to the server<i>Eve</i>');
+prow[3].querySelector('.ms-pbtn').onclick({});
+check('party: a friend by number', JSON.stringify(S.posts.pop()), '["party_friend",2]');
+check('party: names are text', pcard().all().some(e => e.tagName === 'I'), false);
+pbtns().find(b => b.textContent === 'Invite friends').onclick({});
+check("party: Steam's invite dialog", JSON.stringify(S.posts.pop()), '["party","invite"]');
+pbtns().find(b => b.textContent === 'Leave').onclick({});
+check('party: leave', JSON.stringify(S.posts.pop()), '["party","leave"]');
+// Find servers: the leader gets Take the party here on a server's details.
+S.win.MeowyBrowse.open();
+S.win.MeowyBrowse.reset(30, true, 'favorite', '');
+S.posts.length = 0;
+doc.getElementById('meowy-shell').querySelector('.mb-side').querySelector('.mb-tabs').children.find(a => a.textContent === 'Favourites').onclick();
+S.win.MeowyBrowse.reset(31, true, 'favorite', '');
+S.win.MeowyBrowse.add(31, [{ i: 310, a: '31.0.0.1:27015', n: 'Fav', g: 'sandbox', p: 3, x: 10, ms: 20 }], true, 0.2, 1);
+S.win.MeowyBrowse.flush();
+doc.getElementById('meowy-shell').querySelectorAll('.mb-srow')[0].onclick();
+const takeBtn = () => doc.getElementById('meowy-shell').querySelector('.mb-detail').querySelectorAll('.mb-join').find(b => b.textContent === 'Take the party here');
+check('party: no Take the party here for a member', !!takeBtn(), false);
+S.win.MeowyParty.party.leader = true;
+S.win.MeowyBrowserParty();
+check('party: the leader gets Take the party here', !!takeBtn(), true);
+S.posts.length = 0;
+takeBtn().onclick();
+check('party: by row number', JSON.stringify(S.posts.pop()), '["party_go",310]');
 
 console.log(`${count} checks, ${failures} failed`);
 process.exit(failures ? 1 : 0);

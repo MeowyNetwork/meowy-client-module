@@ -29,6 +29,7 @@ jobs:
           lua5.1 tests/home_logic_test.lua
           lua5.1 tests/console_logic_test.lua
           lua5.1 tests/browse_logic_test.lua
+          lua5.1 tests/party_logic_test.lua
           node tests/home_page_test.js
 
   windows:
@@ -72,6 +73,12 @@ jobs:
           ./buildtest/Release/pak_cache_smoke.exe
           cmake --build buildtest32 --config Release --target pak_cache_smoke
           ./buildtest32/Release/pak_cache_smoke.exe
+      - name: Parties (party_smoke, both bitnesses)
+        run: |
+          cmake --build buildtest --config Release --target party_smoke
+          ./buildtest/Release/party_smoke.exe
+          cmake --build buildtest32 --config Release --target party_smoke
+          ./buildtest32/Release/party_smoke.exe
       - name: Fast file.Find rules (lua_find_smoke, both bitnesses)
         run: |
           cmake --build buildtest --config Release --target lua_find_smoke

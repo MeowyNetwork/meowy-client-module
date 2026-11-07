@@ -920,6 +920,13 @@
 		var g = L().gms[s.key];
 		if (g && g.ws) more.appendChild(button('Workshop page', '', function () { post('browse_workshop', g.ws); }));
 		d.appendChild(more);
+		// A party's leader (party.lua): everyone comes along, after a countdown they can stay out of.
+		if (partyLeader()) {
+			var take = node('span', 'mb-join', 'Take the party here');
+			take.title = 'You join it, and your party follows after a 10-second countdown (each of them can stay)';
+			take.onclick = function () { post('party_go', s.i); };
+			d.appendChild(take);
+		}
 		ui.dPlayers = d.appendChild(node('div'));
 		updateDetail();
 	}
@@ -1290,6 +1297,16 @@
 		flush: function () { if (st.timer) { clearTimeout(st.timer); st.timer = null; } render(); },
 		// The tests' and shell's way in: open(false) closes.
 		open: function (on) { window.MeowyBrowser.open(on !== false); }
+	};
+
+	// Parties (party.lua's window.MeowyParty): the details get "Take the party
+	// here" while this player leads one.
+	function partyLeader() { var p = window.MeowyParty; return !!(p && p.on && p.party && p.party.leader === true); }
+	window.MeowyBrowserParty = function () {
+		var lead = partyLeader();
+		if (lead === st.partyLeader) return;
+		st.partyLeader = lead;
+		if (st.open) buildDetail();
 	};
 
 	window.MeowyBrowser = {

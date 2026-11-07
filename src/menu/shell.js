@@ -44,7 +44,15 @@
 		// Find servers (src/menu/browser.js): the whole page while it's open.
 		+ '#meowy-shell .ms-browse { display: none; position: absolute; left: 40px; right: 32px; top: 36px; bottom: 16px; }'
 		+ '#meowy-shell.ms-browsing .ms-browse { display: block; }'
-		+ '#meowy-shell.ms-browsing .ms-home, #meowy-shell.ms-browsing .ms-nav, #meowy-shell.ms-browsing .ms-foot { display: none; }';
+		+ '#meowy-shell.ms-browsing .ms-home, #meowy-shell.ms-browsing .ms-nav, #meowy-shell.ms-browsing .ms-foot { display: none; }'
+		// The party card (party.lua's window.MeowyParty).
+		+ '#meowy-shell .ms-party { margin: 4px 0 0 0; }'
+		+ '#meowy-shell .ms-pbtn { float: right; font-size: 13px; font-weight: bold; padding: 2px 10px; margin-left: 6px; border-radius: 4px; background: rgba(255,255,255,0.16); cursor: pointer; line-height: 20px; }'
+		+ '#meowy-shell .ms-pbtn:hover { background: rgba(255,255,255,0.3); }'
+		+ '#meowy-shell .ms-pbtn.go { background: rgba(120,200,120,0.5); }'
+		+ '#meowy-shell .ms-prow { padding: 3px 12px; overflow: hidden; line-height: 22px; font-size: 15px; }'
+		+ '#meowy-shell .ms-pwhere { font-size: 13px; opacity: 0.75; margin-left: 8px; }'
+		+ '#meowy-shell .ms-pfollow { margin: 4px 12px; padding: 6px 10px; border-radius: 5px; background: rgba(255,255,140,0.25); font-size: 15px; overflow: hidden; line-height: 22px; }';
 	// [label, kind, value]: "route" goes to the page's own screen; the rest are posts.
 	var LINKS = [
 		['Find servers', 'browse', ''], ['Start new game', 'route', 'newgame'], null,
@@ -135,6 +143,7 @@
 		search.onblur = function () { focused = false; mark(); };
 		search.onkeydown = keys;
 		home.appendChild(search);
+		home.appendChild(node('div', 'ms-party'));
 		home.appendChild(node('div', 'ms-lists'));
 		home.appendChild(node('div', 'ms-news'));
 		root.appendChild(home);
@@ -314,6 +323,58 @@
 		c.querySelector('.ms-cwhen').textContent = d[2];
 	}
 
+	// The party card: who's in it and where, the countdown when the leader
+	// moves (with Stay), Start / Invite / Leave, and friends playing Garry's Mod
+	// to invite. Members and friends are posted by number; names are text.
+	function pbtn(label, cls, act) {
+		var b = node('span', 'ms-pbtn' + (cls ? ' ' + cls : ''), label);
+		b.onclick = function (e) { act(); if (e && e.stopPropagation) e.stopPropagation(); };
+		return b;
+	}
+	function party() {
+		var s = shell();
+		if (!s) return;
+		var box = s.querySelector('.ms-party'), d = window.MeowyParty;
+		while (box.firstChild) box.removeChild(box.firstChild);
+		if (!d || !d.on) return;
+		var p = d.party, title = node('div', 'ms-title', 'Party');
+		box.appendChild(title);
+		if (!p) {
+			title.appendChild(pbtn('Start a party', 'go', function () { post('party', 'create'); }));
+			box.appendChild(node('div', 'ms-note', 'Play with friends: when you pick a server, they come along.'));
+		} else {
+			title.appendChild(pbtn('Leave', '', function () { post('party', 'leave'); }));
+			title.appendChild(pbtn('Invite friends', '', function () { post('party', 'invite'); }));
+			if (p.follow) {
+				var f = node('div', 'ms-pfollow');
+				f.appendChild(pbtn('Stay', '', function () { post('party', 'stay'); }));
+				f.appendChild(document.createTextNode('Following ' + p.follow.by + ' to ' + p.follow.to + ' in ' + p.follow.left + ' s'));
+				box.appendChild(f);
+			}
+			for (var i = 0; i < p.members.length; i++) {
+				var m = p.members[i], row = node('div', 'ms-prow');
+				if (m.j) row.appendChild(pbtn('Join', '', (function (n) { return function () { post('party_member', n); }; })(i + 1)));
+				row.appendChild(document.createTextNode(m.n + (m.l ? ' (leader)' : '') + (m.me ? ' (you)' : '')));
+				row.appendChild(node('span', 'ms-pwhere', m.w ? 'on ' + m.w : 'in the menu'));
+				box.appendChild(row);
+			}
+			box.appendChild(node('div', 'ms-note', p.leader ? 'Pick a server in Find servers and choose "Take the party here".'
+				: p.target ? 'The party is going to ' + p.target + '.' : 'The leader picks the server.'));
+		}
+		if (d.notice) box.appendChild(node('div', 'ms-note', d.notice));
+		var friends = d.friends || [];
+		if (p && friends.length) {
+			box.appendChild(node('div', 'ms-title', 'Friends playing'));
+			for (var k = 0; k < friends.length; k++) {
+				var fr = friends[k], frow = node('div', 'ms-prow');
+				frow.appendChild(pbtn(fr.p ? 'Invite' : 'Invite to the server', '', (function (n) { return function () { post('party_friend', n); }; })(k + 1)));
+				frow.appendChild(document.createTextNode(fr.n));
+				if (!fr.p) frow.title = "No Meowy Client Pack: they get Steam's invite to the party's server";
+				box.appendChild(frow);
+			}
+		}
+	}
+
 	// In the search box: arrows move, Enter joins, Esc clears.
 	function keys(e) {
 		var k = e.keyCode, search = e.target;
@@ -358,6 +419,7 @@
 			page.appendChild(build());
 			lists();
 			continueEntry();
+			party();
 		}
 	}
 
@@ -371,6 +433,7 @@
 	};
 	window.MeowyShellLists = lists;
 	window.MeowyShellContinue = continueEntry;
+	window.MeowyShellParty = party;
 
 	// "/" anywhere on our home (not while typing elsewhere) goes to the search box.
 	document.addEventListener('keydown', function (e) {

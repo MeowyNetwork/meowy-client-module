@@ -199,7 +199,7 @@ local function browseRow(s, tab, i, keep)
 		browse.nextI = browse.nextI + 1
 		i = browse.nextI
 	end
-	browse.rows[i] = { address = s.address, tab = tab }
+	browse.rows[i] = { address = s.address, tab = tab, name = s.name }
 	local bots = math.max(0, tonumber(s.bots) or 0)
 	local players = math.max(0, (tonumber(s.players) or 0) - bots)
 	local ws = tostring(s.ws or "")
@@ -448,6 +448,23 @@ local browsePassword   -- { i, password } for the next join of that row (never l
 local handlers = {
 	browse = function(v) browseStart(v) end,
 	browse_stop = function() browseStop() end,
+	-- Parties (party.lua): "create", "leave", "invite" (Steam's dialog), "stay".
+	party = function(v)
+		if MeowyClientPackParty and (v == "create" or v == "leave" or v == "invite" or v == "stay") then MeowyClientPackParty.action(v) end
+	end,
+	-- A friend from the party card's list, by number: invited.
+	party_friend = function(v) if MeowyClientPackParty then MeowyClientPackParty.inviteFriend(v) end end,
+	-- A member's server, by number: joined (the player's click).
+	party_member = function(v) if MeowyClientPackParty then MeowyClientPackParty.joinMember(v) end end,
+	-- The leader's "Take the party here" on a server's details: the row's server.
+	party_go = function(v)
+		local address = browseAddress(v)
+		local r = browse.rows[math.floor(tonumber(v) or 0)]
+		if address and Home.publicAddress(address) and MeowyClientPackParty then
+			browseStop()
+			MeowyClientPackParty.go(address, r and r.name or "")
+		end
+	end,
 	-- The page, once a minute while the Internet list from the index is open: a newer index.
 	browse_refresh = function()
 		if browse.tab == "internet" and browse.index == "shown" then indexFetch() end
