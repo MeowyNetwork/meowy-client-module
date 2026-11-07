@@ -63,6 +63,11 @@ jobs:
           cmake --build buildtest32 --config Release --target font_loads_smoke
           ./buildtest32/Release/font_loads_smoke.exe "$env:RUNNER_TEMP"
 
+      - name: Rejoin-after-crash session file (session_smoke)
+        run: |
+          cmake --build buildtest --config Release --target session_smoke
+          ./buildtest/Release/session_smoke.exe "$env:RUNNER_TEMP"
+
       - name: Build installer
         shell: pwsh
         run: ./installer/build.ps1 -Win32 build32/Release/gmcl_meowy_win32.dll -Win64 build64/Release/gmcl_meowy_win64.dll -Boot32 build32/Release/gmsv_meowy_boot_win32.dll -Boot64 build64/Release/gmsv_meowy_boot_win64.dll -Out MeowyClientPack.exe

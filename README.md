@@ -201,6 +201,10 @@ the game closes while the pack is starting, the next start skips it once by itse
     more try by hand. Not after a kick, a ban, a password or your own Cancel.
   - After a crash while you were on Meowy Network, the next start shows "Rejoin Meowy Network?". It
     only joins when you click **Rejoin**.
+  - After a crash on any other public server, the next start shows "Rejoin the server?" with its name
+    and address, also only on a click. The address is the game's own connection (never a LAN, loopback
+    or Steam P2P one) and is kept in `%LOCALAPPDATA%\MeowyClientPack\on_server.txt` only while you're
+    on that server. Automatic rejoin stays for Meowy Network.
   - **Meowy settings** in the main menu's list, after Options (or `meowy_settings` in the console)
     opens the pack's settings to change your answer.
 - **PC doctor** (1.6+). A tab in the pack's settings (and `meowy_doctor` in the console) with tips for
