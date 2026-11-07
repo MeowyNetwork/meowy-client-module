@@ -454,6 +454,14 @@ namespace MeowyInstaller
 			return key == "" || key == "menu" || key == "before-sandbox" || key == "linked";
 		}
 
+		// A staging folder a start that died left beside the player's own folders:
+		// "menu.incoming", "before-sandbox.incoming-2".
+		static bool IsPlayersStaging(string name)
+		{
+			return name.StartsWith("menu.incoming", StringComparison.OrdinalIgnoreCase) ||
+				name.StartsWith("before-sandbox.incoming", StringComparison.OrdinalIgnoreCase);
+		}
+
 		// A key as a single folder name: never a path, never only dots.
 		static string SafeName(string key)
 		{
@@ -480,12 +488,19 @@ namespace MeowyInstaller
 				MergeMove(menu, data, "menu", true, r);
 			if (Directory.Exists(before))
 				MergeMove(before, data, "before-pack", true, r);
+			// A staging folder a start that died left beside them ("menu.incoming",
+			// "before-sandbox.incoming-2"): the player's own too.
+			foreach (string dir in Directory.GetDirectories(vault))
+			{
+				if (IsPlayersStaging(Path.GetFileName(dir)))
+					MergeMove(dir, data, "staged", true, r);
+			}
 
 			// Each server's own files.
 			foreach (string dir in Directory.GetDirectories(vault))
 			{
 				string name = Path.GetFileName(dir);
-				if (name == "menu" || name == "before-sandbox")
+				if (name == "menu" || name == "before-sandbox" || IsPlayersStaging(name))
 					continue;
 				MergeMove(dir, Path.Combine(backup, SafeName(name)), "older", false, r);
 			}

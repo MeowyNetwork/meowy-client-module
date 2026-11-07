@@ -164,6 +164,8 @@ static class UninstallSmoke
 			Put(Path.Combine(local, @"menu\sub\deep.txt"), "deep");
 			Put(Path.Combine(local, @"before-sandbox\old.txt"), "old");
 			Put(Path.Combine(local, @"1.2.3.4_27015\a.txt"), "a");
+			Put(Path.Combine(local, @"menu.incoming\staged.txt"), "staged");          // a start that died converting
+			Put(Path.Combine(local, @"before-sandbox.incoming-2\staged2.txt"), "staged2");
 			Put(Path.Combine(local, "active"), "linked");
 			Link(data, Path.Combine(local, "menu"));
 			Link(data + ".meowy-link", Path.Combine(local, "menu"));   // left by a start that died while linking
@@ -172,6 +174,8 @@ static class UninstallSmoke
 			Check(!IsLink(data) && Text(Path.Combine(data, "m.txt")) == "m" && Text(Path.Combine(data, @"sub\deep.txt")) == "deep",
 				"linked: data\\ a plain folder again, with the menu's files");
 			Check(Text(Path.Combine(data, "old.txt")) == "old", "linked: before-sandbox back too");
+			Check(Text(Path.Combine(data, "staged.txt")) == "staged" && Text(Path.Combine(data, "staged2.txt")) == "staged2" &&
+				!Directory.Exists(Path.Combine(backup, "menu.incoming")), "linked: leftover staging folders of the player's own back in data\\");
 			Check(Text(Path.Combine(backup, @"1.2.3.4_27015\a.txt")) == "a" && !File.Exists(Path.Combine(data, "a.txt")), "linked: the server's in the backup");
 			Check(!Directory.Exists(data + ".meowy-link") && !Directory.Exists(local) && r.Left.Count == 0, "linked: leftover link and vault gone, nothing left");
 		}
