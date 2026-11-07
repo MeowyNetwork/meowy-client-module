@@ -94,6 +94,7 @@
 #include "timeline.h"
 #include "timeline_steam.h"
 #include "prewarm.h"
+#include "console_capture.h"
 #include "server_query.h"
 #include "steam_ugc.h"
 #include "resilience.h"
@@ -1479,6 +1480,68 @@ namespace
 		return 0;
 	}
 
+	// --- The console's lines (console_capture.h, U8) -------------------------------
+	// ConsoleCaptureStart() -> true | false, reason.
+	int ConsoleCaptureStart(lua_State* L)
+	{
+		std::string why;
+		const bool ok = console_capture::Install(why);
+		L->luabase->PushBool(ok);
+		if (ok)
+			return 1;
+		L->luabase->PushString(why.c_str());
+		return 2;
+	}
+
+	// ConsoleRead(afterId, max) -> { {id, t, s, c, x}, ... }, lastId: the lines
+	// after `afterId` (the newest `max` when there are more), and the id to pass
+	// next time. t: unix ms; s: severity; c: 0xRRGGBB or -1; x: the text.
+	int ConsoleRead(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		const double after = LUA->IsType(1, Type::Number) ? LUA->GetNumber(1) : 0;
+		const double max = LUA->IsType(2, Type::Number) ? LUA->GetNumber(2) : 1000;
+		uint64_t next = 1;
+		const std::vector<console_capture::Line> lines = console_capture::Read(after > 0 ? static_cast<uint64_t>(after) : 0,
+			max < 1 ? 1 : max > 50000 ? 50000 : static_cast<size_t>(max), &next);
+		LUA->CreateTable();
+		int i = 0;
+		for (const console_capture::Line& l : lines)
+		{
+			LUA->PushNumber(++i);
+			LUA->CreateTable();
+			LUA->PushNumber(static_cast<double>(l.id));
+			LUA->SetField(-2, "id");
+			LUA->PushNumber(static_cast<double>(l.timeMs));
+			LUA->SetField(-2, "t");
+			LUA->PushNumber(l.severity);
+			LUA->SetField(-2, "s");
+			LUA->PushNumber(l.color == 0xFFFFFFFF ? -1.0 : static_cast<double>(l.color));
+			LUA->SetField(-2, "c");
+			LUA->PushString(l.text.c_str(), static_cast<unsigned int>(l.text.size()));
+			LUA->SetField(-2, "x");
+			LUA->SetTable(-3);
+		}
+		LUA->PushNumber(static_cast<double>(next - 1));
+		return 2;
+	}
+
+	int ConsoleState(lua_State* L)
+	{
+		L->luabase->PushString(console_capture::Describe().c_str());
+		return 1;
+	}
+
+	// ConsoleRun(line) -> ok: the line run as if typed into the console (the
+	// player's own line, from the pack's console window).
+	int ConsoleRun(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		const char* line = LUA->IsType(1, Type::String) ? LUA->GetString(1) : nullptr;
+		LUA->PushBool(console_capture::RunLine(line));
+		return 1;
+	}
+
 	// --- Server lists from Steam (server_query.h, U6 N1) ----------------------------
 	// ServerQueryStart("internet"|"friends", key1, value1, key2, value2, ...) ->
 	// id | nil, reason. The filters are Steam's master-server keys (checked).
@@ -1655,6 +1718,13 @@ namespace
 			if (!menuPage.empty())
 				home += "(function()\n" + menuPage + "\nend)()\n";
 		}
+		// The Meowy console (console_logic.lua as `ConsoleLogic`, then console.lua),
+		// in a function of its own that sees resilience.lua's locals.
+		std::string consoleLogic = ResourceText(IDR_CONSOLE_LOGIC_LUA);
+		std::string consoleGlue = ResourceText(IDR_CONSOLE_LUA);
+		if (!consoleLogic.empty() && !consoleGlue.empty())
+			// The leading ";": after "end)()" a "(" would call its result.
+			home += ";(function()\nlocal ConsoleLogic = (function()\n" + consoleLogic + "\nend)()\n" + consoleGlue + "\nend)()\n";
 		return "local UI = (function()\n" + ui + "\nend)()\n"
 			"local Logic = (function()\n" + logic + "\nend)()\n" + doctor + glue + home;
 	}
@@ -2545,6 +2615,10 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	SetFunction(LUA, "PrewarmWorkshop", Guarded<PrewarmWorkshop>);
 	SetFunction(LUA, "WorkshopItemState", Guarded<WorkshopItemState>);
 	SetFunction(LUA, "PrewarmCancel", Guarded<PrewarmCancel>);
+	SetFunction(LUA, "ConsoleCaptureStart", Guarded<ConsoleCaptureStart>);
+	SetFunction(LUA, "ConsoleRead", Guarded<ConsoleRead>);
+	SetFunction(LUA, "ConsoleState", Guarded<ConsoleState>);
+	SetFunction(LUA, "ConsoleRun", Guarded<ConsoleRun>);
 	SetFunction(LUA, "ServerQueryStart", Guarded<ServerQueryStart>);
 	SetFunction(LUA, "ServerQueryTake", Guarded<ServerQueryTake>);
 	SetFunction(LUA, "ServerQueryCancel", Guarded<ServerQueryCancel>);
