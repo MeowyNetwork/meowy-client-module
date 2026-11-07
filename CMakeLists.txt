@@ -46,6 +46,7 @@ add_library(meowy SHARED
 	src/resilience.cpp
 	src/resilience_net.cpp
 	src/doctor.cpp
+	src/early_entry.cpp
 	src/startup_hook.cpp)
 target_include_directories(meowy PRIVATE ${gmod_module_base_SOURCE_DIR}/include)
 if(WIN32)
