@@ -266,10 +266,12 @@ end
 -- The index's rows, the most players first, a slice each frame: Garry's
 -- Mod's blacklist check costs ~0.6 ms a server (3.5 s for the whole index,
 -- measured), so a batch at once would freeze the game. The first slice is a
--- screenful (INDEX_FIRST_SLICE), the rest INDEX_SLICE of work a frame.
--- Servers that didn't answer the index's own queries lately are left for
--- Steam to list if they answer it.
-local INDEX_FIRST_SLICE, INDEX_SLICE = 0.06, 0.008   -- seconds of work
+-- screenful (INDEX_FIRST_SLICE); then INDEX_BUSY_SLICE of work a frame while
+-- servers with players remain (~1,300: listed in about 2 s, a menu at ~30
+-- fps), and INDEX_SLICE for the empty ones after them. Servers that didn't
+-- answer the index's own queries lately are left for Steam to list if they
+-- answer it.
+local INDEX_FIRST_SLICE, INDEX_BUSY_SLICE, INDEX_SLICE = 0.06, 0.025, 0.008   -- seconds of work
 local function browseFromIndex(now)
 	browse.index = "shown"
 	browse.job = { rows = idx.rows, at = 1, first = true, gen = browse.gen }
@@ -281,7 +283,9 @@ local function indexSlice()
 	local job = browse.job
 	if not job then return end
 	if job.gen ~= browse.gen or browse.tab ~= "internet" then browse.job = nil return end
-	local stop = SysTime() + (job.first and INDEX_FIRST_SLICE or INDEX_SLICE)
+	local next = job.rows[job.at]
+	local busy = next ~= nil and (next.players or 0) - (next.bots or 0) > 0
+	local stop = SysTime() + (job.first and INDEX_FIRST_SLICE or busy and INDEX_BUSY_SLICE or INDEX_SLICE)
 	job.first = false
 	local batch, rows = {}, job.rows
 	while job.at <= #rows and SysTime() < stop do
