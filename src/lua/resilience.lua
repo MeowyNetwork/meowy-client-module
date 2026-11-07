@@ -61,6 +61,15 @@ local function setContinue(on)
 	if not on and meowy.LastServerForget then meowy.LastServerForget() end
 end
 
+-- The main menu's Home card (home.lua): our server's status, favourites, recent.
+local homeSetting = meowy.Setting and meowy.Setting("meowy_menu_home", "1",
+	"Meowy Client Pack: a card on the main menu with Meowy Network, your favourites and recent servers (0 = none)")
+local function homeOn() return homeSetting == nil or homeSetting:GetBool() end
+local function setHome(on)
+	if homeSetting and homeSetting.SetBool then homeSetting:SetBool(on)
+	else RunConsoleCommand("meowy_menu_home", on and "1" or "0") end
+end
+
 -- UI (ui.lua's kit) ----------------------------------------------------------------
 local C, S = UI.C, UI.S
 
@@ -128,10 +137,12 @@ local function openSettings(startTab)
 			st.gapBefore = S(10)
 			blocks[#blocks + 1] = st
 		end
-		if meowy.LastServer then
+		if meowy.LastServer or meowy.OurServerAddress then
 			local label = UI.Label(nil, "Main menu")
 			label.gapBefore = S(22)
 			blocks[#blocks + 1] = label
+		end
+		if meowy.LastServer then
 			local ct = UI.Toggle(nil, "Continue where you left off",
 				"Shows Continue in the main menu with the last server you played on, any server. One click joins it; "
 				.. "nothing joins on its own. Off: the pack doesn't keep which server it was.",
@@ -139,6 +150,15 @@ local function openSettings(startTab)
 			ct.meowyToggle = "menu_continue"
 			ct.gapBefore = S(10)
 			blocks[#blocks + 1] = ct
+		end
+		if meowy.OurServerAddress then
+			local ht = UI.Toggle(nil, "Your servers on the main menu",
+				"A card next to the menu with Meowy Network's player count, your favourites and the servers you played on "
+				.. "lately, live. One click joins; nothing joins on its own. Asks each server at most once a minute.",
+				homeOn(), function(on) setHome(on) end)
+			ht.meowyToggle = "menu_home"
+			ht.gapBefore = S(10)
+			blocks[#blocks + 1] = ht
 		end
 		return blocks
 	end

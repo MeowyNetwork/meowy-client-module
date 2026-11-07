@@ -225,6 +225,20 @@ the game closes while the pack is starting, the next start skips it once by itse
   loopback or Steam P2P one), in `%LOCALAPPDATA%\MeowyClientPack\last_server.txt`; the server's name is
   only ever shown as text. Turning it off in Meowy settings (or `meowy_menu_continue 0`) also forgets the
   server, and none is kept while it's off.
+- **Your servers on the main menu.** A card at the bottom right of the main menu, out of game only:
+  - Meowy Network's live player count and map;
+  - your favourites, busiest first;
+  - the servers you played on lately, newest first, with when.
+
+  Each row is the server's own answer (name, map, players without bots, ping); one click joins it, and
+  nothing joins on its own. `meowy_home` lists the rows numbered, and `meowy_home_join <n>` joins one.
+  - **Lists:** the game's own favourites and history, asked with the game's own server query, at most
+    once a minute while the card shows. The server list's player-count checks aren't run for it.
+  - **What's left out:** only public `a.b.c.d:port` addresses are shown, never LAN, loopback or Steam
+    relay (`169.254.x.x`) entries. Favourites that don't answer are counted under the list, not listed.
+  - **Safety:** names are only ever shown as text; a click sends the page's row number, and the
+    address comes from the pack's own list.
+  - **Turning it off:** in Meowy settings, or `meowy_menu_home 0`.
 - **PC doctor** (1.6+). A tab in the pack's settings (and `meowy_doctor` in the console) with tips for
   the usual reasons the game runs slowly. It only reads; it changes no Windows or game setting, and
   nothing it finds leaves your PC.

@@ -237,6 +237,11 @@ namespace server_gate
 		return ParseIpv4WithPort(address.c_str(), ip, port) && Allowed(ip, port);
 	}
 
+	std::string PrimaryAddress()
+	{
+		return std::string(kAllowed[0].ip) + ":" + std::to_string(kAllowed[0].port);
+	}
+
 	bool NetHealth(bool& timingOut, double& silence)
 	{
 #ifdef _WIN32
