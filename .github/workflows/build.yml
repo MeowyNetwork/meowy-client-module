@@ -28,6 +28,7 @@ jobs:
           lua5.1 tests/doctor_logic_test.lua
           lua5.1 tests/home_logic_test.lua
           lua5.1 tests/console_logic_test.lua
+          lua5.1 tests/browse_logic_test.lua
           node tests/home_page_test.js
 
   windows:

@@ -27,6 +27,7 @@ add_library(meowy SHARED
 	src/pak_cache.cpp
 	src/console_capture.cpp
 	src/server_query.cpp
+	src/server_index.cpp
 	src/steam_ugc.cpp
 	src/server_gate.cpp
 	src/discord_ipc.cpp

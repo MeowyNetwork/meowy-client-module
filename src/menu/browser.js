@@ -65,6 +65,9 @@
 			cat: CATS.indexOf(r.c) >= 0 ? r.c : '', ws: /^\d{1,20}$/.test(str(r.ws)) && r.ws !== '0' ? r.ws : '',
 			flag: flag(r.f), ver: Math.max(0, int(r.v)), lastplayed: Math.max(0, int(r.lp)) * 1000
 		};
+		// A ping Steam hasn't measured yet (a row from Meowy's index): 1 this PC's
+		// last ping to that network, 2 estimated from the distance, 3 unknown.
+		s.hint = r.ph === 1 || r.ph === 2 || r.ph === 3 ? r.ph : 0;
 		s.gm = str(r.g) || s.desc || 'unknown';
 		s.key = s.gm.toLowerCase();
 		s.listen = s.desc.indexOf('[L] ') === 0;
@@ -197,10 +200,25 @@
 	// hide; flags: prefer, avoid).
 	function cycle(current, first, second) { return current === first ? second : current === second ? undefined : first; }
 
+	// The ping column: Steam's measurement, "~45" for a hint, "..." for none.
+	function pingText(s) { return s.hint === 3 ? '…' : (s.hint ? '~' : '') + s.ping; }
+	var HINT_TITLES = { 1: 'Your ping there last time: Steam measures it again in a moment',
+		2: 'Estimated from the distance (IP Geolocation by DB-IP): Steam measures it in a moment',
+		3: 'Not measured yet: Steam measures it in a moment' };
+
+	// A server sent again (same number) with newer numbers: copied onto the one
+	// the list has, so its place in gamemodes, the selection and the star stay.
+	function updateServer(s, n) {
+		var keys = ['name', 'desc', 'map', 'players', 'max', 'bots', 'ping', 'hint', 'pass', 'anon', 'ver', 'verC', 'hasmap',
+			'honest', 'penalty', 'rank', 'lname', 'lmap', 'listen', 'flag', 'cat', 'ws'];
+		for (var k = 0; k < keys.length; k++) s[keys[k]] = n[keys[k]];
+		if (n.desc && !s.desc) s.desc = n.desc;
+	}
+
 	window.MeowyBrowserLogic = {
 		rank: rank, rankBars: rankBars, formatVersion: formatVersion, flag: flag, server: server,
 		gamemode: gamemode, addServer: addServer, gamemodeShown: gamemodeShown, sortGamemodes: sortGamemodes,
-		serverShown: serverShown, sortServers: sortServers, cycle: cycle, CATS: CATS
+		serverShown: serverShown, sortServers: sortServers, cycle: cycle, pingText: pingText, updateServer: updateServer, CATS: CATS
 	};
 
 	// --- The page --------------------------------------------------------------------
@@ -209,6 +227,7 @@
 	var TAB_NAMES = {};
 	for (var tn = 0; tn < TABS.length; tn++) TAB_NAMES[TABS[tn][0]] = TABS[tn][1];
 	var DETAIL_W = 340, REFRESH_MS = 10000, WAIT_MS = 5000, SELECT_MS = 250, PREFS_MS = 800, PREFS_MAX = 600, PLAYERS_MAX = 256;
+	var INDEX_REFRESH_MS = 60000;   // a newer index while the Internet list from it stays open
 	var TOGGLES = [['notFull', 'Not full'], ['hasPlayers', 'Has players'], ['noPass', 'No password'], ['hideOutdated', 'Not outdated']];
 
 	var STYLE =
@@ -264,6 +283,7 @@
 		+ '#meowy-browser .mb-c-ply { position: absolute; right: 140px; width: 80px; text-align: right; }'
 		+ '#meowy-browser .mb-c-ping { position: absolute; right: 74px; width: 56px; text-align: right; }'
 		+ '#meowy-browser .mb-c-rank { position: absolute; right: 10px; width: 52px; }'
+		+ '#meowy-browser .mb-hint { opacity: 0.5; font-style: italic; }'
 		+ '#meowy-browser .mb-bar { display: inline-block; height: 8px; border-radius: 2px; background: #9be27b; vertical-align: 1px; }'
 		+ '#meowy-browser .mb-fav { display: inline-block; width: 18px; color: #ffd24d; opacity: 0.35; cursor: pointer; }'
 		+ '#meowy-browser .mb-fav:hover, #meowy-browser .mb-fav.on { opacity: 1; }'
@@ -297,7 +317,19 @@
 	function everyGamemode() { var g = gamemode(ALL); g.title = 'Every gamemode'; g.fixed = true; return g; }
 	function newList(gen) {
 		return { gen: gen, ok: true, done: false, complete: false, stopped: false, stage: 1, secs: 0, at: 0,
-			servers: [], byI: {}, gms: {}, gmOrder: [], all: everyGamemode() };
+			servers: [], byI: {}, gms: {}, gmOrder: [], all: everyGamemode(), src: null };
+	}
+	// The gamemodes again from the list's servers (after updates changed counts or titles).
+	function regroup(l) {
+		l.gms = {};
+		l.gmOrder = [];
+		l.all = everyGamemode();
+		for (var i = 0; i < l.servers.length; i++) {
+			var s = l.servers[i];
+			if (!l.gms[s.key]) { l.gms[s.key] = gamemode(s.key); l.gmOrder.push(s.key); }
+			addServer(l.gms[s.key], s);
+			addServer(l.all, s);
+		}
 	}
 	function freshFilters() {
 		return { notFull: false, hasPlayers: false, noPass: false, hideOutdated: false, minPlayers: 0, maxPlayers: 0, maxPing: 0, flags: {} };
@@ -432,14 +464,22 @@
 	function sideState() {
 		var l = L();
 		ui.count.textContent = plural(l.servers.length, 'server', 'servers') + (st.tab === 'internet' ? ' \u00b7 ' + plural(l.gmOrder.length, 'gamemode', 'gamemodes') : '');
-		var status;
+		var status, src = l.src || {};
 		if (!l.ok) status = st.tab === 'internet' || st.tab === 'friends'
 			? "Steam's server list isn't available here: use Garry's Mod's list." : "Garry's Mod's list isn't available here.";
 		else if (l.gen < 0) status = '';
+		else if (src.idx === 'shown') {
+			// Meowy's index first, then Steam's own answers update the rows.
+			status = "From Meowy's index (" + (src.age >= 0 ? src.age + ' s old' : 'fresh') + ') \u00b7 '
+				+ (l.stopped ? 'Steam stopped after ' + l.secs + ' s' : l.done ? 'checked with Steam in ' + l.secs + ' s' : 'checking with Steam\u2026 ' + l.secs + ' s');
+		}
+		else if (src.idx === 'waiting' && !l.servers.length) status = "Asking Meowy's index and Steam\u2026 " + l.secs + ' s';
 		else if (l.stopped) status = 'Stopped after ' + l.secs + ' s';
 		else if (l.done) status = 'Complete in ' + l.secs + ' s';
 		else status = (st.tab === 'internet' ? (l.stage === 2 ? 'Listing empty servers\u2026 ' : 'Listing servers with players\u2026 ') : 'Listing\u2026 ') + l.secs + ' s';
+		if (src.idx === 'failed' && st.tab === 'internet') status += " \u00b7 Meowy's index didn't answer: Steam's list alone";
 		ui.status.textContent = status;
+		ui.status.title = src.idx === 'shown' && src.geo ? 'Ping estimates use IP Geolocation by DB-IP (db-ip.com)' : '';
 		var listing = l.gen >= 0 && !l.done && l.ok;
 		ui.action.textContent = listing ? 'Stop' : 'Refresh';
 		ui.action.onclick = listing
@@ -765,7 +805,9 @@
 		if (!s.hasmap) map.title = "You don't have this map: it downloads when you join";
 		el.appendChild(map);
 		el.appendChild(node('span', 'mb-c-ply', s.players + ' / ' + s.max));
-		el.appendChild(node('span', 'mb-c-ping', String(s.ping)));
+		var ping = node('span', 'mb-c-ping' + (s.hint ? ' mb-hint' : ''), pingText(s));
+		if (s.hint) ping.title = HINT_TITLES[s.hint];
+		el.appendChild(ping);
 		var rk = node('span', 'mb-c-rank');
 		var bar = node('span', 'mb-bar');
 		bar.style.width = (rankBars(s.rank) * 10) + 'px';
@@ -894,7 +936,7 @@
 		fact(ui.dFacts, 'Gamemode', (s.desc || s.gm) + (s.desc && s.desc.toLowerCase() !== s.key ? ' (' + s.key + ')' : ''));
 		fact(ui.dFacts, 'Map', s.map + (s.hasmap ? '' : "  (you don't have it: it downloads when you join)"));
 		fact(ui.dFacts, 'Players', s.players + ' / ' + s.max + (s.bots ? ' and ' + plural(s.bots, 'bot', 'bots') : '') + (s.honest.indexOf('FAKE') === 0 ? ' (the real count)' : ''));
-		fact(ui.dFacts, 'Ping', s.ping + ' ms');
+		fact(ui.dFacts, 'Ping', s.hint === 3 ? 'not measured yet' : pingText(s) + ' ms' + (s.hint === 1 ? ' (your last visit)' : s.hint === 2 ? ' (estimate)' : ''));
 		if (s.ver) fact(ui.dFacts, 'Version', formatVersion(s.ver) + (s.verC < 0 ? " (older than yours: you can't join)" : s.verC > 0 ? ' (newer than yours)' : ''));
 		if (s.flag) fact(ui.dFacts, 'Region', s.flag === 'europeanunion' ? 'EU' : s.flag.toUpperCase());
 		if (s.lastText) fact(ui.dFacts, 'Last visit', s.lastText);
@@ -979,6 +1021,7 @@
 		if (st.open && s && s.address === address) {
 			var bots = Math.max(0, int(botplayers)), real = s.honest.indexOf('FAKE') === 0 ? s.players : null;
 			s.ping = Math.max(0, int(ping));
+			s.hint = 0;
 			if (typeof map === 'string' && map) { s.map = map; s.lmap = map.toLowerCase(); }
 			s.bots = bots;
 			s.players = Math.max(0, int(players) - bots);
@@ -1037,6 +1080,7 @@
 		st.waitFor = null;
 		var l = st.lists[tab];
 		if (!l || !l.complete || Date.now() - l.at > STALE) post('browse', tab);
+		scheduleIndexRefresh();
 		render();
 		var f = st.gm ? ui.search : ui.gmSearch;
 		if (f && f.focus) f.focus();
@@ -1152,6 +1196,21 @@
 		if (st.timer) return;
 		st.timer = setTimeout(function () { st.timer = null; render(); }, RENDER_MS);
 	}
+	// While the Internet list from Meowy's index is open: a newer index each minute.
+	function scheduleIndexRefresh() {
+		var want = st.open && st.tab === 'internet' && !!L().src && L().src.idx === 'shown';
+		if (!want) {
+			if (st.indexTimer) clearTimeout(st.indexTimer);
+			st.indexTimer = null;
+			return;
+		}
+		if (st.indexTimer) return;
+		st.indexTimer = setTimeout(function () {
+			st.indexTimer = null;
+			if (st.open && st.tab === 'internet') post('browse_refresh');
+			scheduleIndexRefresh();
+		}, INDEX_REFRESH_MS);
+	}
 	window.MeowyBrowse = {
 		reset: function (gen, ok, tab, prefs) {
 			if (!st.prefsLoaded && typeof prefs === 'string' && prefs) { loadPrefs(prefs); ui.sideFor = null; }
@@ -1190,6 +1249,31 @@
 			if (stage) l.stage = stage;
 			l.secs = secs;
 			if (l === L()) { st.viewFor = null; scheduleRender(); }
+		},
+		// Rows the list already has (same numbers), with newer numbers: Steam's
+		// answers for rows from Meowy's index, or a newer index.
+		update: function (gen, rows) {
+			var l = listByGen(gen);
+			if (!l || !rows) return;
+			var v = ours(), changed = false;
+			for (var i = 0; i < rows.length; i++) {
+				var r = rows[i];
+				if (!r || typeof r.i !== 'number' || typeof r.n !== 'string') continue;
+				var s = l.byI[r.i];
+				if (!s || s.address !== str(r.a)) continue;
+				updateServer(s, server(r, v, haveMap));
+				changed = true;
+			}
+			if (!changed) return;
+			regroup(l);
+			if (l === L()) { st.viewFor = null; scheduleRender(); }
+		},
+		// Where the list comes from: { idx: "waiting" | "shown" | "failed" | "off", age, geo, n }.
+		source: function (gen, info) {
+			var l = listByGen(gen);
+			if (!l || !info || typeof info !== 'object') return;
+			l.src = { idx: str(info.idx), age: int(info.age), geo: info.geo === true, n: int(info.n) };
+			if (l === L()) { scheduleIndexRefresh(); scheduleRender(); }
 		},
 		// Find by address's answers (Favourites).
 		found: function (gen, rows, done) {
@@ -1233,6 +1317,7 @@
 				if (st.refresh) clearTimeout(st.refresh);
 				st.refresh = null;
 			}
+			scheduleIndexRefresh();
 		},
 		focusSearch: function () { var f = st.gm ? ui.search : ui.gmSearch; if (f && f.focus) f.focus(); },
 		onToggle: null
