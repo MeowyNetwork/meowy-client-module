@@ -41,6 +41,8 @@ add_library(meowy SHARED
 	src/notify.cpp
 	src/notify_catalogue.cpp
 	src/policy.cpp
+	src/updater.cpp
+	src/pack_versions.cpp
 	src/notify_toast.cpp
 	src/timeline.cpp
 	src/timeline_steam.cpp
@@ -105,7 +107,8 @@ set_target_properties(meowy PROPERTIES
 # DLL is what lua/includes/menu.lua requires; it loads gmcl_meowy (src/boot).
 if(WIN32)
 	# data_sandbox too: the stub puts garrysmod/data right even when the pack doesn't start.
-	add_library(meowy_boot SHARED src/boot/boot.cpp src/data_sandbox.cpp src/file_util.cpp)
+	add_library(meowy_boot SHARED src/boot/boot.cpp src/data_sandbox.cpp src/file_util.cpp src/pack_versions.cpp)
+	target_link_libraries(meowy_boot PRIVATE bcrypt)
 	target_include_directories(meowy_boot PRIVATE ${gmod_module_base_SOURCE_DIR}/include)
 	if(MSVC)
 		set_property(TARGET meowy_boot PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
@@ -159,6 +162,14 @@ if(MEOWY_BUILD_TESTS)
 	if(MSVC)
 		set_property(TARGET policy_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 		target_compile_options(policy_smoke PRIVATE /W4 /utf-8)
+	endif()
+	# The signed updater: release documents, who takes them, and the stub's versions (promote, roll back, choose):
+	#   updater_smoke <scratch folder>
+	add_executable(updater_smoke tests/updater_smoke.cpp src/updater.cpp src/pack_versions.cpp src/policy.cpp src/notify_catalogue.cpp src/notify.cpp src/file_util.cpp)
+	target_link_libraries(updater_smoke PRIVATE bcrypt winhttp)
+	if(MSVC)
+		set_property(TARGET updater_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+		target_compile_options(updater_smoke PRIVATE /W4 /utf-8)
 	endif()
 	# The signed notification catalogue (parser, ECDSA check, kind-list switch), no game:
 	#   notify_catalogue_smoke
