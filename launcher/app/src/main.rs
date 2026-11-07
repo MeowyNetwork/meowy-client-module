@@ -13,7 +13,7 @@ use std::time::{Duration, SystemTime};
 
 use launcher_core::links::Link;
 use launcher_core::settings::{self, Settings};
-use launcher_core::{a2s, address, http, index, line, links, log, servers, session, steam, updater, win};
+use launcher_core::{a2s, address, fonts, http, index, line, links, log, servers, session, steam, updater, win};
 use serde::Serialize;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -115,8 +115,13 @@ fn launch(app: &AppHandle, connect: Option<String>) -> Result<String, String> {
         // Never blocks the launch: a failed repair is reported, the game still starts.
         repair(&mut inner, "launch");
     }
-    let args = steam::launch_args(inner.settings.disable_lua_refresh, connect.as_deref());
+    let faster = inner.settings.disable_lua_refresh;
+    let args = steam::launch_args(faster, connect.as_deref());
+    let garrysmod = inner.game.as_ref().map(|g| g.garrysmod.clone());
     drop(inner);
+    if let Some(garrysmod) = garrysmod.filter(|g| faster && line::present(g)) {
+        lazy_fonts(garrysmod);
+    }
     std::process::Command::new(&exe).args(&args).spawn().map_err(|e| format!("Couldn't start Steam: {e}"))?;
     log::line(&format!("launch: steam {}", args.join(" ")));
     let _ = app.emit("status", ());
@@ -124,6 +129,45 @@ fn launch(app: &AppHandle, connect: Option<String>) -> Result<String, String> {
         Some(a) => format!("Starting Garry's Mod and joining {a}..."),
         None => "Starting Garry's Mod...".into(),
     })
+}
+
+/// Lazy fonts (core/src/fonts.rs): the Workshop font cache goes aside for this
+/// start and comes back as soon as the pack's start-up stub runs, which is
+/// after the start-up font pass. Only when the start-up line is in place, so
+/// the stub will run: its first file-name change in the pack's data folder
+/// (recover.lock, even in safe mode) is the signal. Otherwise 45 s, the
+/// game's exit or the launcher's next start puts it back.
+fn lazy_fonts(garrysmod: PathBuf) {
+    match fonts::set_aside(&garrysmod) {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(e) => {
+            log::line(&format!("lazy fonts: couldn't set them aside ({e})"));
+            return;
+        }
+    }
+    let data = data_dir();
+    // Armed before the game starts, so the stub's first change can't be missed.
+    let watch = win::NameWatch::new(&data);
+    std::thread::spawn(move || {
+        let start = std::time::Instant::now();
+        let signal = watch.map(|w| w.wait(45_000)).unwrap_or(false);
+        let why = if signal { format!("the pack started after {:.1} s", start.elapsed().as_secs_f64()) } else { "45 s".into() };
+        match fonts::restore(&garrysmod) {
+            Ok(n) => log::line(&format!("lazy fonts: {n} put back ({why})")),
+            Err(e) => log::line(&format!("lazy fonts: couldn't put them back yet ({e}); retried at exit and next start")),
+        }
+    });
+}
+
+fn restore_fonts(game: Option<&steam::Game>, why: &str) {
+    if let Some(g) = game {
+        match fonts::restore(&g.garrysmod) {
+            Ok(0) => {}
+            Ok(n) => log::line(&format!("lazy fonts: {n} put back ({why})")),
+            Err(e) => log::line(&format!("lazy fonts: couldn't put them back ({why}): {e}")),
+        }
+    }
 }
 
 // --- Windows ------------------------------------------------------------------
@@ -248,7 +292,13 @@ fn watch_game(app: AppHandle) {
                 let _ = app.emit("status", ());
             }
             win::Event::Ended { exit_code, created } => {
-                app.state::<AppState>().0.lock().unwrap().running = false;
+                let game = {
+                    let state = app.state::<AppState>();
+                    let mut inner = state.0.lock().unwrap();
+                    inner.running = false;
+                    inner.game.clone()
+                };
+                restore_fonts(game.as_ref(), "the game closed");
                 let data = data_dir();
                 let file = session::read_server_file(&data);
                 let verdict = session::verdict(file, created, exit_code, |since| session::crash_report_since(&root, since));
@@ -651,6 +701,9 @@ fn main() {
                 let state = handle.state::<AppState>();
                 let mut inner = state.0.lock().unwrap();
                 repair(&mut inner, "start");
+                if !inner.running {
+                    restore_fonts(inner.game.as_ref(), "launcher start");
+                }
             }
             let h = handle.clone();
             std::thread::spawn(move || watch_game(h));

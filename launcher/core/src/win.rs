@@ -143,6 +143,41 @@ pub fn delete_protocol_tree() -> bool {
     reg_delete_tree(PROTOCOL_KEY)
 }
 
+// --- Folder changes ----------------------------------------------------------
+
+/// A watch for a file being created, deleted or renamed directly in a folder
+/// (not below it), armed when made: a change after `new` and before `wait`
+/// still counts.
+pub struct NameWatch(HANDLE);
+
+// SAFETY: a change-notification handle may be waited on from any thread.
+unsafe impl Send for NameWatch {}
+
+impl NameWatch {
+    pub fn new(dir: &Path) -> Option<NameWatch> {
+        use windows_sys::Win32::Storage::FileSystem::{FindFirstChangeNotificationW, FILE_NOTIFY_CHANGE_FILE_NAME};
+        let d = wide(&dir.to_string_lossy());
+        // SAFETY: a valid path; the handle is closed in Drop.
+        let h = unsafe { FindFirstChangeNotificationW(d.as_ptr(), 0, FILE_NOTIFY_CHANGE_FILE_NAME) };
+        (h != INVALID_HANDLE_VALUE).then_some(NameWatch(h))
+    }
+
+    /// True if a change came (or had come) within `timeout_ms`.
+    pub fn wait(&self, timeout_ms: u32) -> bool {
+        use windows_sys::Win32::System::Threading::WaitForSingleObject;
+        // SAFETY: our own handle.
+        unsafe { WaitForSingleObject(self.0, timeout_ms) == WAIT_OBJECT_0 }
+    }
+}
+
+impl Drop for NameWatch {
+    fn drop(&mut self) {
+        use windows_sys::Win32::Storage::FileSystem::FindCloseChangeNotification;
+        // SAFETY: our own handle.
+        unsafe { FindCloseChangeNotification(self.0) };
+    }
+}
+
 // --- Shell ------------------------------------------------------------------
 
 /// Opens a URL (`steam://...`) or a folder with the shell.
@@ -346,6 +381,21 @@ mod tests {
         assert_eq!(command_exe(&protocol_command_for(exe)).as_deref(), Some(exe));
         assert_eq!(run_command_for(exe), format!("\"{}\" --tray", exe.display()));
         assert_eq!(command_exe("no quotes"), None);
+    }
+
+    #[test]
+    fn name_watch_sees_a_change_made_before_waiting() {
+        let dir = std::env::temp_dir().join(format!("meowy_launcher_watch_dir_{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        let w = NameWatch::new(&dir).unwrap();
+        assert!(!w.wait(50), "nothing yet");
+        std::fs::write(dir.join("sub").join("deeper.txt"), "x").unwrap();
+        assert!(!w.wait(200), "a change below the folder doesn't count");
+        std::fs::write(dir.join("boot.lock"), "").unwrap();
+        std::fs::remove_file(dir.join("boot.lock")).unwrap();
+        assert!(w.wait(0), "a create+delete before waiting still counts");
+        drop(w);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
