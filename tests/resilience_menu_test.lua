@@ -87,9 +87,11 @@ local function world(opts)
 		Setting = function(name, default)
 			w.convars = w.convars or {}
 			if w.convars[name] == nil then w.convars[name] = (opts.convars and opts.convars[name]) or default end
+			-- As in game: SetBool on these is refused ("not created by Lua"); the
+			-- console sets them (RunConsoleCommand below).
 			return {
 				GetBool = function() return w.convars[name] == "1" end,
-				SetBool = function(_, on) w.convars[name] = on and "1" or "0" end,
+				SetBool = function() error("calling 'SetBool' on bad self (attempted to modify ConVar not created by Lua)", 2) end,
 			}
 		end,
 		DoctorFacts = function() return opts.facts or { arch = "x64", gpu_time_known = false, adapters = {} } end,
@@ -127,6 +129,7 @@ local function world(opts)
 		w.commands[#w.commands + 1] = table.concat({ cmd, ... }, " ")
 		if cmd == "cl_timeout" then w.cl_timeout = (...) end
 		if w.cvars[cmd] ~= nil then w.cvars[cmd] = (...) end
+		if w.convars and w.convars[cmd] ~= nil then w.convars[cmd] = (...) end
 	end
 	env.SetClipboardText = function(t) w.clipboard = t end
 	-- The Escape menu is open (in game, the menu shows only then).
