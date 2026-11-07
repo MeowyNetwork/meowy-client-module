@@ -978,6 +978,13 @@ namespace
 		return 1;
 	}
 
+	// OurServerAddress() -> "a.b.c.d:port" of our main server.
+	int OurServerAddress(lua_State* L)
+	{
+		L->luabase->PushString(server_gate::PrimaryAddress().c_str());
+		return 1;
+	}
+
 	// DataSandbox(onServer): data/ belongs to the server being joined or played
 	// (onServer true), or to the menu (false). See data_sandbox.h. Called every
 	// frame; a switch only happens when the owner changes.
@@ -1370,8 +1377,15 @@ namespace
 		std::string doctor;
 		if (!doctorLogic.empty() && !doctorGlue.empty())
 			doctor = "local Doctor = (function()\n" + doctorLogic + "\nend)()\n" + doctorGlue + "\n";
+		// The main menu's Home card (home_logic.lua as `Home`, given `Logic`; then
+		// home.lua in a function of its own, which sees resilience.lua's locals).
+		std::string homeLogic = ResourceText(IDR_HOME_LOGIC_LUA);
+		std::string homeGlue = ResourceText(IDR_HOME_LUA);
+		std::string home;
+		if (!homeLogic.empty() && !homeGlue.empty())
+			home = "\nlocal Home = (function(...)\n" + homeLogic + "\nend)(Logic);\n(function()\n" + homeGlue + "\nend)()\n";
 		return "local UI = (function()\n" + ui + "\nend)()\n"
-			"local Logic = (function()\n" + logic + "\nend)()\n" + doctor + glue;
+			"local Logic = (function()\n" + logic + "\nend)()\n" + doctor + glue + home;
 	}
 #endif
 
@@ -1739,6 +1753,9 @@ hook.Add("Think", "MeowyClientPack.ServerList", function()
 end)
 
 local stockQuery = serverlist.Query
+-- The game's own query, for lists that aren't the browser's (the main menu's
+-- Home card): no count checks, no backend calls.
+meowy.StockServerQuery = stockQuery
 serverlist.Query = function(data)
 	if enabled:GetBool() and istable(data) and isfunction(data.Callback) then
 		local type, callback, finished = data.Type, data.Callback, data.Finished
@@ -2154,6 +2171,7 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	SetFunction(LUA, "QueryPlayers", Guarded<QueryPlayers>);
 	SetFunction(LUA, "TakePlayers", Guarded<TakePlayers>);
 	SetFunction(LUA, "IsOurServer", Guarded<IsOurServer>);
+	SetFunction(LUA, "OurServerAddress", Guarded<OurServerAddress>);
 	SetFunction(LUA, "OtherServerAddress", Guarded<OtherServerAddress>);
 	SetFunction(LUA, "StatusCaptureBegin", Guarded<StatusCaptureBegin>);
 	SetFunction(LUA, "StatusCaptureEnd", Guarded<StatusCaptureEnd>);

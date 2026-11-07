@@ -7,3 +7,5 @@
 #define IDR_DOCTOR_LOGIC_LUA 105       // src/lua/doctor_logic.lua: the PC doctor's rules (menu state)
 #define IDR_DOCTOR_LUA 106             // src/lua/doctor.lua: its settings tab and meowy_doctor
 #define IDR_UI_LUA 107                 // src/lua/ui.lua: the menu UI kit (cards, buttons, prompts)
+#define IDR_HOME_LOGIC_LUA 108        // src/lua/home_logic.lua: the main menu's Home card, its rules
+#define IDR_HOME_LUA 109              // src/lua/home.lua: the Home card on the menu page

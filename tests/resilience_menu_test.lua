@@ -11,6 +11,9 @@ local chunkText = "local UI = (function()\n" .. readFile(here .. "/../src/lua/ui
 	.. "\nend)()\n" .. "local Doctor = (function()\n" .. readFile(here .. "/../src/lua/doctor_logic.lua")
 	.. "\nend)()\n" .. readFile(here .. "/../src/lua/doctor.lua") .. "\n"
 	.. readFile(here .. "/../src/lua/resilience.lua")
+	-- The Home card, as module.cpp appends it.
+	.. "\nlocal Home = (function(...)\n" .. readFile(here .. "/../src/lua/home_logic.lua") .. "\nend)(Logic);\n"
+	.. "(function()\n" .. readFile(here .. "/../src/lua/home.lua") .. "\nend)()\n"
 local loadstring = loadstring or load
 
 local failures, count = 0, 0
@@ -60,6 +63,19 @@ local function world(opts)
 			return true
 		end,
 		LastServer = function() if w.last then return w.last[1], w.last[2], w.last[3] end end,
+		-- The Home card: our address, and the game's own query over w.lists[type].
+		OurServerAddress = function() return OURS end,
+		StockServerQuery = function(data)
+			w.queried = w.queried or {}
+			w.queried[data.Type] = (w.queried[data.Type] or 0) + 1
+			for _, s in ipairs((w.lists or {})[data.Type] or {}) do
+				local more
+				if s.failed then more = data.CallbackFailed(s.address)
+				else more = data.Callback(s.ping or 30, s.name, "", s.map or "gm_x", s.players or 0, s.max or 32, s.bots or 0, s.pass or false, s.last or 0, s.address) end
+				if more == false then break end
+			end
+			data.Finished()
+		end,
 		LastServerForget = function() w.last = nil w.forgot = (w.forgot or 0) + 1 end,
 		-- Menu settings (module.cpp's meowy.Setting): a convar-like value.
 		Setting = function(name, default)
@@ -103,7 +119,14 @@ local function world(opts)
 		w.commands[#w.commands + 1] = table.concat({ cmd, ... }, " ")
 		if cmd == "cl_timeout" then w.cl_timeout = (...) end
 	end
-	env.hook = { Add = function(event, id, fn) if event == "Think" then w.think = fn end end }
+	-- Every Think hook runs each frame, in the order added (resilience, then the Home card).
+	local thinks, order = {}, {}
+	env.hook = { Add = function(event, id, fn)
+		if event ~= "Think" then return end
+		if not thinks[id] then order[#order + 1] = id end
+		thinks[id] = fn
+	end }
+	w.think = function() for _, id in ipairs(order) do thinks[id]() end end
 	env.serverlist = { PingServer = function(addr, cb)
 		w.pinged = addr
 		if w.pingAnswer then cb(30, "Meowy", "", "map", 10, 64, 0, w.pingPass) end
@@ -123,7 +146,12 @@ local function world(opts)
 	env.ScrW = function() return 1920 end
 	env.ScrH = function() return 1080 end
 	if opts.menu then
-		env.pnlMainMenu = { Call = function(self, js) w.jsCalls = w.jsCalls + 1 w.js = js end }
+		-- The menu page: w.js is the last menu-entry call, w.homeJS the last Home card call.
+		env.pnlMainMenu = { Call = function(self, js)
+			w.jsCalls = w.jsCalls + 1
+			if js:find("window.MeowyHome(", 1, true) then w.homeJS = js w.homeCalls = (w.homeCalls or 0) + 1
+			else w.js = js end
+		end }
 	end
 	env.Msg = function(m) w.printed = (w.printed or "") .. m end
 	env.MsgN = function(m) w.logs = (w.logs or "") .. m .. "\n" end
@@ -888,6 +916,95 @@ check("continue: toggled off forgets the server", w.last == nil and w.forgot == 
 w.run(2)
 check("continue: toggled off, none shown", continueJS(w), "null")
 check("continue: settings window paints", w.paintAll(), "")
+
+-- The Home card: our server, favourites and recent, live, on the main page.
+local function homeData(w) return (w.homeJS or ""):match("window%.MeowyHome%((.*),%d+%);\n$") end
+local LISTS = {
+	favorite = {
+		{ address = "1.1.1.1:27015", name = "Small", players = 2, max = 16 },
+		{ address = "2.2.2.2:27015", name = "Big RP", players = 40, max = 64, bots = 4 },
+		{ address = "3.3.3.3:27015", failed = true },
+	},
+	history = {
+		{ address = "5.5.5.5:27015", name = "Fresh", players = 5, max = 10, last = 1000000 - 7200 },
+	},
+}
+w = world({ settings = ON, menu = true })
+w.lists = LISTS
+w.run(2)
+local data = homeData(w) or ""
+check("home: sent to the page", data ~= "" and data ~= "null", true)
+check("home: our server first, live", data:find('"title":"Meowy Network"', 1, true) ~= nil and data:find('"name":"Meowy"', 1, true) ~= nil, true)
+check("home: our count", data:find('"stats":"10/64 \194\183 30 ms"', 1, true) ~= nil, true)
+check("home: favourites, busiest first", (data:find('"Big RP"', 1, true) or 1e9) < (data:find('"Small"', 1, true) or 0), true)
+check("home: bots left out", data:find("36/64", 1, true) ~= nil, true)
+check("home: recent, with when", data:find('"detail":"gm_x \194\183 2 h ago"', 1, true) ~= nil, true)
+check("home: asked once each", w.queried.favorite == 1 and w.queried.history == 1, true)
+check("home: never through the honest-count wrapper", w.env.serverlist.Query == nil, true)
+check("home: nothing joined on its own", w.connects(), 0)
+w.run(30)
+check("home: not asked again within a minute", w.queried.favorite, 1)
+w.run(31)
+check("home: asked again after a minute", w.queried.favorite, 2)
+local calls = w.homeCalls
+w.run(3)
+check("home: unchanged data not resent every frame", w.homeCalls - calls <= 1, true)
+-- Clicks: a row number in, the address from Lua's own list.
+w.env.MeowyClientPackHomeJoin(1)
+check("home: row 1 joins our server", w.lastConnect(), "connect " .. OURS)
+w.env.MeowyClientPackHomeJoin(2)
+check("home: row 2 joins the busiest favourite", w.lastConnect(), "connect 2.2.2.2:27015")
+local before = w.connects()
+w.env.MeowyClientPackHomeJoin(99)
+w.env.MeowyClientPackHomeJoin("2); RunConsoleCommand('quit'")
+w.env.MeowyClientPackHomeJoin(nil)
+check("home: unknown or junk row numbers join nothing", w.connects(), before)
+check("home: logged", (w.logs or ""):find("home: joining 2.2.2.2:27015", 1, true) ~= nil, true)
+w.logs = ""
+w.concommands.meowy_home()
+check("home: meowy_home lists numbered rows", (w.logs or ""):find("  2. Big RP", 1, true) ~= nil, true)
+check("home: meowy_home shows the silent count", (w.logs or ""):find("1 more isn't answering", 1, true) ~= nil, true)
+w.commands = {}
+w.concommands.meowy_home_join(nil, "meowy_home_join", { "3" })
+check("home: meowy_home_join joins that row", w.lastConnect(), "connect 1.1.1.1:27015")
+w.commands = {}
+w.concommands.meowy_home_join(nil, "meowy_home_join", { "x" })
+w.concommands.meowy_home_join(nil, "meowy_home_join", {})
+check("home: meowy_home_join with junk joins nothing", w.connects(), 0)
+-- In game: the card goes (the Escape menu is the same page), and clicks do nothing.
+w.play(3)
+check("home: hidden in game", homeData(w), "null")
+before = w.connects()
+w.env.MeowyClientPackHomeJoin(1)
+check("home: no join from in game", w.connects(), before)
+w.cut()
+w.run(2)
+check("home: back after leaving", (homeData(w) or "null") ~= "null", true)
+-- A hostile server name is text, not code.
+w = world({ settings = ON, menu = true })
+w.lists = { favorite = { { address = "6.6.6.6:27015", name = "</script><img src=x onerror=\"lua.Run('quit')\">", players = 1, max = 2 } }, history = {} }
+w.run(2)
+data = homeData(w) or ""
+check("home: hostile name escaped", data:find("<", 1, true) == nil and data:find("'", 1, true) == nil and data:find("\\x3c/script\\x3e", 1, true) ~= nil, true)
+-- Off in settings: card removed, nothing asked.
+w = world({ settings = ON, menu = true })
+w.lists = LISTS
+w.run(2)
+w.concommands.meowy_settings()
+local ht = find(function(p) return p.meowyToggle == "menu_home" end)
+check("home: a toggle in settings, on", ht and ht.on, true)
+if ht then ht:SetOn(false) end
+w.run(2)
+check("home: off removes the card", homeData(w), "null")
+local asked = w.queried.favorite
+w.run(70)
+check("home: off asks nothing", w.queried.favorite, asked)
+check("home: settings window paints", w.paintAll(), "")
+-- No menu page (another menu, or none yet): nothing asked, nothing sent.
+w = world({ settings = ON })
+w.lists = LISTS
+w.run(5)
+check("home: no menu page, nothing asked", w.queried, nil)
 
 check("no Lua errors", w.errors, nil)
 print(("%d checks, %d failed"):format(count, failures))

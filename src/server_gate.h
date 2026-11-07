@@ -33,6 +33,10 @@ namespace server_gate
 	// Whether "a.b.c.d:port" is one of our servers (the same list as Check).
 	bool IsOurAddress(const std::string& address);
 
+	// Our main server's "a.b.c.d:port" (the first of that list), for the main
+	// menu's status card.
+	std::string PrimaryAddress();
+
 	// The engine's own view of the connection's health: INetChannelInfo::
 	// IsTimingOut (no packet for a few seconds) and GetTimeSinceLastReceived
 	// (seconds). False when not connected or it couldn't be read safely.
