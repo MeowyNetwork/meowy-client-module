@@ -39,6 +39,7 @@ namespace notify_toast
 #include <cstdio>
 #include <cwchar>
 #include <deque>
+#include <utility>
 #include <memory>
 #include <mutex>
 #include <vector>
@@ -74,7 +75,9 @@ namespace
 		HANDLE wake = nullptr;
 		std::atomic<bool> stop{ false };
 		std::atomic<HWND> window{ nullptr };   // the worker's hidden window, while it exists
-		std::deque<int> queue;                 // guarded by g_mutex
+		// Guarded by g_mutex. The Kind is taken on the game thread when queued
+		// (notify::Kinds() is game-thread only); its strings are never freed.
+		std::deque<std::pair<int, const notify::Kind*>> queue;
 
 		Shared() = default;
 		Shared(const Shared&) = delete;
@@ -543,13 +546,11 @@ namespace
 		return S_OK;
 	}
 
-	void Show(Worker& w, int index)
+	void Show(Worker& w, int index, const notify::Kind* kindPtr)
 	{
-		size_t count = 0;
-		const notify::Kind* kinds = notify::Kinds(&count);
-		if (index < 0 || static_cast<size_t>(index) >= count)
+		if (!kindPtr || !kindPtr->id || !kindPtr->text)
 			return;
-		const notify::Kind& kind = kinds[index];
+		const notify::Kind& kind = *kindPtr;
 		// Checked again here: the player may be back in the game by now.
 		if (TargetInFront())
 		{
@@ -692,18 +693,18 @@ namespace
 			if (shared.stop.load())
 				break;
 
-			std::deque<int> todo;
+			std::deque<std::pair<int, const notify::Kind*>> todo;
 			{
 				std::lock_guard<std::mutex> lock(g_mutex);
 				todo.swap(shared.queue);
 			}
-			for (int index : todo)
+			for (const auto& item : todo)
 			{
 				if (shared.stop.load())
 					break;
 				try
 				{
-					Show(w, index);
+					Show(w, item.first, item.second);
 				}
 				catch (...)   // out of memory: drop this one, never take the game down
 				{
@@ -773,6 +774,10 @@ namespace notify_toast
 
 	bool Post(int index)
 	{
+		size_t count = 0;
+		const notify::Kind* kinds = notify::Kinds(&count);
+		if (index < 0 || static_cast<size_t>(index) >= count)
+			return false;
 		if (!g_thread)
 		{
 			std::unique_ptr<StartParams> params(new StartParams());
@@ -798,7 +803,7 @@ namespace notify_toast
 		{
 			std::lock_guard<std::mutex> lock(g_mutex);
 			if (g_shared->queue.size() < kMaxQueued)
-				g_shared->queue.push_back(index);
+				g_shared->queue.push_back({ index, &kinds[index] });
 		}
 		SetEvent(g_shared->wake);
 		return true;

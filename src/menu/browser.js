@@ -338,7 +338,8 @@
 		open: false, built: false, tab: 'internet', lists: {}, gm: null, gmSort: 'players', gmQuery: '', cats: {}, f: freshFilters(),
 		q: '', sortKey: 'rank', reverse: false, sel: null, view: [], viewFor: null, timer: null, first: -1, last: -1,
 		players: null, playersFor: null, waitFor: null, refresh: null, selTimer: null, prefsTimer: null, prefsLoaded: false,
-		passwords: {}, found: [], foundGen: 0, foundDone: true, foundAsked: ''
+		passwords: {}, found: [], foundGen: 0, foundDone: true, foundAsked: '',
+		prep: null   // the picked server's content line: { i, text, ask } (home.lua, via MeowyBrowse.prep)
 	};
 	var ui = {};
 
@@ -955,6 +956,16 @@
 			});
 			ui.dActions.appendChild(w);
 		}
+		// Its Workshop content, prepared before the join (docs/CONTENT_PLATFORM.md):
+		// "Get ready · 1.3 GB" as a button, or how far it has got.
+		var prep = st.prep && st.prep.i === s.i && st.prep.text ? st.prep : null;
+		if (prep && prep.ask) {
+			var gr = button(prep.text, '', function () { post('browse_prepare', s.i); });
+			gr.title = "Download this server's Workshop content now, so joining it is quick";
+			ui.dActions.appendChild(gr);
+		} else if (prep) {
+			ui.dActions.appendChild(node('div', 'mb-small', prep.text));
+		}
 		ui.dFav.textContent = s.fav ? '\u2605 Favourite' : '\u2606 Add to favourites';
 		ui.dFav.className = 'mb-btn' + (s.fav ? ' on' : '');
 		var box = ui.dPlayers;
@@ -1288,6 +1299,11 @@
 			drawFound();
 		},
 		flush: function () { if (st.timer) { clearTimeout(st.timer); st.timer = null; } render(); },
+		// The picked server's content line (menu_page.lua's browsePrep): text ('' for none), and whether it's the button.
+		prep: function (i, text, ask) {
+			st.prep = { i: i, text: typeof text === 'string' ? text : '', ask: ask === true };
+			if (st.sel === i) updateDetail();
+		},
 		// The tests' and shell's way in: open(false) closes.
 		open: function (on) { window.MeowyBrowser.open(on !== false); }
 	};
