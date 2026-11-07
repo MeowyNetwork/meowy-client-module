@@ -2,9 +2,10 @@
 // Windows notifications for Meowy Network's city events: the rules (no
 // Windows calls here, so tests/notify_smoke.cpp can run them without the game).
 //
-// The server's client Lua asks for a notification by kind only, from the fixed
-// list in notify.cpp: meowy.Notify("printer_attacked"). The words the player
-// sees are the pack's, compiled in with the kind. Nothing a server sends is
+// The server's client Lua asks for a notification by kind only:
+// meowy.Notify("printer_attacked"). The words the player sees are the pack's:
+// the list compiled into notify.cpp, or (1.6+) a catalogue signed with our
+// offline key (notify_catalogue.h). Nothing a server sends at play time is
 // ever shown, so even our own server can't put a name, a link or anything
 // else in a toast (they appear on the lock screen and in the notification
 // centre). A request is refused, in this order, when:
@@ -18,6 +19,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+
+namespace notify_catalogue
+{
+	struct Catalogue;
+}
 
 namespace notify
 {
@@ -36,11 +42,20 @@ namespace notify
 		const wchar_t* text;
 	};
 
-	// The fixed list, and how many there are.
+	// The current list (the accepted catalogue's, else the compiled one), and
+	// how many there are. Game thread only; the toast thread is handed the
+	// Kind itself.
 	const Kind* Kinds(size_t* count);
 	// Index into Kinds() of exactly this id (length-checked, so an embedded
 	// NUL or trailing text never matches), or -1.
 	int FindKind(const char* id, size_t len);
+
+	// The accepted catalogue's version, 0 while the compiled list applies.
+	uint64_t CatalogueVersion();
+	// Makes a verified, parsed catalogue the current list. Refuses one older
+	// than the current catalogue (an equal version is taken again). The caller
+	// checks the signature first (notify_catalogue::Verify).
+	bool Install(const notify_catalogue::Catalogue& c);
 
 	enum class Refusal
 	{
@@ -61,6 +76,9 @@ namespace notify
 		// clock); if so, it is counted.
 		bool Take(int kind, uint64_t nowMs);
 		void Reset();
+		// Forgets the per-kind times but keeps the hourly count: after a new
+		// catalogue, the indexes mean other kinds.
+		void ResetKinds();
 
 	private:
 		static constexpr int kMaxKinds = 64;

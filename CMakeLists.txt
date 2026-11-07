@@ -31,6 +31,7 @@ add_library(meowy SHARED
 	src/data_sandbox.cpp
 	src/file_util.cpp
 	src/notify.cpp
+	src/notify_catalogue.cpp
 	src/notify_toast.cpp
 	src/timeline.cpp
 	src/timeline_steam.cpp
@@ -40,7 +41,7 @@ add_library(meowy SHARED
 	src/startup_hook.cpp)
 target_include_directories(meowy PRIVATE ${gmod_module_base_SOURCE_DIR}/include)
 if(WIN32)
-	target_link_libraries(meowy PRIVATE msimg32 shlwapi winhttp ws2_32 shell32)   # GradientFill and file streams for the loading screen; HTTPS for the server list
+	target_link_libraries(meowy PRIVATE msimg32 shlwapi winhttp ws2_32 shell32 bcrypt)   # GradientFill and file streams for the loading screen; HTTPS for the server list
 	# Notifications: WinRT toasts (RoGetActivationFactory, HSTRINGs) and the
 	# bundled icons (src/meowy.rc).
 	target_sources(meowy PRIVATE src/meowy.rc)
@@ -138,6 +139,14 @@ if(MEOWY_BUILD_TESTS)
 		set_property(TARGET notify_manual PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 		target_compile_options(notify_smoke PRIVATE /W4 /utf-8)
 		target_compile_options(notify_manual PRIVATE /W4 /utf-8)
+	endif()
+	# The signed notification catalogue (parser, ECDSA check, kind-list switch), no game:
+	#   notify_catalogue_smoke
+	add_executable(notify_catalogue_smoke tests/notify_catalogue_smoke.cpp src/notify_catalogue.cpp src/notify.cpp src/file_util.cpp)
+	target_link_libraries(notify_catalogue_smoke PRIVATE bcrypt)
+	if(MSVC)
+		set_property(TARGET notify_catalogue_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+		target_compile_options(notify_catalogue_smoke PRIVATE /W4 /utf-8)
 	endif()
 	# Connection resilience's own A2S probe against one of our servers, no game:
 	#   probe_smoke <a.b.c.d:port>
