@@ -174,13 +174,16 @@ is kept yet.)
 **The updater (built 2026-11-07, after the pack's U1 merged as #65):** `core/src/release.rs` and
 `core/src/updater.rs` mirror `src/updater.cpp`, agreed with the main session:
 - the same document (`/pack/v1/release-stable.txt` + `.sig`), taken only if signed by the **release** key;
-- the same `ShouldTake` checks, in the same order and words: the `release_seq.txt` floor, `expires`, newer
+- the same `ShouldTake` checks, in the same order and words: the `release_seq_<arch>.txt` floor (one per
+  architecture since 1.7.1; the same document is taken again only when this architecture's staged copy is
+  missing or doesn't match), `expires`, newer
   than what runs, not in `bad_<arch>.txt`, the policy's `VersionAllowed`, the stub version, the rollout slot
   (SHA-256 of `install_token` + salt, the token made the same way and never sent), a file for this arch;
 - the same staging: exactly `size` bytes from meowynetwork.com without redirects, into
-  `bin\<version>.partial\`, SHA-256 checked, renamed to `bin\<version>`, then `pending_<arch>.txt` written
-  atomically, then `release_seq.txt`; unreferenced folders cleaned up. `current`, `previous` and `bad` are
-  the stub's: the launcher never writes them;
+  `bin\<version>.partial\`, SHA-256 checked, this architecture's DLL moved into `bin\<version>` (the other
+  architecture's file there stays), then `pending_<arch>.txt` written atomically, then
+  `release_seq_<arch>.txt`; folders no pointer of either architecture names cleaned up. `current`,
+  `previous` and `bad` are the stub's: the launcher never writes them;
 - only while the game is closed (the pack stages while it runs), a minute after start and every 6 hours;
   the architecture the player runs (`bin\win64\gmod.exe` present → win64).
 

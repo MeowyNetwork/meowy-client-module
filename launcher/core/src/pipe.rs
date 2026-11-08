@@ -68,6 +68,34 @@ pub fn take_lines(buf: &mut Vec<u8>) -> Option<Vec<String>> {
     (buf.len() <= MAX_LINE).then_some(out)
 }
 
+/// A folder as process image paths can show it, lowercase and ending in `\`:
+/// as configured, and with junctions and links resolved (Windows reports a
+/// process's image by its final path, so a game folder moved to another drive
+/// behind a junction only matches that form). The second is left out when it's
+/// the same or can't be resolved.
+pub fn folder_forms(root: &std::path::Path) -> Vec<String> {
+    fn form(s: &str) -> String {
+        let mut s = s.to_lowercase();
+        if let Some(unc) = s.strip_prefix("\\\\?\\unc\\") {
+            s = format!("\\\\{unc}");
+        } else if let Some(rest) = s.strip_prefix("\\\\?\\") {
+            s = rest.to_string();
+        }
+        if !s.ends_with('\\') {
+            s.push('\\');
+        }
+        s
+    }
+    let mut out = vec![form(&root.to_string_lossy())];
+    if let Ok(real) = std::fs::canonicalize(root) {
+        let real = form(&real.to_string_lossy());
+        if !out.contains(&real) {
+            out.push(real);
+        }
+    }
+    out
+}
+
 #[cfg(windows)]
 pub use server::*;
 
@@ -136,14 +164,12 @@ mod server {
     /// Who may connect: given the client's image path (lowercase), yes or no.
     pub type ClientCheck = Box<dyn Fn(&str) -> bool + Send>;
 
-    /// A client is the game when its image is gmod.exe/hl2.exe under `game_root`.
+    /// A client is the game when its image is gmod.exe/hl2.exe under `game_root`
+    /// (either of its `folder_forms`).
     pub fn is_game_client(image: &str, game_root: &Path) -> bool {
-        let mut root = game_root.to_string_lossy().to_lowercase();
-        if !root.ends_with('\\') {
-            root.push('\\');
-        }
         let image = image.to_lowercase();
-        image.starts_with(&root) && (image.ends_with("\\gmod.exe") || image.ends_with("\\hl2.exe"))
+        super::folder_forms(game_root).iter().any(|root| image.starts_with(root))
+            && (image.ends_with("\\gmod.exe") || image.ends_with("\\hl2.exe"))
     }
 
     fn client_image(pipe: HANDLE) -> Option<String> {
@@ -307,6 +333,38 @@ mod tests {
         assert!(!is_game_client("c:\\steam\\steamapps\\common\\garrysmodx\\gmod.exe", root));
         assert!(!is_game_client("c:\\users\\a\\gmod.exe", root));
         assert!(!is_game_client("c:\\steam\\steamapps\\common\\garrysmod\\bin\\win64\\other.exe", root));
+    }
+
+    /// A game folder behind a junction (moved to another drive): the image path
+    /// Windows reports is the real one, and it's still the game.
+    #[cfg(windows)]
+    #[test]
+    fn game_behind_a_junction() {
+        let base = std::env::temp_dir().join(format!("meowy_launcher_junction_{}", std::process::id()));
+        let real = base.join("real");
+        let link = base.join("link");
+        std::fs::create_dir_all(real.join("bin\\win64")).unwrap();
+        let made = std::process::Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(&link)
+            .arg(&real)
+            .output()
+            .unwrap();
+        assert!(made.status.success(), "mklink /J");
+        let forms = folder_forms(&link);
+        assert_eq!(forms.len(), 2, "{forms:?}");
+        let real_form = format!("{}\\", std::fs::canonicalize(&real).unwrap().to_string_lossy().to_lowercase().trim_start_matches("\\\\?\\"));
+        assert_eq!(forms[1], real_form);
+        assert!(!forms[1].starts_with("\\\\?\\"), "no \\\\?\\ prefix");
+        let image = format!("{real_form}bin\\win64\\gmod.exe");
+        assert!(is_game_client(&image, &link), "the real path, the junction configured");
+        assert!(is_game_client(&format!("{}bin\\win64\\gmod.exe", forms[0]), &link), "the configured path still");
+        // The real folder resolves to the same final form (a temp path with an 8.3
+        // short name, as on CI, has its long form as the second one).
+        assert_eq!(folder_forms(&real).last(), Some(&real_form), "the real folder: the same final form");
+        assert!(is_game_client(&image, &real));
+        let _ = std::fs::remove_dir(&link);
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// The real pipe, in this process: a client (standing in for the pack)

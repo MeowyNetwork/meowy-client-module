@@ -182,6 +182,10 @@ pub struct Facts {
     pub policy_allows: bool,
     /// The architecture staged for: "win64" or "win32".
     pub arch: String,
+    /// This architecture's copy of the document's version is missing or doesn't
+    /// match its signed hash (the 1.7.0 launcher emptied a whole `bin\<version>`):
+    /// the same document (seq == last_seq) may be taken again, never an older one.
+    pub staged_copy_gone: bool,
 }
 
 /// `pack_versions::Compare`.
@@ -200,7 +204,7 @@ pub fn own_file<'a>(r: &'a Release, arch: &str) -> Option<&'a File> {
 
 /// `updater::ShouldTake`, in the same order and with the same words.
 pub fn should_take(r: &Release, f: &Facts) -> Result<String, String> {
-    if r.seq <= f.last_seq {
+    if r.seq < f.last_seq || (r.seq == f.last_seq && !f.staged_copy_gone) {
         return Err("the release document isn't newer than the last one taken".into());
     }
     if f.now >= r.expires {
@@ -322,6 +326,7 @@ pub(crate) mod tests {
             bad: vec![],
             policy_allows: true,
             arch: "win64".into(),
+            staged_copy_gone: false,
         }
     }
 
@@ -331,6 +336,8 @@ pub(crate) mod tests {
         assert_eq!(should_take(&r, &facts()), Ok("update to 1.7.0".into()));
         let no = |f: Facts| should_take(&r, &f).unwrap_err();
         assert!(no(Facts { last_seq: 7, ..facts() }).contains("isn't newer"));
+        assert_eq!(should_take(&r, &Facts { last_seq: 7, staged_copy_gone: true, ..facts() }), Ok("update to 1.7.0".into()), "the same seq again, its copy gone");
+        assert!(no(Facts { last_seq: 8, staged_copy_gone: true, ..facts() }).contains("isn't newer"), "never an older seq");
         assert!(no(Facts { now: 1900000000, ..facts() }).contains("expired"));
         assert!(no(Facts { running: None, ..facts() }).contains("isn't known here"));
         assert_eq!(no(Facts { running: Some("1.7.0".into()), ..facts() }), "up to date (1.7.0)");

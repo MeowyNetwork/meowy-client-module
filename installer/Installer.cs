@@ -50,15 +50,32 @@ namespace MeowyInstaller
 
 		// No arguments: the window. "--install" / "--uninstall" [path] [--no-startup]
 		// [--no-sign-in]: no window; exit code 0 on success, 1 on failure, details on stdout.
+		// "--uninstall --without-game": Garry's Mod is gone, so only the launcher and
+		// the pack's own files (never chosen by itself: a mistyped or undetected path
+		// would leave the pack in the real game).
+		// "--reset-policy": forgets the kept policy (below), with the game closed.
 		[STAThread]
 		static int Main(string[] args)
 		{
+			if (args.Length > 0 && args[0] == "--reset-policy")
+			{
+				AttachConsole(-1);
+				if (IsGameRunning())
+				{
+					Console.WriteLine("Close Garry's Mod first.");
+					return 1;
+				}
+				string dir = LocalDir();
+				Console.WriteLine(dir == null ? "no LOCALAPPDATA folder" : ResetPolicy(dir));
+				return 0;
+			}
 			if (args.Length > 0 && (args[0] == "--install" || args[0] == "--uninstall"))
 			{
 				bool startup = Array.IndexOf(args, "--no-startup") < 0;
 				bool signIn = Array.IndexOf(args, "--no-sign-in") < 0;
-				string path = args.Length > 1 && !args[1].StartsWith("--") ? args[1] : FindGarrysMod();
-				return RunCommandLine(args[0] == "--install", path, startup, signIn);
+				bool withoutGame = args[0] == "--uninstall" && Array.IndexOf(args, "--without-game") >= 0;
+				string path = withoutGame ? null : args.Length > 1 && !args[1].StartsWith("--") ? args[1] : FindGarrysMod();
+				return RunCommandLine(args[0] == "--install", path, startup, signIn, withoutGame);
 			}
 
 			Application.EnableVisualStyles();
@@ -71,18 +88,49 @@ namespace MeowyInstaller
 		[System.Runtime.InteropServices.DllImport("kernel32.dll")]
 		static extern bool AttachConsole(int processId);
 
-		static int RunCommandLine(bool install, string garrysmod, bool startup, bool signIn)
+		static int RunCommandLine(bool install, string garrysmod, bool startup, bool signIn, bool withoutGame)
 		{
 			AttachConsole(-1);
-			if (string.IsNullOrEmpty(garrysmod) || !Directory.Exists(Path.Combine(garrysmod, "lua")))
+			bool found = !string.IsNullOrEmpty(garrysmod) && Directory.Exists(Path.Combine(garrysmod, "lua"));
+			if (!found && !withoutGame)
 			{
-				Console.WriteLine("Garry's Mod not found. Pass the garrysmod folder as the second argument.");
+				Console.WriteLine(install ? "Garry's Mod not found. Pass the garrysmod folder as the second argument." :
+					"Garry's Mod not found. Pass the garrysmod folder as the second argument, or --uninstall --without-game " +
+					"if Garry's Mod is already gone (removes only the Meowy Launcher and the pack's own files).");
 				return 1;
 			}
 			if (IsGameRunning())
 			{
 				Console.WriteLine("Close Garry's Mod first.");
 				return 1;
+			}
+			// Garry's Mod uninstalled first (the usual order), said so with
+			// --without-game: the launcher and the pack's own files still go; the
+			// vault with the player's files is kept.
+			if (withoutGame)
+			{
+				// Not while a Garry's Mod Steam knows still has the pack: that uninstall
+				// would leave its modules and start-up line behind.
+				string game = FindGarrysMod();
+				if (game != null && PackPresentIn(game))
+				{
+					Console.WriteLine("Garry's Mod is still installed at " + game + " with the pack in it. Run --uninstall " +
+						"(without --without-game) to remove it from there too.");
+					return 1;
+				}
+				try
+				{
+					Console.WriteLine(UninstallLauncher());
+					Console.WriteLine(RemoveOwnData());
+					Console.WriteLine(UninstallShortcut());
+					Console.WriteLine(NoGameNote);
+					return 0;
+				}
+				catch (Exception e)
+				{
+					Console.WriteLine("failed: " + e.Message);
+					return 1;
+				}
 			}
 			try
 			{
@@ -93,6 +141,11 @@ namespace MeowyInstaller
 					Console.WriteLine(UninstallLauncher());
 					Console.WriteLine(Describe(RemoveData(garrysmod)));
 				}
+				// The launcher's "Faster start" sets the Workshop font cache aside for a
+				// moment; a quit or crash at that moment left it aside.
+				int fonts = RestoreLazyFonts(garrysmod);
+				if (fonts > 0)
+					Console.WriteLine("put back " + fonts + " Workshop font files the launcher had set aside");
 				string bin = Path.Combine(garrysmod, @"lua\bin");
 				Directory.CreateDirectory(bin);
 				foreach (string module in Modules)
@@ -239,28 +292,79 @@ namespace MeowyInstaller
 			File.Replace(temp, file, null);
 		}
 
+		// The way back from a policy no newer one can replace (src/policy.h): the
+		// kept policy and the start-up stub's copy go, so the pack and the launcher
+		// take whatever Meowy Network publishes now, as on a fresh install. Only on
+		// purpose (--reset-policy, when Meowy Network says to): a policy that is
+		// still published comes straight back at the next fetch.
+		public static string ResetPolicy(string dir)
+		{
+			int removed = 0;
+			foreach (string name in new[] { "policy.txt", "policy.sig", "policy.bin" })
+			{
+				string file = Path.Combine(dir, "state", name);
+				if (File.Exists(file))
+				{
+					File.Delete(file);
+					removed++;
+				}
+			}
+			return removed > 0 ? "policy: forgotten; the published one is taken at the next start" : "policy: none kept";
+		}
+
+		// %LOCALAPPDATA%\MeowyClientPack, or null.
+		public static string LocalDir()
+		{
+			string local = Environment.GetEnvironmentVariable("LOCALAPPDATA");
+			return string.IsNullOrEmpty(local) ? null : Path.Combine(local, "MeowyClientPack");
+		}
+
+		// Whether "Start with the game" should show ticked: the line is there, or
+		// the player never turned it off (startup_off.txt). A line Steam removed
+		// isn't the player's choice, so a reinstall puts it back.
+		public static bool StartupWanted(bool linePresent, bool offChosen)
+		{
+			return linePresent || !offChosen;
+		}
+
+		public static bool StartupOffChosen()
+		{
+			string dir = LocalDir();
+			return dir != null && File.Exists(Path.Combine(dir, "startup_off.txt"));
+		}
+
 		// What was just installed in lua\bin is the pack to load: versions the
 		// updater put in %LOCALAPPDATA%\MeowyClientPack\bin and their pointers in
 		// state\ (src/pack_versions.h) go, so an older update can't win over a
-		// newer install. The bad list stays (it only ever names updates).
+		// newer install. The seq floors go too: they guarded the downloads just
+		// removed, and kept, they'd stop the updater from bringing back the release
+		// this install replaced. The bad list stays (it only ever names updates).
 		public static string ResetUpdates()
 		{
-			string local = Environment.GetEnvironmentVariable("LOCALAPPDATA");
-			if (string.IsNullOrEmpty(local))
-				return "updates: nothing to reset";
-			string dir = Path.Combine(local, "MeowyClientPack");
+			string dir = LocalDir();
+			return dir == null ? "updates: nothing to reset" : ResetUpdates(dir);
+		}
+
+		public static string ResetUpdates(string dir)
+		{
 			int removed = 0;
 			string state = Path.Combine(dir, "state");
-			foreach (string which in new[] { "current", "previous", "pending" })
-				foreach (string arch in new[] { "win64", "win32" })
+			var files = new List<string> { "release_seq.txt" };
+			foreach (string arch in new[] { "win64", "win32" })
+			{
+				foreach (string which in new[] { "current", "previous", "pending" })
+					files.Add(which + "_" + arch + ".txt");
+				files.Add("release_seq_" + arch + ".txt");
+			}
+			foreach (string name in files)
+			{
+				string file = Path.Combine(state, name);
+				if (File.Exists(file))
 				{
-					string file = Path.Combine(state, which + "_" + arch + ".txt");
-					if (File.Exists(file))
-					{
-						File.Delete(file);
-						removed++;
-					}
+					File.Delete(file);
+					removed++;
 				}
+			}
 			string bin = Path.Combine(dir, "bin");
 			if (Directory.Exists(bin))
 			{
@@ -289,22 +393,114 @@ namespace MeowyInstaller
 			}
 			if (Directory.Exists(old))
 				RemoveEmpty(old);
-			string local = Environment.GetEnvironmentVariable("LOCALAPPDATA");
-			if (!string.IsNullOrEmpty(local))
+			RemoveOwnData();
+			return report;
+		}
+
+		// The pack's own files in %LOCALAPPDATA%\MeowyClientPack, everything but the
+		// vault (which holds the player's files; RestoreSandboxData empties it).
+		public static string RemoveOwnData()
+		{
+			string dir = LocalDir();
+			return dir == null ? "no LOCALAPPDATA folder" : RemoveOwnData(dir);
+		}
+
+		public static string RemoveOwnData(string dir)
+		{
+			if (!Directory.Exists(dir))
+				return "nothing in " + dir;
+			foreach (string sub in Directory.GetDirectories(dir))
+				if (!string.Equals(Path.GetFileName(sub), "vault", StringComparison.OrdinalIgnoreCase))
+					Directory.Delete(sub, true);
+			foreach (string file in Directory.GetFiles(dir))
+				File.Delete(file);
+			if (Directory.GetFileSystemEntries(dir).Length == 0)
 			{
-				string dir = Path.Combine(local, "MeowyClientPack");
-				if (Directory.Exists(dir))
+				Directory.Delete(dir, false);
+				return "removed " + dir;
+			}
+			return "removed the pack's files in " + dir + " (the vault with your saved files is kept)";
+		}
+
+		public const string NoGameNote = "Garry's Mod wasn't found, so its folder was left as it is: the start-up line, the " +
+			"lua\\bin modules and garrysmod\\data (if any) weren't touched, and the vault with your saved files " +
+			"(%LOCALAPPDATA%\\MeowyClientPack\\vault, or steamapps\\MeowyClientPackVault) was kept.";
+
+		// Anything of the pack on this PC outside a Garry's Mod folder: the
+		// launcher, its sign-in value or the pack's data folder. Uninstall stays
+		// possible with these alone (Garry's Mod removed first, or the DLLs deleted).
+		public static bool LeftoversPresent()
+		{
+			string launcher = LauncherPath();
+			string dir = LocalDir();
+			return (launcher != null && File.Exists(launcher)) || LauncherAtSignIn(RunKey) || (dir != null && Directory.Exists(dir));
+		}
+
+		// Whether a garrysmod folder still has the pack: a module in lua\bin or the start-up line.
+		public static bool PackPresentIn(string garrysmod)
+		{
+			if (string.IsNullOrEmpty(garrysmod) || !Directory.Exists(garrysmod))
+				return false;
+			foreach (string module in Modules)
+				if (File.Exists(Path.Combine(garrysmod, @"lua\bin", module)))
+					return true;
+			return StartupHookPresent(garrysmod);
+		}
+
+		// The launcher's lazy fonts (launcher/core/src/fonts.rs restore): the Workshop
+		// font cache it set aside for a start goes back. Files only; a link is left
+		// alone; when the game made a new fonts folder meanwhile, its copies win.
+		public const string LazyFonts = @"cache\workshop\resource\fonts", LazyFontsAside = @"cache\workshop\resource\fonts.meowy-lazy";
+
+		static bool IsLink(string path)
+		{
+			return (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0;
+		}
+
+		public static int RestoreLazyFonts(string garrysmod)
+		{
+			string aside = Path.Combine(garrysmod, LazyFontsAside), fonts = Path.Combine(garrysmod, LazyFonts);
+			if (!Directory.Exists(aside) || IsLink(aside))
+				return 0;
+			if (!Directory.Exists(fonts) && !File.Exists(fonts))
+			{
+				int all = Directory.GetFileSystemEntries(aside).Length;
+				Directory.Move(aside, fonts);
+				return all;
+			}
+			int n = 0;
+			foreach (string file in Directory.GetFiles(aside))
+			{
+				string target = Path.Combine(fonts, Path.GetFileName(file));
+				if (File.Exists(target))
+					File.Delete(file);   // the game's newer copy is in fonts\ already
+				else
 				{
-					foreach (string sub in Directory.GetDirectories(dir))
-						if (!string.Equals(Path.GetFileName(sub), "vault", StringComparison.OrdinalIgnoreCase))
-							Directory.Delete(sub, true);
-					foreach (string file in Directory.GetFiles(dir))
-						File.Delete(file);
-					if (Directory.GetFileSystemEntries(dir).Length == 0)
-						Directory.Delete(dir, false);
+					File.Move(file, target);
+					n++;
 				}
 			}
-			return report;
+			if (Directory.GetFileSystemEntries(aside).Length == 0)
+				Directory.Delete(aside, false);
+			return n;
+		}
+
+		// The installer was started "as administrator" from a session that normally
+		// runs unelevated (TokenElevationTypeFull, the elevated half of a split
+		// token). With UAC off or on the built-in Administrator account every
+		// process has the full token (TokenElevationTypeDefault): nothing to step
+		// down to, so that's not "elevated" here (launcher/core/src/win.rs elevated).
+		[System.Runtime.InteropServices.DllImport("advapi32.dll", SetLastError = true)]
+		static extern bool GetTokenInformation(IntPtr token, int infoClass, out int info, int length, out int returned);
+		const int TokenElevationTypeClass = 18, TokenElevationTypeFull = 2;
+
+		public static bool IsElevated()
+		{
+			using (var id = System.Security.Principal.WindowsIdentity.GetCurrent())
+			{
+				int kind, returned;
+				return GetTokenInformation(id.Token, TokenElevationTypeClass, out kind, sizeof(int), out returned) && kind == TokenElevationTypeFull;
+			}
 		}
 
 		// --- The player's files the pack kept apart (src/data_sandbox.cpp) ------
@@ -1224,25 +1420,30 @@ namespace MeowyInstaller
 
 		void RefreshStatus()
 		{
+			bool leftovers = Program.LeftoversPresent();
 			if (!PathLooksRight())
 			{
-				m_status.Text = "Garry's Mod wasn't found. Pick its \"garrysmod\" folder (the one with gameinfo.txt).";
-				m_install.Enabled = m_uninstall.Enabled = false;
+				m_status.Text = "Garry's Mod wasn't found. Pick its \"garrysmod\" folder (the one with gameinfo.txt)." +
+					(leftovers ? " Uninstall still removes the Meowy Launcher and the pack's own files." : "");
+				m_install.Enabled = false;
+				m_uninstall.Enabled = leftovers;
 				return;
 			}
 			bool installed = File.Exists(Path.Combine(BinDir(), Program.Modules[0])) || File.Exists(Path.Combine(BinDir(), Program.Modules[1]));
 			bool hook = Program.StartupHookPresent(m_path.Text.Trim());
-			m_status.Text = !installed ? "Not installed." :
+			m_status.Text = !installed ? (leftovers ? "Not installed in this Garry's Mod (the Meowy Launcher or the pack's files are still on this PC)." : "Not installed.") :
 				"Installed" + (hook ? ", starts with the game" : ", doesn't start with the game") + ". Install again to update.";
 			if (installed)
 			{
-				m_startup.Checked = hook;
+				// The player's choice, not whether the line is there right now: a game
+				// update or Steam's file check removes it, and Install puts it back.
+				m_startup.Checked = Program.StartupWanted(hook, Program.StartupOffChosen());
 				string launcher = Program.LauncherPath();
 				if (launcher != null && File.Exists(launcher))
 					m_signIn.Checked = Program.LauncherAtSignIn(Program.RunKey);
 			}
 			m_install.Enabled = true;
-			m_uninstall.Enabled = installed;
+			m_uninstall.Enabled = installed || leftovers;
 		}
 
 		void Browse()
@@ -1280,15 +1481,22 @@ namespace MeowyInstaller
 				// not an older downloaded update (src/pack_versions.h).
 				Program.ResetUpdates();
 				Program.SetStartupChoice(m_startup.Checked);
+				Program.RestoreLazyFonts(m_path.Text.Trim());
 				string launcher = Program.InstallLauncher(m_signIn.Checked);   // never fails the install either
 				Program.InstallShortcut(m_path.Text.Trim());   // never fails the install (balloons without it)
 				RefreshStatus();
 				bool hasLauncher = Program.HasLauncher() && launcher.StartsWith("launcher: " + Program.LauncherPath());
-				if (hasLauncher)
+				// Not from an installer run as administrator: the launcher would keep its
+				// token and start Steam and the game as administrator too.
+				bool elevated = Program.IsElevated();
+				if (hasLauncher && !elevated)
 					Program.StartLauncher();
 				MessageBox.Show(this, "Installed. Join Meowy Network and your Discord status will show where you are." +
-					(hasLauncher ? "\r\n\r\nThe Meowy Launcher is in the tray: Play and Join Meowy Network are there, and it offers " +
+					(hasLauncher && !elevated ? "\r\n\r\nThe Meowy Launcher is in the tray: Play and Join Meowy Network are there, and it offers " +
 						"Rejoin if the game crashes on a server." :
+					 hasLauncher ? "\r\n\r\nThe Meowy Launcher wasn't started, because this installer runs as administrator and the " +
+						"launcher would too. It starts " + (m_signIn.Checked ? "the next time you sign in to Windows, or " : "") +
+						"from the Start menu (Meowy Client Pack)." :
 					 Program.HasLauncher() ? "\r\n\r\nThe Meowy Launcher wasn't installed: " + launcher : ""),
 					Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
 			}
@@ -1303,6 +1511,27 @@ namespace MeowyInstaller
 			if (!GameClosed())
 				return;
 			string garrysmod = m_path.Text.Trim();
+			if (!PathLooksRight())
+			{
+				// Garry's Mod is gone (or not found): the launcher and the pack's own files only.
+				if (MessageBox.Show(this, "Garry's Mod wasn't found. Uninstall removes the Meowy Launcher (and its start at sign-in " +
+					"and meowy:// links) and the pack's own files in %LOCALAPPDATA%\\MeowyClientPack.\r\n\r\n" +
+					"The vault with your saved garrysmod\\data files is kept; pick the garrysmod folder first to have them put back. " +
+					"Uninstall now?", Text, MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK)
+					return;
+				try
+				{
+					string said = Program.UninstallLauncher() + "\r\n" + Program.RemoveOwnData();
+					Program.UninstallShortcut();
+					RefreshStatus();
+					MessageBox.Show(this, "Uninstalled.\r\n\r\n" + said + "\r\n\r\n" + Program.NoGameNote, Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+				}
+				catch (Exception e)
+				{
+					MessageBox.Show(this, "Couldn't uninstall: " + e.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
+				}
+				return;
+			}
 			var answer = MessageBox.Show(this,
 				"Uninstall removes the pack, its start-up line and its own files.\r\n\r\n" +
 				"Your garrysmod\\data files are put back first. While installed, the pack gave every server its own " +
@@ -1321,6 +1550,7 @@ namespace MeowyInstaller
 			{
 				Program.UninstallLauncher();
 				string files = Program.Describe(Program.RemoveData(garrysmod));
+				Program.RestoreLazyFonts(garrysmod);
 				foreach (string module in Program.Modules)
 				{
 					string file = Path.Combine(BinDir(), module);

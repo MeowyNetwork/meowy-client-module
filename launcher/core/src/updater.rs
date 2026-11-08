@@ -5,7 +5,7 @@
 //!
 //!   %LOCALAPPDATA%\MeowyClientPack\bin\<version>\gmcl_meowy_<arch>.dll
 //!   state\pending_<arch>.txt  written last, atomically ("version x\nsha256 y\nok 0\n")
-//!   state\release_seq.txt     the seq floor, after a successful stage only
+//!   state\release_seq_<arch>.txt  the seq floor, one per architecture, after a successful stage only
 //!   state\install_token       made the same way if missing; never sent anywhere
 //!
 //! `current`, `previous` and `bad` belong to the start-up stub, which alone
@@ -23,6 +23,9 @@ use std::path::{Path, PathBuf};
 pub const HOST: &str = "meowynetwork.com";
 pub const DOC_PATH: &str = "/pack/v1/release-stable.txt";
 pub const SIG_PATH: &str = "/pack/v1/release-stable.sig";
+/// The Updates panel's line while "Start with the game" is off.
+pub const START_UP_OFF: &str =
+    "Updates need \"Start with the game\": it's off, so a new version would never start. Turn it on in Meowy settings, or run MeowyClientPack.exe again with it ticked.";
 
 pub fn dll_name(arch: &str) -> String {
     format!("gmcl_meowy_{arch}.dll")
@@ -49,8 +52,15 @@ pub fn bad_list(data: &Path, arch: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-pub fn last_seq(data: &Path) -> u64 {
-    std::fs::read_to_string(data.join("state").join("release_seq.txt")).ok().and_then(|s| s.trim().parse().ok()).unwrap_or(0)
+/// The seq floor for `arch` (`pack_versions::SeqFloorPath`): one per
+/// architecture, so a release staged for one doesn't hold the other back.
+/// 1.7.0's shared `release_seq.txt` isn't read any more.
+pub fn seq_floor_path(data: &Path, arch: &str) -> PathBuf {
+    state_path(data, "release_seq", arch)
+}
+
+pub fn last_seq(data: &Path, arch: &str) -> u64 {
+    std::fs::read_to_string(seq_floor_path(data, arch)).ok().and_then(|s| s.trim().parse().ok()).unwrap_or(0)
 }
 
 /// What the launcher shows: the pointers, the seq floor, the last check.
@@ -164,7 +174,7 @@ mod staging {
             pending: v("pending"),
             previous: v("previous"),
             bad: bad_list(data, arch),
-            release_seq: last_seq(data),
+            release_seq: last_seq(data, arch),
             last_check: last_check.into(),
         }
     }
@@ -220,14 +230,15 @@ mod staging {
             remove_folder(&partial);
             return Err(format!("the download of {} didn't match its signed hash", r.version));
         }
-        remove_folder(&final_dir);
-        if std::fs::rename(&partial, &final_dir).is_err() {
-            remove_folder(&partial);
+        // Only this architecture's file: the other's may be in the same folder.
+        let placed = std::fs::create_dir_all(&final_dir).and_then(|_| std::fs::rename(&dll, final_dir.join(dll_name(arch))));
+        remove_folder(&partial);
+        if placed.is_err() {
             return Err(format!("couldn't put {} in place", r.version));
         }
         let p = Pointer { version: r.version.clone(), sha256: file.sha256.clone(), ok: 0 };
         write_atomic(&state_path(data, "pending", arch), p.text().as_bytes()).map_err(|_| format!("couldn't record {}", r.version))?;
-        let _ = write_atomic(&data.join("state").join("release_seq.txt"), format!("{}\n", r.seq).as_bytes());
+        let _ = write_atomic(&seq_floor_path(data, arch), format!("{}\n", r.seq).as_bytes());
         clean_up(data, arch);
         Ok(format!("{} is ready: it starts next time you open Garry's Mod", r.version))
     }
@@ -248,6 +259,11 @@ mod staging {
         if updates_off(data) {
             return ("updates are off in the pack's settings (meowy_updates 0)".into(), None);
         }
+        // Only the start-up stub starts a downloaded version: with "Start with
+        // the game" off, nothing staged would ever run, so nothing is fetched.
+        if crate::line::off(data) {
+            return (START_UP_OFF.into(), None);
+        }
         let body = fetch(DOC_PATH, release::MAX_BODY as u64).unwrap_or_default();
         let sig = if body.is_empty() { Vec::new() } else { fetch(SIG_PATH, 256).unwrap_or_default() };
         if body.is_empty() || sig.is_empty() {
@@ -267,17 +283,19 @@ mod staging {
         let facts = Facts {
             running: running_version(data, garrysmod, arch, policy),
             stub: stub_version(garrysmod, arch),
-            last_seq: last_seq(data),
+            last_seq: last_seq(data, arch),
             now,
             slot: rollout_slot(&token, &r.salt),
             bad: bad_list(data, arch),
             policy_allows: release::policy_allows(policy, &r.version),
             arch: arch.into(),
+            staged_copy_gone: release::own_file(&r, arch)
+                .is_some_and(|f| file_sha256(&version_dll(data, &r.version, arch)).as_deref() != Some(f.sha256.as_str())),
         };
         if let Err(why) = release::should_take(&r, &facts) {
             return (why, None);
         }
-        if read_pointer(&state_path(data, "pending", arch)).is_some_and(|p| p.version == r.version) {
+        if !facts.staged_copy_gone && read_pointer(&state_path(data, "pending", arch)).is_some_and(|p| p.version == r.version) {
             return (format!("{} is ready: it starts next time you open Garry's Mod", r.version), None);
         }
         // The pack stages while the game runs; the launcher only while it doesn't.
@@ -377,12 +395,16 @@ mod tests {
         // A wrong download: nothing staged, no pointer, seq floor unchanged.
         let wrong = stage(&data, &r, "win64", |_, size| Ok(vec![b'x'; size as usize]));
         assert!(wrong.unwrap_err().contains("didn't match its signed hash"));
-        assert!(!state_path(&data, "pending", "win64").exists() && last_seq(&data) == 0);
+        assert!(!state_path(&data, "pending", "win64").exists() && last_seq(&data, "win64") == 0);
         assert!(!data.join("bin\\1.7.0.partial").exists() && !data.join("bin\\1.7.0").exists());
         let short = stage(&data, &r, "win64", |_, _| Ok(b"short".to_vec()));
         assert!(short.unwrap_err().contains("couldn't download"));
-        // The right one.
+        // The right one, next to the other architecture's file for the same version.
         std::fs::create_dir_all(data.join("bin\\0.9.0")).unwrap(); // nothing points here: cleaned up
+        std::fs::create_dir_all(data.join("bin\\1.7.0")).unwrap();
+        std::fs::write(version_dll(&data, "1.7.0", "win32"), b"the win32 file").unwrap();
+        let p32 = Pointer { version: "1.7.0".into(), sha256: sha256_hex(b"the win32 file"), ok: 0 };
+        std::fs::write(state_path(&data, "pending", "win32"), p32.text()).unwrap();
         let ok = stage(&data, &r, "win64", |path, size| {
             assert_eq!((path, size), ("/pack/v1/1.7.0/gmcl_meowy_win64.dll", dll.len() as u64));
             Ok(dll.clone())
@@ -390,7 +412,10 @@ mod tests {
         assert_eq!(ok.unwrap(), "1.7.0 is ready: it starts next time you open Garry's Mod");
         assert_eq!(std::fs::read(version_dll(&data, "1.7.0", "win64")).unwrap(), dll);
         assert_eq!(read_pointer(&state_path(&data, "pending", "win64")), Some(Pointer { version: "1.7.0".into(), sha256: sha, ok: 0 }));
-        assert_eq!(last_seq(&data), 7);
+        assert_eq!(last_seq(&data, "win64"), 7);
+        assert_eq!(last_seq(&data, "win32"), 0, "the floor is this architecture's own");
+        assert!(seq_floor_path(&data, "win64").ends_with("release_seq_win64.txt"));
+        assert_eq!(std::fs::read(version_dll(&data, "1.7.0", "win32")).unwrap(), b"the win32 file", "the other architecture's file stays");
         assert!(!data.join("bin\\0.9.0").exists(), "an unreferenced folder is cleaned up");
         assert!(!state_path(&data, "current", "win64").exists(), "current is the stub's");
         std::fs::remove_dir_all(data.parent().unwrap()).unwrap();
@@ -409,6 +434,11 @@ mod tests {
         assert_eq!(said, "the release document isn't signed by the release key");
         let down = |_: &str, _: u64| Err("offline".to_string());
         assert!(check_once(&keys, &data, &gm, "win64", None, 1800000000, &never, &down).0.contains("couldn't be reached"));
+        // "Start with the game" off: nothing fetched, and the panel says why.
+        std::fs::write(data.join("startup_off.txt"), b"off").unwrap();
+        let no_fetch = |_: &str, _: u64| -> Result<Vec<u8>, String> { panic!("fetched with start-up off") };
+        let (said, staged) = check_once(&keys, &data, &gm, "win64", None, 1800000000, &never, &no_fetch);
+        assert_eq!((said.as_str(), staged), (START_UP_OFF, None));
         std::fs::remove_dir_all(data.parent().unwrap()).unwrap();
     }
 }

@@ -290,6 +290,37 @@ pub fn shell_open(target: &str) -> bool {
     unsafe { ShellExecuteW(null_mut(), op.as_ptr(), t.as_ptr(), null(), null(), SW_SHOWNORMAL) as usize > 32 }
 }
 
+/// Whether this process was started "as administrator" from a session that
+/// normally runs unelevated (TokenElevationTypeFull: the elevated half of a
+/// split token): then whatever it starts (Steam, and through it the game)
+/// would be elevated too, unlike everything else the player runs. With UAC off,
+/// or on the built-in Administrator account, every process has the full token
+/// (TokenElevationTypeDefault) and this is false: nothing to step down to.
+pub fn elevated() -> bool {
+    use windows_sys::Win32::Security::{
+        GetTokenInformation, TokenElevationType, TokenElevationTypeFull, TOKEN_ELEVATION_TYPE, TOKEN_QUERY,
+    };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+    // SAFETY: our own token, query only; the out-buffer is the value's size.
+    unsafe {
+        let mut token: HANDLE = null_mut();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+            return false;
+        }
+        let mut kind: TOKEN_ELEVATION_TYPE = 0;
+        let mut len = 0u32;
+        let ok = GetTokenInformation(
+            token,
+            TokenElevationType,
+            &mut kind as *mut TOKEN_ELEVATION_TYPE as *mut core::ffi::c_void,
+            std::mem::size_of::<TOKEN_ELEVATION_TYPE>() as u32,
+            &mut len,
+        );
+        CloseHandle(token);
+        ok != 0 && kind == TokenElevationTypeFull
+    }
+}
+
 // --- Game processes -----------------------------------------------------------
 
 struct Proc {
@@ -321,7 +352,7 @@ pub enum Event {
 /// and exits, so a session ends when the last followed process exits; its
 /// exit code is the session's.
 pub struct Watcher {
-    root: String,
+    roots: Vec<String>,
     procs: Vec<Proc>,
     skipped: Vec<u32>,
     active: bool,
@@ -380,11 +411,9 @@ fn candidates() -> Vec<(u32, u32)> {
 
 impl Watcher {
     pub fn new(game_root: &Path) -> Watcher {
-        let mut root = game_root.to_string_lossy().to_lowercase();
-        if !root.ends_with('\\') {
-            root.push('\\');
-        }
-        Watcher { root, procs: Vec::new(), skipped: Vec::new(), active: false, created: 0, last_exit: 0 }
+        // Both forms of the folder: a game behind a junction reports its real path.
+        let roots = crate::pipe::folder_forms(game_root);
+        Watcher { roots, procs: Vec::new(), skipped: Vec::new(), active: false, created: 0, last_exit: 0 }
     }
 
     pub fn running(&self) -> bool {
@@ -405,7 +434,7 @@ impl Watcher {
             }
             let proc = Proc { handle, pid, created: created(handle) };
             match image_path(handle) {
-                Some(path) if path.starts_with(&self.root) => found.push((proc, parent, path)),
+                Some(path) if self.roots.iter().any(|r| path.starts_with(r)) => found.push((proc, parent, path)),
                 _ => self.skipped.push(pid),
             }
         }

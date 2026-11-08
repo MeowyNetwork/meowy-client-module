@@ -125,6 +125,14 @@ fn repair(inner: &mut Inner, why: &str) -> String {
 /// Starts the game through Steam (repairing first), or asks the running game
 /// to join `connect`.
 fn launch(app: &AppHandle, connect: Option<String>) -> Result<String, String> {
+    // Started as administrator (an installer run that way): Steam and the game
+    // would get that token too, with Steam's path from a value any program can change.
+    if win::elevated() {
+        log::line("launch refused: the launcher runs as administrator");
+        return Err("The Meowy Launcher is running as administrator, so it won't start Steam or the game. \
+            Quit it from the tray and open it again from the Start menu."
+            .into());
+    }
     let state = app.state::<AppState>();
     let mut inner = state.0.lock().unwrap();
     locate(&mut inner);
@@ -492,7 +500,12 @@ fn watch_steam(app: AppHandle) {
         }
         let Some(game) = inner.game.clone() else { continue };
         let stamp = |p: PathBuf| std::fs::metadata(p).and_then(|m| m.modified()).ok();
-        let sig = vec![stamp(game.manifest.clone()), stamp(game.garrysmod.join("lua\\includes\\menu.lua"))];
+        // The player's "Start with the game" choice too, so turning it back on is seen.
+        let sig = vec![
+            stamp(game.manifest.clone()),
+            stamp(game.garrysmod.join("lua\\includes\\menu.lua")),
+            stamp(data_dir().join("startup_off.txt")),
+        ];
         let stable = last.as_ref() == Some(&sig);
         last = Some(sig.clone());
         if !stable || checked.as_ref() == Some(&sig) || inner.running {
@@ -506,8 +519,14 @@ fn watch_steam(app: AppHandle) {
             continue;
         }
         repair(&mut inner, "Steam changed the game's files");
+        // A repair that put the line back changed menu.lua: the next stable stamp
+        // is checked once more (cheaply). One that didn't ("Start with the game"
+        // is off, the pack's files are missing, the write failed) isn't tried
+        // again until Steam or the player changes these files.
+        if !line::present(&game.garrysmod) {
+            checked = Some(sig);
+        }
         drop(inner);
-        // The repair itself changed menu.lua: the next stable stamp is checked once more (cheaply).
         let _ = app.emit("status", ());
     }
 }
@@ -588,7 +607,7 @@ fn status(app: AppHandle) -> Status {
         Some(_) => "missing",
     };
     Status {
-        version: env!("CARGO_PKG_VERSION"),
+        version: env!("MEOWY_PACK_VERSION"),
         steam: inner.steam_exe.is_some(),
         game_found: inner.game.is_some(),
         garrysmod: inner.game.as_ref().map(|g| g.garrysmod.display().to_string()).unwrap_or_default(),
@@ -868,7 +887,7 @@ fn main() {
         std::env::args().skip(1).map(|a| if links::is_link(&a) { "<link>".into() } else { a }).collect();
     log::line(&format!(
         "start {} ({:?}); game: {}",
-        env!("CARGO_PKG_VERSION"),
+        env!("MEOWY_PACK_VERSION"),
         args,
         inner.game.as_ref().map(|g| g.garrysmod.display().to_string()).unwrap_or_else(|| "not found".into())
     ));
@@ -919,10 +938,15 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("the launcher's window system");
 
-    app.run(|_app, event| {
+    app.run(|app, event| match event {
         // Closing the last window keeps the launcher in the tray; only Quit exits.
-        if let RunEvent::ExitRequested { code: None, api, .. } = event {
-            api.prevent_exit();
+        RunEvent::ExitRequested { code: None, api, .. } => api.prevent_exit(),
+        // Quit (the tray, --quit, the installer): the Workshop fonts back first,
+        // or nothing would put them back until the launcher's next start.
+        RunEvent::Exit => {
+            let game = app.state::<AppState>().0.lock().ok().and_then(|inner| inner.game.clone());
+            restore_fonts(game.as_ref(), "the launcher quit");
         }
+        _ => {}
     });
 }

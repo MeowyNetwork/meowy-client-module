@@ -205,7 +205,8 @@ namespace updater
 
 	bool ShouldTake(const Release& r, const Facts& f, std::string& why)
 	{
-		if (r.seq <= f.lastSeq)
+		// The same document again only to replace a staged copy that's gone (Facts).
+		if (r.seq < f.lastSeq || (r.seq == f.lastSeq && !f.stagedCopyGone))
 			return why = "the release document isn't newer than the last one taken", false;
 		if (f.now >= r.expires)
 			return why = "the release document has expired", false;
@@ -371,16 +372,23 @@ namespace updater
 			RemoveDirectoryW(dir.c_str());
 		}
 
-		// bin\<version> folders nothing points to any more (current, previous, pending kept).
+	}
+
+	namespace detail
+	{
+		// bin\<version> folders nothing points to any more: current, previous and
+		// pending of both architectures are kept (one bin\ holds both, as the
+		// launcher's clean_up does).
 		void CleanUp(const std::wstring& dataDir)
 		{
 			std::vector<std::string> keep;
-			for (const wchar_t* which : { L"current", L"previous", L"pending" })
-			{
-				pack_versions::Pointer p;
-				if (pack_versions::ReadPointer(pack_versions::StatePath(dataDir, which), &p))
-					keep.push_back(p.version);
-			}
+			for (const wchar_t* arch : { L"win64", L"win32" })
+				for (const wchar_t* which : { L"current", L"previous", L"pending" })
+				{
+					pack_versions::Pointer p;
+					if (pack_versions::ReadPointer(pack_versions::StatePathFor(dataDir, which, arch), &p))
+						keep.push_back(p.version);
+				}
 			WIN32_FIND_DATAW f;
 			HANDLE h = FindFirstFileW((dataDir + L"\\bin\\*").c_str(), &f);
 			if (h == INVALID_HANDLE_VALUE)
@@ -399,6 +407,31 @@ namespace updater
 			FindClose(h);
 		}
 
+		bool PutInPlace(const std::wstring& dataDir, const std::string& version, const std::string& bytes,
+			const std::string& sha256, std::string& why)
+		{
+			const std::wstring bin = dataDir + L"\\bin", partial = bin + L"\\" + Widen(version) + L".partial",
+				final = bin + L"\\" + Widen(version), name = L"\\" + pack_versions::DllName();
+			CreateDirectoryW(bin.c_str(), nullptr);
+			RemoveFolder(partial);
+			CreateDirectoryW(partial.c_str(), nullptr);
+			if (!file_util::WriteAtomic(partial + name, bytes) || pack_versions::Sha256File(partial + name) != sha256)
+			{
+				RemoveFolder(partial);
+				return why = "the download of " + version + " didn't match its signed hash", false;
+			}
+			// Only this architecture's file: the other's may be in the same folder.
+			CreateDirectoryW(final.c_str(), nullptr);
+			const bool moved = MoveFileExW((partial + name).c_str(), (final + name).c_str(), MOVEFILE_REPLACE_EXISTING) != 0;
+			RemoveFolder(partial);
+			if (!moved)
+				return why = "couldn't put " + version + " in place", false;
+			return true;
+		}
+	}
+
+	namespace
+	{
 		// Downloads, checks and stages `r` for the next start. False and why on any failure.
 		bool Stage(const std::wstring& dataDir, const Release& r, std::string& why)
 		{
@@ -406,36 +439,24 @@ namespace updater
 			const std::string bytes = Get(file->path, static_cast<size_t>(file->size));
 			if (bytes.size() != file->size)
 				return why = "couldn't download " + r.version, false;
-			const std::wstring bin = dataDir + L"\\bin", partial = bin + L"\\" + Widen(r.version) + L".partial",
-				final = bin + L"\\" + Widen(r.version);
-			CreateDirectoryW(bin.c_str(), nullptr);
-			RemoveFolder(partial);
-			CreateDirectoryW(partial.c_str(), nullptr);
-			const std::wstring dll = partial + L"\\" + pack_versions::DllName();
-			if (!file_util::WriteAtomic(dll, bytes) || pack_versions::Sha256File(dll) != file->sha256)
-			{
-				RemoveFolder(partial);
-				return why = "the download of " + r.version + " didn't match its signed hash", false;
-			}
-			RemoveFolder(final);
-			if (!MoveFileExW(partial.c_str(), final.c_str(), 0))
-			{
-				RemoveFolder(partial);
-				return why = "couldn't put " + r.version + " in place", false;
-			}
+			if (!detail::PutInPlace(dataDir, r.version, bytes, file->sha256, why))
+				return false;
 			pack_versions::Pointer p;
 			p.version = r.version;
 			p.sha256 = file->sha256;
 			if (!pack_versions::WritePointer(pack_versions::StatePath(dataDir, L"pending"), p))
 				return why = "couldn't record " + r.version, false;
-			file_util::WriteAtomic(dataDir + L"\\state\\release_seq.txt", std::to_string(r.seq) + "\n");
-			CleanUp(dataDir);
+			file_util::WriteAtomic(pack_versions::SeqFloorPath(dataDir), std::to_string(r.seq) + "\n");
+			detail::CleanUp(dataDir);
 			why = r.version + " is ready: it starts next time you open Garry's Mod";
 			return true;
 		}
 
 		void CheckOnce(const std::wstring& dataDir, const std::string& running, int stub)
 		{
+			// Turned off (now, or since the updater started): no contact, no download.
+			if (pack_versions::UpdatesOff(dataDir))
+				return SetState("updates are off in the pack's settings (meowy_updates 0)");
 			const std::string body = Get("/pack/v1/release-stable.txt", kMaxBody);
 			const std::string sig = body.empty() ? std::string() : Trim(Get("/pack/v1/release-stable.sig", 256));
 			if (body.empty() || sig.empty())
@@ -451,17 +472,19 @@ namespace updater
 			Facts f;
 			f.running = running;
 			f.stub = stub;
-			const std::string seqText = Trim(file_util::ReadSmall(dataDir + L"\\state\\release_seq.txt", 64));
+			const std::string seqText = Trim(file_util::ReadSmall(pack_versions::SeqFloorPath(dataDir), 64));
 			f.lastSeq = Digits(seqText, 19) ? std::stoull(seqText) : 0;
 			f.now = static_cast<uint64_t>(std::time(nullptr));
 			f.token = Token(dataDir);
 			f.bad = BadList(dataDir);
 			f.policyAllows = policy::VersionAllowed(policy::Effective(), r.version);
+			const File* own = OwnFile(r);
+			f.stagedCopyGone = own && pack_versions::Sha256File(pack_versions::VersionDll(dataDir, r.version)) != own->sha256;
 			std::string why;
 			if (f.token.empty() || !ShouldTake(r, f, why))
 				return SetState(f.token.empty() ? std::string("no install token") : why);
 			pack_versions::Pointer pending;
-			if (pack_versions::ReadPointer(pack_versions::StatePath(dataDir, L"pending"), &pending) && pending.version == r.version)
+			if (!f.stagedCopyGone && pack_versions::ReadPointer(pack_versions::StatePath(dataDir, L"pending"), &pending) && pending.version == r.version)
 				return SetState(r.version + " is ready: it starts next time you open Garry's Mod");
 			SetState("downloading " + r.version);
 			const bool staged = Stage(dataDir, r, why);

@@ -53,5 +53,8 @@ namespace launcher_pipe
 		std::string HelloLine(const std::string& version);
 		// Whether `image` (a full path) is `expected`, ignoring case and / vs \.
 		bool SamePath(const std::wstring& image, const std::wstring& expected);
+		// Whether two paths name the same existing file (volume and file ID), so
+		// a profile behind a junction matches the real path Windows reports.
+		bool SameFile(const std::wstring& a, const std::wstring& b);
 	}
 }

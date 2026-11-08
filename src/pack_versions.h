@@ -44,6 +44,11 @@ namespace pack_versions
 	std::wstring DllName();     // gmcl_meowy_<arch>.dll
 
 	std::wstring StatePath(const std::wstring& dataDir, const wchar_t* which);   // state\<which>_<arch>.txt
+	std::wstring StatePathFor(const std::wstring& dataDir, const wchar_t* which, const wchar_t* arch);   // either architecture's
+	// The updater's seq floor, one per architecture (state\release_seq_<arch>.txt):
+	// a release one architecture (or the launcher, for it) took doesn't hold the
+	// other back. 1.7.0's shared state\release_seq.txt isn't read any more.
+	std::wstring SeqFloorPath(const std::wstring& dataDir);
 	std::wstring VersionDll(const std::wstring& dataDir, const std::string& version);
 
 	bool ReadPointer(const std::wstring& path, Pointer* out);

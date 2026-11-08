@@ -57,11 +57,16 @@ namespace updater
 	{
 		std::string running;         // this pack's version
 		int stub = 0;                // the start-up stub's version (0: an old stub that can't load updates)
-		uint64_t lastSeq = 0;        // the highest seq taken so far
+		uint64_t lastSeq = 0;        // the highest seq taken so far (this architecture's)
 		uint64_t now = 0;            // unix seconds
 		std::string token;           // this install's random token (hex)
 		std::vector<std::string> bad;
 		bool policyAllows = true;    // the policy allows that version (policy.h VersionAllowed)
+		// This architecture's copy of the document's version is missing or doesn't
+		// match its signed hash (something removed it after it was staged, such as
+		// the 1.7.0 launcher, which emptied the whole bin\<version>): the same
+		// document (seq == lastSeq) may be taken again. Never an older one.
+		bool stagedCopyGone = false;
 	};
 
 	// Whether this install should take `r`; `why` says why not (or "update to x").
@@ -78,4 +83,15 @@ namespace updater
 	std::string Describe();
 	// A version staged this session that starts next time ("" if none), once.
 	std::string TakeReadyNotice();
+
+	namespace detail
+	{
+		// Staging's file steps, for the tests. bytes (checked against sha256) go to
+		// bin\<version>\gmcl_meowy_<arch>.dll for this build's architecture, leaving
+		// the other architecture's file in that folder alone.
+		bool PutInPlace(const std::wstring& dataDir, const std::string& version, const std::string& bytes,
+			const std::string& sha256, std::string& why);
+		// bin\<version> folders no pointer of either architecture names, and partials, removed.
+		void CleanUp(const std::wstring& dataDir);
+	}
 }
