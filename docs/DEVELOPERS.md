@@ -40,7 +40,9 @@ end
 Identical updates are dropped, and updates are sent at most once every 4 s (Discord's rate limit).
 
 ## Menu-state Lua (the pack's own chunks)
-The main menu's Lua is in `src/lua/` and built into the DLL as resources; no server can call it.
+The main menu's Lua is in `src/lua/` and built into the DLL as resources. No server's Lua can call its
+functions; a server can only run the console commands it registers, so each command that matters checks
+where it's run from or asks the player first.
 `settings.lua` (resource 140) runs first, then `module.cpp`'s chunk, then the rest.
 ```lua
 -- meowy.Setting(name, default, help) -> setting   one object per name: asked for again, the first comes
@@ -71,7 +73,8 @@ cmake -S . -B build64 -A x64   && cmake --build build64 --config Release
 cmake -S . -B build32 -A Win32 && cmake --build build32 --config Release
 installer/build.ps1 -Win32 build32/Release/gmcl_meowy_win32.dll -Win64 build64/Release/gmcl_meowy_win64.dll -Boot32 build32/Release/gmsv_meowy_boot_win32.dll -Boot64 build64/Release/gmsv_meowy_boot_win64.dll -Launcher launcher/target/release/MeowyLauncher.exe
 ```
-`-Boot32` and `-Boot64` (the start-up stubs) are required. The version is `src/version.h`'s, for both DLLs,
+`-Boot32` and `-Boot64` (the start-up stubs) are required; `-Launcher` is optional (build it as below).
+The version is `src/version.h`'s, for both DLLs,
 both stubs and the launcher; the installer's own is `AssemblyVersion` in `installer/Installer.cs`.
 
 The Meowy Launcher (Rust, Tauri 2; no tauri-cli or Node needed) and its tests; pass it to the installer
