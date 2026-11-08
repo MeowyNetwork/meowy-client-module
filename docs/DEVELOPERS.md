@@ -39,13 +39,41 @@ end
 ```
 Identical updates are dropped, and updates are sent at most once every 4 s (Discord's rate limit).
 
+## Menu-state Lua (the pack's own chunks)
+The main menu's Lua is in `src/lua/` and built into the DLL as resources; no server can call it.
+`settings.lua` (resource 140) runs first, then `module.cpp`'s chunk, then the rest.
+```lua
+-- meowy.Setting(name, default, help) -> setting   one object per name: asked for again, the first comes
+--   back. Hidden (FCVAR_HIDDEN), kept in menu_settings.txt, read through the policy; the names in
+--   settings.lua's PROTECTED are put back when anything but the menu changes them after a join.
+--   GetBool/GetInt/GetFloat/GetString read the policy-aware, approved value.
+-- meowy.SettingOf(name) -> setting | nil   another chunk's setting, read the way its owner reads it
+--   (the policy and the put-back included). Never read a pack setting through GetConVar's raw value.
+-- meowy.SettingsList() -> { { name, value, default, help }, ... }   for the Meowy console's completion
+-- meowy.MenuFileRead(kind) -> text ("" when there's none)
+-- meowy.MenuFileWrite(kind, text) -> ok   ("" removes the file). Kinds, and nothing else:
+--   "settings_guard_session", "settings_guard_always", "repairs" (the .txt of that name)
+-- meowy.ConsoleRun(line)   runs a line as typed into the console; counts as the menu's own change
+```
+In the menu state `GetConVar`, `GetConVarString` and `ConVarExists` answer a pack setting's name with its
+setting object, since the hidden convars are invisible to the raw functions there too.
+
+Files the pack keeps in `%LOCALAPPDATA%\MeowyClientPack` (HOW-IT-WORKS lists them all), added in 1.7.1:
+`meowy_crashes.txt` (crash reports written while on Meowy Network, the only ones sent),
+`settings_guard_session.txt`, `settings_guard_always.txt`, `repairs.txt` (one-time repairs done) and
+`state\release_seq_<arch>.txt` (the updater's seq floor per architecture; 1.7.0's `release_seq.txt` isn't
+read any more).
+
 ## Building
 Visual Studio 2022+ and CMake 3.20+:
 ```
 cmake -S . -B build64 -A x64   && cmake --build build64 --config Release
 cmake -S . -B build32 -A Win32 && cmake --build build32 --config Release
-installer/build.ps1 -Win32 build32/Release/gmcl_meowy_win32.dll -Win64 build64/Release/gmcl_meowy_win64.dll
+installer/build.ps1 -Win32 build32/Release/gmcl_meowy_win32.dll -Win64 build64/Release/gmcl_meowy_win64.dll -Boot32 build32/Release/gmsv_meowy_boot_win32.dll -Boot64 build64/Release/gmsv_meowy_boot_win64.dll -Launcher launcher/target/release/MeowyLauncher.exe
 ```
+`-Boot32` and `-Boot64` (the start-up stubs) are required. The version is `src/version.h`'s, for both DLLs,
+both stubs and the launcher; the installer's own is `AssemblyVersion` in `installer/Installer.cs`.
+
 The Meowy Launcher (Rust, Tauri 2; no tauri-cli or Node needed) and its tests; pass it to the installer
 with `-Launcher launcher/target/release/MeowyLauncher.exe`:
 ```
@@ -67,13 +95,63 @@ paths the missing-file cache answers for, and its answers against real folders),
 folder>` (the join pre-warm's file lists, budget and cancelling) and `lua_find_smoke` (the fast `file.Find`'s
 prefix rules and its patch stubs on a copy of the game's code).
 
-Staying connected's and the PC doctor's menu Lua is in `src/lua/` (built into the DLL as resources). Their rules and menu
-glue have offline tests, run by CI with Lua 5.1:
+The menu Lua's rules and glue have offline tests, run by CI with Lua 5.1 (each `tests/*_test.lua`,
+including `settings_test.lua`, `settings_guard_logic_test.lua`, `console_logic_test.lua`,
+`content_logic_test.lua` and `party_logic_test.lua`), and the pages have Node tests:
 ```
-lua tests/resilience_logic_test.lua
-lua tests/resilience_menu_test.lua
-lua tests/doctor_logic_test.lua
+for f in tests/*_test.lua; do lua "$f"; done
+node tests/home_page_test.js
+node tests/launcher_card_test.js
 ```
 `-DMEOWY_BUILD_TESTS=ON` also adds `doctor_smoke [power]`: the PC doctor's facts on this PC, after
 rendering a little with Direct3D 11 on the default adapter (or with `power`, Windows' power-saving one),
-so the per-process GPU time should point at that adapter.
+so the per-process GPU time should point at that adapter. The other smoke tests (`policy_smoke`,
+`updater_smoke`, `sandbox_smoke`, `session_smoke`, `launcher_pipe_smoke` and the rest in `tests/`) and
+`uninstall_smoke.cs` (the installer's rules, built with `csc`) run in CI as `.github/workflows/build.yml`
+shows, most of them on both bitnesses.
+
+## Releasing
+1. **Version:** `src/version.h` (`MEOWY_VERSION` and its three numbers), `AssemblyVersion` in
+   `installer/Installer.cs`, and the example in `src/launcher_pipe.h`'s comment. The launcher takes its
+   version from `version.h` (`launcher/app/build.rs`). Add the new version's section at the top of
+   `RELEASE_NOTES.md`: the whole file becomes the GitHub release's text.
+2. **Tag** `vX.Y.Z` on main. CI builds, attests the four DLLs, `MeowyLauncher.exe` and
+   `MeowyClientPack.exe` (not the zip or `SHA256SUMS.txt`), and creates the GitHub release with the
+   installer, the manual zip and `SHA256SUMS.txt`.
+3. **Sign the release for the updater** with `tools/release/make-release.ps1` (the TPM release key; it asks
+   for the PIN). It lays out `pack/v1/` to upload to meowynetwork.com (the Website repo's `public/pack/v1`,
+   then a frontend deploy): the DLLs first, `release-stable.txt` and `.sig` last.
+   - **Seq:** `-Seq` must be above the published document's. The same seq is accepted only to sign the very
+     same version and files again (both updaters may take the floor's document again when its file went
+     missing, so two different documents must never share a seq). The script reads the published document
+     and stops if it can't, unless `-Offline` (then the seq isn't checked).
+   - **Salt** (which installs are in a rollout): `-Salt <hex>`, else the salt of the published document
+     (or `-OutDir`'s) when it names this version, else a new random one. `-NewSalt` forces a new one. If it
+     can read neither, it stops and asks for `-Salt` or `-NewSalt`. So signing the same version again keeps
+     the installs that already had it, and a rollout only grows.
+   - **Rollout in steps:** sign again with a higher `-Seq` and a bigger `-Rollout`; the salt stays.
+   - **Expiry:** the document expires after `-Days` (30 by default). Sign it again before then (same
+     version and files, same seq or higher), or installs that haven't taken it report that the release
+     document has expired. Put the date in the calendar when you publish (1.7.0's expires 2026-12-08).
+4. **Tell older packs:** Meowy Network's server says a newer version exists through `LATEST_VERSION` in
+   the DarkRP repo's `addons/meowy_native_modules/lua/autorun/client/cl_meowy_client_module.lua`.
+5. **Ask players to run the installer** when the launcher changed: the pack's in-game updates replace only
+   the pack, never the Meowy Launcher.
+
+### The kill switch's policy
+`tools/policy/sign-policy.ps1 policy.txt` signs `policy.txt` (LF line ends) and writes `policy.sig`.
+Publish both under `pack/v1/` like a release.
+- **Release key** (default; the TPM, with its PIN): any policy, but its seq must be above the published one.
+- **Ops and recovery keys** (`-Key ops|recovery -KeyFile <file>`): plain PKCS#8 files from
+  `tools/policy/new-keys.ps1`. The pack and the launcher (1.7.1+) take from them only a policy that is
+  stricter than the one kept (the pack on stays on or goes off, nothing leaves `off` or `revoked`,
+  `min_version` only rises), with a seq below 10^15 and at most 1000 above the kept one (at most 1000 on
+  an install that has none), and with no notice other than the kept one. The script checks all of that
+  against the published policy (or `-Kept <policy.txt>`) and refuses to sign what installs would refuse;
+  if the published policy can't be read, it stops and asks for `-Kept`.
+- **Keep seqs counting up by one.** A fresh install with no kept policy takes an ops or recovery policy
+  only up to seq 1000, so fewer than 1000 published policies keep every case working.
+- `new-keys.ps1` writes the ops and recovery keys as unencrypted files. The recovery key is meant to live
+  off the PC that holds the release key.
+- A player stuck on a bad policy can run `MeowyClientPack.exe --reset-policy` (game closed): it forgets
+  the kept policy, and the next fetch takes the published one.
