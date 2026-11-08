@@ -459,6 +459,15 @@ static class UninstallSmoke
 				Put(Path.Combine(dir, @"vault\menu\save.txt"), "mine");
 				Check(Program.FinishUninstall("0", folder) == 0 && !Directory.Exists(folder) && Text(Path.Combine(dir, @"vault\menu\save.txt")) == "mine",
 					"finish: the vault and its folder stay");
+				// Only after an uninstall that got as far as removing the entry.
+				Check(Program.FinishWanted(folder, false), "finish: wanted once the entry is gone");
+				Check(!Program.FinishWanted(folder, true), "finish: not while the entry stays (the uninstall failed later, or Install ran since)");
+				Check(!Program.FinishWanted(null, false), "finish: not when RemoveOwnData kept nothing");
+				Check(!Program.FinishWanted(other, false), "finish: never another folder");
+				// RemoveOwnData from the kept copy is what asks for it.
+				Put(Path.Combine(folder, "MeowyClientPack.exe"), "x");
+				Program.RemoveOwnData(dir, Path.Combine(folder, "MeowyClientPack.exe"));
+				Check(Program.PendingFinishFolder() == folder, "finish: asked for by RemoveOwnData from the kept copy");
 			}
 			finally
 			{

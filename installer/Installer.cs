@@ -1401,6 +1401,8 @@ namespace MeowyInstaller
 			string dir = UninstallerDir();
 			if (dir == null)
 				return "Apps & features: no LOCALAPPDATA folder; no entry";
+			// Installed again after an uninstall in the same window: the kept copy stays.
+			s_finishFolder = null;
 			try
 			{
 				string exe = Path.Combine(dir, UninstallerFile);
@@ -1434,11 +1436,14 @@ namespace MeowyInstaller
 
 		// As this program closes: if RemoveOwnData left the kept installer's folder
 		// because this is it, a copy in %TEMP% removes it once this has exited.
+		// Only when the uninstall got as far as removing the Apps & features
+		// entry: one that failed after RemoveOwnData, or an Install since, keeps
+		// the entry, and it must not point at a folder that's gone.
 		static void FinishUninstaller()
 		{
 			string folder = s_finishFolder;
 			s_finishFolder = null;
-			if (folder == null || !SamePath(folder, UninstallerDir()))
+			if (!FinishWanted(folder, AppsEntryPresent(AppsKey)))
 				return;
 			try
 			{
@@ -1454,6 +1459,19 @@ namespace MeowyInstaller
 			{
 				// Left behind: the next install replaces it, and it only holds the installer.
 			}
+		}
+
+		// Whether FinishUninstaller runs: RemoveOwnData left the kept installer's
+		// folder (and no Install since), and the Apps & features entry is gone.
+		public static bool FinishWanted(string folder, bool entryPresent)
+		{
+			return folder != null && SamePath(folder, UninstallerDir()) && !entryPresent;
+		}
+
+		// The folder FinishUninstaller would remove (tests).
+		public static string PendingFinishFolder()
+		{
+			return s_finishFolder;
 		}
 
 		// --finish-uninstall <pid> <folder>: waits for that process to exit, then

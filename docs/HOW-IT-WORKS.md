@@ -54,7 +54,8 @@ cache aside (below), it's put back.
   folder. No version is shown there, as in-game updates would make it out of date. A program can't
   delete itself while it runs, so once the window closes a copy of it in `%TEMP%`
   (`MeowyClientPack-uninstall.exe`, left there for Windows to clean up) removes the `uninstall`
-  folder. Every uninstall removes the entry. It also deletes a `garrysmod\cfg\meowy_restore.cfg` left
+  folder, but only if the entry is gone: an uninstall that stopped partway keeps both, to try again.
+  Every uninstall removes the entry. It also deletes a `garrysmod\cfg\meowy_restore.cfg` left
   by 1.7.0 or 1.7.1 (see *`config.cfg` backups*).
 
 **Installing again** always makes the installer's own version the one that loads: versions the updater
