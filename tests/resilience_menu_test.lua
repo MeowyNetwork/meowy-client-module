@@ -158,7 +158,10 @@ local function world(opts)
 		ConsoleFileRead = function(kind) return (w.consoleFiles or opts.consoleFiles or {})[kind] or "" end,
 		ConsoleFileWrite = function(kind, text) w.consoleFiles = w.consoleFiles or {} w.consoleFiles[kind] = text return true end,
 		MaskPaths = function(text) return (text:gsub("%a:[\\/][^\n:]*", "<path>")) end,
-		ConsoleSaveLog = function(text) w.savedLog = text return "<path>\\logs\\console_2026-11-07_16-00-00.txt" end,
+		-- The pack's settings, as settings.lua lists them (hidden from cvarlist).
+		SettingsList = function() return { { name = "meowy_updates", value = "1", default = "1", help = "updates" } } end,
+		-- The real path (module.cpp masks the lines, not the path it returns).
+		ConsoleSaveLog = function(text) w.savedLog = text return "C:\\Users\\Ann\\AppData\\Local\\MeowyClientPack\\logs\\console_2026-11-07_16-00-00.txt" end,
 		PrewarmWorkshop = function(a) local ids = {} for i, id in ipairs((w.workshop or {})[a] or {}) do ids[i] = id end return ids end,
 		-- Steam's view of an item: installed, needsUpdate, busy, legacy, updated
 		-- (w.wsState[id] = false: Steam can't say; default: installed, the version of 1600000000).
@@ -2156,16 +2159,27 @@ if cmdEntry then
 	local function shown() w.clipboard = nil copyAll.DoClick() return w.clipboard or "" end
 	cmdEntry.GetValue = function() return "status; clear; echo after" end
 	cmdEntry:OnEnter()
-	check("clear: the mark, then the game's clear", w.consoleRuns[#w.consoleRuns], "status;echo __meowy_console_clear__;clear;echo after")
-	w.console[#w.console + 1] = { id = 3, t = 3000, s = 0, c = -1, x = "status output" }
+	local clearMark = w.consoleRuns[#w.consoleRuns]:match("^status;echo (__meowy_console_clear_%x+__);clear;echo after$")
+	check("clear: the mark (with this start's own part), then the game's clear", clearMark ~= nil, true)
+	-- A server printing the plain mark empties nothing.
+	w.console[#w.console + 1] = { id = 3, t = 3000, s = 0, c = -1, x = "server line" }
 	w.console[#w.console + 1] = { id = 4, t = 3000, s = 0, c = -1, x = "__meowy_console_clear__ " }
-	w.console[#w.console + 1] = { id = 5, t = 3000, s = 0, c = -1, x = "after" }
+	w.now = w.now + 1
+	consoleFrame.Think()
+	check("clear: a server's plain mark empties nothing", shown():find("hello", 1, true) ~= nil, true)
+	w.console[#w.console + 1] = { id = 5, t = 3000, s = 0, c = -1, x = "status output" }
+	w.console[#w.console + 1] = { id = 6, t = 3000, s = 0, c = -1, x = (clearMark or "?") .. " " }
+	w.console[#w.console + 1] = { id = 7, t = 3000, s = 0, c = -1, x = "after" }
+	-- The same mark again (no clear typed for it): nothing more is emptied.
+	w.console[#w.console + 1] = { id = 8, t = 3000, s = 0, c = -1, x = (clearMark or "?") .. " " }
+	w.console[#w.console + 1] = { id = 9, t = 3000, s = 0, c = -1, x = "still here" }
 	w.now = w.now + 1
 	consoleFrame.Think()
 	local after = shown()
+	check("clear: the mark counts once per clear typed", after:find("still here", 1, true) ~= nil and after:find("after", 1, true) ~= nil, true)
 	check("clear: what came before is gone", after:find("hello", 1, true) == nil and after:find("status output", 1, true) == nil, true)
 	check("clear: what came after stays", after:find("after", 1, true) ~= nil, true)
-	check("clear: the mark isn't shown", after:find("__meowy", 1, true), nil)
+	check("clear: the mark it waited for isn't shown; the extra one is just a line", select(2, after:gsub(clearMark or "?", "")), 1)
 	-- Without the engine: emptied here.
 	w.noEngine = true
 	cmdEntry.GetValue = function() return "clear" end
@@ -2222,14 +2236,16 @@ check("console key: turned off through the console", w.convars.meowy_console_key
 w = world({ settings = ON, menu = true, engineConVars = true })
 w.consoleFiles = nil
 w.concommands.meowy_console()
-check("typing: the command list asked for", table.concat(w.consoleRuns or {}, "|"), "echo __meowy_cvars_begin__|cvarlist|echo __meowy_cvars_end__")
+local listBegin, listEnd = table.concat(w.consoleRuns or {}, "|"):match("^echo (__meowy_cvars_begin_%x+__)|cvarlist|echo (__meowy_cvars_end_%x+__)$")
+check("typing: the command list asked for (marks with this start's own part)", listBegin ~= nil and listEnd ~= nil, true)
 w.console = {
-	{ id = 1, t = 1, s = 0, c = -1, x = "__meowy_cvars_begin__ " },   -- echo adds a space
+	{ id = 0, t = 1, s = 0, c = -1, x = "__meowy_cvars_begin__ " },   -- a server printing the plain mark: just a line
+	{ id = 1, t = 1, s = 0, c = -1, x = (listBegin or "?") .. " " },   -- echo adds a space
 	{ id = 2, t = 1, s = 0, c = -1, x = "cvar list" },
 	{ id = 3, t = 1, s = 0, c = -1, x = 'net_graph                                : 1        : , "a", "cl"      : Draw the network usage graph' },
 	{ id = 4, t = 1, s = 0, c = -1, x = 'net_graphheight                          : 64       : , "a", "cl"      : Height of netgraph panel' },
 	{ id = 5, t = 1, s = 0, c = -1, x = "retry                                    : cmd      :                  : Retry connection to last server." },
-	{ id = 6, t = 1, s = 0, c = -1, x = "__meowy_cvars_end__ " },
+	{ id = 6, t = 1, s = 0, c = -1, x = (listEnd or "?") .. " " },
 	{ id = 7, t = 1, s = 0, c = -1, x = "after the list" },
 }
 w.cvars.net_graph, w.cvarDefaults = "1", { net_graph = "0" }
@@ -2244,12 +2260,28 @@ typed.SetText = function(_, v) text = v end
 typed.OnChange()
 typed:OnKeyCodeTyped(67)   -- Tab
 check("typing: Tab completes the best match", text, "net_graph ")
+-- The pack's settings are hidden from cvarlist; settings.lua's list adds them.
+text = "meowy_upd"
+typed.OnChange()
+typed:OnKeyCodeTyped(67)   -- Tab
+check("typing: the pack's own (hidden) settings complete too", text, "meowy_updates ")
+text = "net_g"
+typed.OnChange()
+typed:OnKeyCodeTyped(67)
 typed.OnChange()
 local resetButton
 for _, p in ipairs(w.panels or {}) do if p.class == "DButton" and p.text == "Reset to default" then resetButton = p end end
 check("typing: the inspector offers a reset", resetButton ~= nil, true)
 if resetButton then resetButton.DoClick() end
-check("typing: reset runs it with its default", w.consoleRuns[#w.consoleRuns], 'net_graph "0"')
+check("typing: reset sets its default as one argument", w.commands[#w.commands], "net_graph 0")
+-- A default with a quote or ";" in it (a server's convar can have any) gets no reset.
+w.cvarDefaults = { net_graph = '0";bind w kill;"' }
+typed.OnChange()
+check("typing: no reset for a default that would be two commands", resetButton.visible, false)
+local commandsBefore = #w.commands
+resetButton.DoClick()
+check("typing: and clicking it anyway sends nothing", #w.commands, commandsBefore)
+w.cvarDefaults = { net_graph = "0" }
 -- Pins: "+ Pin" pins what's typed; a pin runs; right-click unpins; kept in a file.
 local function pinChip(label)
 	local found
@@ -2266,13 +2298,33 @@ pinChip("retry").DoRightClick()
 check("pins: right-click unpins", w.consoleFiles.pins, "")
 -- History: kept between starts; Up recalls the last; Ctrl+R lists them.
 check("history: what was run is saved", (w.consoleFiles.history or ""):find("retry", 1, true) ~= nil, true)
-w = world({ settings = ON, menu = true, consoleFiles = { history = "first\nsecond", pins = "status" } })
+-- A password or rcon line runs, but isn't kept, and its echo hides the secret.
+text = 'connect 1.2.3.4:27015; password "hunter2"'
+typed:OnEnter()
+check("history: a password runs", w.consoleRuns[#w.consoleRuns], 'connect 1.2.3.4:27015; password "hunter2"')
+text = "rcon_password hunter2"
+typed:OnEnter()
+check("history: secrets aren't saved", (w.consoleFiles.history or ""):find("hunter2", 1, true), nil)
+local copyButton
+for _, p in ipairs(w.panels or {}) do if p.class == "DButton" and p.text == "Copy" and not p.removed then copyButton = p end end
+w.clipboard = nil
+copyButton.DoClick()
+check("history: the echo hides it", (w.clipboard or ""):find("hunter2", 1, true), nil)
+check("history: and shows the command", (w.clipboard or ""):find("] rcon_password ********", 1, true) ~= nil, true)
+-- Save: the real path on the clipboard, the file named in the note.
+local saveButton
+for _, p in ipairs(w.panels or {}) do if p.class == "DButton" and p.text == "Save" and not p.removed then saveButton = p end end
+saveButton.DoClick()
+check("save: the real path copied", w.clipboard, "C:\\Users\\Ann\\AppData\\Local\\MeowyClientPack\\logs\\console_2026-11-07_16-00-00.txt")
+w = world({ settings = ON, menu = true, consoleFiles = { history = "first\nrcon_password old\nsecond", pins = 'status\nbind k "rcon_password old"' } })
 w.concommands.meowy_console()
 local recallEntry, shown
 for _, p in ipairs(w.panels or {}) do if p.class == "DTextEntry" and rawget(p, "OnEnter") then recallEntry = p end end
 recallEntry.SetText = function(_, v) shown = v end
 recallEntry:OnKeyCodeTyped(88)   -- Up
 check("history: kept from the last start", shown, "second")
+check("history: an older version's secret lines dropped", w.consoleFiles.history, "first\nsecond")
+check("pins: an older version's secret pins dropped", w.consoleFiles.pins, "status")
 local savedPin
 for _, p in ipairs(w.panels or {}) do if rawget(p, "meowyPin") == "status" then savedPin = p end end
 check("pins: kept from the last start", savedPin ~= nil, true)-- Reading the console: dividers at a join, in game and leaving; the right-click
@@ -2285,7 +2337,17 @@ w.state, w.address, w.loading, w.inGame = "ours", OURS, false, true
 w.run(0.2)
 w.inGame, w.state = false, "none"
 w.run(0.2)
+-- meowy_console right after a join (a server's queued command after its
+-- `disconnect`) or during one doesn't open it; at the main menu it does.
+local function consoleOpen()
+	for _, p in ipairs(w.panels or {}) do if rawget(p, "meowyConsole") and not p.removed then return true end end
+	return false
+end
 w.concommands.meowy_console()
+check("meowy_console: not just after a join", consoleOpen(), false)
+w.run(2)
+w.concommands.meowy_console()
+check("meowy_console: at the main menu it opens", consoleOpen(), true)
 local function panelWith(field, value)
 	for _, p in ipairs(w.panels or {}) do
 		if rawget(p, field) ~= nil and (value == nil or rawget(p, field) == value) and not p.removed then return p end

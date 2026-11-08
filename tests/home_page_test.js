@@ -801,6 +801,40 @@ S.win.MeowyBrowse.source(21, { idx: 'failed', age: -1, geo: false, n: 0 });
 S.win.MeowyBrowse.flush();
 check('index: unreachable, Steam alone', side3().querySelector('.mb-status').textContent, "Listing servers with players… 0 s · Meowy's index didn't answer: Steam's list alone");
 
+// Gamemode, title, category and flag names are the server's text: names that are
+// also Object.prototype's own ("constructor", "__proto__") are just names, and
+// one row that fails is skipped, not the batch or the grouping.
+const BLp = S.win.MeowyBrowserLogic;
+const gp = BLp.gamemode('x');
+check('proto: a new gamemode has no inherited titles', ['constructor', '__proto__', 'toString'].some(k => k in gp.titles || k in gp.cats || k in gp.wsids || k in gp.flags), false);
+BLp.addServer(gp, { players: 3, desc: 'constructor', gm: 'x', cat: '', ws: '', flag: 'constructor' });
+BLp.addServer(gp, { players: 1, desc: '__proto__', gm: 'x', cat: '', ws: '', flag: '' });
+check('proto: titles counted as names', gp.titleOrder.join(',') + ' ' + gp.title + ' ' + gp.flagOrder.join(','), 'constructor,__proto__ constructor constructor');
+S = stockPage();
+S.win.MeowyShell(true);
+S.win.MeowyBrowse.open();
+S.win.MeowyBrowse.reset(22, true, 'internet', '');
+S.win.MeowyBrowse.add(22, [
+	{ i: 220, a: '22.0.0.1:27015', n: 'Ctor', d: 'constructor', m: 'gm_a', g: 'constructor', p: 90, x: 100, ms: 10, f: 'constructor' },
+	{ i: 221, a: '22.0.0.2:27015', n: 'Proto', d: '__proto__', m: 'gm_a', g: '__proto__', p: 80, x: 100, ms: 10 },
+	{ i: 222, a: '22.0.0.3:27015', n: 'Empty tag', d: 'hasOwnProperty', m: 'gm_a', g: '', p: 70, x: 100, ms: 10 },
+	{ i: 223, n: 'Throws', get a() { throw new Error('a bad row'); }, g: 'sandbox', p: 60, x: 100 },
+	{ i: 224, a: '22.0.0.5:27015', n: 'Normal', d: 'DarkRP', m: 'rp_a', g: 'darkrp', p: 5, x: 32, ms: 40 },
+], true, 1.5, 1);
+S.win.MeowyBrowse.flush();
+const gmTiles = () => doc.getElementById('meowy-shell').querySelectorAll('.mb-gm').map(t => t.querySelector('.mb-gmname')._text);
+check('proto: every gamemode listed, the bad row alone skipped', gmTiles().join('|'), 'Every gamemode|constructor|__proto__|hasOwnProperty|DarkRP');
+check('proto: counts', side3().querySelectorAll('.mb-small')[0].textContent, '4 servers · 4 gamemodes');
+// Steam's answers regroup the list: still every gamemode.
+S.win.MeowyBrowse.update(22, [
+	{ i: 220, a: '22.0.0.1:27015', n: 'Ctor', d: 'constructor', m: 'gm_b', g: 'constructor', p: 91, x: 100, ms: 9 },
+	{ i: 221, a: '22.0.0.2:27015', n: 'Proto', d: '__proto__', m: 'gm_b', g: '__proto__', p: 81, x: 100, ms: 9 },
+]);
+S.win.MeowyBrowse.flush();
+check('proto: regrouped, nothing lost', gmTiles().join('|'), 'Every gamemode|constructor|__proto__|hasOwnProperty|DarkRP');
+doc.getElementById('meowy-shell').querySelectorAll('.mb-gm').find(t => t.querySelector('.mb-gmname')._text === '__proto__').onclick();
+check('proto: a gamemode named __proto__ opens its servers', doc.getElementById('meowy-shell').querySelectorAll('.mb-srow').map(r => r.querySelector('.mb-c-name').textContent).join('|'), '☆Proto');
+
 // Parties (party.lua's window.MeowyParty): the home's card, and Take the party here.
 S = stockPage();
 S.win.MeowyShell(true);

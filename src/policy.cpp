@@ -51,7 +51,49 @@ namespace policy
 		Keys g_keys = { kReleaseKey, kOpsKey, kRecoveryKey };
 
 		std::mutex g_lock;
+		// The kept files (policy.txt/.sig/.bin): read-check-replace (Offer), the
+		// stub file's heal and the start's read are one step each, so neither
+		// can put an older policy back over a newer one. Taken before g_lock.
+		std::mutex g_fileLock;
 		bool g_haveCurrent = false;
+
+		// The same step across processes: the Meowy Launcher keeps and heals the
+		// same files (launcher/core/src/policy.rs FileGuard), under a named mutex
+		// of the same name. This thread's lock first, then the named one; a
+		// process stuck holding it is waited for 10 s, then gone ahead without.
+		class FileGuard
+		{
+		public:
+			FileGuard() : m_lock(g_fileLock)
+			{
+#ifdef _WIN32
+				m_mutex = CreateMutexW(nullptr, FALSE, kFileMutexName);
+				if (m_mutex)
+				{
+					const DWORD r = WaitForSingleObject(m_mutex, 10000);
+					m_owned = r == WAIT_OBJECT_0 || r == WAIT_ABANDONED;
+				}
+#endif
+			}
+			~FileGuard()
+			{
+#ifdef _WIN32
+				if (m_owned)
+					ReleaseMutex(m_mutex);
+				if (m_mutex)
+					CloseHandle(m_mutex);
+#endif
+			}
+			FileGuard(const FileGuard&) = delete;
+			FileGuard& operator=(const FileGuard&) = delete;
+
+		private:
+			std::lock_guard<std::mutex> m_lock;
+#ifdef _WIN32
+			HANDLE m_mutex = nullptr;
+			bool m_owned = false;
+#endif
+		};
 		Policy g_current;
 		Key g_currentKey = Key::None;
 		std::string g_lastFetch = "not fetched yet";
@@ -286,9 +328,18 @@ namespace policy
 			return *why = "not signed by one of our keys", false;
 		if (haveCur && next.seq <= cur.seq)
 			return *why = "not newer than the one kept", false;
-		if (key == Key::Release || !haveCur)
-			return true;   // the release key may change anything; anything is as strict as "all on"
-		// The ops and recovery keys: only stricter.
+		if (key == Key::Release)
+			return true;   // the release key may change anything
+		// The ops and recovery keys: a seq the release key can always beat (below
+		// kReleaseOnlySeq, at most kMaxStepSeq above the kept one), so a stolen
+		// key can't freeze the policy for good; and no notice of their own.
+		if (next.seq >= kReleaseOnlySeq || next.seq - (haveCur ? cur.seq : 0) > kMaxStepSeq)
+			return *why = "the ops key can't raise the seq that far", false;
+		if (!next.notice.empty() && (!haveCur || next.notice != cur.notice))
+			return *why = "the ops key can't set a notice", false;
+		if (!haveCur)
+			return true;   // anything else is as strict as "all on"
+		// Only stricter.
 		if (next.packEnabled && !cur.packEnabled)
 			return *why = "the ops key can't switch the pack back on", false;
 		for (const std::string& o : cur.off)
@@ -306,7 +357,7 @@ namespace policy
 	{
 		std::wstring PathIn(const std::wstring& dir, const wchar_t* name) { return dir + L"\\" + name; }
 
-		void WriteStubFile(const std::wstring& stateDir, const Policy& p)
+		std::string StubText(const Policy& p)
 		{
 			std::string text = std::string("enabled ") + (p.packEnabled ? "1" : "0") + "\nseq " + std::to_string(p.seq) + "\n";
 			// The stub also passes over an update this policy doesn't allow (pack_versions.h).
@@ -316,7 +367,12 @@ namespace policy
 				text += "revoked " + r + "\n";
 			if (!p.notice.empty())
 				text += "notice " + p.notice + "\n";
-			file_util::WriteAtomic(PathIn(stateDir, L"policy.bin"), text);
+			return text;
+		}
+
+		void WriteStubFile(const std::wstring& stateDir, const Policy& p)
+		{
+			file_util::WriteAtomic(PathIn(stateDir, L"policy.bin"), StubText(p));
 		}
 
 		bool ReadKept(const std::wstring& stateDir, Policy* out, Key* key)
@@ -349,6 +405,7 @@ namespace policy
 		const char* reason = nullptr;
 		if (!Parse(body, &next, &reason))
 			return why = std::string("doesn't parse (") + reason + ")", false;
+		FileGuard files;
 		Policy cur;
 		const bool haveCur = ReadKept(stateDir, &cur, nullptr);
 		if (!MayReplace(cur, haveCur, next, key, &reason))
@@ -485,9 +542,35 @@ namespace policy
 		}
 	}
 
+	bool HealStubFile(const std::wstring& stateDir)
+	{
+		FileGuard files;
+		Policy kept;
+		Key key = Key::None;
+		if (!ReadKept(stateDir, &kept, &key))
+			return false;
+		const std::string want = StubText(kept);
+		const std::string have = file_util::ReadSmall(PathIn(stateDir, L"policy.bin"), kMaxBody + 1024);
+		if (have == want)
+			return false;
+		// Never a lower seq than the stub's copy has: a newer policy is being
+		// kept (by the 1.7.0 launcher, which doesn't take the named mutex).
+		const size_t at = have.find("\nseq ");
+		if (at != std::string::npos)
+		{
+			const size_t end = have.find('\n', at + 5);
+			const std::string seq = have.substr(at + 5, end == std::string::npos ? std::string::npos : end - at - 5);
+			if (Digits(seq, 19) && std::stoull(seq) > kept.seq)
+				return false;
+		}
+		return file_util::WriteAtomic(PathIn(stateDir, L"policy.bin"), want);
+	}
+
 	void StartFetching(const std::wstring& stateDir)
 	{
 		{
+			// The fetch thread a first call started may be taking a newer one.
+			FileGuard files;
 			Policy kept;
 			Key key = Key::None;
 			if (ReadKept(stateDir, &kept, &key))
@@ -498,6 +581,7 @@ namespace policy
 				g_currentKey = key;
 			}
 		}
+		HealStubFile(stateDir);
 		if (!HaveKeys() || g_fetching.exchange(true))
 			return;
 		std::thread([stateDir]
@@ -510,6 +594,7 @@ namespace policy
 		}).detach();
 	}
 #else
+	bool HealStubFile(const std::wstring&) { return false; }
 	void StartFetching(const std::wstring&) {}
 #endif
 }

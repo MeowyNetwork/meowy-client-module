@@ -224,5 +224,37 @@ for i = 2, M.FLOOD_ROWS + 5 do old[i] = L(i, 0, "filler " .. i, i) end
 old[#old + 1] = L(99, 0, "x", 100)
 check("rows: too far back isn't flood", #M.rows(old, { collapse = true, flood = true }), #old)
 
+-- The clear mark console.lua passes (its own, per start).
+check("prepare: a given mark", (M.prepare("clear", true, "__m_1f__")), "echo __m_1f__;clear")
+
+-- Secrets: lines with a password or rcon aren't kept, and their echo hides it.
+check("secret: rcon_password", M.secret("rcon_password hunter2"), true)
+check("secret: any case, any part", M.secret('connect 1.2.3.4:27015; PASSWORD "x"'), true)
+check("secret: rcon", M.secret("rcon kick bob"), true)
+check("secret: quoted command", M.secret('"sv_password" x'), true)
+check("secret: a word that only starts like one", M.secret("passwordless 1"), false)
+check("secret: inside a quoted say", M.secret('say "password hunter2"'), false)
+check("secret: plain", M.secret("net_graph 1"), false)
+check("masked: the secret part", M.masked('connect 1.2.3.4:27015; password "hunter2"'), "connect 1.2.3.4:27015; password ********")
+check("masked: the command alone", M.masked("rcon_password"), "rcon_password")
+check("masked: plain as typed", M.masked("say hi;  retry"), "say hi;  retry")
+check("withoutSecrets", table.concat(M.withoutSecrets({ "a", "rcon_password x", "b", "password y" }), ","), "a,b")
+-- A bind or alias that holds one is a secret too, however it's quoted.
+check("secret: a bind holding rcon_password", M.secret('bind k "rcon_password hunter2"'), true)
+check("secret: an alias holding one in its second command", M.secret('alias go "status; rcon_password hunter2"'), true)
+check("secret: unquoted", M.secret("bind k rcon_password hunter2"), true)
+check("secret: an alias of an alias", M.secret('alias a "alias b password"'), true)
+check("secret: an ordinary bind", M.secret('bind k "say hi"'), false)
+check("secret: a bind with no command", M.secret("bind k"), false)
+check("masked: the bind's command hidden", M.masked('status; bind k "rcon_password hunter2"'), "status; bind k ********")
+
+-- A default that can be put back as one value.
+check("plainValue: a number", M.plainValue("0"), true)
+check("plainValue: text", M.plainValue("some text"), true)
+check("plainValue: a quote", M.plainValue('0";bind w kill;"'), false)
+check("plainValue: a ;", M.plainValue("0;unbindall"), false)
+check("plainValue: a line break", M.plainValue("0\nunbindall"), false)
+check("plainValue: not a string", M.plainValue(nil), false)
+
 print(("%d checks, %d failed"):format(count, failures))
 os.exit(failures == 0 and 0 or 1)

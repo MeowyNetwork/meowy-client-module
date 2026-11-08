@@ -388,6 +388,9 @@ fn watch_policy(app: AppHandle) {
     let mut last_said = String::new();
     // Let the game watcher see a game that's already running before the first fetch.
     std::thread::sleep(Duration::from_secs(10));
+    if keys.any() && policy::heal_stub(&keys, &dir) {
+        log::line("policy: the start-up stub's copy written again from the kept policy");
+    }
     loop {
         let running = app.state::<AppState>().0.lock().unwrap().running;
         if keys.any() && !running && last_fetch.map_or(true, |t| t.elapsed() >= Duration::from_secs(30 * 60)) {

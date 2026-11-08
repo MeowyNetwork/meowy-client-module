@@ -318,6 +318,8 @@ mod tests {
         assert!(updates_off(&data), "0 is off");
         std::fs::write(&settings, "meowy_updates_extra=0\n").unwrap();
         assert!(!updates_off(&data), "only its own name");
+        std::fs::write(&settings, "meowy_menu_scale=100\rmeowy_updates=0\nmeowy_updates=1\n").unwrap();
+        assert!(!updates_off(&data), "a CR inside a value starts no line");
         // Off: the check stops before fetching anything.
         std::fs::write(&settings, "meowy_updates=0\n").unwrap();
         let keys = crate::policy::Keys::production();
