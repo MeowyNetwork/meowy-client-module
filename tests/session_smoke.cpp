@@ -55,6 +55,27 @@ static void Session(const std::wstring& file, const std::string& address, long l
 	f << address << " " << since << "\r\nMeowy\r\n";
 }
 
+// The files this test makes in `dir`: the pack's own and the fake game's crash reports.
+static void CleanUp(const std::wstring& dir)
+{
+	for (const wchar_t* f : { L"on_server.txt", L"last_server.txt", L"meowy_crashes.txt" })
+		DeleteFileW((dir + L"\\" + f).c_str());
+	const std::wstring crashes = dir + L"\\game\\crashes";
+	WIN32_FIND_DATAW fd;
+	HANDLE h = FindFirstFileW((crashes + L"\\*").c_str(), &fd);
+	if (h != INVALID_HANDLE_VALUE)
+	{
+		do
+		{
+			if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+				DeleteFileW((crashes + L"\\" + fd.cFileName).c_str());
+		} while (FindNextFileW(h, &fd));
+		FindClose(h);
+	}
+	RemoveDirectoryW(crashes.c_str());
+	RemoveDirectoryW((dir + L"\\game").c_str());
+}
+
 int main(int argc, char** argv)
 {
 	using namespace resilience;
@@ -71,6 +92,9 @@ int main(int argc, char** argv)
 	GetFullPathNameW(std::wstring(root.begin(), root.end()).c_str(), MAX_PATH, full, nullptr);
 	const std::wstring dir = full;
 	const std::wstring file = dir + L"\\on_server.txt";
+	// Everything this test writes, gone before it starts and after it ends: the
+	// folder may be shared with another run (CI runs each bitness in one temp folder).
+	CleanUp(dir);
 
 	MarkSession(dir, "1.2.3.4:27015", "Foo\r\nRP");
 	const std::string text = Read(file);
@@ -140,6 +164,7 @@ int main(int argc, char** argv)
 	NoteOurCrashes(dir, many);
 	Check("noted names: the newest 50 kept", OurCrashes(dir, { "ours.txt", "c9.txt", "c10.txt", "c59.txt" }).size() == 2);
 
+	CleanUp(dir);
 	std::printf("%d/%d checks passed\n", g_count - g_failures, g_count);
 	return g_failures == 0 ? 0 : 1;
 }
