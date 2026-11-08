@@ -359,6 +359,135 @@ static class UninstallSmoke
 				"fonts: merged into a new folder, the game's copy kept");
 		}
 
+		// 16. The Apps & features entry, under a scratch key (never the real Uninstall key).
+		{
+			string key = @"Software\MeowyClientPackTest\Uninstall\MeowyClientPack";
+			string exe = Path.Combine(root, @"apps\uninstall\MeowyClientPack.exe");
+			try
+			{
+				Check(!Program.AppsEntryPresent(key), "apps: none before install");
+				Program.RegisterAppsEntry(key, exe, exe, Path.Combine(root, "apps"), 1234);
+				Check(Program.AppsEntryPresent(key), "apps: install adds it");
+				using (var k = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(key))
+				{
+					Check(k.GetValue("DisplayName") as string == "Meowy Client Pack" && k.GetValue("Publisher") as string == "Meowy Network",
+						"apps: named Meowy Client Pack, by Meowy Network");
+					Check(k.GetValue("UninstallString") as string == "\"" + exe + "\" --uninstall-prompt",
+						"apps: Uninstall opens the kept installer, asking first");
+					Check(k.GetValue("DisplayIcon") as string == "\"" + exe + "\",0", "apps: its icon");
+					Check((int)k.GetValue("NoModify") == 1 && (int)k.GetValue("NoRepair") == 1, "apps: no Modify or Repair");
+					Check((int)k.GetValue("EstimatedSize") == 1234, "apps: its size in KB");
+					Check(k.GetValue("DisplayVersion") == null, "apps: no version (in-game updates would make it stale)");
+					Check(k.GetValue("InstallLocation") as string == Path.Combine(root, "apps"), "apps: where its files are");
+				}
+				Program.RegisterAppsEntry(key, exe, exe, Path.Combine(root, "apps"), 99);
+				using (var k = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(key))
+					Check((int)k.GetValue("EstimatedSize") == 99, "apps: installing again updates it");
+				Program.RemoveAppsEntry(key);
+				Check(!Program.AppsEntryPresent(key), "apps: uninstall removes it");
+				Program.RemoveAppsEntry(key);
+				Check(!Program.AppsEntryPresent(key), "apps: removing twice is fine");
+			}
+			finally
+			{
+				Microsoft.Win32.Registry.CurrentUser.DeleteSubKeyTree(@"Software\MeowyClientPackTest", false);
+			}
+
+			// Sizes, rounded up to KB; missing files count nothing.
+			Put(Path.Combine(root, @"apps\size\a.bin"), new string('x', 1500));
+			Put(Path.Combine(root, @"apps\size\b.bin"), new string('x', 600));
+			Check(Program.SizeKb(new[] { Path.Combine(root, @"apps\size\a.bin"), Path.Combine(root, @"apps\size\b.bin"), null,
+				Path.Combine(root, @"apps\size\missing.bin") }) == 3, "apps: sizes add up, in KB");
+		}
+
+		// 17. The kept installer: copied, replaced by the next install, never onto itself.
+		{
+			string src = Path.Combine(root, @"keep\download\MeowyClientPack.exe");
+			string kept = Path.Combine(root, @"keep\local\uninstall\MeowyClientPack.exe");
+			Put(src, "installer 1.7.2");
+			Program.CopyUninstaller(src, kept);
+			Check(Text(kept) == "installer 1.7.2", "kept installer: copied (and its folder made)");
+			Put(src, "installer 1.7.3");
+			Program.CopyUninstaller(src, kept);
+			Check(Text(kept) == "installer 1.7.3" && !File.Exists(kept + ".meowy-new"), "kept installer: the next install replaces it");
+			Program.CopyUninstaller(kept, kept);
+			Check(Text(kept) == "installer 1.7.3", "kept installer: installing from it leaves it as it is");
+		}
+
+		// 18. Uninstalling from the kept installer: its own folder can't go while it
+		//     runs, so it's left for afterwards; from anywhere else it goes with the rest.
+		{
+			string d = Path.Combine(root, "fromkept");
+			string kept = Path.Combine(d, @"uninstall\MeowyClientPack.exe");
+			Put(kept, "x");
+			Put(Path.Combine(d, "menu_settings.txt"), "x");
+			Put(Path.Combine(d, @"launcher\MeowyLauncher.exe"), "x");
+			Put(Path.Combine(d, @"vault\menu\save.txt"), "mine");
+			string said = Program.RemoveOwnData(d, kept);
+			Check(File.Exists(kept) && said.Contains("goes once it closes"), "from the kept installer: its folder left for afterwards");
+			Check(!File.Exists(Path.Combine(d, "menu_settings.txt")) && !Directory.Exists(Path.Combine(d, "launcher")), "from the kept installer: the rest goes");
+			Check(Text(Path.Combine(d, @"vault\menu\save.txt")) == "mine", "from the kept installer: the vault is kept");
+			Program.RemoveOwnData(d, Path.Combine(root, @"keep\download\MeowyClientPack.exe"));
+			Check(!Directory.Exists(Path.Combine(d, "uninstall")), "from a downloaded installer: the kept one goes too");
+		}
+
+		// 19. Afterwards (--finish-uninstall): waits for the uninstaller to exit, removes
+		//     only the kept installer's folder, then the pack's folder if empty. The
+		//     pack's folder here is a scratch LOCALAPPDATA's.
+		{
+			string before = Environment.GetEnvironmentVariable("LOCALAPPDATA");
+			string local = Path.Combine(root, "finishlocal");
+			Environment.SetEnvironmentVariable("LOCALAPPDATA", local);
+			try
+			{
+				string dir = Path.Combine(local, "MeowyClientPack"), folder = Path.Combine(dir, "uninstall");
+				Check(Program.UninstallerDir() == folder, "finish: the kept installer's folder is in LOCALAPPDATA\\MeowyClientPack");
+				// A program running from that folder (a copy of cmd.exe waiting a second), as the kept installer would be.
+				string running = Path.Combine(folder, "MeowyClientPack.exe");
+				Directory.CreateDirectory(folder);
+				File.Copy(Path.Combine(Environment.SystemDirectory, "cmd.exe"), running);
+				var p = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(running, "/c ping -n 2 127.0.0.1 >nul")
+					{ UseShellExecute = false, CreateNoWindow = true });
+				string other = Path.Combine(root, @"finishother\uninstall");
+				Directory.CreateDirectory(other);
+				Check(Program.FinishUninstall(p.Id.ToString(), other) == 1 && Directory.Exists(other), "finish: never any other folder");
+				Check(Program.FinishUninstall(p.Id.ToString(), folder) == 0, "finish: done");
+				Check(p.HasExited, "finish: waited for the uninstaller to exit");
+				Check(!Directory.Exists(folder) && !Directory.Exists(dir), "finish: its folder gone, and the pack's, now empty");
+				// With the vault left (Garry's Mod was gone): the pack's folder stays.
+				Put(Path.Combine(folder, "MeowyClientPack.exe"), "x");
+				Put(Path.Combine(dir, @"vault\menu\save.txt"), "mine");
+				Check(Program.FinishUninstall("0", folder) == 0 && !Directory.Exists(folder) && Text(Path.Combine(dir, @"vault\menu\save.txt")) == "mine",
+					"finish: the vault and its folder stay");
+				// Only after an uninstall that got as far as removing the entry.
+				Check(Program.FinishWanted(folder, false), "finish: wanted once the entry is gone");
+				Check(!Program.FinishWanted(folder, true), "finish: not while the entry stays (the uninstall failed later, or Install ran since)");
+				Check(!Program.FinishWanted(null, false), "finish: not when RemoveOwnData kept nothing");
+				Check(!Program.FinishWanted(other, false), "finish: never another folder");
+				// RemoveOwnData from the kept copy is what asks for it.
+				Put(Path.Combine(folder, "MeowyClientPack.exe"), "x");
+				Program.RemoveOwnData(dir, Path.Combine(folder, "MeowyClientPack.exe"));
+				Check(Program.PendingFinishFolder() == folder, "finish: asked for by RemoveOwnData from the kept copy");
+			}
+			finally
+			{
+				Environment.SetEnvironmentVariable("LOCALAPPDATA", before);
+			}
+		}
+
+		// 20. A settings restore's meowy_restore.cfg (left by 1.7.0 and 1.7.1) goes; config.cfg stays.
+		{
+			string gm = Path.Combine(root, @"restorecfg\garrysmod");
+			Put(Path.Combine(gm, @"cfg\meowy_restore.cfg"), "unbindall");
+			Put(Path.Combine(gm, @"cfg\config.cfg"), "mine");
+			Program.RemoveRestoreCfg(gm);
+			Check(!File.Exists(Path.Combine(gm, @"cfg\meowy_restore.cfg")) && Text(Path.Combine(gm, @"cfg\config.cfg")) == "mine",
+				"restore cfg: removed, config.cfg kept");
+			Program.RemoveRestoreCfg(gm);
+			Program.RemoveRestoreCfg(Path.Combine(root, @"restorecfg\nogame"));
+			Check(true, "restore cfg: none there, or no cfg folder, is fine");
+		}
+
 		Console.WriteLine(failed > 0 ? "FAILED" : "all passed");
 		return failed > 0 ? 1 : 0;
 	}

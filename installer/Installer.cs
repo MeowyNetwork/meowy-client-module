@@ -13,6 +13,8 @@
 // which is Steam's default. Install also makes a "Meowy Client Pack" shortcut in
 // the player's Start menu carrying the AppUserModelID the module's Windows
 // notifications use (Windows needs one; see CreateShortcut); uninstall removes it.
+// And it adds the pack to Windows' list of installed apps, uninstalled by a copy
+// of this installer it keeps (see InstallAppsEntry); uninstall removes both.
 //
 // Built with the .NET Framework 4.x compiler that ships with Windows
 // (C# 5), so there is nothing to install to build or run it. See build.ps1.
@@ -53,10 +55,21 @@ namespace MeowyInstaller
 		// "--uninstall --without-game": Garry's Mod is gone, so only the launcher and
 		// the pack's own files (never chosen by itself: a mistyped or undetected path
 		// would leave the pack in the real game).
+		// "--uninstall-prompt": the window, asking to uninstall at once (Windows'
+		// Apps & features runs this; see UninstallerPath).
 		// "--reset-policy": forgets the kept policy (below), with the game closed.
 		[STAThread]
 		static int Main(string[] args)
 		{
+			int code = Run(args);
+			FinishUninstaller();
+			return code;
+		}
+
+		static int Run(string[] args)
+		{
+			if (args.Length > 2 && args[0] == FinishArg)
+				return FinishUninstall(args[1], args[2]);
 			if (args.Length > 0 && args[0] == "--reset-policy")
 			{
 				AttachConsole(-1);
@@ -80,7 +93,7 @@ namespace MeowyInstaller
 
 			Application.EnableVisualStyles();
 			Application.SetCompatibleTextRenderingDefault(false);
-			Application.Run(new MainForm());
+			Application.Run(new MainForm(args.Length > 0 && args[0] == UninstallPromptArg));
 			return 0;
 		}
 
@@ -123,6 +136,7 @@ namespace MeowyInstaller
 					Console.WriteLine(UninstallLauncher());
 					Console.WriteLine(RemoveOwnData());
 					Console.WriteLine(UninstallShortcut());
+					Console.WriteLine(UninstallAppsEntry());
 					Console.WriteLine(NoGameNote);
 					return 0;
 				}
@@ -169,6 +183,7 @@ namespace MeowyInstaller
 				}
 				Console.WriteLine("start with the game: " + (StartupHookPresent(garrysmod) ? "on" : "off"));
 				Console.WriteLine(install ? InstallShortcut(garrysmod) : UninstallShortcut());
+				Console.WriteLine(install ? InstallAppsEntry(garrysmod) : UninstallAppsEntry());
 				return 0;
 			}
 			catch (Exception e)
@@ -393,8 +408,19 @@ namespace MeowyInstaller
 			}
 			if (Directory.Exists(old))
 				RemoveEmpty(old);
+			RemoveRestoreCfg(garrysmod);
 			RemoveOwnData();
 			return report;
+		}
+
+		// A settings restore's garrysmod\cfg\meowy_restore.cfg (the player's binds
+		// and settings): 1.7.0 and 1.7.1 left it there for good; 1.7.2 deletes it
+		// once the game has run it.
+		public static void RemoveRestoreCfg(string garrysmod)
+		{
+			string file = Path.Combine(garrysmod, @"cfg\meowy_restore.cfg");
+			if (File.Exists(file))
+				File.Delete(file);
 		}
 
 		// The pack's own files in %LOCALAPPDATA%\MeowyClientPack, everything but the
@@ -402,24 +428,46 @@ namespace MeowyInstaller
 		public static string RemoveOwnData()
 		{
 			string dir = LocalDir();
-			return dir == null ? "no LOCALAPPDATA folder" : RemoveOwnData(dir);
+			return dir == null ? "no LOCALAPPDATA folder" : RemoveOwnData(dir, Application.ExecutablePath);
 		}
 
-		public static string RemoveOwnData(string dir)
+		// `running`: this program's own file. When it's the copy kept for Apps &
+		// features (in `dir`\uninstall), that folder can't go while it runs: it
+		// goes once this program has closed (FinishUninstaller).
+		public static string RemoveOwnData(string dir, string running)
 		{
 			if (!Directory.Exists(dir))
 				return "nothing in " + dir;
+			string busy = null;
 			foreach (string sub in Directory.GetDirectories(dir))
-				if (!string.Equals(Path.GetFileName(sub), "vault", StringComparison.OrdinalIgnoreCase))
-					Directory.Delete(sub, true);
+			{
+				if (string.Equals(Path.GetFileName(sub), "vault", StringComparison.OrdinalIgnoreCase))
+					continue;
+				if (running != null && SamePath(Path.GetDirectoryName(running), sub))
+				{
+					busy = sub;
+					continue;
+				}
+				Directory.Delete(sub, true);
+			}
 			foreach (string file in Directory.GetFiles(dir))
 				File.Delete(file);
+			if (busy != null)
+			{
+				s_finishFolder = busy;
+				return "removed the pack's files in " + dir + " (this uninstaller's own folder goes once it closes)";
+			}
 			if (Directory.GetFileSystemEntries(dir).Length == 0)
 			{
 				Directory.Delete(dir, false);
 				return "removed " + dir;
 			}
 			return "removed the pack's files in " + dir + " (the vault with your saved files is kept)";
+		}
+
+		public static string RemoveOwnData(string dir)
+		{
+			return RemoveOwnData(dir, null);
 		}
 
 		public const string NoGameNote = "Garry's Mod wasn't found, so its folder was left as it is: the start-up line, the " +
@@ -433,7 +481,8 @@ namespace MeowyInstaller
 		{
 			string launcher = LauncherPath();
 			string dir = LocalDir();
-			return (launcher != null && File.Exists(launcher)) || LauncherAtSignIn(RunKey) || (dir != null && Directory.Exists(dir));
+			return (launcher != null && File.Exists(launcher)) || LauncherAtSignIn(RunKey) || (dir != null && Directory.Exists(dir))
+				|| AppsEntryPresent(AppsKey);
 		}
 
 		// Whether a garrysmod folder still has the pack: a module in lua\bin or the start-up line.
@@ -1262,6 +1311,205 @@ namespace MeowyInstaller
 				return "launcher: couldn't remove everything (" + e.Message + ")";
 			}
 		}
+
+		// --- Apps & features (Windows' list of installed programs) ---------------
+		//
+		// Install registers the pack under HKCU\...\Uninstall\MeowyClientPack, so
+		// Windows offers Uninstall in Settings → Apps → Installed apps (and in
+		// Programs and Features). That runs a copy of this installer kept in
+		// %LOCALAPPDATA%\MeowyClientPack\uninstall (the downloaded one may be gone)
+		// with --uninstall-prompt: the window, asking at once, as its Uninstall
+		// does, with Garry's Mod or without it. Every uninstall removes the entry.
+		// No admin rights; no version shown, as in-game updates would make it stale.
+		// A running program can't delete its own file, so when that copy is the
+		// one uninstalling, its folder is removed right after it closes, by a copy
+		// of it in %TEMP% (FinishUninstaller, FinishUninstall).
+
+		public const string AppsKey = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\MeowyClientPack";
+		public const string UninstallPromptArg = "--uninstall-prompt";
+		const string FinishArg = "--finish-uninstall";
+		const string UninstallerFile = "MeowyClientPack.exe";
+
+		// The folder RemoveOwnData left because this program runs from it, or null.
+		static string s_finishFolder;
+
+		public static string UninstallerDir()
+		{
+			string dir = LocalDir();
+			return dir == null ? null : Path.Combine(dir, "uninstall");
+		}
+
+		// Copies `source` (this installer) to `target`, unless it's that file already
+		// (installing again from the kept copy). Written beside it and swapped in.
+		public static void CopyUninstaller(string source, string target)
+		{
+			if (SamePath(source, target))
+				return;
+			Directory.CreateDirectory(Path.GetDirectoryName(target));
+			string temp = target + ".meowy-new";
+			File.Copy(source, temp, true);
+			if (File.Exists(target))
+				File.Replace(temp, target, null);
+			else
+				File.Move(temp, target);
+		}
+
+		// The entry under `key` (HKCU; tests pass a scratch one). `exe` uninstalls,
+		// `icon` is what Windows shows next to the name.
+		public static void RegisterAppsEntry(string key, string exe, string icon, string location, int sizeKb)
+		{
+			using (RegistryKey k = Registry.CurrentUser.CreateSubKey(key))
+			{
+				k.SetValue("DisplayName", "Meowy Client Pack");
+				k.SetValue("Publisher", "Meowy Network");
+				k.SetValue("UninstallString", "\"" + exe + "\" " + UninstallPromptArg);
+				k.SetValue("DisplayIcon", "\"" + icon + "\",0");
+				k.SetValue("InstallLocation", location);
+				k.SetValue("URLInfoAbout", SourceUrl);
+				k.SetValue("InstallDate", DateTime.Now.ToString("yyyyMMdd"));
+				k.SetValue("EstimatedSize", sizeKb, RegistryValueKind.DWord);
+				k.SetValue("NoModify", 1, RegistryValueKind.DWord);
+				k.SetValue("NoRepair", 1, RegistryValueKind.DWord);
+			}
+		}
+
+		public static bool AppsEntryPresent(string key)
+		{
+			using (RegistryKey k = Registry.CurrentUser.OpenSubKey(key))
+				return k != null;
+		}
+
+		public static void RemoveAppsEntry(string key)
+		{
+			Registry.CurrentUser.DeleteSubKeyTree(key, false);
+		}
+
+		// What the pack takes on disk, in KB: the modules in lua\bin, the launcher
+		// and the kept installer.
+		public static int SizeKb(IEnumerable<string> files)
+		{
+			long bytes = 0;
+			foreach (string f in files)
+				if (f != null && File.Exists(f))
+					bytes += new FileInfo(f).Length;
+			return (int)Math.Min(int.MaxValue, (bytes + 1023) / 1024);
+		}
+
+		// Install's part: never fails the install; says what happened.
+		public static string InstallAppsEntry(string garrysmod)
+		{
+			string dir = UninstallerDir();
+			if (dir == null)
+				return "Apps & features: no LOCALAPPDATA folder; no entry";
+			// Installed again after an uninstall in the same window: the kept copy stays.
+			s_finishFolder = null;
+			try
+			{
+				string exe = Path.Combine(dir, UninstallerFile);
+				CopyUninstaller(Application.ExecutablePath, exe);
+				string launcher = LauncherPath();
+				bool hasLauncher = launcher != null && File.Exists(launcher);
+				var files = new List<string> { exe, launcher };
+				foreach (string module in Modules)
+					files.Add(Path.Combine(garrysmod, @"lua\bin", module));
+				RegisterAppsEntry(AppsKey, exe, hasLauncher ? launcher : exe, LocalDir(), SizeKb(files));
+				return "Apps & features: \"Meowy Client Pack\" (uninstalls with " + exe + ")";
+			}
+			catch (Exception e)
+			{
+				return "Apps & features: couldn't add the entry (" + e.Message + ")";
+			}
+		}
+
+		public static string UninstallAppsEntry()
+		{
+			try
+			{
+				RemoveAppsEntry(AppsKey);
+				return "removed the Apps & features entry";
+			}
+			catch (Exception e)
+			{
+				return "couldn't remove the Apps & features entry: " + e.Message;
+			}
+		}
+
+		// As this program closes: if RemoveOwnData left the kept installer's folder
+		// because this is it, a copy in %TEMP% removes it once this has exited.
+		// Only when the uninstall got as far as removing the Apps & features
+		// entry: one that failed after RemoveOwnData, or an Install since, keeps
+		// the entry, and it must not point at a folder that's gone.
+		static void FinishUninstaller()
+		{
+			string folder = s_finishFolder;
+			s_finishFolder = null;
+			if (!FinishWanted(folder, AppsEntryPresent(AppsKey)))
+				return;
+			try
+			{
+				string temp = Path.Combine(Path.GetTempPath(), "MeowyClientPack-uninstall.exe");
+				File.Copy(Application.ExecutablePath, temp, true);
+				Process.Start(new ProcessStartInfo(temp, FinishArg + " " + Process.GetCurrentProcess().Id + " \"" + folder + "\"")
+				{
+					UseShellExecute = false,
+					CreateNoWindow = true,
+				});
+			}
+			catch (Exception)
+			{
+				// Left behind: the next install replaces it, and it only holds the installer.
+			}
+		}
+
+		// Whether FinishUninstaller runs: RemoveOwnData left the kept installer's
+		// folder (and no Install since), and the Apps & features entry is gone.
+		public static bool FinishWanted(string folder, bool entryPresent)
+		{
+			return folder != null && SamePath(folder, UninstallerDir()) && !entryPresent;
+		}
+
+		// The folder FinishUninstaller would remove (tests).
+		public static string PendingFinishFolder()
+		{
+			return s_finishFolder;
+		}
+
+		// --finish-uninstall <pid> <folder>: waits for that process to exit, then
+		// removes the folder, only if it's the kept installer's (never any other
+		// path given here), and %LOCALAPPDATA%\MeowyClientPack if that's empty then.
+		public static int FinishUninstall(string pid, string folder)
+		{
+			if (!SamePath(folder, UninstallerDir()))
+				return 1;
+			int id;
+			if (int.TryParse(pid, out id) && id > 0)
+			{
+				try
+				{
+					using (Process p = Process.GetProcessById(id))
+						p.WaitForExit(30000);
+				}
+				catch (Exception)
+				{
+					// already gone
+				}
+			}
+			for (int i = 0; i < 20 && Directory.Exists(folder); i++)
+			{
+				try
+				{
+					Directory.Delete(folder, true);
+				}
+				catch (Exception)
+				{
+					System.Threading.Thread.Sleep(250);
+				}
+			}
+			string dir = LocalDir();
+			if (dir != null && Directory.Exists(dir) && Directory.GetFileSystemEntries(dir).Length == 0)
+				Directory.Delete(dir, false);
+			return Directory.Exists(folder) ? 1 : 0;
+		}
 	}
 
 	// The shell's COM interfaces for the shortcut (no extra references needed).
@@ -1348,8 +1596,13 @@ namespace MeowyInstaller
 		readonly CheckBox m_startup = new CheckBox();
 		readonly CheckBox m_signIn = new CheckBox();
 
-		public MainForm()
+		// promptUninstall: opened from Apps & features (--uninstall-prompt): Uninstall
+		// asks at once, and the window closes once it's done. Cancelled, it stays
+		// (to pick the garrysmod folder, say).
+		public MainForm(bool promptUninstall)
 		{
+			if (promptUninstall)
+				Shown += delegate { BeginInvoke(new MethodInvoker(delegate { if (Uninstall()) Close(); })); };
 			Text = "Meowy Client Pack " + Assembly.GetExecutingAssembly().GetName().Version.ToString(3);
 			FormBorderStyle = FormBorderStyle.FixedDialog;
 			MaximizeBox = false;
@@ -1484,6 +1737,7 @@ namespace MeowyInstaller
 				Program.RestoreLazyFonts(m_path.Text.Trim());
 				string launcher = Program.InstallLauncher(m_signIn.Checked);   // never fails the install either
 				Program.InstallShortcut(m_path.Text.Trim());   // never fails the install (balloons without it)
+				Program.InstallAppsEntry(m_path.Text.Trim());   // nor this
 				RefreshStatus();
 				bool hasLauncher = Program.HasLauncher() && launcher.StartsWith("launcher: " + Program.LauncherPath());
 				// Not from an installer run as administrator: the launcher would keep its
@@ -1506,10 +1760,11 @@ namespace MeowyInstaller
 			}
 		}
 
-		void Uninstall()
+		// True once it's uninstalled.
+		bool Uninstall()
 		{
 			if (!GameClosed())
-				return;
+				return false;
 			string garrysmod = m_path.Text.Trim();
 			if (!PathLooksRight())
 			{
@@ -1518,19 +1773,21 @@ namespace MeowyInstaller
 					"and meowy:// links) and the pack's own files in %LOCALAPPDATA%\\MeowyClientPack.\r\n\r\n" +
 					"The vault with your saved garrysmod\\data files is kept; pick the garrysmod folder first to have them put back. " +
 					"Uninstall now?", Text, MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK)
-					return;
+					return false;
 				try
 				{
 					string said = Program.UninstallLauncher() + "\r\n" + Program.RemoveOwnData();
 					Program.UninstallShortcut();
+					Program.UninstallAppsEntry();
 					RefreshStatus();
 					MessageBox.Show(this, "Uninstalled.\r\n\r\n" + said + "\r\n\r\n" + Program.NoGameNote, Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+					return true;
 				}
 				catch (Exception e)
 				{
 					MessageBox.Show(this, "Couldn't uninstall: " + e.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
 				}
-				return;
+				return false;
 			}
 			var answer = MessageBox.Show(this,
 				"Uninstall removes the pack, its start-up line and its own files.\r\n\r\n" +
@@ -1545,7 +1802,7 @@ namespace MeowyInstaller
 				"Nothing of yours is deleted. Uninstall now?",
 				Text, MessageBoxButtons.OKCancel, MessageBoxIcon.Question);
 			if (answer != DialogResult.OK)
-				return;
+				return false;
 			try
 			{
 				Program.UninstallLauncher();
@@ -1559,13 +1816,16 @@ namespace MeowyInstaller
 				}
 				Program.RemoveStartupHook(garrysmod);
 				Program.UninstallShortcut();
+				Program.UninstallAppsEntry();
 				RefreshStatus();
 				MessageBox.Show(this, "Uninstalled.\r\n\r\n" + files, Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+				return true;
 			}
 			catch (Exception e)
 			{
 				MessageBox.Show(this, "Couldn't uninstall: " + e.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
 			}
+			return false;
 		}
 	}
 }
