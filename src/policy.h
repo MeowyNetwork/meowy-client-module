@@ -20,7 +20,8 @@
 //     use) may sign any policy;
 //   - the ops key (meant for the backend's automatic pausing) and the recovery
 //     key (meant to be kept offline, off the PC that holds the release key) are
-//     plain PEM key files, so a copy can be stolen. They may only make it
+//     key files, password-protected (tools/policy/protect-key.ps1), so a copy
+//     can still be stolen and its password guessed. They may only make it
 //     stricter: switch the pack off, add to off or revoked, raise min_version.
 //     Their seq stays below kReleaseOnlySeq and at most kMaxStepSeq above the
 //     kept one, and they can't set a notice (only keep or drop the kept one).

@@ -54,6 +54,11 @@ jobs:
       - name: Launcher rules (cargo test, core)
         run: cargo test -p meowy-launcher-core --locked
 
+      - name: Policy key files (policy_key_test.ps1)
+        working-directory: .
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/policy_key_test.ps1
+
       - name: Build MeowyLauncher.exe
         run: cargo build -p meowy-launcher --release --locked
 
