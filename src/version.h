@@ -6,5 +6,5 @@
 // Plain #defines: the resource compiler reads this too.
 #define MEOWY_VERSION_MAJOR 1
 #define MEOWY_VERSION_MINOR 7
-#define MEOWY_VERSION_PATCH 0
-#define MEOWY_VERSION "1.7.0"
+#define MEOWY_VERSION_PATCH 1
+#define MEOWY_VERSION "1.7.1"
