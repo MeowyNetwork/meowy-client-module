@@ -1,5 +1,43 @@
 #include "discord_ipc.h"
 
+#include <cstdlib>
+
+namespace discord
+{
+	bool OffInMenuSettings(const std::string& text)
+	{
+		const std::string key = "meowy_discord=";
+		size_t at = 0;
+		while (at < text.size())
+		{
+			size_t end = text.find('\n', at);
+			if (end == std::string::npos)
+				end = text.size();
+			std::string line = text.substr(at, end - at);
+			if (!line.empty() && line.back() == '\r')
+				line.pop_back();
+			at = end + 1;
+			if (line.compare(0, key.size(), key) != 0)
+				continue;
+			// settings.lua keeps a protected setting only as a number
+			// (^%-?%d+%.?%d*$); anything else starts from the default (on).
+			const std::string value = line.substr(key.size());
+			size_t i = value.size() > 0 && value[0] == '-' ? 1 : 0;
+			const size_t digits = i;
+			while (i < value.size() && value[i] >= '0' && value[i] <= '9')
+				++i;
+			if (i == digits)
+				return false;
+			if (i < value.size() && value[i] == '.')
+				++i;
+			while (i < value.size() && value[i] >= '0' && value[i] <= '9')
+				++i;
+			return i == value.size() && std::strtod(value.c_str(), nullptr) == 0.0;
+		}
+		return false;
+	}
+}
+
 #ifndef _WIN32
 
 namespace discord
@@ -7,6 +45,8 @@ namespace discord
 	void Start(const std::string&) {}
 	void SetActivity(const std::string&) {}
 	void Shutdown() {}
+	void SetAllowed(bool) {}
+	bool Allowed() { return true; }
 	const char* State() { return "unsupported"; }
 	std::string LastError() { return std::string(); }
 }
@@ -46,6 +86,11 @@ namespace
 	std::string g_activity = "null";   // latest requested activity
 	bool g_dirty = false;              // g_activity not yet sent on this connection
 	std::string g_lastError;           // raw payload of Discord's last error or close frame
+
+	// Game thread only: the player's switch, and whether a server asked for the
+	// status since the client realm last closed (Start, until Shutdown).
+	bool g_allowed = true;
+	bool g_wanted = false;
 
 	constexpr uint32_t kMaxFrame = 64 * 1024;
 	constexpr ULONGLONG kReadWaitMs = 2000;
@@ -295,6 +340,35 @@ namespace
 	}
 }
 
+namespace
+{
+	void StartWorker()
+	{
+		if (g_thread.joinable())
+			return;
+		g_stop = false;
+		g_state = CONNECTING;
+		g_thread = std::thread(Worker);
+	}
+
+	// The worker clears what Discord shows on its way out (a "null" activity),
+	// whatever the update interval.
+	void StopWorker()
+	{
+		if (!g_thread.joinable())
+			return;
+		{
+			// Under the lock the worker waits with, so the wake-up can't fall
+			// between its check of g_stop and its wait (and be lost for up to the
+			// reconnect delay, with the game's main thread waiting here).
+			std::lock_guard<std::mutex> lock(g_mutex);
+			g_stop = true;
+		}
+		g_wake.notify_one();
+		g_thread.join();
+	}
+}
+
 namespace discord
 {
 	void Start(const std::string& clientId)
@@ -303,11 +377,9 @@ namespace discord
 			std::lock_guard<std::mutex> lock(g_mutex);
 			g_clientId = clientId;
 		}
-		if (g_thread.joinable())
-			return;
-		g_stop = false;
-		g_state = CONNECTING;
-		g_thread = std::thread(Worker);
+		g_wanted = true;
+		if (g_allowed)
+			StartWorker();
 	}
 
 	void SetActivity(const std::string& activityJson)
@@ -324,17 +396,24 @@ namespace discord
 
 	void Shutdown()
 	{
-		if (!g_thread.joinable())
+		g_wanted = false;
+		StopWorker();
+	}
+
+	void SetAllowed(bool on)
+	{
+		if (on == g_allowed)
 			return;
-		{
-			// Under the lock the worker waits with, so the wake-up can't fall
-			// between its check of g_stop and its wait (and be lost for up to the
-			// reconnect delay, with the game's main thread waiting here).
-			std::lock_guard<std::mutex> lock(g_mutex);
-			g_stop = true;
-		}
-		g_wake.notify_one();
-		g_thread.join();
+		g_allowed = on;
+		if (!on)
+			StopWorker();
+		else if (g_wanted)
+			StartWorker();   // what the server asked for last is sent once connected
+	}
+
+	bool Allowed()
+	{
+		return g_allowed;
 	}
 
 	const char* State()

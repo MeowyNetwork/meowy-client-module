@@ -130,6 +130,12 @@ if(MEOWY_BUILD_TESTS)
 	if(MSVC)
 		set_property(TARGET ipc_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 	endif()
+	# The player's Discord status switch, no game or Discord needed:
+	#   discord_switch_smoke
+	add_executable(discord_switch_smoke tests/discord_switch_smoke.cpp src/discord_ipc.cpp)
+	if(MSVC)
+		set_property(TARGET discord_switch_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+	endif()
 endif()
 if(MEOWY_BUILD_TESTS)
 	# Hardware profile and crash-dump faults, without the game:

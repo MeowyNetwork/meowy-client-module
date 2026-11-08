@@ -69,7 +69,7 @@
 	// Settings the search finds: [title, where it opens, words it answers to].
 	var SETTINGS = [
 		['Options', 'options', 'options video graphics resolution display audio sound volume voice microphone keyboard keys bindings mouse sensitivity controls multiplayer spray language'],
-		['Meowy settings', 'settings', 'meowy settings pack stay connected reconnect start with the game loading screen continue home screen menu escape server card text size zoom scale pre-warm prewarm workshop find servers players fake counts']
+		['Meowy settings', 'settings', 'meowy settings pack stay connected reconnect start with the game loading screen continue home screen menu escape server card text size zoom scale pre-warm prewarm workshop find servers players fake counts discord status privacy']
 	];
 
 	var on = false, query = '', selected = 0, rows = [], focused = false;

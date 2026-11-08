@@ -88,7 +88,7 @@ parties led by your Steam friends.
 ### Extras on Meowy Network
 
 - Your Discord status shows your job and the player count, with a **Join** button. Anyone who can see
-  your Discord activity sees it, not just your friends.
+  your Discord activity sees it, not just your friends. **Discord status** in Meowy settings turns it off.
 - Windows notifications when something happens to you while you're alt-tabbed, such as your printer
   being attacked or staff replying to your ticket.
 - Markers on Steam's game recording when you're arrested, become wanted and so on, so you can find the
@@ -110,8 +110,9 @@ window. In-game updates don't update the launcher; running a newer installer doe
 ## Changing things
 
 **Meowy settings**, in the main menu after Options, has switches for staying connected, starting with the
-game, getting servers ready, the console key, the menu and the settings guard. Everything else, including
-the privacy settings below, is a console setting, listed in [How it works](docs/HOW-IT-WORKS.md#settings).
+game, getting servers ready, the console key, the menu, Discord status and the settings guard. Everything
+else, including the other privacy settings below, is a console setting, listed in
+[How it works](docs/HOW-IT-WORKS.md#settings).
 
 To type console settings, turn the console on first: **Options → Keyboard → Advanced → Enable developer
 console**. Then press the key under Esc.
@@ -138,8 +139,8 @@ This is what leaves your PC, and where it goes:
   (CPU, graphics card, memory, Windows version; no serial numbers or names). Both are saved with your
   Steam ID.
 - **To Discord, on Meowy Network:** your job, the player count and how long you've played, if the Discord
-  app is running. Anyone who can see your Discord activity sees it. Discord's own activity setting turns
-  it off.
+  app is running. Anyone who can see your Discord activity sees it. **Discord status** in Meowy settings
+  turns it off.
 - **On other servers:** to catch fake player counts, the pack sends Meowy Network the server's player
   list as the game's `status` command shows it: other players' Steam IDs, pings and times, never yours.
   The Steam IDs are scrambled (hashed) as they arrive and deleted after 14 days. Reports never mark a

@@ -135,6 +135,30 @@ local function setEscape(on)
 	RunConsoleCommand("meowy_menu_escape", on and "1" or "0")
 end
 
+-- Discord status on Meowy Network (our server's Lua asks for it; discord_ipc.h).
+-- Off: nothing reaches Discord, and what it shows is cleared at once.
+-- Protected (settings.lua): a server can't turn it back on.
+local discordSetting = meowy.Setting and meowy.Setting("meowy_discord", "1",
+	"Meowy Client Pack: on Meowy Network, show your job, the player count and how long you've played in your Discord status (0 = off)")
+local function discordOn() return discordSetting == nil or discordSetting:GetBool() end
+local function applyDiscord(on) if meowy.DiscordAllow then meowy.DiscordAllow(on) end end
+local function setDiscord(on)
+	-- Through the console: Garry's Mod refuses ConVar:SetBool on these menu convars.
+	RunConsoleCommand("meowy_discord", on and "1" or "0")
+	applyDiscord(on)   -- at once: the command may only take effect at the next frame
+end
+-- At start, and whenever the setting changes some other way (the Meowy
+-- console, the policy): only a change of the setting itself is applied, so a
+-- click isn't undone by the frame before its command has run.
+local discordSeen
+hook.Add("Think", "MeowyClientPack.Discord", function()
+	local on = discordOn()
+	if on ~= discordSeen then
+		discordSeen = on
+		applyDiscord(on)
+	end
+end)
+
 -- UI (ui.lua's kit) ----------------------------------------------------------------
 local C, S = UI.C, UI.S
 
@@ -309,6 +333,19 @@ local function openSettings(startTab)
 			mt.meowyToggle = "menu_page"
 			mt.gapBefore = S(10)
 			blocks[#blocks + 1] = mt
+		end
+		if meowy.DiscordAllow then
+			local label = UI.Label(nil, "Discord")
+			label.gapBefore = S(22)
+			blocks[#blocks + 1] = label
+			local dt = UI.Toggle(nil, "Discord status on Meowy Network",
+				"While you play on Meowy Network, Discord shows your job, the player count, how long you've played and a "
+				.. "Join button. Everyone who can see your Discord activity sees it, not only friends. Off: nothing is sent "
+				.. "to Discord, and what it shows now is cleared at once.",
+				discordOn(), function(on) setDiscord(on) end)
+			dt.meowyToggle = "discord"
+			dt.gapBefore = S(10)
+			blocks[#blocks + 1] = dt
 		end
 		for _, section in ipairs(settingsSections) do
 			local ok, more = pcall(section, function() if show then show("general") end end)

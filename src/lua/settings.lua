@@ -49,9 +49,9 @@ local function clean(value) return (string.gsub(tostring(value or ""), "%c", "")
 -- What a protected setting may hold: a number, or for the guard's list,
 -- addresses separated by spaces. Anything else (quotes, ";") is never kept.
 -- Protected: what a hostile server gains from switching off, or on (the data
--- sandbox, updates, the settings guard, parties, the server-list reports, and
--- what tells players a server lies about its player count: the honest list,
--- Meowy's server index and the Meowy home with its Find servers).
+-- sandbox, updates, the settings guard, parties, the server-list reports,
+-- Discord status, and what tells players a server lies about its player count:
+-- the honest list, Meowy's server index and the Meowy home with its Find servers).
 local function number(v) return string.match(v, "^%-?%d+%.?%d*$") ~= nil end
 local function addresses(v) return #v <= 1024 and string.match(v, "^[%w%.:%[%]_ %-]*$") ~= nil end
 local PROTECTED = {
@@ -61,6 +61,7 @@ local PROTECTED = {
 	meowy_settings_guard_always = addresses,   -- a convar until #75's file; harmless after
 	meowy_party = number,
 	meowy_serverlist_reports = number,
+	meowy_discord = number,
 	meowy_honest_serverlist = number,
 	meowy_server_index = number,
 	meowy_menu = number,
