@@ -347,10 +347,20 @@ on Meowy Network's servers.
     they arrive and 13 more, UTC), to spot the same accounts on a server around the clock. Older
     hashes are deleted every hour, whether or not new reports come in. It judges behaviour only:
     hidden bots, flat pings, players stuck connecting, one account on two servers at once.
-  - **What reports can do:** never mark a server, and never back or change a verdict. When reports
-    from at least three different networks (IPv4 /24, IPv6 /64) within 6 hours mostly say a server
-    looks fake, they only queue a visit by Meowy Network's observer, after the crawler's own
-    suspects. Verdicts come only from the crawler's and the observer's own checks. A server the observer visits only because
+  - **Who sent it (1.7.2+):** each report also carries a Steam ticket the pack asks the Steam client
+    for, made for Meowy Network only (`GetAuthTicketForWebApi`, identity `meowynetwork`). The backend
+    asks Steam whose account it is (`AuthenticateUserTicket`), so one account counts once however many
+    networks it reports from (with Family Sharing, the copy's owner). It keeps only a salted hash of that
+    account, in memory, for the 6 hours below, never the ticket or the SteamID, and hashed differently
+    from the rows, so it can't be matched with them. The pack cancels the ticket once the report is
+    sent. Without a ticket (Steam didn't give one within 10 s), the report goes as 1.7.1 sent it.
+  - **What reports can do:** never mark a server, and never back or change a verdict. When at least
+    three voices within 6 hours mostly say a server looks fake, they only queue a visit by Meowy
+    Network's observer, after the crawler's own suspects. A voice is a Steam account (a report whose
+    ticket Steam vouched for), or a network (IPv4 /24, IPv6 /64) for a report without one: from 1.7.0
+    or 1.7.1, or with a ticket Steam couldn't check. A network one of the accounts reported from adds
+    no voice of its own. Meowy Network can stop counting reports without an account once 1.7.0 and
+    1.7.1 are rare. Verdicts come only from the crawler's and the observer's own checks. A server the observer visits only because
     reports asked for it is never labelled `[UNVERIFIED]` if it refuses. The website doesn't log the
     pack's requests with your IP address.
   - `meowy_honest_serverlist 0` turns the whole check off; `meowy_serverlist_reports 0` keeps the
@@ -817,7 +827,8 @@ on Meowy Network's servers.
   player lists for the honest server list, the `meowy_content` rule of a server you point at or pick, and,
   before a rejoin, whether the server is up.
 - **Steam,** through the game's own `steam_api`: the server list, parties (a lobby and two Rich Presence
-  keys), Workshop downloads and Timeline markers.
+  keys), Workshop downloads, Timeline markers, and a ticket for Meowy Network with each server-list
+  report (Meowy Network then asks Steam whose account it is; see *Honest server list*).
 - **Discord,** only the Discord app on your PC, over its local pipe, while you're on Meowy Network. Discord
   then shows your job, the player count and how long you've played to everyone who can see your Discord
   activity, not only friends. Neither the pack nor the server has a switch for it; Discord's own activity

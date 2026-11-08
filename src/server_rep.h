@@ -7,7 +7,9 @@
 //     worker thread. The host and paths are fixed here; Lua only says when.
 //   * Reports from inside another server: how many clients the game's own
 //     `status` listed, how many were bots, and their SteamIDs (the backend
-//     classifies the accounts and keeps only the per-server tally).
+//     classifies the accounts and keeps only the per-server tally), with a
+//     Steam ticket for Meowy Network so it counts once per account
+//     (steam_ticket.h).
 //   * Capturing `status` output from the console (connect_watch's listener
 //     feeds Capture()).
 
@@ -19,7 +21,9 @@ namespace server_rep
 	void FetchList();
 	// The list's JSON once a fetch finished since the last call, else "".
 	std::string TakeList();
-	// POSTs a report (JSON built by the menu Lua) on a worker thread.
+	// POSTs a report (JSON built by the menu Lua) on a worker thread, with a
+	// Steam ticket added when Steam gives one within 10 s. Game thread (it asks
+	// Steam for the ticket).
 	void SendReport(const std::string& json);
 
 	// "a.b.c.d:port" on the public internet (not LAN, loopback, CGNAT or

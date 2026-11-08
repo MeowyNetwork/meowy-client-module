@@ -1,4 +1,5 @@
 #include "server_rep.h"
+#include "steam_ticket.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <winsock2.h>
@@ -376,10 +377,22 @@ namespace server_rep
 			Log("report dropped: " + std::to_string(json.size()) + " bytes");
 			return;
 		}
-		std::thread([json] {
+		// A Steam ticket for Meowy Network goes with it (steam_ticket.h), so the
+		// report counts as one Steam account's. Steam answers through a callback
+		// on the game's thread; the worker waits up to 10 s for it, and without
+		// one the report goes as 1.7.0/1.7.1 sent theirs.
+		steam_ticket::Pump();
+		std::string why;
+		const uint32_t handle = steam_ticket::Request(&why);
+		std::thread([json, handle, why] {
+			std::string whyNot = why;
+			const std::string hex = handle ? steam_ticket::Wait(handle, 10000, &whyNot) : std::string();
+			const std::string body = hex.empty() ? json : steam_ticket::detail::WithTicket(json, hex);
 			DWORD status = 0;
-			Request(L"POST", kReportPath, json, &status);
-			Log("report sent, " + std::to_string(json.size()) + " bytes, HTTP " + std::to_string(status));
+			Request(L"POST", kReportPath, body, &status);
+			steam_ticket::Release(handle);   // the backend has checked it by now; cancelled on the game thread
+			Log("report sent, " + std::to_string(body.size()) + " bytes, HTTP " + std::to_string(status)
+				+ (hex.empty() ? ", no Steam ticket (" + whyNot + ")" : ", with a Steam ticket"));
 		}).detach();
 	}
 

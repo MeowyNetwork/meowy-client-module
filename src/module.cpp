@@ -100,6 +100,7 @@
 #include "server_gate.h"
 #include "data_sandbox.h"
 #include "server_rep.h"
+#include "steam_ticket.h"
 #include "launcher_pipe.h"
 #include "notify.h"
 #include "notify_catalogue.h"
@@ -1164,8 +1165,11 @@ namespace
 	}
 
 	// The verdicts JSON when a fetch has finished since the last call, else nil.
+	// The server list's Think asks every frame, on the game's thread: the reports'
+	// Steam tickets the backend is done with are cancelled here (steam_ticket.h).
 	int ServerRepTake(lua_State* L)
 	{
+		steam_ticket::Pump();
 		std::string json = server_rep::TakeList();
 		if (json.empty())
 			L->luabase->PushNil();
@@ -3307,7 +3311,9 @@ local function runStatus(done)
 				run.bots = run.bots + 1
 			elseif uid then
 				local id64 = toSteamID64(uid)
-				-- Our own row stays out: the report says nothing about who sent it.
+				-- Our own row stays out of the rows. Who sent the report is only in the
+			-- Steam ticket native adds (steam_ticket.h), which Meowy Network checks
+			-- with Steam and keeps as a salted hash, for one vote per account.
 				if id64 and id64 == meowy.SelfSteamID64 then
 					sawSelf = true
 				elseif id64 and not seenIds[id64] and #run.rows < 128 then

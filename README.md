@@ -142,8 +142,10 @@ This is what leaves your PC, and where it goes:
   it off.
 - **On other servers:** to catch fake player counts, the pack sends Meowy Network the server's player
   list as the game's `status` command shows it: other players' Steam IDs, pings and times, never yours.
-  The Steam IDs are scrambled (hashed) as they arrive and deleted after 14 days. Reports never mark a
-  server as fake by themselves. `meowy_serverlist_reports 0` stops this.
+  The Steam IDs are scrambled (hashed) as they arrive and deleted after 14 days. Each report also
+  carries a Steam ticket, so Meowy Network can ask Steam which account sent it and count each account
+  once; it keeps only a scrambled form of your account, for 6 hours. Reports never mark a server as
+  fake by themselves. `meowy_serverlist_reports 0` stops this.
 - **To your Steam friends:** your party, and the fact that you have the pack. `meowy_party 0` turns that
   off.
 - **Downloads from meowynetwork.com:** the loading screen, the server list and updates. Like any website,
