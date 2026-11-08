@@ -64,6 +64,7 @@ local PROTECTED = {
 	meowy_honest_serverlist = number,
 	meowy_server_index = number,
 	meowy_menu = number,
+	meowy_menu_version = number,   -- below "2", the next start switches the Meowy home back on (resilience.lua)
 }
 
 -- Meowy Network's signed policy (policy.h) can turn a setting off ("off

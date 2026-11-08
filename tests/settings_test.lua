@@ -341,15 +341,18 @@ check("save: read back, updates still on", s2.updates:GetBool(), true)
 -- What tells players a server lies about its players is protected too.
 w = world()
 for _, n in ipairs({ "meowy_honest_serverlist", "meowy_server_index", "meowy_menu" }) do w.env.meowy.Setting(n, "1", "help") end
+w.env.meowy.Setting("meowy_menu_version", "2", "help")
 w.loading = true
 w.frame()
 w.server("meowy_honest_serverlist", "0")
 w.server("meowy_server_index", "0")
 w.server("meowy_menu", "0")
+w.server("meowy_menu_version", "0")   -- would switch the Meowy home back on at the next start
 w.frame(3)
 check("protected: honest list, server index and the Meowy home put back",
 	w.env.meowy.SettingOf("meowy_honest_serverlist"):GetString() .. w.env.meowy.SettingOf("meowy_server_index"):GetString()
 		.. w.env.meowy.SettingOf("meowy_menu"):GetString() .. w.convars.meowy_honest_serverlist .. w.convars.meowy_server_index .. w.convars.meowy_menu, "111111")
+check("protected: the home screen's default marker put back", w.env.meowy.SettingOf("meowy_menu_version"):GetString() .. w.convars.meowy_menu_version, "22")
 w.loading = false
 w.env.RunConsoleCommand("meowy_menu", "0")   -- Meowy settings' switch
 w.frame(2)

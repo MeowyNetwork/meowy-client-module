@@ -48,6 +48,9 @@ namespace policy
 	constexpr uint64_t kReleaseOnlySeq = 1000000000000000ull;
 	constexpr uint64_t kMaxStepSeq = 1000;
 	constexpr size_t kSigHexLen = 128;
+	// Held (by the pack and the launcher, launcher/core/src/policy.rs) around
+	// every read-check-write of the kept files in state\.
+	constexpr wchar_t kFileMutexName[] = L"Local\\MeowyClientPack.Policy";
 
 	enum class Key { None, Release, Ops, Recovery };
 

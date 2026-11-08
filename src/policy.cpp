@@ -56,6 +56,44 @@ namespace policy
 		// can put an older policy back over a newer one. Taken before g_lock.
 		std::mutex g_fileLock;
 		bool g_haveCurrent = false;
+
+		// The same step across processes: the Meowy Launcher keeps and heals the
+		// same files (launcher/core/src/policy.rs FileGuard), under a named mutex
+		// of the same name. This thread's lock first, then the named one; a
+		// process stuck holding it is waited for 10 s, then gone ahead without.
+		class FileGuard
+		{
+		public:
+			FileGuard() : m_lock(g_fileLock)
+			{
+#ifdef _WIN32
+				m_mutex = CreateMutexW(nullptr, FALSE, kFileMutexName);
+				if (m_mutex)
+				{
+					const DWORD r = WaitForSingleObject(m_mutex, 10000);
+					m_owned = r == WAIT_OBJECT_0 || r == WAIT_ABANDONED;
+				}
+#endif
+			}
+			~FileGuard()
+			{
+#ifdef _WIN32
+				if (m_owned)
+					ReleaseMutex(m_mutex);
+				if (m_mutex)
+					CloseHandle(m_mutex);
+#endif
+			}
+			FileGuard(const FileGuard&) = delete;
+			FileGuard& operator=(const FileGuard&) = delete;
+
+		private:
+			std::lock_guard<std::mutex> m_lock;
+#ifdef _WIN32
+			HANDLE m_mutex = nullptr;
+			bool m_owned = false;
+#endif
+		};
 		Policy g_current;
 		Key g_currentKey = Key::None;
 		std::string g_lastFetch = "not fetched yet";
@@ -367,7 +405,7 @@ namespace policy
 		const char* reason = nullptr;
 		if (!Parse(body, &next, &reason))
 			return why = std::string("doesn't parse (") + reason + ")", false;
-		std::lock_guard<std::mutex> files(g_fileLock);
+		FileGuard files;
 		Policy cur;
 		const bool haveCur = ReadKept(stateDir, &cur, nullptr);
 		if (!MayReplace(cur, haveCur, next, key, &reason))
@@ -506,14 +544,25 @@ namespace policy
 
 	bool HealStubFile(const std::wstring& stateDir)
 	{
-		std::lock_guard<std::mutex> files(g_fileLock);
+		FileGuard files;
 		Policy kept;
 		Key key = Key::None;
 		if (!ReadKept(stateDir, &kept, &key))
 			return false;
 		const std::string want = StubText(kept);
-		if (file_util::ReadSmall(PathIn(stateDir, L"policy.bin"), kMaxBody + 1024) == want)
+		const std::string have = file_util::ReadSmall(PathIn(stateDir, L"policy.bin"), kMaxBody + 1024);
+		if (have == want)
 			return false;
+		// Never a lower seq than the stub's copy has: a newer policy is being
+		// kept (by the 1.7.0 launcher, which doesn't take the named mutex).
+		const size_t at = have.find("\nseq ");
+		if (at != std::string::npos)
+		{
+			const size_t end = have.find('\n', at + 5);
+			const std::string seq = have.substr(at + 5, end == std::string::npos ? std::string::npos : end - at - 5);
+			if (Digits(seq, 19) && std::stoull(seq) > kept.seq)
+				return false;
+		}
 		return file_util::WriteAtomic(PathIn(stateDir, L"policy.bin"), want);
 	}
 
@@ -521,7 +570,7 @@ namespace policy
 	{
 		{
 			// The fetch thread a first call started may be taking a newer one.
-			std::lock_guard<std::mutex> files(g_fileLock);
+			FileGuard files;
 			Policy kept;
 			Key key = Key::None;
 			if (ReadKept(stateDir, &kept, &key))

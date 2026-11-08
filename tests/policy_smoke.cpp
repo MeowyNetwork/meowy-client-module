@@ -183,6 +183,34 @@ int main(int argc, char** argv)
 		}
 		Check("stub file: a heal racing a newer policy never puts the older one back", stale == 0);
 	}
+	// Across processes (the launcher): the named mutex is waited for, and a stub
+	// file with a higher seq than the kept policy (the 1.7.0 launcher keeping a
+	// newer one without the mutex) is left alone.
+	{
+		file_util::WriteAtomic(dir + L"\\policy.bin", "enabled 1\nseq 4\n");
+		HANDLE other = CreateMutexW(nullptr, FALSE, policy::kFileMutexName);
+		std::atomic<bool> held{ false };
+		std::thread holder([&] {
+			WaitForSingleObject(other, INFINITE);
+			held = true;
+			Sleep(400);
+			ReleaseMutex(other);
+		});
+		while (!held)
+			Sleep(1);
+		const DWORD start = GetTickCount();
+		policy::HealStubFile(dir);
+		const DWORD waited = GetTickCount() - start;
+		holder.join();
+		CloseHandle(other);
+		Check("stub file: the heal waits for the launcher's named mutex", waited >= 300);
+		file_util::WriteAtomic(dir + L"\\policy.bin", "enabled 0\nseq 6\n");
+		Check("stub file: never a lower seq than the one there", !policy::HealStubFile(dir)
+			&& file_util::ReadSmall(dir + L"\\policy.bin", 256) == "enabled 0\nseq 6\n");
+		policy::HealStubFile(dir);
+		file_util::WriteAtomic(dir + L"\\policy.bin", "enabled 1\nseq 5\n");
+		Check("stub file: the same seq is still healed", policy::HealStubFile(dir));
+	}
 
 	// Edited on disk: no longer verifies, so it isn't kept.
 	file_util::WriteAtomic(dir + L"\\policy.txt", "meowy-pack-policy 1\nseq 9\npack_enabled 1\n");

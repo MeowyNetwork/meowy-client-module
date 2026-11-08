@@ -285,14 +285,63 @@ mod store {
         Some((parse(&body).ok()?, key))
     }
 
+    /// Held around every read-check-write of the kept files, by this process and
+    /// the pack in the game (`policy::kFileMutexName`, the same name), so neither
+    /// puts an older policy back over one the other just kept. A holder stuck
+    /// for 10 s is gone ahead without.
+    pub const FILE_MUTEX_NAME: &str = "Local\\MeowyClientPack.Policy";
+
+    pub struct FileGuard(windows_sys::Win32::Foundation::HANDLE, bool);
+
+    impl FileGuard {
+        pub fn take() -> FileGuard {
+            use windows_sys::Win32::Foundation::{WAIT_ABANDONED, WAIT_OBJECT_0};
+            use windows_sys::Win32::System::Threading::{CreateMutexW, WaitForSingleObject};
+            let name: Vec<u16> = FILE_MUTEX_NAME.encode_utf16().chain(Some(0)).collect();
+            // SAFETY: a valid name; the handle is closed in Drop.
+            unsafe {
+                let h = CreateMutexW(std::ptr::null(), 0, name.as_ptr());
+                if h.is_null() {
+                    return FileGuard(h, false);
+                }
+                let r = WaitForSingleObject(h, 10_000);
+                FileGuard(h, r == WAIT_OBJECT_0 || r == WAIT_ABANDONED)
+            }
+        }
+    }
+
+    impl Drop for FileGuard {
+        fn drop(&mut self) {
+            use windows_sys::Win32::Foundation::CloseHandle;
+            use windows_sys::Win32::System::Threading::ReleaseMutex;
+            // SAFETY: our own handle; released only if this thread owns it.
+            unsafe {
+                if self.1 {
+                    ReleaseMutex(self.0);
+                }
+                if !self.0.is_null() {
+                    CloseHandle(self.0);
+                }
+            }
+        }
+    }
+
+    /// The seq in a stub file's text, if it has one.
+    fn stub_seq(text: &str) -> Option<u64> {
+        text.lines().find_map(|l| l.strip_prefix("seq ")).and_then(|s| s.parse().ok())
+    }
+
     /// policy.bin written again from the kept policy when it differs (a stub
-    /// file from an older launcher lacked min_version and revoked). Whether it
-    /// was rewritten.
+    /// file from an older launcher lacked min_version and revoked), but never
+    /// with a lower seq than it has (a newer policy being kept by a process that
+    /// doesn't take the mutex, such as the 1.7.0 pack). Whether it was rewritten.
     pub fn heal_stub(keys: &Keys, dir: &Path) -> bool {
+        let _files = FileGuard::take();
         let Some((p, _)) = current(keys, dir) else { return false };
         let want = stub_file(&p);
         let path = dir.join("policy.bin");
-        if std::fs::read_to_string(&path).ok().as_deref() == Some(want.as_str()) {
+        let have = std::fs::read_to_string(&path).ok();
+        if have.as_deref() == Some(want.as_str()) || have.as_deref().and_then(stub_seq).is_some_and(|s| s > p.seq) {
             return false;
         }
         write_atomic(&path, want.as_bytes()).is_ok()
@@ -304,6 +353,7 @@ mod store {
         let sig = sig_hex.trim();
         let key = signed_by(keys, body, sig).ok_or("not signed by one of our keys")?;
         let next = parse(body).map_err(|why| format!("doesn't parse ({why})"))?;
+        let _files = FileGuard::take();
         let cur = current(keys, dir).map(|(p, _)| p);
         may_replace(cur.as_ref(), &next, key)?;
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
@@ -484,6 +534,25 @@ mod tests {
         assert!(heal_stub(&k, &dir));
         assert_eq!(std::fs::read_to_string(dir.join("policy.bin")).unwrap(), "enabled 0\nseq 4\nrevoked 1.6.1\n");
         assert!(!heal_stub(&k, &dir), "already right");
+        // Never a lower seq than the stub file has (a newer one being kept elsewhere).
+        std::fs::write(dir.join("policy.bin"), b"enabled 1\nseq 5\n").unwrap();
+        assert!(!heal_stub(&k, &dir), "never lowers the seq");
+        assert_eq!(std::fs::read_to_string(dir.join("policy.bin")).unwrap(), "enabled 1\nseq 5\n");
+        // The pack holding the named mutex (here another thread): the heal waits for it.
+        std::fs::write(dir.join("policy.bin"), b"enabled 0\nseq 4\n").unwrap();
+        let (held_tx, held_rx) = std::sync::mpsc::channel();
+        let holder = std::thread::spawn(move || {
+            let guard = FileGuard::take();
+            held_tx.send(()).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            drop(guard);
+        });
+        held_rx.recv().unwrap();
+        let start = std::time::Instant::now();
+        assert!(heal_stub(&k, &dir));
+        assert!(start.elapsed() >= std::time::Duration::from_millis(300), "waited for the other holder");
+        holder.join().unwrap();
+        assert_eq!(FILE_MUTEX_NAME, "Local\\MeowyClientPack.Policy", "the name src/policy.h has");
         assert_eq!(offer(&k, &dir, P5.0.as_bytes(), P5.1), Ok(5), "release: back on");
         std::fs::write(dir.join("policy.txt"), b"meowy-pack-policy 1\nseq 9\npack_enabled 1\n").unwrap();
         assert_eq!(current(&k, &dir), None, "an edited file is ignored");
