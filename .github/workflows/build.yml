@@ -211,13 +211,13 @@ jobs:
         run: |
           foreach ($b in "buildtest", "buildtest32") {
             cmake --build $b --config Release --target info_smoke sandbox_smoke notify_smoke timeline_smoke
-            ./$b/Release/info_smoke.exe
+            & "./$b/Release/info_smoke.exe"
             $scratch = Join-Path $env:RUNNER_TEMP "$b-offline"
             foreach ($t in "sandbox", "notify") {
               New-Item -ItemType Directory -Force (Join-Path $scratch $t) | Out-Null
               & "./$b/Release/${t}_smoke.exe" (Join-Path $scratch $t)
             }
-            ./$b/Release/timeline_smoke.exe
+            & "./$b/Release/timeline_smoke.exe"
           }
 
       - name: Installer rules (uninstall_smoke)
