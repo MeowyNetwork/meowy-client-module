@@ -183,6 +183,13 @@ jobs:
           cmake --build buildtest32 --config Release --target content_advert_smoke
           ./buildtest32/Release/content_advert_smoke.exe
 
+      - name: The server-list report's Steam ticket (steam_ticket_smoke, both bitnesses)
+        run: |
+          cmake --build buildtest --config Release --target steam_ticket_smoke
+          ./buildtest/Release/steam_ticket_smoke.exe
+          cmake --build buildtest32 --config Release --target steam_ticket_smoke
+          ./buildtest32/Release/steam_ticket_smoke.exe
+
       - name: Launcher pipe, the pack's end (launcher_pipe_smoke, both bitnesses)
         run: |
           cmake --build buildtest --config Release --target launcher_pipe_smoke

@@ -36,6 +36,7 @@ add_library(meowy SHARED
 	src/loading_webview.cpp
 	src/connect_watch.cpp
 	src/server_rep.cpp
+	src/steam_ticket.cpp
 	src/data_sandbox.cpp
 	src/file_util.cpp
 	src/notify.cpp
@@ -290,7 +291,7 @@ if(MEOWY_BUILD_TESTS)
 	endif()
 	# Content platform adverts (the meowy_content rule in A2S_RULES), no game:
 	#   content_advert_smoke [a.b.c.d:port to ask for real]
-	add_executable(content_advert_smoke tests/content_advert_smoke.cpp src/content_advert.cpp src/server_rep.cpp)
+	add_executable(content_advert_smoke tests/content_advert_smoke.cpp src/content_advert.cpp src/server_rep.cpp src/steam_ticket.cpp)
 	target_link_libraries(content_advert_smoke PRIVATE winhttp ws2_32)
 	target_compile_definitions(content_advert_smoke PRIVATE _CRT_SECURE_NO_WARNINGS)   # server_rep.cpp's _wfopen
 	if(MSVC)
@@ -299,12 +300,22 @@ if(MEOWY_BUILD_TESTS)
 	endif()
 	# The Meowy Launcher's pipe, the pack's end: what it takes and sends, no game:
 	#   launcher_pipe_smoke
-	add_executable(launcher_pipe_smoke tests/launcher_pipe_smoke.cpp src/launcher_pipe.cpp src/server_gate.cpp src/server_rep.cpp)
+	add_executable(launcher_pipe_smoke tests/launcher_pipe_smoke.cpp src/launcher_pipe.cpp src/server_gate.cpp src/server_rep.cpp src/steam_ticket.cpp)
 	target_link_libraries(launcher_pipe_smoke PRIVATE winhttp ws2_32 advapi32)
 	target_compile_definitions(launcher_pipe_smoke PRIVATE _CRT_SECURE_NO_WARNINGS)   # server_rep.cpp's _wfopen
 	if(MSVC)
 		set_property(TARGET launcher_pipe_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 		target_compile_options(launcher_pipe_smoke PRIVATE /W4 /utf-8)
+	endif()
+	# The server-list report's Steam ticket (steam_ticket.h), no game:
+	#   steam_ticket_smoke                         the rules, offline
+	#   steam_ticket_smoke --live <GarrysMod folder>   a real ticket from Steam, through the game's steam_api
+	#     (Steam running; with STEAM_API_KEY set, Steam's Web API is asked whose it is, as the backend does)
+	add_executable(steam_ticket_smoke tests/steam_ticket_smoke.cpp src/steam_ticket.cpp)
+	target_link_libraries(steam_ticket_smoke PRIVATE winhttp)
+	if(MSVC)
+		set_property(TARGET steam_ticket_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+		target_compile_options(steam_ticket_smoke PRIVATE /W4 /utf-8)
 	endif()
 	# The missing-file cache's rules against real folders, no game:
 	#   fs_cache_smoke <scratch folder>

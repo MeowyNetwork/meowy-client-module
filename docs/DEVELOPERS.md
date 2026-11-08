@@ -96,7 +96,10 @@ installed `client.dll` of the same bitness) `font_loads_smoke <scratch folder>` 
 gdi32 loads, on the test's own imports and a real font file), `fs_cache_smoke <scratch folder>` (which
 paths the missing-file cache answers for, and its answers against real folders), `prewarm_smoke <scratch
 folder>` (the join pre-warm's file lists, budget and cancelling) and `lua_find_smoke` (the fast `file.Find`'s
-prefix rules and its patch stubs on a copy of the game's code).
+prefix rules and its patch stubs on a copy of the game's code). `steam_ticket_smoke` checks the server-list
+report's Steam ticket offline; `steam_ticket_smoke --live <GarrysMod folder>` gets a real one from the Steam
+client on this PC through the game's `steam_api`, and with `STEAM_API_KEY` set asks Steam's Web API whose it
+is, as the backend does (so it says whether a key can check Garry's Mod tickets; neither is printed).
 
 The menu Lua's rules and glue have offline tests, run by CI with Lua 5.1 (each `tests/*_test.lua`,
 including `settings_test.lua`, `settings_guard_logic_test.lua`, `console_logic_test.lua`,
