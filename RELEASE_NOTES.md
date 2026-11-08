@@ -1,4 +1,29 @@
-**New in 1.7.0:** faster joins on every server, a new main menu and server browser, and a pack that keeps itself up to date. 1.6.0 was never released, so its changes are included here. Install this version once by hand; after that, new versions arrive on their own.
+**New in 1.7.1:** fixes from a full review of 1.7.0. **Run the 1.7.1 installer once**, even if the pack already updated itself in the game: the in-game update doesn't replace the Meowy Launcher from 1.7.0.
+
+- **Safer against servers.**
+  - Servers can no longer read the pack's settings, or switch off the ones that protect you: the data sandbox, updates, the settings guard, parties and the server-list reports.
+  - Only crashes that happened on Meowy Network are sent to Meowy Network, never crashes on other servers.
+  - You only join parties led by your Steam friends, and the party's next server isn't contacted until you follow.
+  - The Meowy console no longer saves passwords you type, and a server can't blank it.
+  - Putting back an old `config.cfg` works only at the main menu, after you confirm.
+- **Fixes.**
+  - Your own `garrysmod/data` files stay with the main menu, singleplayer and your own games, instead of being hidden on the first start. Files 1.7.0 set aside come back.
+  - The settings guard asks about each server you were on. If the game closes while you're on a server, it asks at the next start.
+  - The frame-rate limit the pack sets at the menu no longer sticks, and one 1.7.0 left behind is undone once.
+  - "Rejoin the server?" after a crash on another server works.
+  - The party countdown shows wherever the menu is, and a quick second move waits instead of being lost.
+  - "Get ready" says when downloads failed, with **Try again**, and the home screen's server lists show it too.
+  - The stay-connected prompt now says exactly what comes back after a drop.
+- **Updates.**
+  - Updates need **Start with the game**. If it's off, the launcher and the console now say so.
+  - `meowy_updates 0` stops updates straight away.
+  - The 32-bit and 64-bit game no longer hold each other's updates back.
+  - Uninstall works after Garry's Mod is removed, and running the installer as administrator no longer leaves an administrator launcher in the tray.
+  - The launcher shows the right version and puts the Workshop fonts back when you quit it.
+
+Everything in detail: [How it works](https://github.com/MeowyNetwork/meowy-client-module/blob/main/docs/HOW-IT-WORKS.md).
+
+**New in 1.7.0:** faster joins on every server, a new main menu and server browser, and a pack that keeps itself up to date. 1.6.0 was never released, so its changes are included here. Install this version once by hand; after that, new versions arrive on their own while "Start with the game" is on.
 
 - **Faster joins, on any server.** Garry's Mod spends much of a join looking for files that aren't there and searching the same lists again and again. The pack cuts most of that out: in our tests, the first join to Meowy Network after starting the game went from over a minute to about 30 seconds. For servers you've played on (and Meowy Network), files and Workshop content are made ready at the main menu, before you click Join.
 - **A new main menu.** A home screen with **Continue** (your last server), your friends' servers, your favourites and recent servers, and one search box for servers, maps, addons and settings. The menu is bigger on large screens, and in game the Escape menu shows the server you're on, with **Reconnect**.
@@ -16,12 +41,12 @@
 - **The Meowy Launcher.** The installer adds a small tray app. It starts the game a little faster, puts the pack back after a Steam update and offers to rejoin after a crash.
 - **Updates and safety.**
   - The pack updates itself, only with versions Meowy Network has signed. A new version starts the next time you open the game.
-  - If a new version crashes the game, the pack goes back to the previous one.
+  - If the game closes while a new version is starting, the pack goes back to the previous one.
   - `meowy_updates 0` turns updates off.
   - Meowy Network can switch a feature off for everyone while a bug is fixed.
-- **Privacy.** Your Steam friends can see your party and that you have the pack (`meowy_party 0` turns that off). The new downloads from meowynetwork.com (the server list, updates and the kill switch) carry nothing about you.
+- **Privacy.** Your Steam friends can see your party and that you have the pack (`meowy_party 0` turns that off). The new downloads from meowynetwork.com (the server list, updates and the kill switch) carry nothing about you; like any website, it sees your IP address, which the server list uses for rough ping estimates.
 
-Most features have a switch in **Meowy settings**, in the main menu after Options. Everything in detail: [How it works](https://github.com/MeowyNetwork/meowy-client-module/blob/main/docs/HOW-IT-WORKS.md).
+**Meowy settings**, in the main menu after Options, has switches for the menu, joins and staying connected; the rest are console settings.
 
 **New in 1.5.2:** the pack's loading screen now shows on every join. Before, it only appeared the first time you joined after starting Garry's Mod; reconnecting or joining another server showed the game's default loading screen instead.
 
@@ -47,7 +72,7 @@ Also: fixes from a security review of the pack (tighter limits on what server re
 Download **MeowyClientPack.exe**, close Garry's Mod, run it and click **Install**.
 
 The installer isn't code-signed yet: if Windows shows "Windows protected your PC", click **More info** → **Run anyway**.
-File hashes are in `SHA256SUMS.txt`, and every file has a GitHub build attestation
-(`gh attestation verify <file> --repo MeowyNetwork/meowy-client-module`).
+File hashes are in `SHA256SUMS.txt`. `MeowyClientPack.exe` and the four DLLs inside the zip have a GitHub build attestation
+(`gh attestation verify <file> --repo MeowyNetwork/meowy-client-module`); the zip itself and `SHA256SUMS.txt` don't.
 
 Manual install: unzip `meowy-client-module-manual.zip` into `garrysmod/lua/bin/`.
