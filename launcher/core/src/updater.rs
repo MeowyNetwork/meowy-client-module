@@ -25,7 +25,7 @@ pub const DOC_PATH: &str = "/pack/v1/release-stable.txt";
 pub const SIG_PATH: &str = "/pack/v1/release-stable.sig";
 /// The Updates panel's line while "Start with the game" is off.
 pub const START_UP_OFF: &str =
-    "Updates need \"Start with the game\": it's off, so a new version would never start. Turn it on in Meowy settings, or run MeowyClientPack.exe again with it ticked.";
+    "Updates need \"Start with the game\": it's off, so a new version would never start. Run MeowyClientPack.exe again with it ticked.";
 
 pub fn dll_name(arch: &str) -> String {
     format!("gmcl_meowy_{arch}.dll")

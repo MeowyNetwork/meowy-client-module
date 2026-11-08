@@ -112,7 +112,7 @@ fn repair(inner: &mut Inner, why: &str) -> String {
     } else {
         match line::heal(&game.garrysmod, &data_dir()) {
             line::Heal::Present => "Nothing to repair.".into(),
-            line::Heal::Off => "\"Start with the game\" is off in Meowy settings, so the start-up line stays out.".into(),
+            line::Heal::Off => "\"Start with the game\" is off, so the start-up line stays out. Run MeowyClientPack.exe again with it ticked to turn it back on.".into(),
             line::Heal::Added => "Put the pack's start-up line back (Steam had replaced menu.lua).".into(),
             line::Heal::Failed(why) => format!("Couldn't repair: {why}."),
         }
