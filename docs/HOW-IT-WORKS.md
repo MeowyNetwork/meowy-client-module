@@ -122,8 +122,9 @@ switches for: Stay connected through drops, Start with the game, Get servers rea
 Mod's server list: only servers with players (`meowy_fast_serverlist`), The console key opens the Meowy
 console (`meowy_console_key`), Menu text size (`meowy_menu_scale`), Continue where you left off
 (`meowy_menu_continue`), Your servers on the main menu (`meowy_menu_home`), Server card in the Escape menu
-(`meowy_menu_escape`), Meowy home screen (`meowy_menu`), and the settings guard (`meowy_settings_guard`,
-with the servers whose changes are always put back). Its other tab is the PC doctor.
+(`meowy_menu_escape`), Meowy home screen (`meowy_menu`), Discord status on Meowy Network
+(`meowy_discord`), and the settings guard (`meowy_settings_guard`, with the servers whose changes are
+always put back). Its other tab is the PC doctor.
 
 Everything else is a console setting, named with its feature below: `meowy_party`,
 `meowy_serverlist_reports`, `meowy_honest_serverlist`, `meowy_server_index`, `meowy_data_sandbox`,
@@ -146,7 +147,7 @@ console has to be on: **Options → Keyboard → Advanced → Enable developer c
   still ask whether the pack's DLL is installed.)
 - **Servers can't change the ones that guard you.** A server's Lua can run console commands on your game
   (`RunConsoleCommand`; Garry's Mod blocks only a fixed list of names). So for `meowy_data_sandbox`,
-  `meowy_updates`, `meowy_settings_guard`, `meowy_party`, `meowy_serverlist_reports`,
+  `meowy_updates`, `meowy_settings_guard`, `meowy_party`, `meowy_serverlist_reports`, `meowy_discord`,
   `meowy_honest_serverlist`, `meowy_server_index`, `meowy_menu` and `meowy_menu_version`, the pack keeps
   the value it approved and puts any other change back through the console. Until then the setting
   reads as its approved value (also on the same frame), and only approved values are saved. The console
@@ -168,8 +169,11 @@ on Meowy Network's servers.
 - **Discord status.** It talks only to the Discord app on your PC, over Discord's local connection
   (`\\.\pipe\discord-ipc-N`), on its own thread so the game never waits on it. Our server sets your job,
   the player count, how long you've played and a Join button; Discord shows that to everyone who can see
-  your Discord activity (people in servers you share, too), not only friends. There's no switch for it
-  in the pack: Discord's own activity setting turns it off.
+  your Discord activity (people in servers you share, too), not only friends. Meowy settings →
+  **Discord status on Meowy Network** (`meowy_discord 0`) turns it off: what Discord shows is cleared at
+  once, and nothing the server asks for reaches Discord until it's back on (then the server's latest
+  status shows again). Servers can't turn it back on (see *Settings*). Without "Start with the game" the
+  pack reads the saved setting when you join. Discord's own activity setting turns it off too, for every game.
 - Since 1.1 it also reads the game's own crash reports (`GarrysMod/crashes/*.txt`), so the
   server can see which addon crashed your game. Only the "Lua Stack Traces" section is read
   (at most 3 reports per join, 4 KB each, any `C:\...` paths masked). The rest of the report,
@@ -831,8 +835,8 @@ on Meowy Network's servers.
   report (Meowy Network then asks Steam whose account it is; see *Honest server list*).
 - **Discord,** only the Discord app on your PC, over its local pipe, while you're on Meowy Network. Discord
   then shows your job, the player count and how long you've played to everyone who can see your Discord
-  activity, not only friends. Neither the pack nor the server has a switch for it; Discord's own activity
-  setting turns it off.
+  activity, not only friends. Meowy settings → Discord status on Meowy Network (`meowy_discord 0`) turns
+  it off and clears what Discord shows at once.
 - **Meowy Network's game server,** over the game's own connection, when you join it: the Lua part of
   crash reports from crashes on Meowy Network only, and your hardware description (see the top of
   *Feature by feature*).

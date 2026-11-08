@@ -358,5 +358,25 @@ w.env.RunConsoleCommand("meowy_menu", "0")   -- Meowy settings' switch
 w.frame(2)
 check("protected: still the player's from Meowy settings", w.env.meowy.SettingOf("meowy_menu"):GetBool(), false)
 
+-- Discord status: the player's off stays off, whatever the server's Lua runs.
+w = world({ settings = "meowy_discord=0" })
+local discord = w.env.meowy.Setting("meowy_discord", "1", "help")
+check("discord: the player's off read back", discord:GetBool(), false)
+w.inGame = true
+w.frame()
+w.server("meowy_discord", "1")
+w.frame(3)
+check("discord: a server can't turn it back on", discord:GetBool(), false)
+check("discord: put back in the console too", w.convars.meowy_discord, "0")
+check("discord: logged", w.told("meowy_discord"), true)
+w.seconds(1.1)
+check("discord: the server's value never saved", w.saved("meowy_discord"), nil)
+w.inGame = false
+w.env.RunConsoleCommand("meowy_discord", "1")   -- Meowy settings' switch
+w.frame(2)
+check("discord: on again from Meowy settings", discord:GetBool(), true)
+w.seconds(1.1)
+check("discord: saved", w.saved("meowy_discord"), "1")
+
 print(("%d checks, %d failed"):format(count, failures))
 os.exit(failures == 0 and 0 or 1)

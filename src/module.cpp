@@ -2,7 +2,9 @@
 //
 // Lua API (global table `meowy`, created by require("meowy")):
 //   meowy.VERSION                     "1.3.0"
-//   meowy.DiscordStart(clientId)      connect to the local Discord app
+//   meowy.DiscordStart(clientId)      connect to the local Discord app (1.7.2+:
+//                                     not while the player has Discord status
+//                                     off in Meowy settings; it's remembered)
 //   meowy.DiscordSetActivity(tbl)     set Rich Presence (fields below)
 //   meowy.DiscordClear()              remove it
 //   meowy.DiscordState()              "unsupported" | "stopped" | "connecting" | "ready"
@@ -367,6 +369,17 @@ namespace
 		ILuaBase* LUA = L->luabase;
 		LUA->PushString(discord::State());
 		return 1;
+	}
+
+	// Menu only: meowy.DiscordAllow(on), the player's Discord status switch
+	// (meowy_discord in Meowy settings, read the menu's way). Off: what Discord
+	// shows is cleared at once, and nothing a server asks for reaches Discord.
+	// The client realm has no such function: a server can't turn it back on.
+	int DiscordAllow(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		discord::SetAllowed(LUA->GetBool(1));
+		return 0;
 	}
 
 	int DiscordLastError(lua_State* L)
@@ -3647,6 +3660,18 @@ end)
 
 namespace
 {
+#ifdef _WIN32
+// Discord status off, as the menu reads the setting: the saved meowy_discord
+// (menu_settings.txt) or the policy. For when the menu's own Lua hasn't said:
+// the client realm without the menu state, and the menu before its chunks run.
+bool DiscordOffSaved()
+{
+	const policy::Policy p = policy::Effective();
+	return discord::OffInMenuSettings(file_util::ReadSmall(DataDir() + L"\\menu_settings.txt", kMaxMenuSettings))
+		|| std::find(p.off.begin(), p.off.end(), "meowy_discord") != p.off.end();
+}
+#endif
+
 int ClientOpen(ILuaBase* LUA)
 {
 #ifdef _WIN32
@@ -3694,6 +3719,11 @@ int ClientOpen(ILuaBase* LUA)
 
 #ifdef _WIN32
 	notify_toast::Configure(DataDir());
+	// Without the menu state (the pack didn't start with the game), nothing has
+	// said whether the player turned Discord status off: their saved setting and
+	// the policy, read as the menu reads them, say.
+	if (!startup_hook::MenuLoaded())
+		discord::SetAllowed(!DiscordOffSaved());
 #endif
 
 	// Client Lua starting is the start of the join's longest stage, and the
@@ -3793,6 +3823,7 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	LUA->PushString("menu");
 	LUA->SetField(-2, "REALM");
 	SetFunction(LUA, "PolicyState", Guarded<PolicyState>);
+	SetFunction(LUA, "DiscordAllow", Guarded<DiscordAllow>);
 	SetFunction(LUA, "UpdaterStart", Guarded<UpdaterStart>);
 	SetFunction(LUA, "UpdaterState", Guarded<UpdaterState>);
 	SetFunction(LUA, "UpdaterReady", Guarded<UpdaterReady>);
@@ -3808,6 +3839,9 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 		return 0;
 	}
 	startup_hook::NoteMenuLoaded();
+	// The saved Discord switch from the start, so it holds even if the menu
+	// Lua that applies it (resilience.lua) didn't load.
+	discord::SetAllowed(!DiscordOffSaved());
 	SetFunction(LUA, "StartupHook", Guarded<StartupHookState>);
 	SetFunction(LUA, "SetStartupHook", Guarded<SetStartupHook>);
 	SetFunction(LUA, "LoadingTarget", Guarded<LoadingTarget>);

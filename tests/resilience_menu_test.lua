@@ -73,6 +73,8 @@ local function world(opts)
 		ResilienceClearRestart = function() w.restartUntil = nil end,
 		ResilienceSettingsRead = function() return w.settingsText end,
 		ResilienceSettingsWrite = function(t) w.settingsText = t return true end,
+		-- Discord status (module.cpp's DiscordAllow): each call kept, in order.
+		DiscordAllow = function(on) w.discordCalls = w.discordCalls or {} w.discordCalls[#w.discordCalls + 1] = on w.discord = on end,
 		ResilienceSession = function(on, name) w.session = on w.sessionName = name w.marks = (w.marks or 0) + 1 end,
 		ResilienceCrashedSession = function() return w.crashed, w.crashedName end,
 		-- Continue: native keeps the engine's address (w.otherAddress on another server).
@@ -1407,6 +1409,50 @@ check("shell: a toggle in settings, off", mt ~= nil and mt.on, false)
 if mt then mt:SetOn(true) end
 w.run(1)
 check("shell: turned on from settings (through the console)", shellState(w), "true")
+
+-- Discord status (meowy_discord): on by default, applied at start; off in
+-- Meowy settings clears it at once, and the frame before the console command
+-- has run doesn't turn it back on.
+w = world({ settings = ON, menu = true })
+w.run(0.1)
+check("discord: on at start", table.concat((function() local t = {} for i, v in ipairs(w.discordCalls or {}) do t[i] = tostring(v) end return t end)(), ","), "true")
+w.concommands.meowy_settings()
+local dt = find(function(p) return p.meowyToggle == "discord" end)
+check("discord: a toggle in settings, on", dt ~= nil and dt.on, true)
+local rawRun, queuedDiscord = w.env.RunConsoleCommand, nil
+w.env.RunConsoleCommand = function(cmd, ...) if cmd == "meowy_discord" then queuedDiscord = (...) else rawRun(cmd, ...) end end
+if dt then dt:SetOn(false) end
+check("discord: off at once, before any frame", w.discord, false)
+w.run(0.3)
+check("discord: not turned back on while the command waits", w.discord, false)
+w.env.RunConsoleCommand = rawRun
+rawRun("meowy_discord", queuedDiscord)   -- the console runs it
+w.run(0.3)
+check("discord: the setting saved off", w.convars.meowy_discord, "0")
+check("discord: still off", w.discord, false)
+local calls = #w.discordCalls
+w.run(1)
+check("discord: no repeated calls", #w.discordCalls, calls)
+-- Changed another way (the Meowy console): applied at the next frame.
+rawRun("meowy_discord", "1")
+w.run(0.1)
+check("discord: on again from the console", w.discord, true)
+-- A click on applies once the setting reads on (the policy may keep it off).
+rawRun("meowy_discord", "0")
+w.run(0.1)
+w.env.RunConsoleCommand = function(cmd, ...) if cmd == "meowy_discord" then queuedDiscord = (...) else rawRun(cmd, ...) end end
+if dt then dt:SetOn(true) end
+w.run(0.3)
+check("discord: on waits for the setting", w.discord, false)
+w.env.RunConsoleCommand = rawRun
+rawRun("meowy_discord", queuedDiscord)
+w.run(0.1)
+check("discord: on once it reads on", w.discord, true)
+check("discord: settings window paints", w.paintAll(), "")
+-- Saved off: off from the first frame.
+w = world({ settings = ON, menu = true, convars = { meowy_discord = "0" } })
+w.run(0.1)
+check("discord: saved off, off at start", w.discord, false)
 
 -- The menu's text size (meowy_menu_scale): a zoom on the page, on or off.
 local function zoomJS(w)
