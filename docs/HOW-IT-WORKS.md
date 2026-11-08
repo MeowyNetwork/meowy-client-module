@@ -22,7 +22,8 @@ start with the game, also add this line at the end of `garrysmod/lua/includes/me
 `pcall(require, "meowy_boot") -- meowy-client-pack v1`. Without that line the pack never updates
 itself (see *Start with the game* below).
 
-**Uninstall:** run the installer and click **Uninstall** (or `MeowyClientPack.exe --uninstall`). It
+**Uninstall:** in Windows' Settings → Apps → Installed apps (or Programs and Features), uninstall
+**Meowy Client Pack**; or run the installer and click **Uninstall** (or `MeowyClientPack.exe --uninstall`). It
 first puts back the `garrysmod/data` files the pack kept apart (see *A separate `garrysmod/data` for
 every server* below): your own files, from before the pack and from the main menu, go back into
 `garrysmod/data`, never overwriting anything there (on a name clash both are kept, and the one coming
@@ -45,6 +46,16 @@ cache aside (below), it's put back.
   with the game closed, delete the `garrysmod/data` link (deleting a link never deletes what it points
   to), make an empty `data` folder, and copy `vault\menu` into it (and `vault\before-sandbox`, if 1.7.0
   left one and no later version has started with the game since).
+- **From Windows' list of apps.** Since 1.7.2 the installer adds **Meowy Client Pack** to Windows'
+  installed apps, for your account only (`HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\MeowyClientPack`,
+  no admin rights), and keeps a copy of itself in `%LOCALAPPDATA%\MeowyClientPack\uninstall`, since the
+  one you downloaded may be gone. Uninstall there opens that copy's window and asks at once, with
+  Garry's Mod or without it, as above; cancelled, the window stays so you can pick the `garrysmod`
+  folder. No version is shown there, as in-game updates would make it out of date. A program can't
+  delete itself while it runs, so once the window closes a copy of it in `%TEMP%`
+  (`MeowyClientPack-uninstall.exe`, left there for Windows to clean up) removes the `uninstall`
+  folder. Every uninstall removes the entry. It also deletes a `garrysmod\cfg\meowy_restore.cfg` left
+  by 1.7.0 or 1.7.1 (see *`config.cfg` backups*).
 
 **Installing again** always makes the installer's own version the one that loads: versions the updater
 downloaded, their pointers and both architectures' update floors (`state\release_seq_<arch>.txt`) are
@@ -840,14 +851,15 @@ on Meowy Network's servers.
   - notifications: `notify.txt`, `notify_icon.png`, `notify_catalogue.txt`;
   - joins and servers: `joins\` (pre-warm), `pings.json`, `serverlist.log`;
   - the console: `console_history.txt`, `console_pins.txt`, `logs\`;
-  - `vault\` (each server's `garrysmod/data`, unless the game is on another drive) and `launcher\` (the
-    launcher, its settings and log).
+  - `vault\` (each server's `garrysmod/data`, unless the game is on another drive), `launcher\` (the
+    launcher, its settings and log) and `uninstall\` (a copy of the installer, for Windows' list of apps).
 - **In the game's folder:** the start-up line in `lua/includes/menu.lua`; `garrysmod/data` as a link
   into the vault; `garrysmod\cfg\meowy_restore.cfg`, only if you use `meowy_settings_restore`, which stays
   after uninstalling; the game's own `config.cfg`, saved (`host_writeconfig`) when a settings-guard
   put-back from an earlier run or a restore needs it; and, from the launcher, the Workshop font cache
   renamed while the game starts.
-- **In Windows' settings for your account:** the launcher's start at sign-in (if chosen), the `meowy://`
+- **In Windows' settings for your account:** the **Meowy Client Pack** entry in installed apps (see
+  *From Windows' list of apps*), the launcher's start at sign-in (if chosen), the `meowy://`
   link handler, and the **Meowy Client Pack** Start-menu entry.
 - Uninstalling removes all of it, except `meowy_restore.cfg` and your `config.cfg`. Each server's
   `data/` files go to `Documents\Meowy Client Pack backup`, and a vault it can't empty, or can't put back

@@ -160,7 +160,8 @@ Every detail, feature by feature, is in [How it works](docs/HOW-IT-WORKS.md).
 
 ## Uninstall
 
-Run **MeowyClientPack.exe** again and click **Uninstall**. It puts your own `garrysmod/data` files back,
+Uninstall **Meowy Client Pack** in Windows' **Settings → Apps → Installed apps**, or run
+**MeowyClientPack.exe** again and click **Uninstall**. It puts your own `garrysmod/data` files back,
 saves each server's files to `Documents\Meowy Client Pack backup`, and then removes the pack, the launcher
 and everything they stored. If you've already removed Garry's Mod, it still removes the launcher and the
 pack's own files.
