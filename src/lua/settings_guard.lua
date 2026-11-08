@@ -96,30 +96,25 @@ local function putBack(changes)
 	return n
 end
 
--- The prompts, one at a time, at the main menu.
-local prompts, asking = {}, false
+-- The prompts, one at a time (each a window of UI's, so UI.current), at the main menu.
+local prompts = {}
 local function whoOf(part)
 	local who = isstring(part.name) and part.name ~= "" and part.name or part.address or "the last server"
 	if #who > 48 then who = who:sub(1, 45) .. "..." end
 	return who
 end
 local function ask(part)
-	asking = true
-	local function done() asking = false end
 	local changes = part.changes
 	local buttons = { { "Keep", "ghost", function()
-		done()
 		log("settings guard: kept %d changes from %s", #changes, tostring(part.address))
 	end } }
 	if part.address then
 		buttons[#buttons + 1] = { "Always put back here", "secondary", function()
-			done()
 			saveAlways(Guard.listAdd(alwaysList(), part.address, ALWAYS_MAX))
 			log("settings guard: put back %d settings; %s's changes are put back from now on", putBack(changes), part.address)
 		end }
 	end
 	buttons[#buttons + 1] = { "Put back", "primary", function()
-		done()
 		log("settings guard: put back %d settings changed on %s", putBack(changes), tostring(part.address))
 	end }
 	UI.Prompt({
@@ -132,7 +127,6 @@ local function ask(part)
 			.. "was when you joined. Changed one yourself, in Options? Keep leaves them all as they are.",
 		closable = true,
 		buttons = buttons,
-		onDismiss = done,
 	})
 end
 
@@ -243,8 +237,8 @@ hook.Add("Think", "MeowyClientPack.SettingsGuard", function()
 			if guardOn() then finish(s, false) end
 		end
 	end
-	-- Not over another window of the pack's (the start-up questions, Meowy settings).
-	if not asking and #prompts > 0 and not session and menuVisible() and not IsValid(overlay) and not IsValid(UI.current) then
+	-- Not over another window of the pack's (another of these, the start-up questions, Meowy settings).
+	if #prompts > 0 and not session and menuVisible() and not IsValid(overlay) and not IsValid(UI.current) then
 		ask(table.remove(prompts, 1))
 	end
 end)
