@@ -5,6 +5,7 @@
 #include <windows.h>
 #include <bcrypt.h>
 #include <algorithm>
+#include <cstdlib>
 
 namespace pack_versions
 {
@@ -206,6 +207,16 @@ namespace pack_versions
 			if (Compare(version, r) == 0)
 				return false;
 		return true;
+	}
+
+	bool UpdatesOff(const std::wstring& dataDir)
+	{
+		// The menu Lua's convar reads it the engine's way: a number, 0 is off.
+		const std::string key = "meowy_updates=";
+		for (const std::string& line : Lines(file_util::ReadSmall(dataDir + L"\\menu_settings.txt", 4096)))
+			if (line.compare(0, key.size(), key) == 0)
+				return std::atoi(line.c_str() + key.size()) == 0;
+		return false;
 	}
 
 	std::string Promote(const std::wstring& dataDir)

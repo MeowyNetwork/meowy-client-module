@@ -171,8 +171,9 @@ GMOD_MODULE_OPEN()
 
 	const std::wstring lock = dataDir.empty() ? L"" : dataDir + L"\\boot.lock";
 
-	// An update downloaded last session (pack_versions.h) is taken now.
-	if (!dataDir.empty())
+	// An update downloaded last session (pack_versions.h) is taken now, unless
+	// the player turned updates off since (it waits until they're back on).
+	if (!dataDir.empty() && !pack_versions::UpdatesOff(dataDir))
 	{
 		const std::string promoted = pack_versions::Promote(dataDir);
 		if (!promoted.empty())
