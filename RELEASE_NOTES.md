@@ -1,7 +1,27 @@
-**New in 1.6.0:** three things.
-- **Stay connected through drops.** The pack asks once: "Stay connected through drops?" If you say yes, a short drop no longer ends your session: Garry's Mod waits 60 seconds for the connection to come back instead of 30 (`cl_timeout 60`; your own value is kept and put back if you turn it off), and if you're disconnected anyway, the pack rejoins Meowy Network for you. Your job, jail time, wanted level and loadout come back if you're back within 3 minutes. A small card at the top of the screen shows "Reconnecting to Meowy Network..." and the attempt, with **Cancel**. It only ever rejoins the Meowy Network server you were really on (the address the game itself was connected to), and only when the game engine itself saw the server go silent before the connection ended, or the server had announced a restart; a kick, a ban, quitting or a map change never rejoins. It waits for the server to answer before joining, tries at 2, 4, 8, 15 and 30 seconds, gives up after 3 minutes (5 while the server restarts) or 3 failed joins, and never uses a password. If the server is back before Steam is, it waits for Steam (up to 5 minutes), and when it gives up the card offers **Rejoin now**. Saying no changes nothing; **Meowy settings** in the main menu (after Options; or `meowy_settings` in the console) changes your answer later. And if Garry's Mod crashes while you're on Meowy Network, the next start asks "Rejoin Meowy Network?"; it only joins when you click.
-- **PC doctor.** The pack's settings (**Meowy settings** in the main menu, or `meowy_settings`) have a *PC doctor* tab that checks for the usual reasons Garry's Mod runs slowly: a laptop drawing the game on its integrated graphics while a faster GPU sits idle ("Garry's Mod is using AMD Radeon Graphics. You have an RTX 3070 Ti.", with a button to Windows' Graphics settings and the steps), running on battery or battery saver, Windows' power mode set to save power, multicore rendering off, and the 32-bit game. It only looks: it changes nothing, and nothing it finds leaves your PC. `meowy_doctor` prints the same in the console.
-- **Verified servers in the server list.** Servers that Meowy Network's observer joined in the last 7 days and found nothing fake on show `[VERIFIED]`; servers that refused it (usually a VPN or hosting block, not an accusation) show `[UNVERIFIED]` and, like `[LIST HIDDEN]` ones, sit slightly lower than otherwise-equal servers. None are hidden.
+**New in 1.7.0:** faster joins on every server, a new main menu and server browser, and a pack that keeps itself up to date. 1.6.0 was never released, so its changes are included here. Install this version once by hand; after that, new versions arrive on their own.
+
+- **Faster joins, on any server.** Garry's Mod spends much of a join looking for files that aren't there and searching the same lists again and again. The pack cuts most of that out: in our tests, the first join to Meowy Network after starting the game went from over a minute to about 30 seconds. For servers you've played on (and Meowy Network), files and Workshop content are made ready at the main menu, before you click Join.
+- **A new main menu.** A home screen with **Continue** (your last server), your friends' servers, your favourites and recent servers, and one search box for servers, maps, addons and settings. The menu is bigger on large screens, and in game the Escape menu shows the server you're on, with **Reconnect**.
+- **A better server browser.** Find servers fills in within about a second and marks servers that fake their player count. It also adds a Friends tab, filters that are remembered, and **Join when a slot opens**. Servers Meowy Network has checked show **VERIFIED**.
+- **Parties.** Start a party with your Steam friends. When the leader takes the party to a server, everyone follows after a short countdown, unless they click **Stay**.
+- **Staying connected.** If your connection drops on Meowy Network, the pack can rejoin for you, and your job and jail time come back. It asks once whether you want this. After a crash, the next start offers to rejoin the server you were on, on any server.
+- **The Meowy console.** A readable console, with search, autocomplete and an Errors tab that shows which addon is breaking.
+- **Handy tools.**
+  - **Settings guard:** asks before a server's changes to your settings stick.
+  - Backups of your `config.cfg`.
+  - **PC doctor:** finds the usual reasons the game runs slowly.
+  - Sound follows your headphones when you plug them in.
+  - The mouse stays inside the game window while you aim.
+- **Our loading screen on other servers.** Servers without a loading page of their own get a simpler version of ours.
+- **The Meowy Launcher.** The installer adds a small tray app. It starts the game a little faster, puts the pack back after a Steam update and offers to rejoin after a crash.
+- **Updates and safety.**
+  - The pack updates itself, only with versions Meowy Network has signed. A new version starts the next time you open the game.
+  - If a new version crashes the game, the pack goes back to the previous one.
+  - `meowy_updates 0` turns updates off.
+  - Meowy Network can switch a feature off for everyone while a bug is fixed.
+- **Privacy.** Your Steam friends can see your party and that you have the pack (`meowy_party 0` turns that off). The new downloads from meowynetwork.com (the server list, updates and the kill switch) carry nothing about you.
+
+Most features have a switch in **Meowy settings**, in the main menu after Options. Everything in detail: [How it works](https://github.com/MeowyNetwork/meowy-client-module/blob/main/docs/HOW-IT-WORKS.md).
 
 **New in 1.5.2:** the pack's loading screen now shows on every join. Before, it only appeared the first time you joined after starting Garry's Mod; reconnecting or joining another server showed the game's default loading screen instead.
 
