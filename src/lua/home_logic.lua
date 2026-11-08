@@ -254,6 +254,10 @@ function M.escapeModel(info)
 			address = info.address,
 		}
 	end
+	-- The party (party.lua): its line, and Stay while it counts down to follow the leader.
+	if type(info.party) == "table" and type(info.party.text) == "string" then
+		out.party = { text = M.clean(info.party.text), stay = info.party.stay == true }
+	end
 	for i, s in ipairs(M.SETTINGS) do
 		local v = tonumber(info.values and info.values[s.key])
 		if v and v == v then

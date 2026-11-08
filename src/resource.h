@@ -18,3 +18,5 @@
 #define IDR_SETTINGS_GUARD_LUA 131         // src/lua/settings_guard.lua: its prompt, and the config.cfg copies' commands
 #define IDR_CONTENT_LOGIC_LUA 115     // src/lua/content_logic.lua: the content platform's rules (adverts, plans, consent)
 #define IDR_BROWSE_LOGIC_LUA 116      // src/lua/browse_logic.lua: Find servers' rules for Meowy's server index (BrowseLogic)
+#define IDR_PARTY_LOGIC_LUA 117       // src/lua/party_logic.lua: parties' rules (PartyLogic)
+#define IDR_PARTY_LUA 118             // src/lua/party.lua: parties, menu glue

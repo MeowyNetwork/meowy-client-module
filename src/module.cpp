@@ -116,6 +116,7 @@
 #include "console_capture.h"
 #include "server_query.h"
 #include "server_index.h"
+#include "party_steam.h"
 #include "steam_ugc.h"
 #include "content_advert.h"
 #include "resilience.h"
@@ -2244,6 +2245,195 @@ namespace
 		return 1;
 	}
 
+	// --- Parties (party_steam.h, MR3) --------------------------------------------------
+	// SteamIDs go to and from Lua as decimal strings (a Lua number can't hold them).
+	uint64_t SteamIdArg(ILuaBase* LUA, int i)
+	{
+		if (!LUA->IsType(i, Type::String))
+			return 0;
+		const char* s = LUA->GetString(i);
+		if (!s || !*s || std::strlen(s) > 20)
+			return 0;
+		for (const char* p = s; *p; ++p)
+			if (*p < '0' || *p > '9')
+				return 0;
+		return std::strtoull(s, nullptr, 10);
+	}
+
+	void PushId(ILuaBase* LUA, uint64_t id)
+	{
+		const std::string s = std::to_string(id);
+		LUA->PushString(s.c_str(), static_cast<unsigned int>(s.size()));
+	}
+
+	// PartyAvailable() -> true | false, why
+	int PartyAvailable(lua_State* L)
+	{
+		const std::string why = party_steam::Unavailable();
+		L->luabase->PushBool(why.empty());
+		L->luabase->PushString(why.c_str());
+		return 2;
+	}
+
+	int PartyStart(lua_State*)
+	{
+		party_steam::Start();
+		return 0;
+	}
+
+	int PartyCreate(lua_State* L)
+	{
+		L->luabase->PushBool(party_steam::Create(8));
+		return 1;
+	}
+
+	// PartyJoin(lobbyId) -> true | false (only a lobby's SteamID)
+	int PartyJoin(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		const uint64_t lobby = LUA->IsType(1, Type::String) ? party_steam::detail::ParseLobbyId(LUA->GetString(1)) : 0;
+		LUA->PushBool(lobby && party_steam::Join(lobby));
+		return 1;
+	}
+
+	int PartyLeave(lua_State*)
+	{
+		party_steam::Leave();
+		return 0;
+	}
+
+	int PartyInviteDialog(lua_State* L)
+	{
+		L->luabase->PushBool(party_steam::OpenInviteDialog());
+		return 1;
+	}
+
+	// PartyInvite(friendId) -> true | false
+	int PartyInvite(lua_State* L)
+	{
+		L->luabase->PushBool(party_steam::Invite(SteamIdArg(L->luabase, 1)));
+		return 1;
+	}
+
+	// PartyInviteToServer(friendId, "a.b.c.d:port") -> true | false: the stock
+	// "join game" invite, for a friend without the pack.
+	int PartyInviteToServer(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		const char* address = LUA->IsType(2, Type::String) ? LUA->GetString(2) : "";
+		LUA->PushBool(party_steam::InviteToServer(SteamIdArg(LUA, 1), address));
+		return 1;
+	}
+
+	// PartySet("lobby" | "member" | "presence", key, value) -> true | false.
+	// Only the keys the party uses: lobby srv, srvname, go; member at, atname,
+	// pack; presence steam_player_group, steam_player_group_size, meowy_pack.
+	int PartySet(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		const char* kind = LUA->IsType(1, Type::String) ? LUA->GetString(1) : "";
+		const char* key = LUA->IsType(2, Type::String) ? LUA->GetString(2) : "";
+		const std::string value = LUA->IsType(3, Type::String) ? LUA->GetString(3) : "";
+		const auto is = [&](const char* a) { return std::strcmp(key, a) == 0; };
+		bool ok = false;
+		if (std::strcmp(kind, "lobby") == 0 && (is("srv") || is("srvname") || is("go")))
+			ok = party_steam::SetLobbyData(key, value);
+		else if (std::strcmp(kind, "member") == 0 && (is("at") || is("atname") || is("pack")))
+			ok = party_steam::SetMemberData(key, value);
+		else if (std::strcmp(kind, "presence") == 0 && (is("steam_player_group") || is("steam_player_group_size") || is("meowy_pack")))
+			ok = party_steam::SetPresence(key, value);
+		LUA->PushBool(ok);
+		return 1;
+	}
+
+	// PartyState() -> nil (no party) or { lobby, owner, self, srv, srvname, go,
+	// members = { { id, name, at, atname, pack }, ... } }. Names and data are
+	// other people's: shown as text only.
+	int PartyState(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		const party_steam::State s = party_steam::Read();
+		if (!s.lobby)
+		{
+			LUA->PushNil();
+			return 1;
+		}
+		const auto str = [&](const char* k, const std::string& v) {
+			LUA->PushString(v.c_str(), static_cast<unsigned int>(v.size()));
+			LUA->SetField(-2, k);
+		};
+		const auto id = [&](const char* k, uint64_t v) { PushId(LUA, v); LUA->SetField(-2, k); };
+		LUA->CreateTable();
+		id("lobby", s.lobby);
+		id("owner", s.owner);
+		id("self", s.self);
+		str("srv", s.srv);
+		str("srvname", s.srvName);
+		str("go", s.go);
+		LUA->CreateTable();
+		int n = 0;
+		for (const party_steam::Member& m : s.members)
+		{
+			LUA->PushNumber(++n);
+			LUA->CreateTable();
+			id("id", m.id);
+			str("name", m.name);
+			str("at", m.at);
+			str("atname", m.atName);
+			str("pack", m.pack);
+			LUA->SetTable(-3);
+		}
+		LUA->SetField(-2, "members");
+		return 1;
+	}
+
+	// PartyPoll() -> { "created" | "joined" | "failed: ..." | "invite <lobby id>", ... }
+	int PartyPoll(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		const std::vector<std::string> events = party_steam::Poll();
+		LUA->CreateTable();
+		int n = 0;
+		for (const std::string& e : events)
+		{
+			LUA->PushNumber(++n);
+			LUA->PushString(e.c_str(), static_cast<unsigned int>(e.size()));
+			LUA->SetTable(-3);
+		}
+		return 1;
+	}
+
+	// PartyFriends() -> { { id, name, ingmod, pack }, ... }: Steam friends, those
+	// playing Garry's Mod first (and whether their pack says so), at most 200.
+	int PartyFriends(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		const std::vector<party_steam::Friend> friends = party_steam::Friends(200);
+		LUA->CreateTable();
+		int n = 0;
+		for (const party_steam::Friend& f : friends)
+		{
+			LUA->PushNumber(++n);
+			LUA->CreateTable();
+			PushId(LUA, f.id);
+			LUA->SetField(-2, "id");
+			LUA->PushString(f.name.c_str(), static_cast<unsigned int>(f.name.size()));
+			LUA->SetField(-2, "name");
+			LUA->PushBool(f.inGmod);
+			LUA->SetField(-2, "ingmod");
+			LUA->PushBool(f.hasPack);
+			LUA->SetField(-2, "pack");
+			LUA->SetTable(-3);
+		}
+		return 1;
+	}
+
+	int PartyStatus(lua_State* L)
+	{
+		L->luabase->PushString(party_steam::Describe().c_str());
+		return 1;
+	}
+
 	int PrewarmState(lua_State* L)
 	{
 		L->luabase->PushString(prewarm::Describe().c_str());
@@ -2512,6 +2702,12 @@ namespace
 			std::string browseLogic = ResourceText(IDR_BROWSE_LOGIC_LUA);
 			if (!menuPage.empty() && !browseLogic.empty())
 				home += "(function()\nlocal BrowseLogic = (function()\n" + browseLogic + "\nend)()\n" + menuPage + "\nend)()\n";
+			// Parties (party_logic.lua as `PartyLogic`, then party.lua), after the menu
+			// page, whose handlers call it. The leading ";": after "end)()" a "(" would call its result.
+			std::string partyLogic = ResourceText(IDR_PARTY_LOGIC_LUA);
+			std::string party = ResourceText(IDR_PARTY_LUA);
+			if (!partyLogic.empty() && !party.empty())
+				home += ";(function()\nlocal PartyLogic = (function()\n" + partyLogic + "\nend)()\n" + party + "\nend)()\n";
 		}
 		// The Meowy console (console_logic.lua as `ConsoleLogic`, then console.lua),
 		// in a function of its own that sees resilience.lua's locals.
@@ -3633,6 +3829,19 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	SetFunction(LUA, "ServerIndexState", Guarded<ServerIndexState>);
 	SetFunction(LUA, "PingMemoryLoad", Guarded<PingMemoryLoad>);
 	SetFunction(LUA, "PingMemorySave", Guarded<PingMemorySave>);
+	SetFunction(LUA, "PartyAvailable", Guarded<PartyAvailable>);
+	SetFunction(LUA, "PartyStart", Guarded<PartyStart>);
+	SetFunction(LUA, "PartyCreate", Guarded<PartyCreate>);
+	SetFunction(LUA, "PartyJoin", Guarded<PartyJoin>);
+	SetFunction(LUA, "PartyLeave", Guarded<PartyLeave>);
+	SetFunction(LUA, "PartyInviteDialog", Guarded<PartyInviteDialog>);
+	SetFunction(LUA, "PartyInvite", Guarded<PartyInvite>);
+	SetFunction(LUA, "PartyInviteToServer", Guarded<PartyInviteToServer>);
+	SetFunction(LUA, "PartySet", Guarded<PartySet>);
+	SetFunction(LUA, "PartyState", Guarded<PartyState>);
+	SetFunction(LUA, "PartyPoll", Guarded<PartyPoll>);
+	SetFunction(LUA, "PartyFriends", Guarded<PartyFriends>);
+	SetFunction(LUA, "PartyStatus", Guarded<PartyStatus>);
 	SetFunction(LUA, "PrewarmState", Guarded<PrewarmState>);
 	SetFunction(LUA, "PakCache", Guarded<PakCache>);
 	SetFunction(LUA, "PakCacheState", Guarded<PakCacheState>);

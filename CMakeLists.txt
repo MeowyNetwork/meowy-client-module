@@ -46,6 +46,7 @@ add_library(meowy SHARED
 	src/notify_toast.cpp
 	src/timeline.cpp
 	src/timeline_steam.cpp
+	src/party_steam.cpp
 	src/resilience.cpp
 	src/resilience_net.cpp
 	src/config_backup.cpp
@@ -223,6 +224,13 @@ if(MEOWY_BUILD_TESTS)
 	if(MSVC)
 		set_property(TARGET timeline_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 		target_compile_options(timeline_smoke PRIVATE /W4 /utf-8)
+	endif()
+	# Parties' rules (lobby ids, +connect_lobby, Steam missing), no game or Steam:
+	#   party_smoke
+	add_executable(party_smoke tests/party_smoke.cpp src/party_steam.cpp)
+	if(MSVC)
+		set_property(TARGET party_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+		target_compile_options(party_smoke PRIVATE /W4 /utf-8)
 	endif()
 	# The rejoin-after-a-crash session file and server-name cleaning, no game:
 	#   session_smoke <scratch folder>

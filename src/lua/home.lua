@@ -825,6 +825,18 @@ local ESC_JS = [==[
 			addr.style.lineHeight = '24px';
 			box.appendChild(addr);
 		}
+		if (data.party) {
+			box.appendChild(node('div', 'me-title', 'Party'));
+			var pl = node('div', 'me-name');
+			pl.style.fontSize = '15px';
+			if (data.party.stay) {
+				var stay = node('span', 'me-btn', 'Stay');
+				stay.onclick = function () { lua.Run('MeowyClientPackEscAction("party_stay")'); };
+				pl.appendChild(stay);
+			}
+			pl.appendChild(document.createTextNode(data.party.text));
+			box.appendChild(pl);
+		}
 		if (data.settings.length) {
 			box.appendChild(node('div', 'me-title', 'Quick settings'));
 			for (var i = 0; i < data.settings.length; i++) box.appendChild(slider(data.settings[i]));
@@ -855,6 +867,8 @@ function MeowyClientPackEscAction(what)
 	if what == "reconnect" then
 		log("escape menu: reconnect")
 		RunConsoleCommand("retry")
+	elseif what == "party_stay" then
+		if MeowyClientPackParty then MeowyClientPackParty.action("stay") end
 	elseif what == "copy" then
 		local address = meowy.ServerNow and meowy.ServerNow()
 		if Home.validAddress(address) and SetClipboardText then SetClipboardText(address) end
@@ -897,6 +911,7 @@ function tickEsc(now)
 	info.name = info.answerName or meowy.JoiningName
 	info.values = {}
 	for _, s in ipairs(Home.SETTINGS) do info.values[s.key] = convarNumber(s.key) end
+	info.party = MeowyClientPackParty and MeowyClientPackParty.escapeLine() or nil
 	-- The server's own answer (map, players) at most every 30 s while the card shows.
 	if Home.validAddress(address) and now >= esc.nextAsk and serverlist and serverlist.PingServer then
 		esc.nextAsk = now + 30

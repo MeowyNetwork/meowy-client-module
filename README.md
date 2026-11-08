@@ -299,6 +299,21 @@ it to close.
     `%LOCALAPPDATA%\MeowyClientPack\pings.json` (per /24 network, 30 days), never in `garrysmod/data`.
   - If the index can't be reached, is older than 10 minutes, or is off (`meowy_server_index 0`), the list
     is Steam's alone, as before. `meowy_server_index_status` shows the last fetch.
+- **Parties** (MR3). Friends who move between servers together. The home screen has a party card: **Start a
+  party**, **Invite friends** (Steam's own invite window), and the friends playing Garry's Mod, each with
+  an **Invite**. It lists who's in the party and which server each one is on, with **Join** next to each.
+  - A party is a friends-only Steam lobby of up to 8, through the game's own `steam_api`
+    (`ISteamMatchmaking`). Steam's friends list shows the members together, and any friend can join from
+    there.
+  - The leader picks a server in Find servers and chooses **Take the party here**. The leader joins it.
+    Each member's pack then shows a 10-second countdown, "Following Ann to Big RP" (on the home's card, the
+    Escape menu's card, and a banner over the game). **Stay** (or `meowy_party_stay`) keeps them where they
+    are. A member never follows a move made before they joined, more than once every 30 seconds, or to a
+    server on Garry's Mod's blacklist. The pack gets the party's next server ready ahead (pre-warm).
+  - A friend without the pack gets Steam's ordinary invite to the party's server instead.
+  - Rich Presence: `steam_player_group` (the party) and `meowy_pack` (so friends' packs know who has it).
+    Steam shows these to friends only. `meowy_party 0` turns parties off, along with both keys.
+    `meowy_party_status` shows the party.
 - Its only other network traffic is the loading page and its data, from meowynetwork.com, through WebView2. It
   writes only in `%LOCALAPPDATA%\MeowyClientPack` (`boot.lock` and `recover.lock` for a moment at start-up; for the
   loading screen `join_times.txt`, how long each stage of your last join took, `last_join.txt`,
