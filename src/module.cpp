@@ -729,16 +729,39 @@ namespace
 		return dir;
 	}
 
-	// The game's garrysmod folder, from this DLL's own path (garrysmod/lua/bin).
+	// The game's garrysmod folder: two up from its lua\bin, where the installer
+	// put the start-up stub and the pack. An update runs from
+	// %LOCALAPPDATA%\MeowyClientPack\bin\<version> (pack_versions.h), so this
+	// DLL's own folder says nothing then: the stub's does (loaded for the whole
+	// game in the menu state), or the installed copy's (a server's require).
+	// 1.7.0 and 1.7.1 took this DLL's own path, so an update looked for config.cfg
+	// and menu.lua in %LOCALAPPDATA%: no settings backups, and "Start with the
+	// game" showing off.
+	std::wstring ModulePath(HMODULE m)
+	{
+		wchar_t path[MAX_PATH * 2];
+		const DWORD n = m ? GetModuleFileNameW(m, path, MAX_PATH * 2) : 0;
+		return std::wstring(path, n < MAX_PATH * 2 ? n : 0);
+	}
+
 	std::wstring GarrysModDir()
 	{
+		static std::wstring dir;
+		if (!dir.empty())
+			return dir;
 		HMODULE self = nullptr;
 		GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
 			reinterpret_cast<LPCWSTR>(&GarrysModDir), &self);
-		wchar_t path[MAX_PATH];
-		DWORD n = GetModuleFileNameW(self, path, MAX_PATH);
-		std::wstring s(path, n < MAX_PATH ? n : 0);
-		size_t slash = s.find_last_of(L"\\/");
+		const std::wstring stub = std::wstring(L"gmsv_meowy_boot_") + pack_versions::Arch() + L".dll";
+		for (HMODULE m : { self, GetModuleHandleW(stub.c_str()), GetModuleHandleW(pack_versions::DllName().c_str()) })
+		{
+			const std::wstring found = config_backup::GameDirOf(ModulePath(m));
+			if (!found.empty())
+				return dir = found;
+		}
+		// Neither (not expected): as before, two up from this DLL, not kept.
+		const std::wstring s = ModulePath(self);
+		const size_t slash = s.find_last_of(L"\\/");
 		return slash == std::wstring::npos ? L"" : s.substr(0, slash + 1) + L"..\\..";
 	}
 
@@ -2704,6 +2727,14 @@ namespace
 		return 2;
 	}
 
+	// meowy.ConfigRestoreDone() -> ok: meowy_restore.cfg removed from the game's
+	// cfg folder (the exec has run, or it was left behind); true when it's gone.
+	int ConfigRestoreDone(lua_State* L)
+	{
+		L->luabase->PushBool(config_backup::RemoveRestore(GarrysModDir() + L"\\cfg"));
+		return 1;
+	}
+
 	// LastServerMark(name) -> ok: the player is in the game on a server now; kept
 	// for the main menu's "Continue" when it's ours or a public one (the engine's
 	// address, read here; the name is the server's, only ever shown as text).
@@ -3933,6 +3964,7 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	SetFunction(LUA, "ConfigBackup", Guarded<ConfigBackup>);
 	SetFunction(LUA, "ConfigBackups", Guarded<ConfigBackups>);
 	SetFunction(LUA, "ConfigRestore", Guarded<ConfigRestore>);
+	SetFunction(LUA, "ConfigRestoreDone", Guarded<ConfigRestoreDone>);
 	SetFunction(LUA, "JoinBoost", Guarded<JoinBoost>);
 	SetFunction(LUA, "CvarHold", Guarded<CvarHold>);
 	SetFunction(LUA, "CvarRelease", Guarded<CvarRelease>);

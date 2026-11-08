@@ -365,6 +365,34 @@ end
 local function atMenu()
 	return not IsInGame() and not IsInLoading() and menuShownSince ~= nil and SysTime() - menuShownSince >= 2
 end
+
+-- meowy_restore.cfg (the player's binds and settings) stays in the game's cfg
+-- folder only until the game has run it. Its last line (config_backup.cpp) is
+-- meowy_restore_done, so the file is removed as soon as that runs: after every
+-- line before it. If it hasn't run within RESTORE_FILE_SECONDS, it's removed
+-- anyway; one left behind (the game closed in between) goes at start.
+local RESTORE_FILE_SECONDS = 30
+local function removeRestoreFile()
+	if meowy.ConfigRestoreDone and not meowy.ConfigRestoreDone() then
+		log("settings restore: couldn't remove meowy_restore.cfg from the game's cfg folder")
+	end
+end
+removeRestoreFile()
+local removeBy   -- SysTime() by which the file goes, while a restore's exec is under way
+if concommand then
+	concommand.Add("meowy_restore_done", function()
+		if not removeBy then return end   -- no restore under way: nothing to do
+		removeBy = nil
+		removeRestoreFile()
+	end, nil, "Meowy Client Pack: internal (the last line of meowy_restore.cfg)")
+end
+hook.Add("Think", "MeowyClientPack.SettingsRestoreFile", function()
+	if not removeBy or SysTime() < removeBy then return end
+	removeBy = nil
+	removeRestoreFile()
+	log("settings restore: meowy_restore.cfg removed; its last line didn't run within %d s", RESTORE_FILE_SECONDS)
+end)
+
 local restoring
 hook.Add("Think", "MeowyClientPack.SettingsRestore", function()
 	if not restoring or SysTime() < restoring.at then return end
@@ -380,9 +408,11 @@ hook.Add("Think", "MeowyClientPack.SettingsRestore", function()
 	end
 	local ok, what = meowy.ConfigBackup()
 	if ok == false then
+		removeRestoreFile()
 		MsgN("[Meowy Client Pack] settings restore: your settings now couldn't be copied first (" .. tostring(what) .. "), so nothing was put back")
 		return
 	end
+	removeBy = SysTime() + RESTORE_FILE_SECONDS
 	meowy.ConsoleRun("exec " .. file)
 	MsgN("[Meowy Client Pack] settings restore: put back your settings and binds from " .. b.when
 		.. (what == "copied" and "; the ones you had are the newest copy in meowy_settings_backups" or ""))

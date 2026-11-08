@@ -8,6 +8,7 @@
 namespace config_backup
 {
 	const char* const kRestoreName = "meowy_restore.cfg";
+	const char* const kRestoreDoneCommand = "meowy_restore_done";
 
 	namespace
 	{
@@ -122,6 +123,10 @@ namespace config_backup
 			why = "that copy couldn't be read";
 			return false;
 		}
+		// Its last line says the game has run the rest (RestoreDoneCommand).
+		if (!text.empty() && text.back() != '\n')
+			text += '\n';
+		text += std::string(kRestoreDoneCommand) + "\n";
 		if (!file_util::WriteAtomic(cfgDir + L"\\" + Widen(kRestoreName), text))
 		{
 			why = "couldn't write to the game's cfg folder";
@@ -129,5 +134,35 @@ namespace config_backup
 		}
 		why = kRestoreName;
 		return true;
+	}
+
+	bool RemoveRestore(const std::wstring& cfgDir)
+	{
+		const std::wstring path = cfgDir + L"\\" + Widen(kRestoreName);
+		if (DeleteFileW(path.c_str()))
+			return true;
+		const DWORD err = GetLastError();
+		return err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND;
+	}
+
+	std::wstring GameDirOf(const std::wstring& modulePath)
+	{
+		auto lower = [](std::wstring s) {
+			for (wchar_t& c : s)
+				if (c >= L'A' && c <= L'Z')
+					c = static_cast<wchar_t>(c - L'A' + L'a');
+			return s;
+		};
+		const size_t file = modulePath.find_last_of(L"\\/");
+		if (file == std::wstring::npos || file < 8)
+			return L"";
+		// "\lua\bin" right before the file name, either slash.
+		std::wstring tail = lower(modulePath.substr(file - 8, 8));
+		for (wchar_t& c : tail)
+			if (c == L'/')
+				c = L'\\';
+		if (tail != L"\\lua\\bin")
+			return L"";
+		return modulePath.substr(0, file - 8);
 	}
 }
