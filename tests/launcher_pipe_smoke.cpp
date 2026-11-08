@@ -6,7 +6,11 @@
 #include "../src/launcher_pipe.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <string>
+
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
 
 static int g_failures = 0, g_count = 0;
 
@@ -63,6 +67,33 @@ int main()
 	Check("server path: case and slashes", SamePath(L"c:/users/a/appdata/local/meowyclientpack/launcher/meowylauncher.EXE", exe));
 	Check("server path: anything else", !SamePath(L"C:\\Users\\A\\Downloads\\MeowyLauncher.exe", exe) && !SamePath(L"", exe) &&
 		!SamePath(exe + L"x", exe));
+
+	// A profile behind a junction: the real path Windows reports is the same file.
+	{
+		wchar_t tmp[MAX_PATH];
+		GetTempPathW(MAX_PATH, tmp);
+		const std::wstring base = std::wstring(tmp) + L"meowy_pipe_junction_" + std::to_wstring(GetCurrentProcessId());
+		const std::wstring real = base + L"\\real", link = base + L"\\link";
+		CreateDirectoryW(base.c_str(), nullptr);
+		CreateDirectoryW(real.c_str(), nullptr);
+		const std::wstring file = real + L"\\MeowyLauncher.exe", other = real + L"\\Other.exe";
+		for (const std::wstring& f : { file, other })
+		{
+			HANDLE h = CreateFileW(f.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
+			CloseHandle(h);
+		}
+		const std::wstring cmd = L"cmd /c mklink /J \"" + link + L"\" \"" + real + L"\" >nul";
+		Check("junction made", _wsystem(cmd.c_str()) == 0);
+		Check("same file: through the junction", SameFile(link + L"\\MeowyLauncher.exe", file));
+		Check("same file: not by name alone", !SamePath(link + L"\\MeowyLauncher.exe", file));
+		Check("same file: another file", !SameFile(other, file));
+		Check("same file: missing", !SameFile(real + L"\\missing.exe", file) && !SameFile(L"", file));
+		RemoveDirectoryW(link.c_str());   // the junction itself, not what it points to
+		DeleteFileW(file.c_str());
+		DeleteFileW(other.c_str());
+		RemoveDirectoryW(real.c_str());
+		RemoveDirectoryW(base.c_str());
+	}
 
 	// The menu Lua chunk takes only what the native side checked.
 	const std::string lua = launcher_pipe::kLua;

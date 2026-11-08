@@ -290,6 +290,31 @@ pub fn shell_open(target: &str) -> bool {
     unsafe { ShellExecuteW(null_mut(), op.as_ptr(), t.as_ptr(), null(), null(), SW_SHOWNORMAL) as usize > 32 }
 }
 
+/// Whether this process runs with an administrator's (elevated) token: then
+/// whatever it starts (Steam, and through it the game) would be elevated too.
+pub fn elevated() -> bool {
+    use windows_sys::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+    // SAFETY: our own token, query only; the out-buffer is the struct's size.
+    unsafe {
+        let mut token: HANDLE = null_mut();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+            return false;
+        }
+        let mut e = TOKEN_ELEVATION { TokenIsElevated: 0 };
+        let mut len = 0u32;
+        let ok = GetTokenInformation(
+            token,
+            TokenElevation,
+            &mut e as *mut TOKEN_ELEVATION as *mut core::ffi::c_void,
+            std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+            &mut len,
+        );
+        CloseHandle(token);
+        ok != 0 && e.TokenIsElevated != 0
+    }
+}
+
 // --- Game processes -----------------------------------------------------------
 
 struct Proc {
@@ -321,7 +346,7 @@ pub enum Event {
 /// and exits, so a session ends when the last followed process exits; its
 /// exit code is the session's.
 pub struct Watcher {
-    root: String,
+    roots: Vec<String>,
     procs: Vec<Proc>,
     skipped: Vec<u32>,
     active: bool,
@@ -380,11 +405,9 @@ fn candidates() -> Vec<(u32, u32)> {
 
 impl Watcher {
     pub fn new(game_root: &Path) -> Watcher {
-        let mut root = game_root.to_string_lossy().to_lowercase();
-        if !root.ends_with('\\') {
-            root.push('\\');
-        }
-        Watcher { root, procs: Vec::new(), skipped: Vec::new(), active: false, created: 0, last_exit: 0 }
+        // Both forms of the folder: a game behind a junction reports its real path.
+        let roots = crate::pipe::folder_forms(game_root);
+        Watcher { roots, procs: Vec::new(), skipped: Vec::new(), active: false, created: 0, last_exit: 0 }
     }
 
     pub fn running(&self) -> bool {
@@ -405,7 +428,7 @@ impl Watcher {
             }
             let proc = Proc { handle, pid, created: created(handle) };
             match image_path(handle) {
-                Some(path) if path.starts_with(&self.root) => found.push((proc, parent, path)),
+                Some(path) if self.roots.iter().any(|r| path.starts_with(r)) => found.push((proc, parent, path)),
                 _ => self.skipped.push(pid),
             }
         }

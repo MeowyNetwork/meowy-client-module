@@ -65,6 +65,11 @@ jobs:
   windows:
     runs-on: windows-latest
     needs: launcher
+    # Every test in a step counts: a failing exe stops the step (by default only
+    # the step's last command's exit code did, so x64 failing was hidden by x86 passing).
+    defaults:
+      run:
+        shell: pwsh -NoProfile -Command "$PSNativeCommandUseErrorActionPreference = $true; $ErrorActionPreference = 'Stop'; . '{0}'"
     steps:
       - uses: actions/checkout@v4
 
@@ -194,10 +199,26 @@ jobs:
           cmake --build buildtest32 --config Release --target fs_cache_smoke
           ./buildtest32/Release/fs_cache_smoke.exe "$env:RUNNER_TEMP"
 
-      - name: Rejoin-after-crash session file (session_smoke)
+      - name: Rejoin-after-crash session file and start-up line (session_smoke, startup_hook_smoke, both bitnesses)
         run: |
           cmake --build buildtest --config Release --target session_smoke
           ./buildtest/Release/session_smoke.exe "$env:RUNNER_TEMP"
+          cmake --build buildtest32 --config Release --target session_smoke startup_hook_smoke
+          ./buildtest32/Release/session_smoke.exe "$env:RUNNER_TEMP"
+          ./buildtest32/Release/startup_hook_smoke.exe
+
+      - name: Crash-report masking, data sandbox, notifications, timeline (info, sandbox, notify, timeline smokes, both bitnesses)
+        run: |
+          foreach ($b in "buildtest", "buildtest32") {
+            cmake --build $b --config Release --target info_smoke sandbox_smoke notify_smoke timeline_smoke
+            ./$b/Release/info_smoke.exe
+            $scratch = Join-Path $env:RUNNER_TEMP "$b-offline"
+            foreach ($t in "sandbox", "notify") {
+              New-Item -ItemType Directory -Force (Join-Path $scratch $t) | Out-Null
+              & "./$b/Release/${t}_smoke.exe" (Join-Path $scratch $t)
+            }
+            ./$b/Release/timeline_smoke.exe
+          }
 
       - name: Installer rules (uninstall_smoke)
         shell: pwsh

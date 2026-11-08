@@ -90,9 +90,19 @@ namespace pack_versions
 	const wchar_t* Arch() { return sizeof(void*) == 8 ? L"win64" : L"win32"; }
 	std::wstring DllName() { return std::wstring(L"gmcl_meowy_") + Arch() + L".dll"; }
 
+	std::wstring StatePathFor(const std::wstring& dataDir, const wchar_t* which, const wchar_t* arch)
+	{
+		return dataDir + L"\\state\\" + which + L"_" + arch + L".txt";
+	}
+
 	std::wstring StatePath(const std::wstring& dataDir, const wchar_t* which)
 	{
-		return dataDir + L"\\state\\" + which + L"_" + Arch() + L".txt";
+		return StatePathFor(dataDir, which, Arch());
+	}
+
+	std::wstring SeqFloorPath(const std::wstring& dataDir)
+	{
+		return StatePath(dataDir, L"release_seq");
 	}
 
 	std::wstring VersionDll(const std::wstring& dataDir, const std::string& version)

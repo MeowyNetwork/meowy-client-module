@@ -285,6 +285,59 @@ static class UninstallSmoke
 			}
 		}
 
+		// 12. "Start with the game" as the player chose it, not as Steam left menu.lua.
+		{
+			Check(Program.StartupWanted(true, false), "start-up: the line there");
+			Check(Program.StartupWanted(false, false), "start-up: the line gone, never turned off: ticked (and put back)");
+			Check(!Program.StartupWanted(false, true), "start-up: turned off by the player: unticked");
+			Check(Program.StartupWanted(true, true), "start-up: the line there wins");
+		}
+
+		// 13. Reinstalling: downloaded versions, their pointers and the seq floors go.
+		{
+			string d = Path.Combine(root, "reset");
+			foreach (string f in new[] { @"state\current_win64.txt", @"state\pending_win32.txt", @"state\release_seq.txt",
+				@"state\release_seq_win64.txt", @"state\release_seq_win32.txt", @"state\bad_win64.txt", @"state\policy.txt", @"bin\1.7.1\gmcl_meowy_win64.dll" })
+				Put(Path.Combine(d, f), "x");
+			Program.ResetUpdates(d);
+			Check(!File.Exists(Path.Combine(d, @"state\release_seq.txt")) && !File.Exists(Path.Combine(d, @"state\release_seq_win64.txt"))
+				&& !File.Exists(Path.Combine(d, @"state\release_seq_win32.txt")), "reset: the seq floors go");
+			Check(!File.Exists(Path.Combine(d, @"state\current_win64.txt")) && !File.Exists(Path.Combine(d, @"state\pending_win32.txt"))
+				&& !Directory.Exists(Path.Combine(d, "bin")), "reset: pointers and downloads go");
+			Check(File.Exists(Path.Combine(d, @"state\bad_win64.txt")) && File.Exists(Path.Combine(d, @"state\policy.txt")), "reset: the bad list and the policy stay");
+		}
+
+		// 14. Uninstall without Garry's Mod: the pack's own files go, the vault stays.
+		{
+			string d = Path.Combine(root, "own");
+			Put(Path.Combine(d, "menu_settings.txt"), "x");
+			Put(Path.Combine(d, @"launcher\MeowyLauncher.exe"), "x");
+			Put(Path.Combine(d, @"vault\menu\save.txt"), "mine");
+			Program.RemoveOwnData(d);
+			Check(Text(Path.Combine(d, @"vault\menu\save.txt")) == "mine", "own files: the vault is kept");
+			Check(!File.Exists(Path.Combine(d, "menu_settings.txt")) && !Directory.Exists(Path.Combine(d, "launcher")), "own files: the rest goes");
+			string e = Path.Combine(root, "own-empty");
+			Put(Path.Combine(e, "x.txt"), "x");
+			Program.RemoveOwnData(e);
+			Check(!Directory.Exists(e), "own files: nothing left, the folder goes too");
+		}
+
+		// 15. The launcher's lazy fonts put back (the game's folder, as fonts.rs restore).
+		{
+			string gm = Path.Combine(root, @"fonts\garrysmod");
+			Put(Path.Combine(gm, Program.LazyFontsAside + @"\a.ttf"), "a");
+			Put(Path.Combine(gm, Program.LazyFontsAside + @"\b.ttf"), "b");
+			Check(Program.RestoreLazyFonts(gm) == 2 && Text(Path.Combine(gm, Program.LazyFonts + @"\a.ttf")) == "a"
+				&& !Directory.Exists(Path.Combine(gm, Program.LazyFontsAside)), "fonts: the folder back");
+			Check(Program.RestoreLazyFonts(gm) == 0, "fonts: nothing aside, nothing done");
+			// The game made a new fonts folder meanwhile: merged, its copies winning.
+			Put(Path.Combine(gm, Program.LazyFontsAside + @"\a.ttf"), "old a");
+			Put(Path.Combine(gm, Program.LazyFontsAside + @"\c.ttf"), "c");
+			Check(Program.RestoreLazyFonts(gm) == 1 && Text(Path.Combine(gm, Program.LazyFonts + @"\a.ttf")) == "a"
+				&& Text(Path.Combine(gm, Program.LazyFonts + @"\c.ttf")) == "c" && !Directory.Exists(Path.Combine(gm, Program.LazyFontsAside)),
+				"fonts: merged into a new folder, the game's copy kept");
+		}
+
 		Console.WriteLine(failed > 0 ? "FAILED" : "all passed");
 		return failed > 0 ? 1 : 0;
 	}

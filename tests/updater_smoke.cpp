@@ -222,6 +222,46 @@ int main(int argc, char** argv)
 	Check("crash with nothing before it: the installed copy", pack_versions::RevertAfterCrash(dataDir, "1.9.0", said)
 		&& said.find("installed copy") != std::string::npos && pack_versions::Choose(dataDir).path.empty());
 
+	// Staging's files: this architecture's DLL goes into bin\<version>, the
+	// other architecture's file there stays; clean-up keeps what either
+	// architecture points to; the seq floor is this architecture's own.
+	{
+		auto exists = [](const std::wstring& p) { return GetFileAttributesW(p.c_str()) != INVALID_FILE_ATTRIBUTES; };
+		const bool x64 = sizeof(void*) == 8;
+		const std::wstring own = L"\\" + pack_versions::DllName();
+		const std::wstring otherFile = x64 ? L"\\gmcl_meowy_win32.dll" : L"\\gmcl_meowy_win64.dll";
+		const wchar_t* otherArch = x64 ? L"win32" : L"win64";
+		const std::wstring v2 = dataDir + L"\\bin\\2.0.0";
+		CreateDirectoryW((dataDir + L"\\bin").c_str(), nullptr);
+		CreateDirectoryW(v2.c_str(), nullptr);
+		file_util::WriteAtomic(v2 + otherFile, "the other architecture's 2.0.0");
+		const std::string bytes = "this architecture's 2.0.0";
+		file_util::WriteAtomic(dataDir + L"\\hash_me.tmp", bytes);
+		const std::string sha = pack_versions::Sha256File(dataDir + L"\\hash_me.tmp");
+		DeleteFileW((dataDir + L"\\hash_me.tmp").c_str());
+		std::string staged;
+		Check("stage: this architecture's file placed", updater::detail::PutInPlace(dataDir, "2.0.0", bytes, sha, staged)
+			&& file_util::ReadSmall(v2 + own, 256) == bytes);
+		Check("stage: the other architecture's file in that folder kept", file_util::ReadSmall(v2 + otherFile, 256) == "the other architecture's 2.0.0");
+		Check("stage: again over the same file", updater::detail::PutInPlace(dataDir, "2.0.0", bytes, sha, staged));
+		Check("stage: a wrong hash refused, nothing left", !updater::detail::PutInPlace(dataDir, "2.0.1", bytes, Repeat("00", 32), staged)
+			&& !exists(dataDir + L"\\bin\\2.0.1") && !exists(dataDir + L"\\bin\\2.0.1.partial"));
+		// Only the other architecture points at 2.0.0.
+		pack_versions::Pointer o;
+		o.version = "2.0.0";
+		o.sha256 = sha;
+		pack_versions::WritePointer(pack_versions::StatePathFor(dataDir, L"current", otherArch), o);
+		for (const wchar_t* which : { L"current", L"previous", L"pending" })
+			DeleteFileW(pack_versions::StatePath(dataDir, which).c_str());
+		CreateDirectoryW((dataDir + L"\\bin\\3.0.0").c_str(), nullptr);
+		CreateDirectoryW((dataDir + L"\\bin\\2.5.0.partial").c_str(), nullptr);
+		updater::detail::CleanUp(dataDir);
+		Check("clean-up: the other architecture's current kept", exists(v2 + own) && exists(v2 + otherFile));
+		Check("clean-up: folders nothing names, and partials, removed", !exists(dataDir + L"\\bin\\3.0.0") && !exists(dataDir + L"\\bin\\2.5.0.partial"));
+		const std::wstring floor = pack_versions::SeqFloorPath(dataDir);
+		Check("seq floor: this architecture's own file", floor == dataDir + (x64 ? L"\\state\\release_seq_win64.txt" : L"\\state\\release_seq_win32.txt"));
+	}
+
 	std::printf("%d/%d checks passed\n", g_count - g_failures, g_count);
 	return g_failures == 0 ? 0 : 1;
 }

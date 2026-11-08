@@ -78,4 +78,15 @@ namespace updater
 	std::string Describe();
 	// A version staged this session that starts next time ("" if none), once.
 	std::string TakeReadyNotice();
+
+	namespace detail
+	{
+		// Staging's file steps, for the tests. bytes (checked against sha256) go to
+		// bin\<version>\gmcl_meowy_<arch>.dll for this build's architecture, leaving
+		// the other architecture's file in that folder alone.
+		bool PutInPlace(const std::wstring& dataDir, const std::string& version, const std::string& bytes,
+			const std::string& sha256, std::string& why);
+		// bin\<version> folders no pointer of either architecture names, and partials, removed.
+		void CleanUp(const std::wstring& dataDir);
+	}
 }

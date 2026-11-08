@@ -80,6 +80,7 @@ end)
 			}
 			return true;
 		}
+
 	}
 
 	namespace
@@ -160,7 +161,32 @@ namespace launcher_pipe
 				return L"";
 			return std::wstring(base) + L"\\MeowyClientPack\\launcher\\MeowyLauncher.exe";
 		}
+	}
 
+	namespace detail
+	{
+		bool SameFile(const std::wstring& a, const std::wstring& b)
+		{
+			auto id = [](const std::wstring& path, BY_HANDLE_FILE_INFORMATION* info)
+			{
+				if (path.empty())
+					return false;
+				HANDLE h = CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+					nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+				if (h == INVALID_HANDLE_VALUE)
+					return false;
+				const bool ok = GetFileInformationByHandle(h, info) != 0;
+				CloseHandle(h);
+				return ok;
+			};
+			BY_HANDLE_FILE_INFORMATION x = {}, y = {};
+			return id(a, &x) && id(b, &y) && x.dwVolumeSerialNumber == y.dwVolumeSerialNumber
+				&& x.nFileIndexHigh == y.nFileIndexHigh && x.nFileIndexLow == y.nFileIndexLow;
+		}
+	}
+
+	namespace
+	{
 		// The pipe's server is the installed launcher (not a squatter).
 		bool ServerIsLauncher(HANDLE pipe)
 		{
@@ -172,7 +198,11 @@ namespace launcher_pipe
 				return false;
 			wchar_t path[MAX_PATH * 2];
 			DWORD size = MAX_PATH * 2;
-			const bool ok = QueryFullProcessImageNameW(p, 0, path, &size) && detail::SamePath(std::wstring(path, size), LauncherExe());
+			// Windows reports the image's final path: with the profile behind a
+			// junction only the file itself matches.
+			const std::wstring image(path, QueryFullProcessImageNameW(p, 0, path, &size) ? size : 0);
+			const std::wstring exe = LauncherExe();
+			const bool ok = !image.empty() && (detail::SamePath(image, exe) || detail::SameFile(image, exe));
 			CloseHandle(p);
 			return ok;
 		}

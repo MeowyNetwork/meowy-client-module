@@ -123,6 +123,7 @@
 #include "doctor.h"
 #include "audio_watch.h"
 #include "startup_hook.h"
+#include "pack_versions.h"
 #include "resource.h"
 
 #include <cstdio>
@@ -3628,6 +3629,24 @@ int ClientOpen(ILuaBase* LUA)
 			LUA->Pop();
 		}
 	}
+	// Updates only start through the start-up stub (pack_versions.h), so without
+	// "Start with the game" this copy stays as installed: say so once a start.
+	// (The client realm doesn't load a downloaded copy itself: without the
+	// stub's crash guard a broken update couldn't be rolled back.)
+	static bool toldUpdates = false;
+	if (!startup_hook::MenuLoaded() && !toldUpdates)
+	{
+		toldUpdates = true;
+		pack_versions::Pointer pending;
+		const bool waiting = pack_versions::ReadPointer(pack_versions::StatePath(DataDir(), L"pending"), &pending);
+		LUA->PushSpecial(SPECIAL_GLOB);
+		LUA->GetField(-1, "print");
+		LUA->PushString((std::string("[Meowy Client Pack] ") + VERSION + " didn't start with the game, so it can't update itself"
+			+ (waiting ? " (" + pending.version + " is downloaded and waiting)" : "")
+			+ ". Turn on \"Start with the game\": run MeowyClientPack.exe again and leave it ticked.").c_str());
+		LUA->Call(1, 0);
+		LUA->Pop();
+	}
 #endif
 	return 0;
 }
@@ -3691,8 +3710,9 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	SetFunction(LUA, "UpdaterReady", Guarded<UpdaterReady>);
 	if (!allowed)
 	{
-		// This version is revoked or too old, not the whole pack: a fixed one may come.
-		if (policy::Effective().packEnabled)
+		// This version is revoked or too old, not the whole pack: a fixed one may
+		// come, unless the player turned updates off (each check reads that too).
+		if (policy::Effective().packEnabled && !pack_versions::UpdatesOff(DataDir()))
 			updater::Start(DataDir(), VERSION, StubVersion());
 		LUA->SetField(-2, "meowy");
 		LUA->Pop();

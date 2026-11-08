@@ -6,8 +6,13 @@ out like the site (pack/v1/...).
 
 .DESCRIPTION
 - Hashes each DLL (SHA-256) and writes release-stable.txt with version, seq,
-  expiry, minimum stub, rollout, a fresh salt and one "file" line per
+  expiry, minimum stub, rollout, the salt and one "file" line per
   architecture (size, hash, path under /pack/v1/bin/<version>/).
+- The salt picks which installs are in a rollout. Signing the same version
+  again (a longer expiry, a bigger rollout) keeps the published one, so the
+  installs that had it stay in and the rollout only grows: -Salt, else the
+  salt of the release-stable.txt published at meowynetwork.com (or the one in
+  -OutDir) when it names this version, else a new random one.
 - Signs it with the release key in the TPM (asks for its PIN); only that key
   can sign a release. Checks the signature before writing release-stable.sig.
 - Copies the DLLs to pack/v1/bin/<version>/.
@@ -15,7 +20,9 @@ out like the site (pack/v1/...).
 Upload the whole pack/v1 folder to meowynetwork.com: the binaries first, the
 release document and its signature last. Players' packs take it within six
 hours (and at their next start), from the next time they open the game.
-To roll out in steps, sign again with a higher -Seq and a bigger -Rollout.
+To roll out in steps, sign again with a higher -Seq and a bigger -Rollout (the
+salt stays). The document expires after -Days (30): sign it again before then
+so installs that haven't started the game yet still take it.
 
 .EXAMPLE
 pwsh tools/release/make-release.ps1 -Version 1.7.0 -Seq 1 -Win64 build-rel64\Release\gmcl_meowy_win64.dll -Win32 build-rel32\Release\gmcl_meowy_win32.dll
@@ -28,6 +35,8 @@ param(
 	[ValidateRange(0, 100)][int]$Rollout = 100,
 	[ValidateRange(1, 365)][int]$Days = 30,
 	[ValidateRange(1, 99)][int]$MinStub = 1,
+	[ValidatePattern('^[0-9a-f]{8,64}$')][string]$Salt,
+	[switch]$NewSalt,
 	[string]$OutDir = (Join-Path (Split-Path $PSScriptRoot -Parent | Split-Path -Parent) "release-out")
 )
 $ErrorActionPreference = "Stop"
@@ -40,7 +49,37 @@ $bin = Join-Path $OutDir "pack\v1\bin\$Version"
 New-Item -ItemType Directory -Force $bin | Out-Null
 $lines = @("meowy-pack-release 1", "seq $Seq", "version $Version",
 	"expires $([DateTimeOffset]::UtcNow.AddDays($Days).ToUnixTimeSeconds())", "min_stub $MinStub", "rollout $Rollout")
-$salt = -join ((1..8) | ForEach-Object { "{0:x2}" -f (Get-Random -Maximum 256) })
+# The salt: kept for the same version (see above), new for a new one.
+function SaltOf([string]$doc) {
+	if ($doc -and $doc.StartsWith("meowy-pack-release 1`n") -and ($doc -match "(?m)^version $([regex]::Escape($Version))$") -and ($doc -match '(?m)^salt ([0-9a-f]{8,64})$')) { return $Matches[1] }
+	return $null
+}
+$salt = $Salt
+$from = "-Salt"
+if (-not $salt -and -not $NewSalt) {
+	try {
+		$published = (Invoke-WebRequest -UseBasicParsing -TimeoutSec 15 "https://meowynetwork.com/pack/v1/release-stable.txt").Content
+		if ($published -is [byte[]]) { $published = [System.Text.Encoding]::UTF8.GetString($published) }
+		$salt = SaltOf $published
+		$from = "the published release-stable.txt"
+	} catch {
+		Write-Warning "Couldn't read the published release-stable.txt ($($_.Exception.Message)); trying $OutDir."
+	}
+}
+if (-not $salt -and -not $NewSalt) {
+	$local = Join-Path $OutDir "pack\v1\release-stable.txt"
+	if (Test-Path $local) {
+		$salt = SaltOf ([System.IO.File]::ReadAllText($local))
+		$from = $local
+	}
+}
+if (-not $salt) {
+	$random = [byte[]]::new(8)
+	[System.Security.Cryptography.RandomNumberGenerator]::Fill($random)
+	$salt = -join ($random | ForEach-Object { "{0:x2}" -f $_ })
+	$from = "new"
+}
+Write-Host "Salt $salt ($from)."
 $lines += "salt $salt"
 $sources = @{ win64 = $Win64; win32 = $Win32 }
 foreach ($arch in "win64", "win32") {
