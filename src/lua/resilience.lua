@@ -145,11 +145,13 @@ local function applyDiscord(on) if meowy.DiscordAllow then meowy.DiscordAllow(on
 local function setDiscord(on)
 	-- Through the console: Garry's Mod refuses ConVar:SetBool on these menu convars.
 	RunConsoleCommand("meowy_discord", on and "1" or "0")
-	applyDiscord(on)   -- at once: the command may only take effect at the next frame
+	-- Off at once: the command may only take effect at the next frame. On waits
+	-- for the setting to read on (below): the policy may keep it off.
+	if not on then applyDiscord(false) end
 end
--- At start, and whenever the setting changes some other way (the Meowy
--- console, the policy): only a change of the setting itself is applied, so a
--- click isn't undone by the frame before its command has run.
+-- At start, and whenever the setting changes (a click, the Meowy console, the
+-- policy): only a change of the setting itself is applied, so a click off
+-- isn't undone by the frame before its command has run.
 local discordSeen
 hook.Add("Think", "MeowyClientPack.Discord", function()
 	local on = discordOn()

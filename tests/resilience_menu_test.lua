@@ -1437,6 +1437,17 @@ check("discord: no repeated calls", #w.discordCalls, calls)
 rawRun("meowy_discord", "1")
 w.run(0.1)
 check("discord: on again from the console", w.discord, true)
+-- A click on applies once the setting reads on (the policy may keep it off).
+rawRun("meowy_discord", "0")
+w.run(0.1)
+w.env.RunConsoleCommand = function(cmd, ...) if cmd == "meowy_discord" then queuedDiscord = (...) else rawRun(cmd, ...) end end
+if dt then dt:SetOn(true) end
+w.run(0.3)
+check("discord: on waits for the setting", w.discord, false)
+w.env.RunConsoleCommand = rawRun
+rawRun("meowy_discord", queuedDiscord)
+w.run(0.1)
+check("discord: on once it reads on", w.discord, true)
 check("discord: settings window paints", w.paintAll(), "")
 -- Saved off: off from the first frame.
 w = world({ settings = ON, menu = true, convars = { meowy_discord = "0" } })
