@@ -131,6 +131,7 @@ local function world(opts)
 		ConsoleRun = function(line)
 			w.consoleRuns = w.consoleRuns or {}
 			w.consoleRuns[#w.consoleRuns + 1] = line
+			if line == "exec meowy_restore.cfg" then w.execFrame = w.frames end
 			-- w.applyConsole: "name value" takes effect, as the engine runs it at its next frame.
 			local name, value = line:match("^([%w_]+) (%S+)$")
 			if w.applyConsole and name and w.cvars[name] ~= nil then w.cvars[name] = value end
@@ -145,6 +146,7 @@ local function world(opts)
 		-- Copies of config.cfg: made (w.backups counts), listed (w.backupList), put back (w.restored).
 		-- As config_backup.cpp: a new copy goes first, and only the newest 10 are kept.
 		ConfigBackup = function()
+			if w.backupFails then return false, "config.cfg couldn't be read" end
 			w.backups = (w.backups or 0) + 1
 			w.backupList = w.backupList or {}
 			table.insert(w.backupList, 1, { name = "config-new-" .. w.backups .. ".cfg", when = "now " .. w.backups, size = 1 })
@@ -154,9 +156,16 @@ local function world(opts)
 		ConfigBackups = function() local t = {} for i, b in ipairs(w.backupList or {}) do t[i] = b end return t end,
 		ConfigRestore = function(name)
 			for _, b in ipairs(w.backupList or {}) do
-				if b.name == name then w.restored = name return true, "meowy_restore.cfg" end
+				if b.name == name then w.restored, w.restoreFile = name, true return true, "meowy_restore.cfg" end
 			end
 			return false, "that copy couldn't be read"
+		end,
+		-- meowy_restore.cfg in the game's cfg folder (w.restoreFile; opts.restoreFile: one left from an earlier run).
+		ConfigRestoreDone = function()
+			if w.restoreFile == nil then w.restoreFile = opts.restoreFile end
+			w.restoreRemoves = (w.restoreRemoves or 0) + 1
+			if w.restoreFile then w.restoreFile, w.restoreRemovedFrame = false, w.frames end
+			return true
 		end,
 		-- The menu Lua's own files (module.cpp's MenuFileRead/Write; opts.menuFiles: what's on disk at start).
 		MenuFileRead = function(kind)
@@ -325,7 +334,8 @@ local function world(opts)
 	env.unpack = env.unpack or unpack or table.unpack
 	-- The menu state's engine library: your subscribed addons (w.addons).
 	env.engine = { GetAddons = function() return w.addons or {} end }
-	w.think = function() for _, id in ipairs(order) do thinks[id]() end end
+	w.frames = 0
+	w.think = function() w.frames = w.frames + 1 for _, id in ipairs(order) do thinks[id]() end end
 	env.hook.Run = function(event) w.hookRuns = w.hookRuns or {} w.hookRuns[#w.hookRuns + 1] = event end
 	-- What Garry's Mod's menu Lua has (mainmenu.lua), for refilling its page.
 	env.VERSIONSTR, env.NETVERSIONSTR, env.BRANCH = "2026.09.16", "2026.09.16", "x86-64"
@@ -2876,6 +2886,9 @@ local restoreRuns = table.concat(w.consoleRuns, "|")
 local wrote, execd = restoreRuns:find("host_writeconfig", 1, true), restoreRuns:find("exec meowy_restore.cfg", 1, true)
 check("settings restore: the settings now saved and copied first", wrote ~= nil and execd ~= nil and wrote < execd, true)
 check("settings restore: a copy of them made", w.backups, backupsBefore + 1)
+-- meowy_restore.cfg goes once the game has run it: two frames after the exec.
+check("settings restore: meowy_restore.cfg removed after the exec", w.restoreFile, false)
+check("settings restore: two frames after the exec", w.execFrame and w.restoreRemovedFrame and w.restoreRemovedFrame - w.execFrame, 2)
 w.restored = nil
 w.concommands.meowy_settings_restore(nil, nil, { "9" })
 w.run(1)
@@ -2902,6 +2915,21 @@ w.click("Put back")
 w.run(1)
 check("settings restore: the oldest of ten still puts back", w.restored, oldest)
 check("settings restore: and runs", (table.concat(w.consoleRuns or {}, "|")):find("exec meowy_restore.cfg", 1, true) ~= nil, true)
+check("no Lua errors", w.errors, nil)
+-- One left behind (the game closed between the exec and its removal): gone at start.
+w = world({ settings = ON, menu = true, restoreFile = true })
+check("settings restore: a meowy_restore.cfg left behind is removed at start", w.restoreFile, false)
+check("settings restore: at start, before any frame", w.restoreRemovedFrame, 0)
+-- The settings now can't be copied: nothing is run, and the written file goes at once.
+w = world({ settings = ON, menu = true })
+w.backupList = { { name = "config-20261107-120000.cfg", when = "2026-11-07 12:00:00", size = 100 } }
+w.run(3)
+w.backupFails, w.consoleRuns = true, {}
+w.concommands.meowy_settings_restore(nil, nil, { "1" })
+w.click("Put back")
+w.run(1)
+check("settings restore: no copy of the settings now, nothing run", (table.concat(w.consoleRuns, "|")):find("exec meowy_restore.cfg", 1, true), nil)
+check("settings restore: no copy of the settings now, the file written is removed", w.restoreFile, false)
 check("no Lua errors", w.errors, nil)
 
 -- Servers A then B, back to back, both changing the same setting (the player

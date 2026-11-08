@@ -5,7 +5,8 @@
 // start when it changed since the newest copy, the newest kKeep kept, named
 // config-YYYYMMDD-HHMMSS.cfg. A copy goes back through the game's own exec: it's
 // written to the game's cfg folder as meowy_restore.cfg (unbindall, binds,
-// settings), and the menu runs "exec meowy_restore.cfg".
+// settings), the menu runs "exec meowy_restore.cfg", and the file is removed
+// again once the game has run it (and at start, if one was left behind).
 #include <string>
 #include <vector>
 
@@ -35,4 +36,15 @@ namespace config_backup
 
 	// Writes copy `name` from `dir` to `cfgDir`\meowy_restore.cfg. False + why.
 	bool Restore(const std::wstring& dir, const std::string& name, const std::wstring& cfgDir, std::string& why);
+
+	// Removes `cfgDir`\meowy_restore.cfg: the game has run it (exec reads the
+	// whole file at once), or it was left behind. True when it's gone, or was
+	// never there.
+	bool RemoveRestore(const std::wstring& cfgDir);
+
+	// The game's garrysmod folder from the path of a module the installer put in
+	// its lua\bin ("...\garrysmod\lua\bin\x.dll" -> "...\garrysmod"), or "" for a
+	// module anywhere else: an update runs from
+	// %LOCALAPPDATA%\MeowyClientPack\bin\<version> (pack_versions.h).
+	std::wstring GameDirOf(const std::wstring& modulePath);
 }

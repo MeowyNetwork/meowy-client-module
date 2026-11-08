@@ -100,6 +100,25 @@ int main(int argc, char** argv)
 	Check("restore: only our names", !config_backup::Restore(dir, "..\\..\\x.cfg", cfgDir, r));
 	Check("restore: a copy that's gone", !config_backup::Restore(dir, "config-20261108-100000.cfg", cfgDir, r));
 
+	// Removed once the game has run it (or left behind): only meowy_restore.cfg.
+	Check("remove: done", config_backup::RemoveRestore(cfgDir));
+	Check("remove: the file's gone", GetFileAttributesW((cfgDir + L"\\meowy_restore.cfg").c_str()) == INVALID_FILE_ATTRIBUTES);
+	Check("remove: config.cfg stays", GetFileAttributesW(cfg.c_str()) != INVALID_FILE_ATTRIBUTES);
+	Check("remove: nothing there is fine", config_backup::RemoveRestore(cfgDir));
+	Check("remove: no cfg folder is fine", config_backup::RemoveRestore(root + L"\\no-such-folder"));
+
+	// The game's folder from a module's path: only from a lua\bin.
+	Check("game folder: the installed copy", config_backup::GameDirOf(
+		L"C:\\Steam\\steamapps\\common\\GarrysMod\\garrysmod\\lua\\bin\\gmcl_meowy_win64.dll") == L"C:\\Steam\\steamapps\\common\\GarrysMod\\garrysmod");
+	Check("game folder: the start-up stub, any case", config_backup::GameDirOf(
+		L"D:\\Games\\GarrysMod\\garrysmod\\LUA\\Bin\\gmsv_meowy_boot_win32.dll") == L"D:\\Games\\GarrysMod\\garrysmod");
+	Check("game folder: forward slashes", config_backup::GameDirOf(L"C:/GarrysMod/garrysmod/lua/bin/gmcl_meowy_win64.dll") == L"C:/GarrysMod/garrysmod");
+	Check("game folder: not from an update", config_backup::GameDirOf(
+		L"C:\\Users\\a\\AppData\\Local\\MeowyClientPack\\bin\\1.7.1\\gmcl_meowy_win64.dll").empty());
+	Check("game folder: not from a folder only ending in lua\\bin", config_backup::GameDirOf(L"C:\\x\\notlua\\bin\\a.dll").empty());
+	Check("game folder: no folder", config_backup::GameDirOf(L"gmcl_meowy_win64.dll").empty());
+	Check("game folder: nothing", config_backup::GameDirOf(L"").empty());
+
 	std::printf("%d/%d checks passed\n", g_count - g_failures, g_count);
 	return g_failures == 0 ? 0 : 1;
 }

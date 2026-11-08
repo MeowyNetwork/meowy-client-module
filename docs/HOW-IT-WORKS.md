@@ -720,7 +720,8 @@ on Meowy Network's servers.
   running) and only after you confirm in a prompt there: any server's Lua can run the command, but not
   click. Put back first saves your current settings (`host_writeconfig`), writes the chosen copy to
   `garrysmod\cfg\meowy_restore.cfg`, then makes a backup of your current `config.cfg`, then runs the
-  copy. `meowy_restore.cfg` stays in `cfg` afterwards, also after uninstalling.
+  copy. `meowy_restore.cfg` is deleted two frames later, once the game has run it, or at the next start
+  if the game closed in between.
 - **Sound follows the default device.** Plug in headphones mid-game and the game's sound moves to Windows'
   new default device (the pack runs `snd_restart` when Windows says the default changed).
   `meowy_audio_follow 0` turns it off. The PC doctor also has a microphone section (Bluetooth hands-free
@@ -843,12 +844,12 @@ on Meowy Network's servers.
   - `vault\` (each server's `garrysmod/data`, unless the game is on another drive) and `launcher\` (the
     launcher, its settings and log).
 - **In the game's folder:** the start-up line in `lua/includes/menu.lua`; `garrysmod/data` as a link
-  into the vault; `garrysmod\cfg\meowy_restore.cfg`, only if you use `meowy_settings_restore`, which stays
-  after uninstalling; the game's own `config.cfg`, saved (`host_writeconfig`) when a settings-guard
+  into the vault; `garrysmod\cfg\meowy_restore.cfg`, only for the moment `meowy_settings_restore` puts a
+  copy back; the game's own `config.cfg`, saved (`host_writeconfig`) when a settings-guard
   put-back from an earlier run or a restore needs it; and, from the launcher, the Workshop font cache
   renamed while the game starts.
 - **In Windows' settings for your account:** the launcher's start at sign-in (if chosen), the `meowy://`
   link handler, and the **Meowy Client Pack** Start-menu entry.
-- Uninstalling removes all of it, except `meowy_restore.cfg` and your `config.cfg`. Each server's
+- Uninstalling removes all of it, except your `config.cfg`. Each server's
   `data/` files go to `Documents\Meowy Client Pack backup`, and a vault it can't empty, or can't put back
   because Garry's Mod is gone, is kept (see *Uninstall*).

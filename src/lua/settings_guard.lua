@@ -365,6 +365,26 @@ end
 local function atMenu()
 	return not IsInGame() and not IsInLoading() and menuShownSince ~= nil and SysTime() - menuShownSince >= 2
 end
+
+-- meowy_restore.cfg (the player's binds and settings) stays in the game's cfg
+-- folder only until the game has run it: exec reads the whole file when it
+-- runs, at the next frame (ConsoleRun's lines run then), so it's removed two
+-- frames later. One left behind (the game closed in between) goes at start.
+local function removeRestoreFile()
+	if meowy.ConfigRestoreDone and not meowy.ConfigRestoreDone() then
+		log("settings restore: couldn't remove meowy_restore.cfg from the game's cfg folder")
+	end
+end
+removeRestoreFile()
+local removeInFrames
+hook.Add("Think", "MeowyClientPack.SettingsRestoreFile", function()
+	if not removeInFrames then return end
+	removeInFrames = removeInFrames - 1
+	if removeInFrames > 0 then return end
+	removeInFrames = nil
+	removeRestoreFile()
+end)
+
 local restoring
 hook.Add("Think", "MeowyClientPack.SettingsRestore", function()
 	if not restoring or SysTime() < restoring.at then return end
@@ -380,10 +400,12 @@ hook.Add("Think", "MeowyClientPack.SettingsRestore", function()
 	end
 	local ok, what = meowy.ConfigBackup()
 	if ok == false then
+		removeRestoreFile()
 		MsgN("[Meowy Client Pack] settings restore: your settings now couldn't be copied first (" .. tostring(what) .. "), so nothing was put back")
 		return
 	end
 	meowy.ConsoleRun("exec " .. file)
+	removeInFrames = 2
 	MsgN("[Meowy Client Pack] settings restore: put back your settings and binds from " .. b.when
 		.. (what == "copied" and "; the ones you had are the newest copy in meowy_settings_backups" or ""))
 end)
