@@ -216,14 +216,16 @@ end
 -- window, `showconsole` leaves it open and `hideconsole` and `toggleconsole`
 -- close it (the game's console would only flash). Returns the line for the
 -- engine (as typed when none of these is in it; "" when nothing is left) and
--- whether to close the window.
+-- whether to close the window. `mark` is the clear mark to echo (console.lua's
+-- own, with a part no server knows; M.CLEAR_MARK without one).
 M.CLEAR_MARK = "__meowy_console_clear__"
-function M.prepare(line, ownsKey)
+function M.prepare(line, ownsKey, mark)
+	mark = mark or M.CLEAR_MARK
 	local out, close, changed = {}, false, false
 	for _, part in ipairs(M.parts(line)) do
 		local w = string.lower((M.firstWord(part)))
 		if w == "clear" then
-			out[#out + 1] = "echo " .. M.CLEAR_MARK
+			out[#out + 1] = "echo " .. mark
 			out[#out + 1] = part
 			changed = true
 		elseif ownsKey and (w == "hideconsole" or w == "toggleconsole") then
@@ -236,6 +238,47 @@ function M.prepare(line, ownsKey)
 	end
 	if not changed then return type(line) == "string" and line or "", false end
 	return table.concat(out, ";"), close
+end
+
+-- Commands whose words are a secret (a password, an rcon command, a server's
+-- Steam token): a line with one isn't kept in the history, and its echo shows
+-- the command without them.
+M.SECRET_COMMANDS = { password = true, rcon_password = true, sv_password = true, rcon = true,
+	sv_setsteamaccount = true, cl_steamauth_token = true }
+local function secretWord(part)
+	return M.SECRET_COMMANDS[string.lower((string.gsub(M.firstWord(part), '"', "")))] == true
+end
+function M.secret(line)
+	for _, part in ipairs(M.parts(line)) do
+		if secretWord(part) then return true end
+	end
+	return false
+end
+function M.masked(line)
+	if not M.secret(line) then return type(line) == "string" and line or "" end
+	local out = {}
+	for _, part in ipairs(M.parts(line)) do
+		if secretWord(part) then
+			local word, more = M.firstWord(part)
+			out[#out + 1] = more and (word .. " ********") or word
+		else
+			out[#out + 1] = part
+		end
+	end
+	return table.concat(out, "; ")
+end
+-- History as saved by an older version: without the secret lines.
+function M.withoutSecrets(list)
+	local out = {}
+	for _, line in ipairs(list or {}) do if not M.secret(line) then out[#out + 1] = line end end
+	return out
+end
+
+-- Whether a setting's default can be put back as one value: a server's Lua can
+-- make any default, and a quote, ";" or line break in it would be a second
+-- command.
+function M.plainValue(v)
+	return type(v) == "string" and not string.find(v, '[";\r\n]') and #v <= 512
 end
 
 -- The game's con_filter, which acts on its own console's text and so never

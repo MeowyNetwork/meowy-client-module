@@ -20,3 +20,4 @@
 #define IDR_BROWSE_LOGIC_LUA 116      // src/lua/browse_logic.lua: Find servers' rules for Meowy's server index (BrowseLogic)
 #define IDR_PARTY_LOGIC_LUA 117       // src/lua/party_logic.lua: parties' rules (PartyLogic)
 #define IDR_PARTY_LUA 118             // src/lua/party.lua: parties, menu glue
+#define IDR_SETTINGS_LUA 140            // src/lua/settings.lua: meowy.Setting, menu_settings.txt, what servers may not change (the first menu chunk)

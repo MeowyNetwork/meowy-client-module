@@ -16,11 +16,16 @@
 // is strict. The signature is ECDSA P-256 over SHA-256 of the exact bytes, as
 // 128 hex digits (r || s), checked with Windows' own BCrypt against keys
 // compiled in here:
-//   - the release key (kept offline by Catualus) may sign any policy;
-//   - the ops key (on the backend, for automatic pausing) and the recovery key
-//     (offline, on paper) may only make it stricter: switch the pack off, add
-//     to off or revoked, raise min_version. A stolen ops key can only switch
-//     things off; undoing that needs the release key.
+//   - the release key (in Catualus's PC's TPM: not exportable, a PIN on every
+//     use) may sign any policy;
+//   - the ops key (meant for the backend's automatic pausing) and the recovery
+//     key (meant to be kept offline, off the PC that holds the release key) are
+//     plain PEM key files, so a copy can be stolen. They may only make it
+//     stricter: switch the pack off, add to off or revoked, raise min_version.
+//     Their seq stays below kReleaseOnlySeq and at most kMaxStepSeq above the
+//     kept one, and they can't set a notice (only keep or drop the kept one).
+//     So a stolen ops or recovery key can switch things off and no more, and
+//     the release key can always undo it with a higher seq.
 // A policy replaces the one kept only with a higher seq (an old one can't be
 // replayed). It's fetched from https://meowynetwork.com/pack/v1/policy.txt
 // (+ policy.sig) at start and every 30 minutes, kept in
@@ -37,6 +42,11 @@ namespace policy
 	constexpr size_t kMaxBody = 8 * 1024;
 	constexpr size_t kMaxList = 64;
 	constexpr size_t kMaxNotice = 200;
+	// Seqs from 10^15 up are the release key's alone; the ops and recovery keys
+	// step at most kMaxStepSeq above the kept seq (above 0 when none is kept).
+	// The same numbers are in launcher/core/src/policy.rs.
+	constexpr uint64_t kReleaseOnlySeq = 1000000000000000ull;
+	constexpr uint64_t kMaxStepSeq = 1000;
 	constexpr size_t kSigHexLen = 128;
 
 	enum class Key { None, Release, Ops, Recovery };
@@ -77,7 +87,12 @@ namespace policy
 	// Whether this build has its production keys (until then nothing is fetched).
 	bool HaveKeys();
 
-	// Starts the background fetch: now, then every 30 minutes. Once.
+	// state\policy.bin written again from the kept policy when it differs (the
+	// 1.7.0 launcher wrote it without min_version and revoked). Whether it was.
+	bool HealStubFile(const std::wstring& stateDir);
+
+	// Reads the kept policy, heals policy.bin (above), and starts the background
+	// fetch: now, then every 30 minutes. Once.
 	void StartFetching(const std::wstring& stateDir);
 
 	// The policy in effect now (the kept one, or the default: all on), for Lua.

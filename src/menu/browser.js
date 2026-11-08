@@ -23,6 +23,9 @@
 
 	function str(v) { return typeof v === 'string' ? v : ''; }
 	function int(v) { var n = Math.floor(Number(v)); return isFinite(n) ? n : 0; }
+	// A map keyed by text a server chose (its gamemode, title, category, Workshop
+	// ID, flag): no prototype, so "constructor" or "__proto__" is just a key.
+	function dict() { return Object.create(null); }
 
 	// Garry's Mod's own ranking (control.Servers.js CalculateRank): lower is better.
 	function rank(s) {
@@ -101,8 +104,8 @@
 	// common category (or "rp" from the title when none is given) and Workshop
 	// ID, and the flags its servers have.
 	function gamemode(key) {
-		return { key: key, servers: [], count: 0, players: 0, sortPlayers: 0, title: key, titles: {}, titleOrder: [],
-			cats: {}, catOrder: [], catSet: false, cat: '', wsids: {}, wsOrder: [], ws: '', flags: {}, flagOrder: [] };
+		return { key: key, servers: [], count: 0, players: 0, sortPlayers: 0, title: key, titles: dict(), titleOrder: [],
+			cats: dict(), catOrder: [], catSet: false, cat: '', wsids: dict(), wsOrder: [], ws: '', flags: dict(), flagOrder: [] };
 	}
 	function addServer(g, s) {
 		g.servers.push(s);
@@ -224,7 +227,7 @@
 	// --- The page --------------------------------------------------------------------
 
 	var TABS = [['internet', 'Internet'], ['favorite', 'Favourites'], ['history', 'History'], ['lan', 'Local network'], ['friends', 'Friends']];
-	var TAB_NAMES = {};
+	var TAB_NAMES = dict();
 	for (var tn = 0; tn < TABS.length; tn++) TAB_NAMES[TABS[tn][0]] = TABS[tn][1];
 	var DETAIL_W = 340, REFRESH_MS = 10000, WAIT_MS = 5000, SELECT_MS = 250, PREFS_MS = 800, PREFS_MAX = 600, PLAYERS_MAX = 256;
 	var INDEX_REFRESH_MS = 60000;   // a newer index while the Internet list from it stays open
@@ -317,22 +320,30 @@
 	function everyGamemode() { var g = gamemode(ALL); g.title = 'Every gamemode'; g.fixed = true; return g; }
 	function newList(gen) {
 		return { gen: gen, ok: true, done: false, complete: false, stopped: false, stage: 1, secs: 0, at: 0,
-			servers: [], byI: {}, gms: {}, gmOrder: [], all: everyGamemode(), src: null };
+			servers: [], byI: dict(), gms: dict(), gmOrder: [], all: everyGamemode(), src: null };
+	}
+	// A server into its gamemode and every gamemode. One bad row is skipped, not
+	// the batch or the rest of the grouping; false for a row that was skipped.
+	function group(l, s) {
+		try {
+			var g = l.gms[s.key];
+			if (!g) { g = l.gms[s.key] = gamemode(s.key); l.gmOrder.push(s.key); }
+			addServer(g, s);
+			addServer(l.all, s);
+			return true;
+		} catch (e) {
+			return false;
+		}
 	}
 	// The gamemodes again from the list's servers (after updates changed counts or titles).
 	function regroup(l) {
-		l.gms = {};
+		l.gms = dict();
 		l.gmOrder = [];
 		l.all = everyGamemode();
-		for (var i = 0; i < l.servers.length; i++) {
-			var s = l.servers[i];
-			if (!l.gms[s.key]) { l.gms[s.key] = gamemode(s.key); l.gmOrder.push(s.key); }
-			addServer(l.gms[s.key], s);
-			addServer(l.all, s);
-		}
+		for (var i = 0; i < l.servers.length; i++) group(l, l.servers[i]);
 	}
 	function freshFilters() {
-		return { notFull: false, hasPlayers: false, noPass: false, hideOutdated: false, minPlayers: 0, maxPlayers: 0, maxPing: 0, flags: {} };
+		return { notFull: false, hasPlayers: false, noPass: false, hideOutdated: false, minPlayers: 0, maxPlayers: 0, maxPing: 0, flags: dict() };
 	}
 	var st = {
 		open: false, built: false, tab: 'internet', lists: {}, gm: null, gmSort: 'players', gmQuery: '', cats: {}, f: freshFilters(),
@@ -413,7 +424,7 @@
 		if (st.prefsTimer) clearTimeout(st.prefsTimer);
 		st.prefsTimer = setTimeout(function () {
 			st.prefsTimer = null;
-			var f = st.f, flags = {}, n = 0;
+			var f = st.f, flags = dict(), n = 0;
 			for (var k in f.flags) if (f.flags[k] && n < 24) { flags[k] = f.flags[k]; n++; }
 			var p = { s: st.gmSort, c: st.cats, f: [f.notFull ? 1 : 0, f.hasPlayers ? 1 : 0, f.noPass ? 1 : 0, f.hideOutdated ? 1 : 0,
 				f.minPlayers, f.maxPlayers, f.maxPing], r: flags };
@@ -652,7 +663,7 @@
 		if (list.length > 1 && !st.gmQuery && !anyCat) list.unshift(l.all);
 		if (!list.length) grid.appendChild(node('div', 'mb-empty', l.servers.length ? 'No gamemode matches.' : (l.ok ? 'Asking Steam for servers\u2026' : '')));
 		// Two gamemodes by the same title (DarkRP and a fork of it, say): each says its folder name.
-		var titles = {};
+		var titles = dict();
 		for (var t = 0; t < list.length; t++) titles[list[t].title] = (titles[list[t].title] || 0) + 1;
 		for (var k = 0; k < list.length; k++) grid.appendChild(gamemodeTile(list[k], titles[list[k].title] > 1));
 		grid.scrollTop = top;
@@ -1253,15 +1264,13 @@
 			if (!l || !rows) return;
 			var v = ours();
 			for (var i = 0; i < rows.length; i++) {
-				var r = rows[i];
+				var r = rows[i], s;
 				if (!r || typeof r.i !== 'number' || typeof r.n !== 'string' || l.byI[r.i]) continue;
-				var s = server(r, v, haveMap);
+				try { s = server(r, v, haveMap); } catch (e) { continue; }
 				if (s.max <= 1) continue;   // as Garry's Mod's list: not a server to join
+				if (!group(l, s)) continue;
 				l.byI[s.i] = s;
 				l.servers.push(s);
-				if (!l.gms[s.key]) { l.gms[s.key] = gamemode(s.key); l.gmOrder.push(s.key); }
-				addServer(l.gms[s.key], s);
-				addServer(l.all, s);
 			}
 			if (finished) { l.done = l.complete = true; l.stopped = false; }
 			if (stage) l.stage = stage;
@@ -1279,7 +1288,7 @@
 				if (!r || typeof r.i !== 'number' || typeof r.n !== 'string') continue;
 				var s = l.byI[r.i];
 				if (!s || s.address !== str(r.a)) continue;
-				updateServer(s, server(r, v, haveMap));
+				try { updateServer(s, server(r, v, haveMap)); } catch (e) { continue; }
 				changed = true;
 			}
 			if (!changed) return;

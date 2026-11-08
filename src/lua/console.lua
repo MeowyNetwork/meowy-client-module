@@ -47,13 +47,27 @@ end
 local function saveList(kind, list, max)
 	if meowy.ConsoleFileWrite then meowy.ConsoleFileWrite(kind, ConsoleLogic.formatList(list, max)) end
 end
+-- Lines typed with a secret in them (passwords, rcon) were never kept; older
+-- versions kept them, so they're dropped from what was saved.
 local history, recallAt = loadList("history", HISTORY_MAX), 0
 local pins = loadList("pins", PINS_MAX)
+do
+	local clean = ConsoleLogic.withoutSecrets(history)
+	if #clean ~= #history then history = clean saveList("history", history, HISTORY_MAX) end
+end
+
+-- The pack's marks in the console's text (a `clear`, the command list's start
+-- and end) carry a part made at each start, so a server printing the plain
+-- words can't empty the window or start a list; each also counts only while
+-- the pack is waiting for it.
+local NONCE = string.format("%s%x%x", string.match(tostring({}), "(%x+)$") or "", os.time(), math.floor((SysTime() % 2048) * 1048576))
+local CLEAR = "__meowy_console_clear_" .. NONCE .. "__"
+local clearsAsked = 0
 
 -- Every command and setting, with its value, flags and help: the engine's own
 -- `cvarlist`, run between two markers; its lines are read into the catalog and
 -- left out of the window.
-local BEGIN, FINISH = "__meowy_cvars_begin__", "__meowy_cvars_end__"
+local BEGIN, FINISH = "__meowy_cvars_begin_" .. NONCE .. "__", "__meowy_cvars_end_" .. NONCE .. "__"
 local catalog, catalogAt, collecting, asked = {}, nil, nil, false
 local function askCatalog()
 	if asked or not meowy.ConsoleRun then return end
@@ -70,10 +84,11 @@ local function pull()
 	if istable(got) then
 		for _, l in ipairs(got) do
 			local x = string.match(l.x or "", "^%s*(.-)%s*$")   -- echo adds a space at the end
-			if x == ConsoleLogic.CLEAR_MARK then   -- a typed `clear` (run, below) got here
+			if x == CLEAR and clearsAsked > 0 then   -- a typed `clear` (run, below) got here
+				clearsAsked = clearsAsked - 1
 				clearLines()
 				added = 0
-			elseif x == BEGIN then
+			elseif x == BEGIN and asked and not collecting then
 				collecting = {}
 			elseif collecting and x == FINISH then
 				if #collecting > 0 then catalog, catalogAt = collecting, SysTime() end
@@ -92,29 +107,38 @@ local function pull()
 	return added
 end
 
+local function echo(text)
+	lines[#lines + 1] = { id = -1, t = os.time() * 1000, s = 0, c = 0x9A9EA8, x = "] " .. text }
+end
 local function run(line)
 	if not isstring(line) or line:match("^%s*$") then return end
-	if history[#history] ~= line then
+	-- A password or rcon line isn't kept (on disk, or for Up and Ctrl+R).
+	if history[#history] ~= line and not ConsoleLogic.secret(line) then
 		history[#history + 1] = line
 		while #history > HISTORY_MAX do table.remove(history, 1) end
 		saveList("history", history, HISTORY_MAX)
 	end
 	recallAt = 0
-	-- Echoed like the game's console does, so the answer reads in context.
-	lines[#lines + 1] = { id = -1, t = os.time() * 1000, s = 0, c = 0x9A9EA8, x = "] " .. line }
-	local send, close = ConsoleLogic.prepare(line, keySetting and keySetting:GetBool())
+	-- Echoed like the game's console does, so the answer reads in context
+	-- (without a password: the window can be on stream or saved).
+	echo(ConsoleLogic.masked(line))
+	local send, close = ConsoleLogic.prepare(line, keySetting and keySetting:GetBool(), CLEAR)
 	if close and IsValid(holder) then holder:Remove() end
 	if send == "" then return end
-	if meowy.ConsoleRun and meowy.ConsoleRun(send) then return end
+	if meowy.ConsoleRun and meowy.ConsoleRun(send) then
+		local _, marks = string.gsub(send, CLEAR, "")
+		clearsAsked = clearsAsked + marks
+		return
+	end
 	-- Without the engine's own command line: each command through
 	-- RunConsoleCommand, and `clear`'s mark empties the window here.
 	for _, words in ipairs(ConsoleLogic.commands(send)) do
-		if words[1] == "echo" and words[2] == ConsoleLogic.CLEAR_MARK then clearLines() else RunConsoleCommand(unpack(words)) end
+		if words[1] == "echo" and words[2] == CLEAR then clearLines() else RunConsoleCommand(unpack(words)) end
 	end
 end
 
 local function pin(line)
-	if not isstring(line) or line:match("^%s*$") then return end
+	if not isstring(line) or line:match("^%s*$") or ConsoleLogic.secret(line) then return end
 	for i = #pins, 1, -1 do if pins[i] == line then table.remove(pins, i) end end
 	pins[#pins + 1] = line
 	while #pins > PINS_MAX do table.remove(pins, 1) end
@@ -349,12 +373,14 @@ local function open()
 		if sel then copyRows(sel, "selected lines") else copyRows(state.view, "lines") end
 	end)
 	local clear = UI.Button(holder, "Clear", "ghost", function() clearLines() rebuild() end)
-	-- Save: the lines shown, paths masked, to a file of its own (logs\).
+	-- Save: the lines shown, paths masked, to a file of its own (logs\); its
+	-- full path goes on the clipboard.
 	local save = UI.Button(holder, "Save", "ghost", function()
 		local path = meowy.ConsoleSaveLog and meowy.ConsoleSaveLog(ConsoleLogic.copyText(state.view, ConsoleLogic.MAX_KEEP))
 		if isstring(path) then
 			SetClipboardText(path)
-			state.note, state.noteUntil = "Saved " .. #state.view .. " lines (path copied): " .. (path:match("[^\\/]+$") or path), SysTime() + 4
+			state.note, state.noteUntil = "Saved " .. #state.view .. " lines (path copied): MeowyClientPack\\logs\\"
+				.. (path:match("[^\\/]+$") or path), SysTime() + 4
 		else
 			state.note, state.noteUntil = "Couldn't save the log", SysTime() + 3
 		end
@@ -505,8 +531,12 @@ local function open()
 	pop:SetVisible(false)
 	local ROW = S(42)
 	local p = { mode = nil, items = {}, sel = 1, dismissed = false, history = false, entry = nil }
+	-- The default as one argument, never as a console line: a server's Lua can
+	-- give its convar any default (layoutPop offers the button only for a plain one).
 	local reset = UI.Button(pop, "Reset to default", "secondary", function()
-		if p.entry then run(p.entry.name .. ' "' .. tostring(p.default or "") .. '"') end
+		if not (p.entry and ConsoleLogic.plainValue(p.default)) then return end
+		echo(p.entry.name .. ' "' .. p.default .. '"')
+		RunConsoleCommand(p.entry.name, p.default)
 	end)
 	reset:SetVisible(false)
 	local function liveValue(e)
@@ -529,6 +559,7 @@ local function open()
 		pop:SetVisible(true)
 		pop:MoveToFront()
 		local showReset = p.mode == "inspect" and p.value ~= nil and p.default ~= nil and p.value ~= p.default
+			and ConsoleLogic.plainValue(p.default)
 		reset:SetVisible(showReset)
 		if showReset then reset:SetPos(w - reset:GetWide() - S(12), h - reset:GetTall() - S(12)) end
 	end

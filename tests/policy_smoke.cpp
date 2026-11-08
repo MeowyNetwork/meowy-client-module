@@ -40,10 +40,11 @@ static std::vector<uint8_t> Bytes(const char* hex)
 	return out;
 }
 
-// tools: scratchpad policy_vectors.ps1 (throwaway keys, never used anywhere else).
-static const char* kRelease = "f530598b2c2aa7fb0aa05a1a33f7fb471ea56b878e82e83e4c9290a2181b2ba38a29edf32476d150c86b66821d5416c12294be78bf44550ece9c1065322efb9f";
-static const char* kOps = "e0d84f65f3589c5451c976af9da54fa32826806ee092067ea619f33e9bfaf89a9a920435803d2b33c4b492dc18b2ffa66dd998bc9afc2c74e6dc77981bf4e86c";
-static const char* kRecovery = "78a09ae8854b931eb4a3782ab0726000a8a900407dd61fac7631a1bc0492d9ae19f81f09013c1118ed26f55108888307cae65bd839608f055374155a0d7e4ce1";
+// Made by a throwaway script (keys never written anywhere, used nowhere else),
+// signed as tools/policy/sign-policy.ps1 signs. launcher/core/src/policy.rs has the same.
+static const char* kRelease = "ce0f613c979afd27f505b74c81bd7a2d290302978571a52b85d50b8a628e63768f48ffaab29d552511cf25016031400623cb01f1d7902e106d66d262aa66f3ff";
+static const char* kOps = "23382955a362316831cf2b419eb3a6614daf64296b737ed1522a51578aaf67b00de5190d1911473e011ca6a549a5eec070f83f1799a095ae53049eedac68b075";
+static const char* kRecovery = "060434149f915e4c92e5172341aef705f3b9e59e6d794fc12d3f43c0283280c781a9d6f6f8446406f42f07cf32bdc8c17a4364aeb2347bfac497d5434d72b430";
 
 struct Signed
 {
@@ -51,17 +52,23 @@ struct Signed
 	const char* sig;
 };
 static const Signed P1 = { "meowy-pack-policy 1\nseq 1\npack_enabled 1\noff meowy_pak_cache\n",
-	"90f879c83ad608f679e2f66797cb132331ee464b3b0d65160cc0391a8d72c8a989e37fdae652378a80620aeeaf6b27a63f7a924d0ea39c7d9207d3b8bd515dcb" };
+	"a347bd868e414cc51d08d9fc7b2813ab45afc1d38dd73f6bb78951261533c6ffc76d1e6f530788cc19116157015d0097ee0b95bc0a9dcd557bf4f5c6cecdbb1b" };
 static const Signed P2 = { "meowy-pack-policy 1\nseq 2\npack_enabled 1\noff meowy_pak_cache\noff meowy_prewarm\nrevoked 1.6.1\n",
-	"da20f19618897f98418697809c8f036f8eff4c01a74969f55ff100037158d135b3e438ac8d6fa50122fe8f165ca3735d8f6b04799317b3dac1918241fdcf108d" };
+	"db43a9d071a2165c03f6e65316665a01307c21893ffae0fa09ce66dfdb645bce3ed57b21305e345463e54be1971f69d92b6c739651184c4d408e67cf2b0f1001" };
 static const Signed P3 = { "meowy-pack-policy 1\nseq 3\npack_enabled 1\n",
-	"e4235645efbf4614c326607080d3406b1ef0a13e7625b730e20ae5d909aa5e68382b76bff8cd666327bef0ae96f87b081d8d90262dc8900f6c6a71b16c60e44e" };
-static const Signed P4 = { "meowy-pack-policy 1\nseq 4\npack_enabled 0\noff meowy_pak_cache\noff meowy_prewarm\nrevoked 1.6.1\nnotice Paused while we fix a crash.\n",
-	"18eff360838711746675f7e14aed6ae91ee445c446d0a21020f2270986451829d90cf172100eb173b595889956687f6544dace6726f82fa8f53832a883a30307" };
-static const Signed P5 = { "meowy-pack-policy 1\nseq 5\npack_enabled 1\nmin_version 1.6.0\nfuture_field whatever it is\n",
-	"571e28c3eccf93d369610fdb8e8fa2a04909f527dce518cfeb1c88305c10511a4f41e975e715eabf6e6d58ee4dec4ccc0edfa8d11185870002cf8a6ce37fd93d" };
+	"e8d61975cc0e9d86fc63dfe9c3d5944a8ec0bb06cae4f18acb9f656d6c547707b7563b9ecad5395c137b527bcbfeb6f50051afdfad892bbf534e998c63d2f9cb" };
+static const Signed P4 = { "meowy-pack-policy 1\nseq 4\npack_enabled 0\noff meowy_pak_cache\noff meowy_prewarm\nrevoked 1.6.1\n",
+	"61c915601ec02c8f76ef8801d06c3f9f8789e45738be4e550cbe6fd35ff7a4db1ecb2e8e6c5f43e8fffc8876b1e2c78f7936470b84f17cff0333d4044562756e" };
+// The recovery key with a notice of its own: refused.
+static const Signed P4N = { "meowy-pack-policy 1\nseq 5\npack_enabled 0\noff meowy_pak_cache\noff meowy_prewarm\nrevoked 1.6.1\nnotice Update at evil.example to keep playing.\n",
+	"a3b2cc256ca1d66fd9d477d96f2dd512955634b3c0c28ed890475d16ce8563e9038051b58162f100274fe8533e02eb791b321e394c3f5bdefe890a408745cd2e" };
+// The ops key at the largest seq there is: refused (the release key could never beat it).
+static const Signed PMAX = { "meowy-pack-policy 1\nseq 9999999999999999999\npack_enabled 0\noff meowy_pak_cache\noff meowy_prewarm\nrevoked 1.6.1\n",
+	"45182755e76cc52910f92525b9ea2e3500061913562bc15e01f7a5671ddebb324f404c4d0bc06eca065e7d79297e706f1501d6cc9e3af17ec15bc61563e0c220" };
+static const Signed P5 = { "meowy-pack-policy 1\nseq 5\npack_enabled 1\nmin_version 1.6.0\nfuture_field whatever it is\nnotice Back on.\n",
+	"7b4fc4732ba87d28f0565ea104ef29d423b8c81f939709fde0fe6f4db9d7ad26a4caa01c556fcb28dabf4532cf3ad379d1680dc02af36958731c8ff3784946b1" };
 static const Signed P0 = { "meowy-pack-policy 1\nseq 1\npack_enabled 0\n",
-	"d7a6a9d05f486210845134f3fc7587cf3858b0b813152c9c1ab071cab97d89e7a55463c3187416985053646ee77cc0d82160518dd63f52edbec5e0fcdc1ad492" };
+	"6a935633d866a834768a91a116aa0d7bae4ea6e784300476d8342a8a9252732de7652492090e80645dc4583d74601ea5ccf3d7307d9d37af567a70701dffeecf" };
 
 int main(int argc, char** argv)
 {
@@ -90,8 +97,8 @@ int main(int argc, char** argv)
 	// Parsing.
 	policy::Policy p;
 	const char* why = nullptr;
-	Check("parse: a policy", policy::Parse(P4.body, &p, &why) && p.seq == 4 && !p.packEnabled && p.off.size() == 2 && p.revoked.size() == 1
-		&& p.notice == "Paused while we fix a crash.");
+	Check("parse: a policy", policy::Parse(P4N.body, &p, &why) && p.seq == 5 && !p.packEnabled && p.off.size() == 2 && p.revoked.size() == 1
+		&& p.notice == "Update at evil.example to keep playing.");
 	Check("parse: an unknown keyword is skipped", policy::Parse(P5.body, &p, &why) && p.minVersion == "1.6.0");
 	Check("parse: wrong header", !policy::Parse("meowy-pack-policy 2\nseq 1\npack_enabled 1\n", &p, &why));
 	Check("parse: no seq", !policy::Parse("meowy-pack-policy 1\npack_enabled 1\n", &p, &why));
@@ -129,22 +136,32 @@ int main(int argc, char** argv)
 	Check("pack off: no version runs", !policy::VersionAllowed(p, "9.9"));
 
 	// Offered in order: release, ops stricter, ops re-enabling (refused),
-	// recovery off, an old one (refused), release back on.
+	// recovery off, recovery with a notice and ops at the largest seq (both
+	// refused), an old one (refused), release back on.
 	std::string result;
 	Check("release policy taken", policy::Offer(dir, P1.body, P1.sig, result));
 	Check("stub file: on", file_util::ReadSmall(dir + L"\\policy.bin", 256) == "enabled 1\nseq 1\n");
 	Check("ops: stricter taken", policy::Offer(dir, P2.body, P2.sig, result));
 	Check("ops: switching a feature back on refused", !policy::Offer(dir, P3.body, P3.sig, result));
 	Check("recovery: switching the pack off taken", policy::Offer(dir, P4.body, P4.sig, result));
-	Check("stub file: off, revoked versions, the notice", file_util::ReadSmall(dir + L"\\policy.bin", 256)
-		== "enabled 0\nseq 4\nrevoked 1.6.1\nnotice Paused while we fix a crash.\n");
+	Check("stub file: off, revoked versions", file_util::ReadSmall(dir + L"\\policy.bin", 256)
+		== "enabled 0\nseq 4\nrevoked 1.6.1\n");
+	Check("recovery: a notice of its own refused", !policy::Offer(dir, P4N.body, P4N.sig, result));
+	Check("ops: seq 9999999999999999999 refused", !policy::Offer(dir, PMAX.body, PMAX.sig, result));
 	Check("an older policy refused (no replay)", !policy::Offer(dir, P0.body, P0.sig, result));
 	Check("a tampered policy refused", !policy::Offer(dir, tampered, P1.sig, result));
 	policy::Policy kept;
 	Check("kept: policy 4", policy::Current(dir, &kept) && kept.seq == 4 && !kept.packEnabled);
 	Check("release: back on (and the ops key's off list gone)", policy::Offer(dir, P5.body, P5.sig, result));
 	Check("kept: policy 5", policy::Current(dir, &kept) && kept.seq == 5 && kept.packEnabled && kept.off.empty());
+	Check("stub file: the release key's notice", file_util::ReadSmall(dir + L"\\policy.bin", 256)
+		== "enabled 1\nseq 5\nmin_version 1.6.0\nnotice Back on.\n");
 	Check("effective: policy 5", policy::Effective().seq == 5);
+	// A stub file the 1.7.0 launcher wrote (no min_version) is written again at start.
+	file_util::WriteAtomic(dir + L"\\policy.bin", "enabled 1\nseq 5\nnotice Back on.\n");
+	Check("stub file: healed from the kept policy", policy::HealStubFile(dir) && file_util::ReadSmall(dir + L"\\policy.bin", 256)
+		== "enabled 1\nseq 5\nmin_version 1.6.0\nnotice Back on.\n");
+	Check("stub file: already right, left alone", !policy::HealStubFile(dir));
 
 	// Edited on disk: no longer verifies, so it isn't kept.
 	file_util::WriteAtomic(dir + L"\\policy.txt", "meowy-pack-policy 1\nseq 9\npack_enabled 1\n");
@@ -159,6 +176,44 @@ int main(int argc, char** argv)
 	Check("ops: lowering min_version refused", !policy::MayReplace(cur, true, next, Key::Ops, &why));
 	Check("release: anything newer allowed", policy::MayReplace(cur, true, next, Key::Release, &why));
 	Check("unsigned: refused", !policy::MayReplace(cur, true, next, Key::None, &why));
+
+	// The seq: the ops and recovery keys stay where the release key can beat them.
+	policy::Parse("meowy-pack-policy 1\nseq 9999999999999999999\npack_enabled 0\n", &next, &why);
+	Check("ops: seq 9999999999999999999 refused", !policy::MayReplace(cur, true, next, Key::Ops, &why));
+	Check("recovery: seq 9999999999999999999 refused", !policy::MayReplace(cur, true, next, Key::Recovery, &why));
+	Check("ops: seq 9999999999999999999 refused with none kept", !policy::MayReplace(cur, false, next, Key::Ops, &why));
+	Check("release: seq 9999999999999999999 allowed", policy::MayReplace(cur, true, next, Key::Release, &why));
+	policy::Policy top = next;
+	next.seq = 3;
+	Check("release: never an older seq", !policy::MayReplace(top, true, next, Key::Release, &why));
+	policy::Parse("meowy-pack-policy 1\nseq 1\npack_enabled 1\n", &cur, &why);
+	next = cur;
+	next.packEnabled = false;
+	next.seq = 1 + policy::kMaxStepSeq;
+	Check("ops: a step of kMaxStepSeq allowed", policy::MayReplace(cur, true, next, Key::Ops, &why));
+	next.seq = 2 + policy::kMaxStepSeq;
+	Check("ops: one more refused", !policy::MayReplace(cur, true, next, Key::Ops, &why));
+	Check("ops: none kept, up to kMaxStepSeq", !policy::MayReplace(cur, false, next, Key::Ops, &why));
+	cur.seq = policy::kReleaseOnlySeq - 2;
+	next.seq = policy::kReleaseOnlySeq - 1;
+	Check("ops: just below the release key's range allowed", policy::MayReplace(cur, true, next, Key::Ops, &why));
+	cur.seq = policy::kReleaseOnlySeq - 1;
+	next.seq = policy::kReleaseOnlySeq;
+	Check("ops: the release key's range refused", !policy::MayReplace(cur, true, next, Key::Ops, &why));
+	Check("release: its range allowed", policy::MayReplace(cur, true, next, Key::Release, &why));
+	// The notice: the ops and recovery keys keep or drop the kept one, no new text.
+	policy::Parse("meowy-pack-policy 1\nseq 1\npack_enabled 1\nnotice Maintenance tonight.\n", &cur, &why);
+	next = cur;
+	next.seq = 2;
+	next.packEnabled = false;
+	Check("ops: keeping the notice allowed", policy::MayReplace(cur, true, next, Key::Ops, &why));
+	next.notice.clear();
+	Check("ops: dropping it allowed", policy::MayReplace(cur, true, next, Key::Ops, &why));
+	next.notice = "Download the fix at evil.example";
+	Check("ops: a new notice refused", !policy::MayReplace(cur, true, next, Key::Ops, &why));
+	Check("recovery: a new notice refused", !policy::MayReplace(cur, true, next, Key::Recovery, &why));
+	Check("ops: a notice with none kept refused", !policy::MayReplace(cur, false, next, Key::Ops, &why));
+	Check("release: a new notice allowed", policy::MayReplace(cur, true, next, Key::Release, &why));
 
 	std::printf("%d/%d checks passed\n", g_count - g_failures, g_count);
 	return g_failures == 0 ? 0 : 1;

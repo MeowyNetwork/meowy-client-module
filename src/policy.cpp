@@ -286,9 +286,18 @@ namespace policy
 			return *why = "not signed by one of our keys", false;
 		if (haveCur && next.seq <= cur.seq)
 			return *why = "not newer than the one kept", false;
-		if (key == Key::Release || !haveCur)
-			return true;   // the release key may change anything; anything is as strict as "all on"
-		// The ops and recovery keys: only stricter.
+		if (key == Key::Release)
+			return true;   // the release key may change anything
+		// The ops and recovery keys: a seq the release key can always beat (below
+		// kReleaseOnlySeq, at most kMaxStepSeq above the kept one), so a stolen
+		// key can't freeze the policy for good; and no notice of their own.
+		if (next.seq >= kReleaseOnlySeq || next.seq - (haveCur ? cur.seq : 0) > kMaxStepSeq)
+			return *why = "the ops key can't raise the seq that far", false;
+		if (!next.notice.empty() && (!haveCur || next.notice != cur.notice))
+			return *why = "the ops key can't set a notice", false;
+		if (!haveCur)
+			return true;   // anything else is as strict as "all on"
+		// Only stricter.
 		if (next.packEnabled && !cur.packEnabled)
 			return *why = "the ops key can't switch the pack back on", false;
 		for (const std::string& o : cur.off)
@@ -306,7 +315,7 @@ namespace policy
 	{
 		std::wstring PathIn(const std::wstring& dir, const wchar_t* name) { return dir + L"\\" + name; }
 
-		void WriteStubFile(const std::wstring& stateDir, const Policy& p)
+		std::string StubText(const Policy& p)
 		{
 			std::string text = std::string("enabled ") + (p.packEnabled ? "1" : "0") + "\nseq " + std::to_string(p.seq) + "\n";
 			// The stub also passes over an update this policy doesn't allow (pack_versions.h).
@@ -316,7 +325,12 @@ namespace policy
 				text += "revoked " + r + "\n";
 			if (!p.notice.empty())
 				text += "notice " + p.notice + "\n";
-			file_util::WriteAtomic(PathIn(stateDir, L"policy.bin"), text);
+			return text;
+		}
+
+		void WriteStubFile(const std::wstring& stateDir, const Policy& p)
+		{
+			file_util::WriteAtomic(PathIn(stateDir, L"policy.bin"), StubText(p));
 		}
 
 		bool ReadKept(const std::wstring& stateDir, Policy* out, Key* key)
@@ -485,6 +499,18 @@ namespace policy
 		}
 	}
 
+	bool HealStubFile(const std::wstring& stateDir)
+	{
+		Policy kept;
+		Key key = Key::None;
+		if (!ReadKept(stateDir, &kept, &key))
+			return false;
+		const std::string want = StubText(kept);
+		if (file_util::ReadSmall(PathIn(stateDir, L"policy.bin"), kMaxBody + 1024) == want)
+			return false;
+		return file_util::WriteAtomic(PathIn(stateDir, L"policy.bin"), want);
+	}
+
 	void StartFetching(const std::wstring& stateDir)
 	{
 		{
@@ -498,6 +524,7 @@ namespace policy
 				g_currentKey = key;
 			}
 		}
+		HealStubFile(stateDir);
 		if (!HaveKeys() || g_fetching.exchange(true))
 			return;
 		std::thread([stateDir]
@@ -510,6 +537,7 @@ namespace policy
 		}).detach();
 	}
 #else
+	bool HealStubFile(const std::wstring&) { return false; }
 	void StartFetching(const std::wstring&) {}
 #endif
 }

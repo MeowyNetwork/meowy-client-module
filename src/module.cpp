@@ -2051,7 +2051,7 @@ namespace
 
 	// ConsoleSaveLog(text) -> path | nil: the console's lines, paths masked, in
 	// %LOCALAPPDATA%\MeowyClientPack\logs\console_YYYY-MM-DD_HH-MM-SS.txt (8 MB at
-	// most; the newest 20 kept).
+	// most; the newest 20 kept). The path returned is the file's real one.
 	int ConsoleSaveLog(lua_State* L)
 	{
 		ILuaBase* LUA = L->luabase;
@@ -2086,11 +2086,13 @@ namespace
 		std::sort(logs.begin(), logs.end());
 		for (size_t i = 0; i + 20 < logs.size(); ++i)
 			DeleteFileW((dir + L"\\" + logs[i]).c_str());
+		// The file's own path, unmasked: it goes to the player's clipboard and the
+		// console's note (menu Lua only), never off this PC. Masked, it was all "<path>".
 		const int n = WideCharToMultiByte(CP_UTF8, 0, path.c_str(), -1, nullptr, 0, nullptr, nullptr);
 		std::string utf8(n > 0 ? n - 1 : 0, '\0');
 		if (n > 1)
 			WideCharToMultiByte(CP_UTF8, 0, path.c_str(), -1, &utf8[0], n, nullptr, nullptr);
-		LUA->PushString(crashes::MaskPaths(utf8).c_str());
+		LUA->PushString(utf8.c_str(), static_cast<unsigned int>(utf8.size()));
 		return 1;
 	}
 
@@ -3299,68 +3301,7 @@ end)
 	const char* const kMenuLua = R"lua(
 local meowy = meowy
 
--- The pack's settings. The game saves client-realm Lua convars, not menu-state
--- ones, so each is kept in the pack's own menu_settings.txt ("name=value"
--- lines): read here, before any is created, and written within a second of a
--- change. Every menu chunk creates its settings with meowy.Setting.
-do
-	local saved, names, written = {}, {}, nil
-	for name, value in string.gmatch(meowy.MenuSettingsRead() or "", "([%w_]+)=([^\r\n]*)") do
-		saved[name] = value
-	end
-	-- Meowy Network's signed policy (policy.h) can turn a setting off ("off
-	-- meowy_pak_cache"), or the whole pack: such a setting reads as off here,
-	-- whatever the player chose (their own value is kept and comes back when
-	-- the policy lets it). Every feature that reads its setting follows.
-	local policyOff, policyAt, policySeq = {}, -math.huge, nil
-	local function killed(name)
-		local now = SysTime()
-		if now - policyAt > 2 then
-			policyAt = now
-			local st = meowy.PolicyState and meowy.PolicyState()
-			policyOff = {}
-			if istable(st) then
-				for _, n in ipairs(st.off or {}) do policyOff[n] = true end
-				policyOff["*"] = st.pack_enabled == false
-				if st.seq ~= policySeq then
-					if policySeq ~= nil and isstring(st.notice) and st.notice ~= "" then
-						print("[Meowy Client Pack] Meowy Network: " .. st.notice)
-					end
-					policySeq = st.seq
-				end
-			end
-		end
-		return policyOff[name] == true or policyOff["*"] == true
-	end
-	function meowy.Setting(name, default, help)
-		names[#names + 1] = name
-		local cv = CreateConVar(name, saved[name] or default, FCVAR_ARCHIVE, help)
-		return setmetatable({}, { __index = function(_, k)
-			if k == "GetBool" then return function() return not killed(name) and cv:GetBool() end end
-			if k == "GetInt" then return function() if killed(name) then return 0 end return cv:GetInt() end end
-			if k == "GetFloat" then return function() if killed(name) then return 0 end return cv:GetFloat() end end
-			if k == "GetString" then return function() if killed(name) then return "0" end return cv:GetString() end end
-			local f = cv[k]
-			if isfunction(f) then return function(_, ...) return f(cv, ...) end end
-			return f
-		end })
-	end
-	concommand.Add("meowy_policy_status", function()
-		local st = meowy.PolicyState and meowy.PolicyState()
-		print("[Meowy Client Pack] policy: " .. (istable(st) and st.describe or "unavailable"))
-	end)
-	local nextCheck = 0
-	hook.Add("Think", "MeowyClientPack.SaveSettings", function()
-		local now = SysTime()
-		if now < nextCheck then return end
-		nextCheck = now + 1
-		local lines = {}
-		for _, name in ipairs(names) do lines[#lines + 1] = name .. "=" .. GetConVarString(name) end
-		local text = table.concat(lines, "\n")
-		if written == nil then written = text return end -- in effect at start; nothing to write
-		if text ~= written and meowy.MenuSettingsWrite(text) then written = text end
-	end)
-end
+-- The pack's settings (meowy.Setting) come from settings.lua, run just before this.
 
 -- Signed updates (updater.h): checked a minute after start and every 6 hours;
 -- a new version is downloaded, checked against Meowy Network's signature, and
@@ -3885,7 +3826,10 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	launcher_pipe::Start(VERSION);
 
 	const std::string resilienceLua = ResilienceChunk();
-	for (const auto& chunk : { std::make_pair(kMenuLua, "meowy_client_pack/menu"),
+	// meowy.Setting first (settings.lua): every other chunk creates its settings with it.
+	const std::string settingsLua = ResourceText(IDR_SETTINGS_LUA);
+	for (const auto& chunk : { std::make_pair(settingsLua.c_str(), "meowy_client_pack/settings"),
+		std::make_pair(kMenuLua, "meowy_client_pack/menu"),
 		std::make_pair(kServerListLua, "meowy_client_pack/serverlist"),
 		std::make_pair(resilienceLua.c_str(), "meowy_client_pack/resilience"),
 		std::make_pair(launcher_pipe::kLua, "meowy_client_pack/launcher") })
