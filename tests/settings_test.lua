@@ -81,6 +81,16 @@ local function world(opts)
 	end
 	-- The menu's own RunConsoleCommand: queued, run with the next frame.
 	env.RunConsoleCommand = function(cmd, ...) w.queue[#w.queue + 1] = commandLine(cmd, ...) end
+	-- The menu's convar lookups, as the game's: a hidden convar (flag 16) isn't found.
+	local function visible(n) return w.convars[n] ~= nil and (w.flags[n] or 0) % 32 < 16 end
+	w.engine = { cl_timeout = "30" }
+	env.GetConVar = function(n)
+		if w.engine[n] then return { GetString = function() return w.engine[n] end, engine = true } end
+		if visible(n) then return { GetString = function() return w.convars[n] end, raw = true } end
+		return nil
+	end
+	env.GetConVarString = function(n) return w.engine[n] or (visible(n) and w.convars[n]) or "" end
+	env.ConVarExists = function(n) return w.engine[n] ~= nil or visible(n) end
 	env.meowy = {
 		MenuSettingsRead = function() return w.settingsText end,
 		MenuSettingsWrite = function(t) w.written = t return true end,
@@ -282,6 +292,31 @@ w.env.RunConsoleCommand("meowy_loadingscreen", "0")
 w.seconds(1.1)
 local _, lines = (w.written or ""):gsub("meowy_updates=", "")
 check("Setting twice: saved once", lines, 1)
+
+-- Hidden (FCVAR_HIDDEN) so servers can't read them; the menu's own lookups
+-- answer a pack setting's name with its object, anything else as before.
+check("hidden: created with FCVAR_HIDDEN (16) and FCVAR_ARCHIVE", w.flags.meowy_updates, 144)
+check("hidden: GetConVar gives the setting object", w.env.GetConVar("meowy_updates"), s.updates)
+check("hidden: any case, as the console", w.env.GetConVar("MEOWY_UPDATES"), s.updates)
+check("hidden: GetConVarString reads it", w.env.GetConVarString("meowy_loadingscreen"), "0")
+check("hidden: ConVarExists", w.env.ConVarExists("meowy_party"), true)
+check("hidden: others as before", w.env.GetConVar("cl_timeout").engine == true and w.env.GetConVarString("cl_timeout") == "30"
+	and w.env.ConVarExists("nope") == false and w.env.GetConVar("nope") == nil, true)
+-- A protected setting a server changed reads as approved through GetConVar too.
+w.inGame = true
+w.frame()
+w.server("meowy_updates", "0")
+local q3 = w.queue
+w.queue = {}
+for _, line in ipairs(q3) do execLine(w, line) end
+check("hidden: GetConVar reads the approved value", w.env.GetConVar("meowy_updates"):GetBool() and w.env.GetConVarString("meowy_updates") == "1", true)
+w.inGame = false
+-- The Meowy console's list of them (cvarlist leaves hidden ones out).
+local list = w.env.meowy.SettingsList()
+local byName = {}
+for _, e in ipairs(list) do byName[e.name] = e end
+check("list: every setting, in order", #list == 7 and list[1].name == "meowy_data_sandbox", true)
+check("list: value, default, help", byName.meowy_loadingscreen.value .. "/" .. byName.meowy_loadingscreen.default .. "/" .. byName.meowy_loadingscreen.help, "0/1/help")
 
 print(("%d checks, %d failed"):format(count, failures))
 os.exit(failures == 0 and 0 or 1)

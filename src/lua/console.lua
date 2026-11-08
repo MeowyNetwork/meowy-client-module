@@ -91,7 +91,17 @@ local function pull()
 			elseif x == BEGIN and asked and not collecting then
 				collecting = {}
 			elseif collecting and x == FINISH then
-				if #collecting > 0 then catalog, catalogAt = collecting, SysTime() end
+				if #collecting > 0 then
+					-- The pack's own settings are hidden from cvarlist (settings.lua): added here.
+					local have = {}
+					for _, e in ipairs(collecting) do have[string.lower(e.name)] = true end
+					for _, s in ipairs(meowy.SettingsList and meowy.SettingsList() or {}) do
+						if not have[s.name] then
+							collecting[#collecting + 1] = { name = s.name, value = s.value, flags = { "pack" }, help = s.help, cmd = false }
+						end
+					end
+					catalog, catalogAt = collecting, SysTime()
+				end
 				collecting, asked = nil, false
 			elseif collecting then
 				local e = ConsoleLogic.parseCvar(x)

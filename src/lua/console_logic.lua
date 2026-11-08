@@ -335,7 +335,7 @@ M.FLAG_WORDS = {
 	a = "saved", cl = "client", sv = "server", cheat = "cheat", rep = "replicated", nf = "not while connected",
 	user = "user info", prot = "protected", sp = "single player", demo = "demo", norecord = "not in demos",
 	ss = "split screen", ss_added = "split screen", clientcmd_can_execute = "server can run", server_can_execute = "server can run",
-	nolog = "not logged", numeric = "number",
+	nolog = "not logged", numeric = "number", pack = "Meowy Client Pack",
 }
 function M.flagWords(flags)
 	local out = {}

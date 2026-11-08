@@ -158,6 +158,8 @@ local function world(opts)
 		ConsoleFileRead = function(kind) return (w.consoleFiles or opts.consoleFiles or {})[kind] or "" end,
 		ConsoleFileWrite = function(kind, text) w.consoleFiles = w.consoleFiles or {} w.consoleFiles[kind] = text return true end,
 		MaskPaths = function(text) return (text:gsub("%a:[\\/][^\n:]*", "<path>")) end,
+		-- The pack's settings, as settings.lua lists them (hidden from cvarlist).
+		SettingsList = function() return { { name = "meowy_updates", value = "1", default = "1", help = "updates" } } end,
 		-- The real path (module.cpp masks the lines, not the path it returns).
 		ConsoleSaveLog = function(text) w.savedLog = text return "C:\\Users\\Ann\\AppData\\Local\\MeowyClientPack\\logs\\console_2026-11-07_16-00-00.txt" end,
 		PrewarmWorkshop = function(a) local ids = {} for i, id in ipairs((w.workshop or {})[a] or {}) do ids[i] = id end return ids end,
@@ -2258,6 +2260,14 @@ typed.SetText = function(_, v) text = v end
 typed.OnChange()
 typed:OnKeyCodeTyped(67)   -- Tab
 check("typing: Tab completes the best match", text, "net_graph ")
+-- The pack's settings are hidden from cvarlist; settings.lua's list adds them.
+text = "meowy_upd"
+typed.OnChange()
+typed:OnKeyCodeTyped(67)   -- Tab
+check("typing: the pack's own (hidden) settings complete too", text, "meowy_updates ")
+text = "net_g"
+typed.OnChange()
+typed:OnKeyCodeTyped(67)
 typed.OnChange()
 local resetButton
 for _, p in ipairs(w.panels or {}) do if p.class == "DButton" and p.text == "Reset to default" then resetButton = p end end

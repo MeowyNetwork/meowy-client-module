@@ -14,11 +14,20 @@
 -- can call), or when it happens before any join this start (the player's own
 -- config files and the game's console; no server Lua has run yet). After a
 -- join, a change from anywhere else is put back: a server can queue commands
--- that run after `disconnect` (and `wait` for later), so "at the main menu"
--- doesn't tell the player's typing from a server's leftovers.
+-- that run after `disconnect`, so "at the main menu" doesn't tell the player's
+-- typing from a server's leftovers.
+--
+-- And servers can't read them: every setting is created hidden (FCVAR_HIDDEN),
+-- which keeps it out of client-realm GetConVar, GetConVarString and
+-- ConVarExists (measured in game, 2026-11-08), and out of find, cvarlist and the
+-- console's completion. The menu's own GetConVar, GetConVarString and
+-- ConVarExists hide them as well, so here they answer a pack setting's name with
+-- its setting object (the policy and the put-back included); the Meowy console
+-- lists them from meowy.SettingsList.
 local meowy = meowy
+local FCVAR_HIDDEN_FLAG = 16   -- FCVAR_HIDDEN; the menu state has no FCVAR_HIDDEN global
 
-local saved, names, cvs = {}, {}, {}
+local saved, names, cvs, helps, defaults = {}, {}, {}, {}, {}
 for name, value in string.gmatch(meowy.MenuSettingsRead and meowy.MenuSettingsRead() or "", "([%w_]+)=([^\r\n]*)") do
 	saved[name] = value
 end
@@ -167,8 +176,10 @@ function meowy.Setting(name, default, help)
 	-- A protected value that couldn't be set through the pack (saved by an older
 	-- version, or edited) starts from the default.
 	if PROTECTED[name] and not PROTECTED[name](start) then start = default end
-	local cv = CreateConVar(name, start, FCVAR_ARCHIVE, help)
+	-- FCVAR_ARCHIVE is dropped by the menu state anyway (menu_settings.txt keeps them).
+	local cv = CreateConVar(name, start, (FCVAR_ARCHIVE or 128) + FCVAR_HIDDEN_FLAG, help)
 	cvs[name] = cv
+	helps[name], defaults[name] = help, default
 	if PROTECTED[name] then kept[name] = cv:GetString() end
 	objects[name] = setmetatable({}, { __index = function(_, k)
 		if k == "GetBool" then return function() return not killed(name) and truthy(current(name)) end end
@@ -180,6 +191,41 @@ function meowy.Setting(name, default, help)
 		return f
 	end })
 	return objects[name]
+end
+
+-- The pack's settings for the Meowy console (hidden from cvarlist): name,
+-- value as it reads, default and help, in the order they were made.
+function meowy.SettingsList()
+	local out = {}
+	for _, name in ipairs(names) do
+		out[#out + 1] = { name = name, value = objects[name]:GetString(), default = defaults[name], help = helps[name] or "" }
+	end
+	return out
+end
+
+-- The menu's convar lookups, for a pack setting's name (any case, as the
+-- console's): its object. Anything else as before.
+local function ours(name) return isstring(name) and objects[string.lower(name)] or nil end
+local rawGetConVar, rawGetConVarString, rawConVarExists = GetConVar, GetConVarString, ConVarExists
+if rawGetConVar then
+	GetConVar = function(name, ...)
+		local o = ours(name)
+		if o then return o end
+		return rawGetConVar(name, ...)
+	end
+end
+if rawGetConVarString then
+	GetConVarString = function(name, ...)
+		local o = ours(name)
+		if o then return o:GetString() end
+		return rawGetConVarString(name, ...)
+	end
+end
+if rawConVarExists then
+	ConVarExists = function(name, ...)
+		if ours(name) then return true end
+		return rawConVarExists(name, ...)
+	end
 end
 
 concommand.Add("meowy_policy_status", function()
