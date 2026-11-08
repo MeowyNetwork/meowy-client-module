@@ -276,23 +276,37 @@ function Guard.only(changes, keep)
 	return out
 end
 
--- The snapshot for the next server: the values now, with `putBack`'s changes
--- as they will be once the commands have run.
-function Guard.snapshotAfter(get, putBack)
-	local snap = Guard.snapshot(get)
-	for _, c in ipairs(putBack or {}) do
-		if snap[c.name] ~= nil then snap[c.name] = c.was end
-	end
-	return snap
+-- What to do now with a part waiting to be answered, and the changes that
+-- applies to: the ones still in place (Guard.stillChanged). Parts are taken
+-- newest first, each once the one after it has been answered and its
+-- put-back has run: a server joined later may have changed the same setting
+-- again, and putting that back first leaves this one's change in place to be
+-- asked about. A part from a game that closed (left over from the last run)
+-- is asked about even for a server always put back: the player may have
+-- changed things since, and should see it.
+function Guard.decide(part, get, isOurs, always)
+	local still = Guard.stillChanged(part.changes, get)
+	local v = Guard.verdict({ address = part.address, changes = still }, isOurs, always)
+	if v == "putback" and part.closed then v = "ask" end
+	return v, still
+end
+
+-- Whether something from the last run is recent enough to still mean
+-- anything (at: unix time; anything older is dropped).
+Guard.MAX_AGE = 7 * 86400
+function Guard.fresh(at, now)
+	return type(at) == "number" and at > 0 and now - at <= Guard.MAX_AGE and at <= now + 3600
 end
 
 -- The session as kept on disk (%LOCALAPPDATA%\MeowyClientPack\settings_guard_session.txt),
--- so a game closed on a server is still answered for at the next start. Lines:
---   part <address|-> <name>            a server's part that ended, waiting for the prompt
---   change <convar> <was> <now>        one of that part's changes
---   cur <address|-> <name>             the server the player is on (or was, when the game closed)
---   snap <convar> <value>              its snapshot
--- Only watched settings and values without spaces are kept; a name is one line of text.
+-- so a game closed on a server, or a prompt never answered, is still answered
+-- for at the next start. Lines:
+--   part <address|-> <unix time> <name>   a server's part that ended, waiting to be answered
+--   change <convar> <was> <now>           one of that part's changes
+--   cur <address|-> <unix time> <name>    the server the player is on (or was, when the game closed)
+--   snap <convar> <value>                 its snapshot
+-- The time is when the part ended (when it started, for cur). Only watched
+-- settings and values without spaces are kept; a name is one line of text.
 local watched
 local function isWatched(name)
 	if not watched then
@@ -312,11 +326,12 @@ end
 
 function Guard.encodeSession(s)
 	local lines = { "v 1" }
-	local function server(kind, address, name)
-		lines[#lines + 1] = kind .. " " .. (addressToken(address) and address or "-") .. " " .. nameText(name)
+	local function server(kind, address, at, name)
+		lines[#lines + 1] = kind .. " " .. (addressToken(address) and address or "-") .. " "
+			.. string.format("%d", tonumber(at) or 0) .. " " .. nameText(name)
 	end
 	for _, part in ipairs(s.parts or {}) do
-		server("part", part.address, part.name)
+		server("part", part.address, part.at, part.name)
 		for _, c in ipairs(part.changes or {}) do
 			if isWatched(c.name) and token(c.was) and token(c.now) then
 				lines[#lines + 1] = "change " .. c.name .. " " .. c.was .. " " .. c.now
@@ -324,7 +339,7 @@ function Guard.encodeSession(s)
 		end
 	end
 	if s.cur then
-		server("cur", s.cur.address, s.cur.name)
+		server("cur", s.cur.address, s.cur.at, s.cur.name)
 		local names = {}
 		for name in pairs(s.cur.snap or {}) do names[#names + 1] = name end
 		table.sort(names)
@@ -339,13 +354,15 @@ end
 -- The session from that text, or nil when it holds none.
 function Guard.decodeSession(text)
 	if type(text) ~= "string" or text:sub(1, 3) ~= "v 1" then return nil end
-	local s, part = { parts = {} }, nil
+	-- change/snap lines belong to the part/cur line just above, if it was read.
+	local s, part, cur = { parts = {} }, nil, nil
 	for line in text:gmatch("[^\r\n]+") do
 		local kind, rest = line:match("^(%a+) (.*)$")
 		if kind == "part" or kind == "cur" then
-			local address, name = rest:match("^(%S+) ?(.*)$")
+			part, cur = nil, nil
+			local address, at, name = rest:match("^(%S+) (%d+) ?(.*)$")
 			if address then
-				local server = { address = address ~= "-" and addressToken(address) and address or nil, name = nameText(name) }
+				local server = { address = address ~= "-" and addressToken(address) and address or nil, name = nameText(name), at = tonumber(at) }
 				if server.name == "" then server.name = nil end
 				if kind == "part" then
 					server.changes = {}
@@ -353,7 +370,7 @@ function Guard.decodeSession(text)
 					part = server
 				else
 					server.snap = {}
-					s.cur, part = server, nil
+					s.cur, cur = server, server
 				end
 			end
 		elseif kind == "change" and part then
@@ -361,9 +378,9 @@ function Guard.decodeSession(text)
 			if name and isWatched(name) then
 				part.changes[#part.changes + 1] = { name = name, label = isWatched(name), was = was, now = now }
 			end
-		elseif kind == "snap" and s.cur then
+		elseif kind == "snap" and cur then
 			local name, v = rest:match("^(%S+) (%S+)$")
-			if name and isWatched(name) then s.cur.snap[name] = v end
+			if name and isWatched(name) then cur.snap[name] = v end
 		end
 	end
 	if #s.parts == 0 and not s.cur then return nil end

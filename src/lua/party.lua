@@ -72,14 +72,16 @@ local function onEvent(e, now)
 		say("Party started: invite your friends")
 		P.lastSeq, P.mine = nil, nil
 	elseif e == "joined" then
+		-- A new party (native left the one before, if any, only now it passed).
 		say("You joined the party")
-		P.lastSeq, P.mine = nil, nil
+		P.lastSeq, P.mine, P.follow, P.presence = nil, nil, nil, nil
 	elseif e:sub(1, 7) == "failed:" then
 		say(e:sub(9))
 	elseif e:sub(1, 7) == "invite " then
 		-- An invite accepted in Steam (or the game started from one): the player's own click.
+		-- The party they're in stays until the new one is checked and joined
+		-- (party_steam.cpp: a Meowy party led by a Steam friend).
 		if not partyOn() then return log("party: invite ignored, parties are off") end
-		if P.state then leave() end
 		if not meowy.PartyJoin(e:sub(8)) then say("Couldn't join that party") end
 	end
 end

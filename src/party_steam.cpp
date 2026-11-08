@@ -554,13 +554,15 @@ namespace party_steam
 					auto g = [&] { got = g_api.callResult(i.ut, call, &r, sizeof(r), kLobbyEnter, &failed); };
 					if (Guard(g) && got && !failed && r.response == 1 && r.lobby == g_joining)
 					{
-						g_lobby = r.lobby;
 						// Only a Meowy party led by a friend (or this player): anything
-						// else's lobby is left at once, before the pack publishes anything in it.
+						// else's lobby is left at once, before the pack publishes anything
+						// in it. The party the player is in is left only once the new one
+						// passes (a join link or +connect_lobby says nothing about who
+						// sent it, so this is the only check it gets).
+						const uint64_t lobby = r.lobby, previous = g_lobby;
 						const char* v = nullptr;
 						uint64_t owner = 0, self = 0;
 						int relationship = 0;
-						const uint64_t lobby = g_lobby;
 						auto h = [&] {
 							v = g_api.getLobbyData(i.mm, lobby, "v");
 							owner = g_api.lobbyOwner(i.mm, lobby);
@@ -570,13 +572,23 @@ namespace party_steam
 						const std::string why = Guard(h) ? detail::Refusal(v, owner, self, relationship) : "Steam faulted";
 						if (why.empty())
 						{
-							g_last = "joined " + std::to_string(r.lobby);
+							if (previous && previous != lobby)
+							{
+								auto old = [&] { g_api.leaveLobby(i.mm, previous); };
+								Guard(old);
+							}
+							g_lobby = lobby;
+							g_last = "joined " + std::to_string(lobby);
 							Event("joined");
 						}
 						else
 						{
-							Leave();
-							g_last = "left " + std::to_string(r.lobby) + ": " + why;
+							if (lobby != previous)
+							{
+								auto drop = [&] { g_api.leaveLobby(i.mm, lobby); };
+								Guard(drop);
+							}
+							g_last = "left " + std::to_string(lobby) + ": " + why;
 							Event("failed: " + why);
 						}
 					}

@@ -604,7 +604,11 @@ end
 
 -- 1.7.0 could leave fps_max_menu at the menu cap for good (the put-back ran
 -- before config.cfg): a 15 with nothing held, once config.cfg has run, is put
--- back to the game's default, once (repairs.txt says it's done).
+-- back to the game's default, once (repairs.txt says it's done), and only
+-- where 1.7.0 ran: the menu cap and the config.cfg copies both came with it,
+-- so copies from before this start (settings_guard.lua makes this start's,
+-- after this chunk) say so. On a fresh install a 15 is the player's own.
+local ranBefore = meowy.ConfigBackups ~= nil and #(meowy.ConfigBackups() or {}) > 0
 local function repairMenuCap(now)
 	if held.repairDone or now < held.untilAt or idle.capped or next(heldAtStart) then return end
 	held.repairDone = true
@@ -612,7 +616,7 @@ local function repairMenuCap(now)
 	local done = meowy.MenuFileRead("repairs") or ""
 	if done:find("fps_max_menu_cap", 1, true) then return end
 	meowy.MenuFileWrite("repairs", done .. "fps_max_menu_cap\n")
-	if tonumber(cvarText("fps_max_menu")) ~= MENU_BACKGROUND_FPS then return end
+	if not ranBefore or tonumber(cvarText("fps_max_menu")) ~= MENU_BACKGROUND_FPS then return end
 	local cv = GetConVar and GetConVar("fps_max_menu")
 	local default = cv and cv.GetDefault and cv:GetDefault()
 	if not numberText(default) or tonumber(default) == MENU_BACKGROUND_FPS then default = "60" end

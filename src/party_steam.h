@@ -39,7 +39,9 @@ namespace party_steam
 
 	// A new friends-only lobby for up to `maxMembers`. False if one can't be asked for.
 	bool Create(int maxMembers);
-	// Joins a lobby by its SteamID. False if one can't be asked for.
+	// Joins a lobby by its SteamID. False if one can't be asked for. The party
+	// the player is in is left only once the new one is entered and passes
+	// detail::Refusal (Poll's "joined"); otherwise it stays.
 	bool Join(uint64_t lobby);
 	// Leaves the party (and clears the pack's Rich Presence keys).
 	void Leave();

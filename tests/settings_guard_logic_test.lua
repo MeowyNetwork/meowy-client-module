@@ -87,16 +87,29 @@ cvars.r_3dsky = "0.5"
 check("still changed: a later server changed it again", #Guard.stillChanged(part.changes, get), 0)
 check("only: kept by name", #Guard.only({ { name = "a" }, { name = "b" } }, function(n) return n == "b" end), 1)
 cvars.r_3dsky = "0"
-local after = Guard.snapshotAfter(get, part.changes)
-check("snapshot after a put-back: the value it will have", after.r_3dsky, "1")
-check("snapshot after: the rest as they are", after.mat_specular, "1")
+
+-- What's done with a part waiting: on what's still in place; a part from the
+-- last run is asked about even for a server always put back.
+check("decide: ask", (Guard.decide(part, get, ours, {})), "ask")
+check("decide: always, put back", (Guard.decide(part, get, ours, { "1.2.3.4:27015" })), "putback")
+local closed = { address = part.address, changes = part.changes, closed = true }
+check("decide: from the last run, asked even when always", (Guard.decide(closed, get, ours, { "1.2.3.4:27015" })), "ask")
+cvars.r_3dsky = "0.5"
+local v, still = Guard.decide(part, get, ours, {})
+check("decide: changed again since, nothing to do", v .. #still, "none0")
+cvars.r_3dsky = "0"
+check("fresh: today", Guard.fresh(1000, 1000 + 3600), true)
+check("fresh: a week old", Guard.fresh(1000, 1000 + Guard.MAX_AGE + 1), false)
+check("fresh: no time", Guard.fresh(nil, 1000), false)
+check("fresh: from the future", Guard.fresh(1000 + 86400, 1000), false)
 
 -- The session on disk: what's needed to ask at the next start, and nothing else.
-local s = { parts = { { address = "5.6.7.8:27015", name = "Bar\nRP", changes = { { name = "mat_picmip", label = "x", was = "0", now = "2" } } } },
-	cur = { address = "1.2.3.4:27015", name = "Foo RP", snap = { mat_specular = "1", r_3dsky = "1", not_watched = "1", cl_interp = "0 1" } } }
+local s = { parts = { { address = "5.6.7.8:27015", name = "Bar\nRP", at = 1700000000, changes = { { name = "mat_picmip", label = "x", was = "0", now = "2" } } } },
+	cur = { address = "1.2.3.4:27015", name = "Foo RP", at = 1700000100, snap = { mat_specular = "1", r_3dsky = "1", not_watched = "1", cl_interp = "0 1" } } }
 local text = Guard.encodeSession(s)
 local back = Guard.decodeSession(text)
 check("session: the part ended earlier", back.parts[1].address .. "|" .. back.parts[1].name, "5.6.7.8:27015|BarRP")
+check("session: when each ended or started", back.parts[1].at .. " " .. back.cur.at, "1700000000 1700000100")
 check("session: its change, labelled", back.parts[1].changes[1].name .. " " .. back.parts[1].changes[1].was .. ">" .. back.parts[1].changes[1].now .. " " .. back.parts[1].changes[1].label, "mat_picmip 0>2 Texture detail")
 check("session: the server it was on", back.cur.address .. "|" .. back.cur.name, "1.2.3.4:27015|Foo RP")
 check("session: its snapshot", back.cur.snap.mat_specular .. back.cur.snap.r_3dsky, "11")
@@ -106,10 +119,12 @@ check("session: none at all", Guard.decodeSession(""), nil)
 check("session: not one", Guard.decodeSession("garbage"), nil)
 local noAddress = Guard.decodeSession(Guard.encodeSession({ parts = {}, cur = { snap = { r_3dsky = "1" } } }))
 check("session: no address yet", noAddress.cur.address == nil and noAddress.cur.snap.r_3dsky == "1", true)
-local evil = Guard.decodeSession("v 1\ncur 1.2.3.4:27015;quit x\nsnap r_3dsky 1\nsnap sv_cheats 1\nchange r_3dsky 1 0\n")
+local evil = Guard.decodeSession("v 1\ncur 1.2.3.4:27015;quit 5 x\nsnap r_3dsky 1\nsnap sv_cheats 1\nchange r_3dsky 1 0\n")
 check("session: a damaged address isn't used", evil.cur.address, nil)
 check("session: an unwatched setting isn't read", evil.cur.snap.sv_cheats, nil)
 check("session: a change outside a part is ignored", #evil.parts, 0)
+local broken = Guard.decodeSession("v 1\npart 1.2.3.4:27015 5 A\nchange mat_picmip 0 2\npart garbage\nchange r_3dsky 1 0\ncur nonsense\nsnap r_3dsky 1\n")
+check("session: lines under a line that didn't read go nowhere", #broken.parts .. " " .. #broken.parts[1].changes .. " " .. tostring(broken.cur), "1 1 nil")
 
 print(("%d checks, %d failed"):format(count, failures))
 if failures > 0 then os.exit(1) end
