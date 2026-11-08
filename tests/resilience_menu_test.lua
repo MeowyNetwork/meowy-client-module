@@ -52,7 +52,7 @@ end
 local function world(opts)
 	local w = {
 		now = 0, state = "none", address = nil, timingOut = nil, silence = nil, inGame = false, loading = false,
-		restartUntil = nil, commands = {}, settingsText = opts.settings or "", crashed = opts.crashed,
+		restartUntil = nil, commands = {}, settingsText = opts.settings or "", crashed = opts.crashed, backupList = opts.backupList,
 		cl_timeout = "30", pingAnswer = true, pingPass = false, buttons = {}, think = nil, jsCalls = 0,
 	}
 	-- Globals the menu state doesn't have: touching one fails the test, the way
@@ -128,7 +128,14 @@ local function world(opts)
 			return out, last
 		end,
 		ConsoleState = function() return "spew function; 3 lines kept" end,
-		ConsoleRun = function(line) w.consoleRuns = w.consoleRuns or {} w.consoleRuns[#w.consoleRuns + 1] = line return not w.noEngine end,
+		ConsoleRun = function(line)
+			w.consoleRuns = w.consoleRuns or {}
+			w.consoleRuns[#w.consoleRuns + 1] = line
+			-- w.applyConsole: "name value" takes effect, as the engine runs it at its next frame.
+			local name, value = line:match("^([%w_]+) (%S+)$")
+			if w.applyConsole and name and w.cvars[name] ~= nil then w.cvars[name] = value end
+			return not w.noEngine
+		end,
 		-- Windows' default output changes so far (w.audioChanges); nil when it can't be watched.
 		AudioChanges = function()
 			w.audioAsks = (w.audioAsks or 0) + 1
@@ -136,9 +143,35 @@ local function world(opts)
 			return w.audioChanges or 0
 		end,
 		-- Copies of config.cfg: made (w.backups counts), listed (w.backupList), put back (w.restored).
-		ConfigBackup = function() w.backups = (w.backups or 0) + 1 return true, "copied" end,
-		ConfigBackups = function() return w.backupList or {} end,
-		ConfigRestore = function(name) w.restored = name return true, "meowy_restore.cfg" end,
+		-- As config_backup.cpp: a new copy goes first, and only the newest 10 are kept.
+		ConfigBackup = function()
+			w.backups = (w.backups or 0) + 1
+			w.backupList = w.backupList or {}
+			table.insert(w.backupList, 1, { name = "config-new-" .. w.backups .. ".cfg", when = "now " .. w.backups, size = 1 })
+			while #w.backupList > 10 do table.remove(w.backupList) end
+			return true, "copied"
+		end,
+		ConfigBackups = function() local t = {} for i, b in ipairs(w.backupList or {}) do t[i] = b end return t end,
+		ConfigRestore = function(name)
+			for _, b in ipairs(w.backupList or {}) do
+				if b.name == name then w.restored = name return true, "meowy_restore.cfg" end
+			end
+			return false, "that copy couldn't be read"
+		end,
+		-- The menu Lua's own files (module.cpp's MenuFileRead/Write; opts.menuFiles: what's on disk at start).
+		MenuFileRead = function(kind)
+			if w.menuFiles == nil then w.menuFiles = {} for k, v in pairs(opts.menuFiles or {}) do w.menuFiles[k] = v end end
+			return w.menuFiles[kind] or ""
+		end,
+		MenuFileWrite = function(kind, text)
+			if w.menuFiles == nil then w.menuFiles = {} for k, v in pairs(opts.menuFiles or {}) do w.menuFiles[k] = v end end
+			w.menuFiles[kind] = text ~= "" and text or nil
+			w.menuFileWrites = (w.menuFileWrites or 0) + 1
+			return true
+		end,
+		-- menu_settings.txt (opts.menuSettings), as kMenuLua keeps the pack's settings.
+		MenuSettingsRead = function() return w.menuSettings or opts.menuSettings or "" end,
+		MenuSettingsWrite = function(text) w.menuSettings = text return true end,
 		JoinBoost = function(on) w.boost = on return true end,
 		-- cvar_restore.txt: the player's own values while the pack has them changed
 		-- (opts.held: what the last session left).
@@ -226,7 +259,7 @@ local function world(opts)
 	env.math = setmetatable({ random = function() return 0.5 end,
 		Clamp = function(v, lo, hi) return v < lo and lo or (v > hi and hi or v) end }, { __index = math })
 	env.SysTime = function() return w.now end
-	w.osTime = 1000000
+	w.osTime = opts.osTime or 1000000
 	env.os = setmetatable({ time = function() return w.osTime end }, { __index = os })
 	env.IsInGame = function() return w.inGame end
 	env.IsInLoading = function() return w.loading end
@@ -452,6 +485,9 @@ end
 -- Opt-in: asked once, Yes sets cl_timeout 60 and remembers the old value
 w = world({})
 w.run(4)
+-- It promises only what the server reliably restores (meowy_resilience).
+local promise = find(function(p) return type(p.text) == "string" and p.text:find("Back within 3 minutes", 1, true) ~= nil end)
+check("opt-in: the promise has its limits", promise ~= nil and promise.text:find("unless you were just in a fight, restrained or downed. Not after a server restart, and at most 3 times an hour.", 1, true) ~= nil, true)
 check("asked at start", w.click("Stay connected"), true)
 check("cl_timeout set", w.cl_timeout, "60")
 check("saved", w.settingsText, "asked=1\r\nenabled=1\r\nsaved_cl_timeout=30\r\n")
@@ -1008,6 +1044,11 @@ check("other server's crash: joins that server on click", w.lastConnect(), "conn
 w = world({ settings = ON, crashed = "5.6.7.8:27015" })
 w.run(10)
 check("unnamed server's crash: card", w.click("Rejoin"), true)
+-- With the menu's JoinServer (always, in game): that, never `connect`, which the engine refuses.
+w = world({ settings = ON, crashed = "1.2.3.4:27015", joinServer = true })
+w.run(10)
+w.click("Rejoin")
+check("other server's crash: joins through JoinServer", (w.joinedVia or "") .. " " .. w.connects(), "1.2.3.4:27015 0")
 
 -- On another server: marked (with the name once it's known), cleared on leaving.
 w = world({ settings = ON })
@@ -1444,7 +1485,19 @@ w.loading = true
 w.run(1)
 w.loading = false
 w.run(1)
-check("prewarm: a join that didn't get in keeps nothing", w.pwBegins == 2 and w.pwEnds == 1, true)
+check("prewarm: a join that didn't get in stops recording (nothing kept: no server)", w.pwBegins == 2 and w.pwEnds == 2, true)
+w.run(2)
+check("prewarm: and only once", w.pwEnds, 2)
+-- Both pre-warm switches off (or Meowy Network's policy turning them off): no
+-- read hook, no list of the join's files.
+w = world({ settings = ON, menu = true, convars = { meowy_prewarm = "0", meowy_prewarm_workshop = "0" } })
+w.state, w.address, w.loading = "ours", OURS, true
+w.run(1)
+w.loading, w.inGame = false, true
+w.run(1)
+w.cut()
+w.run(1)
+check("prewarm off: nothing hooked or recorded", (w.pwBegins or 0) + (w.pwEnds or 0), 0)
 -- The join priority guard: full speed and fps_max_nofocus lifted while a join
 -- loads, both put back in game or when the join ends; a value left by a join
 -- cut short is put back at the next start.
@@ -1472,7 +1525,47 @@ w = world({ settings = ON, menu = true, held = { fps_max_nofocus = "20", fps_max
 local startRuns = table.concat(w.consoleRuns or {}, "|")
 check("held convars: a value left by a cut-short join put back at start", startRuns:find("fps_max_nofocus 20", 1, true) ~= nil, true)
 check("held convars: a menu cap left by a quit put back at start", startRuns:find("fps_max_menu 60", 1, true) ~= nil, true)
-check("held convars: none kept once put back", next(w.held), nil)
+check("held convars: still kept until config.cfg has run", w.held.fps_max_menu, "60")
+w.cvars.fps_max_nofocus, w.cvars.fps_max_menu = "20", "60"   -- the put-back ran
+w.consoleRuns = {}
+w.run(4)
+w.cvars.fps_max_menu = "15"   -- config.cfg, saved with the pack's cap, runs after it
+w.run(1.5)
+local againRuns = #w.consoleRuns
+check("held convars: put back again after config.cfg", againRuns >= 1 and (table.concat(w.consoleRuns, "|"):gsub("fps_max_menu 60", "")):gsub("|", "") == "", true)
+check("held convars: said why", (w.logs or ""):find("fps_max_menu was 15 again", 1, true) ~= nil, true)
+w.cvars.fps_max_menu = "60"
+w.run(30)
+check("held convars: released once they held", next(w.held), nil)
+check("held convars: nothing more run once it held", #w.consoleRuns, againRuns)
+-- One that never reads right (the game keeps another value): the record stays for the next start.
+w = world({ settings = ON, menu = true, held = { fps_max_nofocus = "20" } })
+w.cvars.fps_max_nofocus = "300"
+w.run(32)
+check("held convars: not released while it reads otherwise", w.held.fps_max_nofocus, "20")
+-- 1.7.0 left fps_max_menu at the menu cap with nothing held: put back to the
+-- default, once, where 1.7.0 ran (it made copies of config.cfg before this start).
+local RAN_170 = { { name = "config-20261107-120000.cfg", when = "2026-11-07 12:00:00", size = 100 } }
+w = world({ settings = ON, menu = true, backupList = RAN_170 })
+w.cvars.fps_max_menu, w.cvars.fps_max_nofocus = "15", "20"
+w.run(32)
+check("menu cap repair: the game's default", table.concat(w.consoleRuns or {}, "|"):find("fps_max_menu 60", 1, true) ~= nil, true)
+check("menu cap repair: noted as done", (w.menuFiles.repairs or ""):find("fps_max_menu_cap", 1, true) ~= nil, true)
+local repairFiles = w.menuFiles
+w = world({ settings = ON, menu = true, menuFiles = repairFiles, backupList = RAN_170 })
+w.cvars.fps_max_menu, w.cvars.fps_max_nofocus = "15", "20"
+w.run(32)
+check("menu cap repair: only once (a 15 chosen since stays)", table.concat(w.consoleRuns or {}, "|"):find("fps_max_menu", 1, true), nil)
+-- A fresh install (no copies from before this start): a 15 is the player's own.
+w = world({ settings = ON, menu = true })
+w.cvars.fps_max_menu, w.cvars.fps_max_nofocus = "15", "20"
+w.run(32)
+check("menu cap repair: not on a fresh install", table.concat(w.consoleRuns or {}, "|"):find("fps_max_menu", 1, true), nil)
+check("menu cap repair: and never later", (w.menuFiles.repairs or ""):find("fps_max_menu_cap", 1, true) ~= nil, true)
+w = world({ settings = ON, menu = true, backupList = RAN_170 })
+w.cvars.fps_max_menu, w.cvars.fps_max_nofocus = "120", "20"
+w.run(32)
+check("menu cap repair: any other value is left alone", table.concat(w.consoleRuns or {}, "|"):find("fps_max_menu", 1, true), nil)
 w = world({ settings = ON, menu = true, convars = { meowy_join_boost = "0" } })
 w.cvars.fps_max_nofocus, w.cvars.fps_max = "20", "300"
 w.state, w.address, w.loading = "ours", OURS, true
@@ -2074,11 +2167,80 @@ w.joinedVia = nil
 w.party.go = "4|5.6.7.8:27015"
 w.run(12)
 check("party: never twice in 30 s", w.joinedVia, nil)
+check("party: a move that soon waits, it isn't dropped", partyJS(w):find('"follow":', 1, true) ~= nil, true)
+w.run(20)
+check("party: followed once the 30 s have passed", w.joinedVia, "5.6.7.8:27015")
+-- The countdown is a card with Stay wherever the menu is up (Find servers,
+-- Garry's Mod's own menu), and only runs while it's on screen: not while a join loads.
+w = partyWorld({ meowy_menu = "0" })
+w.recorded = { ["5.6.7.8:27015"] = true }
+w.party = lobby("1", "1|5.6.7.8:27015")
+w.run(1)
+w.party.go = "2|5.6.7.8:27015"
+w.run(1)
+-- The card's title panel, while the card itself is up (a removed card's own panels stay in w.panels).
+local cardTitle = function()
+	local card = find(function(p) return p.buttons and p.title and type(p.title.text) == "string" and p.title.text:find("Your party is going to", 1, true) ~= nil end)
+	return card and card.title
+end
+check("party card: shown at the menu, any menu", cardTitle() ~= nil and cardTitle().text, "Your party is going to Big RP")
+check("party card: with Stay and Go now", find(function(p) return p.text == "Stay" end) ~= nil and find(function(p) return p.text == "Go now" end) ~= nil, true)
+check("party: the next server isn't contacted before you go", w.pwStarts, nil)
+w.loading = true   -- a join of the player's own, loading
+w.run(15)
+check("party: no countdown while a join loads", w.joinedVia, nil)
+check("party card: not over the loading screen", cardTitle(), nil)
+w.loading = false
+w.run(5)
+check("party: the countdown goes on once it's seen again", w.joinedVia, nil)
+w.run(6)
+check("party: then joins", w.joinedVia, "5.6.7.8:27015")
+-- Go now: at once, the player's own click.
+w = partyWorld({ meowy_menu = "0" })
+w.party = lobby("1", "1|5.6.7.8:27015")
+w.run(1)
+w.party.go = "2|5.6.7.8:27015"
+w.run(1)
+w.click("Go now")
+check("party card: Go now joins at once", w.joinedVia, "5.6.7.8:27015")
+w.run(1)
+check("party card: gone once joined", cardTitle(), nil)
+-- Stay on the card.
+w = partyWorld({ meowy_menu = "0" })
+w.party = lobby("1", "1|5.6.7.8:27015")
+w.run(1)
+w.party.go = "2|5.6.7.8:27015"
+w.run(1)
+w.click("Stay")
+w.run(12)
+check("party card: Stay stays", w.joinedVia, nil)
+-- In game with the Escape card off: the Escape menu still has the card with Stay.
+w = partyWorld({ meowy_menu = "1", meowy_menu_escape = "0" })
+w.party = lobby("1", "1|5.6.7.8:27015")
+w.inGame, w.state, w.otherNow = true, "other", "1.2.3.4:27015"
+w.run(1)
+w.party.go = "2|5.6.7.8:27015"
+w.run(1)
+check("party card: not over the game itself (the banner is)", cardTitle(), nil)
+w.escOpen = true
+w.run(0.5)
+check("party card: in the Escape menu, Escape card off", cardTitle() ~= nil, true)
+check("party card: its Stay works there", w.click("Stay"), true)
+w.run(12)
+check("party card: stayed", w.joinedVia, nil)
 -- Invites accepted in Steam join that party; a friend without the pack gets the server.
 w = partyWorld()
+w.party = lobby("2")
+w.run(1)
 w.events = { "invite 109775241000000009" }
 w.run(1)
 check("party: an accepted invite joins it", w.partyJoins[1], "109775241000000009")
+check("party: the party you're in stays until the new one is checked (native leaves it on \"joined\")", w.leaves, nil)
+w.events = { "failed: that party's leader isn't on your Steam friends list" }
+w.run(1)
+check("party: a stranger's party refused, still in your own", w.party ~= nil and w.leaves == nil, true)
+w.events = { "joined" }
+w.run(1)
 w.party = lobby("2")
 w.run(1)
 w.post("party_friend", 1)
@@ -2473,8 +2635,16 @@ end
 local function promptTitle(w)
 	for i = #(w.panels or {}), 1, -1 do
 		local p = w.panels[i]
-		if not p.removed and type(p.text) == "string" and p.text:find("of your settings", 1, true) then return p.text end
+		if not p.removed and type(p.text) == "string" and p.text:find("changed while you were on", 1, true) then return p.text end
 	end
+end
+-- How many guard prompts were shown so far.
+local function promptCount(w)
+	local n = 0
+	for _, p in ipairs(w.panels or {}) do
+		if type(p.text) == "string" and p.text:find("changed while you were on", 1, true) then n = n + 1 end
+	end
+	return n
 end
 w = world({ settings = ON, menu = true })
 check("settings backup: a copy at start", w.backups, 1)
@@ -2482,12 +2652,16 @@ guardSession(w, { mat_specular = "0", r_3dsky = "0" })
 w.run(1)
 check("settings guard: not at once (it could be reconnecting)", promptTitle(w), nil)
 w.run(3)
-check("settings guard: names the server and how many", promptTitle(w), "Foo RP changed 2 of your settings")
+check("settings guard: names the server and how many", promptTitle(w), "2 settings changed while you were on Foo RP")
+check("settings guard: unanswered, it's kept on disk (a quit now asks again next start)", (w.menuFiles.settings_guard_session or ""):find("part 1.2.3.4:27015 ", 1, true) ~= nil, true)
+local note = find(function(p) return type(p.text) == "string" and p.text:find("Keep leaves them all", 1, true) ~= nil end)
+check("settings guard: says your own changes show too", note ~= nil, true)
 local listed = find(function(p) return type(p.text) == "string" and p.text:find("Specular reflections (mat_specular): 1, now 0", 1, true) ~= nil end)
 check("settings guard: lists each change", listed ~= nil, true)
 w.click("Put back")
 local ran = table.concat(w.consoleRuns, "|")
 check("settings guard: put back", ran, "mat_specular 1|r_3dsky 1")
+check("settings guard: answered, the file's gone", w.menuFiles.settings_guard_session, nil)
 -- Keep: nothing run.
 w = world({ settings = ON, menu = true })
 guardSession(w, { mat_specular = "0" })
@@ -2512,20 +2686,150 @@ w.cut()
 w.run(1)
 check("settings guard: a reconnect keeps the session going", promptTitle(w), nil)
 w.run(3)
-check("settings guard: both changes, at the end", promptTitle(w), "Foo RP changed 2 of your settings")
--- Always put back for that server: next time without asking.
+check("settings guard: both changes, at the end", promptTitle(w), "2 settings changed while you were on Foo RP")
+-- Always put back for that server: next time without asking. The list is the
+-- pack's own file, never a convar (any server's Lua can read convars).
 w = world({ settings = ON, menu = true })
 guardSession(w, { mat_specular = "0" })
 w.run(4)
 w.click("Always put back here")
 check("settings guard: always: put back now", table.concat(w.consoleRuns, "|"), "mat_specular 1")
-check("settings guard: always: the server remembered", w.convars.meowy_settings_guard_always, "1.2.3.4:27015")
+check("settings guard: always: the server remembered, in the pack's file", w.menuFiles.settings_guard_always, "1.2.3.4:27015")
+check("settings guard: always: no convar holds it", w.convars.meowy_settings_guard_always, nil)
 guardSession(w, { mat_specular = "0" })
 w.run(4)
 check("settings guard: always: put back next time", table.concat(w.consoleRuns, "|"), "mat_specular 1")
 guardSession(w, { mat_specular = "0" }, { address = "5.6.7.8:27015", name = "Bar RP" })
 w.run(4)
-check("settings guard: always: other servers still ask", promptTitle(w), "Bar RP changed 1 of your settings")
+check("settings guard: always: other servers still ask", promptTitle(w), "1 setting changed while you were on Bar RP")
+w.click("Keep")
+-- Taken off the list (Meowy settings' Remove, or the console after a prompt): asked again.
+-- A server can run the command too, so it does nothing in game, nor without the click.
+w.state, w.otherNow, w.inGame = "other", "1.2.3.4:27015", true
+w.run(1)
+w.concommands.meowy_settings_guard_forget(nil, nil, nil, "1.2.3.4 : 27015")
+check("settings guard: forget: refused in game", w.menuFiles.settings_guard_always, "1.2.3.4:27015")
+w.cut()
+w.concommands.meowy_settings_guard_forget(nil, nil, nil, "1.2.3.4 : 27015")
+check("settings guard: forget: refused right after leaving a server", find(function(p) return type(p.text) == "string" and p.text:find("Ask again about", 1, true) ~= nil end), nil)
+w.run(5)
+for _ = 1, 5 do if promptTitle(w) then w.click("Keep") end w.run(1) end   -- that short session's own prompt
+w.concommands.meowy_settings_guard_forget(nil, nil, nil, "1.2.3.4 : 27015")
+check("settings guard: forget: not without the player's click", w.menuFiles.settings_guard_always, "1.2.3.4:27015")
+check("settings guard: forget: asks first", w.click("Ask again"), true)
+check("settings guard: forget: off the list", w.menuFiles.settings_guard_always, nil)
+guardSession(w, { mat_specular = "0" })
+w.run(4)
+check("settings guard: forget: asked again", promptTitle(w), "1 setting changed while you were on Foo RP")
+w.click("Keep")
+-- Meowy settings: the always list, each server with Remove.
+w = world({ settings = ON, menu = true, menuFiles = { settings_guard_always = "1.2.3.4:27015\n5.6.7.8:27015" } })
+w.env.MeowyClientPackOpenSettings()
+local rowFor = find(function(p) return p.text == "5.6.7.8:27015" end)
+check("settings window: lists the servers always put back", rowFor ~= nil, true)
+check("settings window: each with Remove", w.click("Remove"), true)
+check("settings window: Remove takes one off", w.menuFiles.settings_guard_always, "1.2.3.4:27015")
+check("settings window: the guard's own switch", find(function(p) return p.meowyToggle == "settings_guard" end) ~= nil, true)
+-- 1.7.0's list, in the convar meowy_settings_guard_always (menu_settings.txt): moved
+-- into the file once, and the line taken out.
+w = world({ settings = ON, menu = true, menuSettings = "meowy_menu=1\nmeowy_settings_guard_always=1.2.3.4:27015 5.6.7.8:27015\nmeowy_party=1" })
+check("settings guard: 1.7.0's list moved to the file", w.menuFiles.settings_guard_always, "1.2.3.4:27015\n5.6.7.8:27015")
+check("settings guard: and out of menu_settings.txt", w.menuSettings, "meowy_menu=1\nmeowy_party=1")
+-- Server A, then B without the menu in between (a party follow): each answers for its own.
+w = world({ settings = ON, menu = true })
+w.cvars.mat_specular, w.cvars.r_3dsky, w.cvars.mat_picmip = "1", "1", "0"
+w.otherNow, w.state, w.loading = "1.2.3.4:27015", "other", true
+w.run(1)
+w.loading, w.inGame = false, true
+w.env.meowy.JoiningName = "Foo RP"
+w.run(1)
+w.cvars.mat_specular = "0"   -- A's Lua
+w.otherNow, w.state, w.inGame, w.loading = OURS, "ours", false, true
+w.run(1)
+w.loading, w.inGame = false, true
+w.env.meowy.JoiningName = "Meowy Network"
+w.run(1)
+w.cvars.r_3dsky = "0"   -- the player's FPS Booster on ours
+w.cut()
+w.run(5)
+check("settings guard: hop: the first server's changes asked about, under its name", promptTitle(w), "1 setting changed while you were on Foo RP")
+w.click("Put back")
+check("settings guard: hop: only that server's change put back", table.concat(w.consoleRuns, "|"), "mat_specular 1")
+w.run(2)
+check("settings guard: hop: ours isn't second-guessed", promptCount(w), 1)
+-- The other way round: ours, then a server always put back. Ours's changes stay.
+w = world({ settings = ON, menu = true, menuFiles = { settings_guard_always = "1.2.3.4:27015" } })
+w.cvars.mat_specular, w.cvars.r_3dsky = "1", "1"
+w.otherNow, w.state, w.loading = OURS, "ours", true
+w.run(1)
+w.loading, w.inGame = false, true
+w.run(1)
+w.cvars.r_3dsky = "0"   -- the player's FPS Booster on ours
+w.otherNow, w.state, w.inGame, w.loading = "1.2.3.4:27015", "other", false, true
+w.run(1)
+w.loading, w.inGame = false, true
+w.run(1)
+w.cvars.mat_specular = "0"   -- B's Lua
+w.cut()
+w.consoleRuns = {}
+w.run(5)
+check("settings guard: hop: B's change put back, ours's kept", table.concat(w.consoleRuns, "|"), "mat_specular 1")
+check("settings guard: hop: nothing asked", promptTitle(w), nil)
+-- The game closed on a server (a quit from in game, a crash): the session was
+-- on disk, and the next start asks about what was saved.
+w = world({ settings = ON, menu = true })
+w.cvars.mat_specular, w.cvars.r_3dsky = "1", "1"
+w.otherNow, w.state, w.loading = "1.2.3.4:27015", "other", true
+w.run(1)
+w.loading, w.inGame = false, true
+w.env.meowy.JoiningName = "Foo RP"
+w.run(1)
+local onDisk = w.menuFiles.settings_guard_session
+check("settings guard: the session kept on disk while it runs", onDisk ~= nil and onDisk:find("cur 1.2.3.4:27015 1000000 Foo RP", 1, true) ~= nil, true)
+w = world({ settings = ON, menu = true, menuFiles = { settings_guard_session = onDisk } })
+w.cvars.mat_specular, w.cvars.r_3dsky = "0", "1"   -- config.cfg, saved at the quit with the server's change
+w.run(4)
+check("settings guard: next start: not before config.cfg has run", promptTitle(w), nil)
+w.run(6)
+check("settings guard: next start: asked about the server's change", promptTitle(w), "1 setting changed while you were on Foo RP")
+check("settings guard: next start: says the game closed there", find(function(p) return type(p.text) == "string" and p.text:find("The game closed while you were there", 1, true) ~= nil end) ~= nil, true)
+w.click("Put back")
+check("settings guard: next start: put back, and config.cfg written at once (a crash can't bring them back)", table.concat(w.consoleRuns or {}, "|"), "mat_specular 1|host_writeconfig")
+check("settings guard: next start: the file's gone once answered", w.menuFiles.settings_guard_session, nil)
+-- Even for a server always put back: a leftover is asked about, never put back on its own
+-- (the player may have changed things since).
+w = world({ settings = ON, menu = true, menuFiles = { settings_guard_session = onDisk, settings_guard_always = "1.2.3.4:27015" } })
+w.cvars.mat_specular, w.cvars.r_3dsky = "0", "1"
+w.run(10)
+check("settings guard: leftover, always-listed: asked, not put back", promptTitle(w) ~= nil and #(w.consoleRuns or {}) == 0, true)
+-- Over a week old (the pack didn't start with the game for a while): dropped.
+w = world({ settings = ON, menu = true, menuFiles = { settings_guard_session = onDisk }, osTime = 1000000 + 8 * 86400 })
+w.cvars.mat_specular, w.cvars.r_3dsky = "0", "1"
+w.run(10)
+check("settings guard: a leftover over a week old is dropped", promptTitle(w), nil)
+check("settings guard: and said so", (w.logs or ""):find("over a week old", 1, true) ~= nil, true)
+-- Only what config.cfg keeps counts after a restart: the rest is back to its default anyway.
+w = world({ settings = ON, menu = true, engineConVars = true, menuFiles = { settings_guard_session = onDisk } })
+w.cvars.mat_specular = "0"
+w.env.GetConVar = function(n) return { IsFlagSet = function(_, flag) return n ~= "mat_specular" end, GetBool = function() return false end, GetString = function() return w.cvars[n] end } end
+w.run(10)
+check("settings guard: next start: a setting the game doesn't save isn't asked about", promptTitle(w), nil)
+-- Nothing changed by the time of the next start (a crash: nothing saved).
+w = world({ settings = ON, menu = true, menuFiles = { settings_guard_session = onDisk } })
+w.cvars.mat_specular, w.cvars.r_3dsky = "1", "1"
+w.run(10)
+check("settings guard: next start: nothing saved, nothing asked", promptTitle(w), nil)
+check("settings guard: next start: the file's gone anyway", w.menuFiles.settings_guard_session, nil)
+-- Started straight into a join (a Steam join link): the leftover is settled first.
+w = world({ settings = ON, menu = true, menuFiles = { settings_guard_session = onDisk } })
+w.cvars.mat_specular, w.cvars.r_3dsky = "0", "1"
+w.otherNow, w.state, w.loading = "5.6.7.8:27015", "other", true
+w.run(1)
+w.loading, w.inGame = false, true
+w.run(2)
+w.cut()
+w.run(5)
+check("settings guard: leftover settled at a join, asked at the menu", promptTitle(w), "1 setting changed while you were on Foo RP")
 -- A value that isn't a plain number is never run back.
 w = world({ settings = ON, menu = true })
 guardSession(w, { cl_interp = "0.0152" }, { interp = "0;quit" })
@@ -2553,17 +2857,116 @@ w.cvars.cl_new_impact_effects = "1"
 w.run(1)
 w.state, w.loading = "none", false
 w.run(5)
-check("settings guard: a join cut short still names the server", promptTitle(w), "Bar RP changed 1 of your settings")
--- The copies' commands.
+check("settings guard: a join cut short still names the server", promptTitle(w), "1 setting changed while you were on Bar RP")
+-- The copies' commands. A copy goes back only at the main menu, and only after
+-- a prompt the player answers there: a server's Lua can run the command too.
 w = world({ settings = ON, menu = true })
 w.backupList = { { name = "config-20261107-120000.cfg", when = "2026-11-07 12:00:00", size = 100 } }
+w.run(3)
+local backupsBefore = w.backups
+w.consoleRuns = {}
 w.concommands.meowy_settings_restore(nil, nil, { "1" })
+w.run(1)
+check("settings restore: nothing without the player's click", w.restored, nil)
+check("settings restore: asks first", find(function(p) return type(p.text) == "string" and p.text:find("Put back your settings from 2026-11-07 12:00:00?", 1, true) ~= nil end) ~= nil, true)
+w.click("Put back")
+w.run(1)
 check("settings restore: that copy", w.restored, "config-20261107-120000.cfg")
-check("settings restore: run through exec", w.consoleRuns and w.consoleRuns[#w.consoleRuns], "exec meowy_restore.cfg")
+local restoreRuns = table.concat(w.consoleRuns, "|")
+local wrote, execd = restoreRuns:find("host_writeconfig", 1, true), restoreRuns:find("exec meowy_restore.cfg", 1, true)
+check("settings restore: the settings now saved and copied first", wrote ~= nil and execd ~= nil and wrote < execd, true)
+check("settings restore: a copy of them made", w.backups, backupsBefore + 1)
 w.restored = nil
-w.concommands.meowy_settings_restore(nil, nil, { "2" })
+w.concommands.meowy_settings_restore(nil, nil, { "9" })
+w.run(1)
 check("settings restore: a number that isn't listed does nothing", w.restored, nil)
+-- In game, or a server that disconnects first in the same breath: refused, no prompt.
+local asks = function() local n = 0 for _, p in ipairs(w.panels) do if type(p.text) == "string" and p.text:find("Put back your settings from", 1, true) then n = n + 1 end end return n end
+local asksBefore = asks()
+w.state, w.address, w.inGame = "ours", OURS, true
+w.run(1)
+w.concommands.meowy_settings_restore(nil, nil, { "1" })
+check("settings restore: refused in game", asks(), asksBefore)
+w.cut()   -- the server's queued disconnect, then the command, before a frame passes
+w.concommands.meowy_settings_restore(nil, nil, { "1" })
+check("settings restore: refused right after leaving a server", asks(), asksBefore)
+-- The oldest of 10 copies: written out before the settings now are copied
+-- (that copy is an 11th, and the oldest is dropped).
+local ten = {}
+for i = 1, 10 do ten[i] = { name = string.format("config-202611%02d-120000.cfg", 11 - i), when = "day " .. (11 - i), size = 100 } end
+w = world({ settings = ON, menu = true, backupList = ten })
+w.run(3)
+local oldest = w.backupList[10].name
+w.concommands.meowy_settings_restore(nil, nil, { "10" })
+w.click("Put back")
+w.run(1)
+check("settings restore: the oldest of ten still puts back", w.restored, oldest)
+check("settings restore: and runs", (table.concat(w.consoleRuns or {}, "|")):find("exec meowy_restore.cfg", 1, true) ~= nil, true)
 check("no Lua errors", w.errors, nil)
+
+-- Servers A then B, back to back, both changing the same setting (the player
+-- had 0, A set 2, B set 5): B answers for 2 -> 5, then A for 0 -> 2.
+local function hopTwice(w)
+	w.applyConsole = true
+	w.cvars.mat_picmip = "0"
+	w.otherNow, w.state, w.loading = "1.1.1.1:27015", "other", true
+	w.env.meowy.JoiningName = "A RP"
+	w.run(1)
+	w.loading, w.inGame = false, true
+	w.run(1)
+	w.cvars.mat_picmip = "2"   -- A's Lua
+	w.otherNow, w.inGame, w.loading = "2.2.2.2:27015", false, true
+	w.run(1)
+	w.env.meowy.JoiningName = "B RP"
+	w.loading, w.inGame = false, true
+	w.run(1)
+	w.cvars.mat_picmip = "5"   -- B's Lua
+	w.cut()
+	w.consoleRuns = {}
+	w.run(5)
+end
+w = world({ settings = ON, menu = true })
+hopTwice(w)
+check("hop chain: the newest server first", promptTitle(w), "1 setting changed while you were on B RP")
+check("hop chain: B's own step", find(function(p) return type(p.text) == "string" and p.text:find("(mat_picmip): 2, now 5", 1, true) ~= nil end) ~= nil, true)
+w.click("Put back")
+w.run(2)
+check("hop chain: then the earlier server, for its own step", promptTitle(w), "1 setting changed while you were on A RP")
+check("hop chain: A's step", find(function(p) return type(p.text) == "string" and p.text:find("(mat_picmip): 0, now 2", 1, true) ~= nil end) ~= nil, true)
+w.click("Put back")
+w.run(1)
+check("hop chain: back to the player's own", w.cvars.mat_picmip, "0")
+-- B always put back: done without asking, then A is asked.
+w = world({ settings = ON, menu = true, menuFiles = { settings_guard_always = "2.2.2.2:27015" } })
+hopTwice(w)
+check("hop chain: B always, put back without asking, A asked", promptTitle(w), "1 setting changed while you were on A RP")
+w.click("Put back")
+w.run(1)
+check("hop chain: B always: back to the player's own", w.cvars.mat_picmip, "0")
+-- Keeping B's: A's step isn't in place any more, so A isn't asked.
+w = world({ settings = ON, menu = true })
+hopTwice(w)
+w.click("Keep")
+w.run(3)
+check("hop chain: B kept, A not asked about a setting B changed again", promptCount(w), 1)
+check("hop chain: B kept: B's value stays", w.cvars.mat_picmip, "5")
+
+-- A leftover settled as a join starts (Continue within seconds of starting):
+-- nothing put back then, and the next session's snapshot is the values as they are.
+w = world({ settings = ON, menu = true, menuFiles = { settings_guard_session = onDisk, settings_guard_always = "1.2.3.4:27015" } })
+w.cvars.mat_specular, w.cvars.r_3dsky = "0", "1"
+w.otherNow, w.state, w.loading = "1.2.3.4:27015", "other", true
+w.run(1)
+check("leftover at a join: nothing put back as it starts", #(w.consoleRuns or {}), 0)
+check("leftover at a join: still waiting, on disk", (w.menuFiles.settings_guard_session or ""):find("part 1.2.3.4:27015 ", 1, true) ~= nil, true)
+w.loading, w.inGame = false, true
+w.run(2)
+-- The game closes again in game: the prompt still waits for the next start.
+local again = w.menuFiles.settings_guard_session
+w = world({ settings = ON, menu = true, menuFiles = { settings_guard_session = again } })
+w.cvars.mat_specular, w.cvars.r_3dsky = "0", "1"
+w.run(10)
+check("leftover at a join: asked at the start after", promptTitle(w), "1 setting changed while you were on Foo RP")
 
 -- Find servers: the picked server's content line, and its "Get ready" button.
 w = world({ settings = ON, menu = true, convars = PAGE_ON, adverts = { ["4.4.4.4:27015"] = "1;ws=501" } })

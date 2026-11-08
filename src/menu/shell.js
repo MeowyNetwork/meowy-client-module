@@ -41,6 +41,10 @@
 		+ '#meowy-shell .ms-stats { float: right; font-size: 14px; margin-left: 12px; opacity: 0.85; line-height: 22px; }'
 		+ '#meowy-shell .ms-name { font-size: 18px; font-weight: bold; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 22px; }'
 		+ '#meowy-shell .ms-detail { font-size: 14px; opacity: 0.75; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }'
+		// A server's content line (home.lua's Content.label): progress, or the "Get ready" button.
+		+ '#meowy-shell .ms-prep { font-size: 13px; opacity: 0.85; margin-top: 2px; }'
+		+ '#meowy-shell .ms-prep-ask { display: inline-block; font-weight: bold; padding: 1px 8px; border-radius: 4px; background: rgba(255,255,255,0.16); cursor: pointer; }'
+		+ '#meowy-shell .ms-prep-ask:hover { background: rgba(255,255,255,0.3); }'
 		// Find servers (src/menu/browser.js): the whole page while it's open.
 		+ '#meowy-shell .ms-browse { display: none; position: absolute; left: 40px; right: 32px; top: 36px; bottom: 16px; }'
 		+ '#meowy-shell.ms-browsing .ms-browse { display: block; }'
@@ -164,12 +168,21 @@
 	if (browser()) browser().onToggle = function (open) { var s = shell(); if (s) s.className = open ? 'ms-browsing' : ''; };
 
 	// One row: a name, an optional detail and stats; act() is what Enter or a click does.
-	function addRow(list, name, detail, stats, dim, act, intentId) {
+	// prep: a server's content line ({ text, ask }), the button posting 'prepare' with intentId.
+	function addRow(list, name, detail, stats, dim, act, intentId, prep) {
 		var cls = 'ms-row' + (dim ? ' ms-dim' : '');
 		var el = node('div', cls);
 		if (stats) el.appendChild(node('span', 'ms-stats', stats));
 		el.appendChild(node('div', 'ms-name', name));
 		if (detail) el.appendChild(node('div', 'ms-detail', detail));
+		if (prep && typeof prep.text === 'string' && prep.text) {
+			var line = el.appendChild(node('div', 'ms-prep'));
+			var label = line.appendChild(node('span', prep.ask ? 'ms-prep-ask' : '', prep.text));
+			if (prep.ask && intentId !== undefined) {
+				label.title = 'Download this server\'s Workshop content now, so joining it is quick';
+				label.onclick = function (e) { if (e && e.stopPropagation) e.stopPropagation(); post('prepare', Number(intentId)); };
+			}
+		}
 		el.title = name;
 		el.onclick = act;
 		if (intentId !== undefined) intent(el, intentId);
@@ -274,7 +287,8 @@
 			for (var k = 0; k < picked.length; k++) {
 				var p = picked[k];
 				addRow(list, p.name, p.detail, p.stats, p.dim,
-					(function (id) { return function () { post('join', Number(id)); }; })(p.id), p.id);
+					(function (id) { return function () { post('join', Number(id)); }; })(p.id), p.id,
+					p.prep ? { text: p.prep, ask: p.prepAsk === true } : null);
 			}
 			if (!q && sec.note) list.appendChild(node('div', 'ms-note', sec.note));
 		}

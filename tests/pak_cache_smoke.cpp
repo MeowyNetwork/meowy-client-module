@@ -195,6 +195,15 @@ int main()
 	Check("pak: not a pak", !pak_cache::detail::PakEntries(std::wstring(tmp) + L"meowy_no_such_pak.bsp", entries, why));
 	DeleteFileW(path.c_str());
 
+	// Sizes a directory entry can't mean are never allocated for (a crafted map
+	// could otherwise have every worker take the whole lump at once).
+	using pak_cache::detail::PlausibleSizes;
+	Check("sizes: a normal entry", PlausibleSizes(9 + 400, 800));
+	Check("sizes: incompressible, a little bigger", PlausibleSizes(9 + 800 + 40, 800));
+	Check("sizes: compressed far bigger than the file", !PlausibleSizes(9 + 50u * 1048576, 1048576));
+	Check("sizes: no LZMA header", !PlausibleSizes(9, 800) && !PlausibleSizes(0, 800));
+	Check("sizes: nothing to unpack", !PlausibleSizes(400, 0));
+
 	std::printf("%d/%d checks passed\n", g_count - g_failures, g_count);
 	return g_failures == 0 ? 0 : 1;
 }

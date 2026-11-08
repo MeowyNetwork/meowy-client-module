@@ -56,5 +56,11 @@ namespace fs_cache
 		void Clear();
 		void NewJoin();   // what SetActive(true) does to the listings
 		size_t Folders();
+
+		// Install after an Uninstall: the object's vtable pointer (*slot) goes
+		// back to `ours` (the copy kept from the first Install) if it's still
+		// `original`, or is already `ours`. False, and nothing changed, if
+		// something else's is there.
+		bool SwapIn(void** slot, void* original, void* ours);
 	}
 }

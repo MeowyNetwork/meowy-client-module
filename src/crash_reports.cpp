@@ -278,6 +278,7 @@ namespace crashes
 			if (trace.empty())
 				continue;
 			Report r;
+			r.name = Narrow(fd.cFileName, std::wcslen(fd.cFileName));
 			r.time = t;
 			r.luaTrace = trace;
 			ReadFault(txt.substr(0, txt.size() - 4) + L".dmp", r);

@@ -127,6 +127,7 @@
 #include "resource.h"
 
 #include <cstdio>
+#include <cstring>
 #include <exception>
 #include <string>
 #include <algorithm>
@@ -381,6 +382,14 @@ namespace
 		return 1;
 	}
 
+#ifdef _WIN32
+	std::wstring DataDir();
+#endif
+
+	// Only crashes on Meowy Network (resilience::OurCrashes): a report from a
+	// crash on another server names that server's Lua files, and a report
+	// can't say where the game was, so one the pack didn't note as ours is
+	// never sent.
 	int CrashReports(lua_State* L)
 	{
 		ILuaBase* LUA = L->luabase;
@@ -393,7 +402,20 @@ namespace
 		}
 		long long since = static_cast<long long>(LUA->CheckNumber(1));
 		double max = LUA->IsType(2, Type::Number) ? LUA->GetNumber(2) : 5;
-		std::vector<crashes::Report> reports = crashes::Since(since, max < 1 ? 1 : max > 20 ? 20 : static_cast<size_t>(max));
+		const size_t want = max < 1 ? 1 : max > 20 ? 20 : static_cast<size_t>(max);
+		std::vector<crashes::Report> reports;
+#ifdef _WIN32
+		{
+			std::vector<crashes::Report> all = crashes::Since(since, 20);
+			std::vector<std::string> names;
+			for (const crashes::Report& r : all)
+				names.push_back(r.name);
+			const std::vector<std::string> ours = resilience::OurCrashes(DataDir(), names);
+			for (crashes::Report& r : all)
+				if (reports.size() < want && std::find(ours.begin(), ours.end(), r.name) != ours.end())
+					reports.push_back(std::move(r));
+		}
+#endif
 
 		LUA->CreateTable();
 		int i = 0;
@@ -1563,6 +1585,53 @@ namespace
 		const char* text = LUA->IsType(1, Type::String) ? LUA->GetString(1, &len) : nullptr;
 		const bool ok = text && len <= kMaxMenuSettings &&
 			file_util::WriteAtomic(DataDir() + L"\\menu_settings.txt", std::string(text, len));
+		LUA->PushBool(ok);
+		return 1;
+	}
+
+	// The menu Lua's own small files in %LOCALAPPDATA%\MeowyClientPack, by kind
+	// (only these): the settings guard's session (settings_guard.lua: a game
+	// that closed on a server is asked about at the next start) and its list of
+	// servers always put back (kept here, not in a convar any server's Lua can
+	// read), and one-time repairs done (home.lua).
+	constexpr size_t kMaxMenuFile = 16384;
+	const wchar_t* MenuFileName(const char* kind)
+	{
+		static const struct { const char* kind; const wchar_t* file; } kFiles[] = {
+			{ "settings_guard_session", L"settings_guard_session.txt" },
+			{ "settings_guard_always", L"settings_guard_always.txt" },
+			{ "repairs", L"repairs.txt" },
+		};
+		for (const auto& f : kFiles)
+			if (kind && std::strcmp(kind, f.kind) == 0)
+				return f.file;
+		return nullptr;
+	}
+
+	// MenuFileRead(kind) -> its text ("" when there's none).
+	int MenuFileRead(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		const wchar_t* file = MenuFileName(LUA->IsType(1, Type::String) ? LUA->GetString(1) : nullptr);
+		const std::string text = file ? file_util::ReadSmall(DataDir() + L"\\" + file, kMaxMenuFile) : std::string();
+		LUA->PushString(text.c_str(), static_cast<unsigned int>(text.size()));
+		return 1;
+	}
+
+	// MenuFileWrite(kind, text) -> ok. "" removes the file.
+	int MenuFileWrite(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		const wchar_t* file = MenuFileName(LUA->IsType(1, Type::String) ? LUA->GetString(1) : nullptr);
+		unsigned int len = 0;
+		const char* text = LUA->IsType(2, Type::String) ? LUA->GetString(2, &len) : nullptr;
+		bool ok = false;
+		if (file && text && len <= kMaxMenuFile)
+		{
+			const std::wstring path = DataDir() + L"\\" + file;
+			ok = len == 0 ? (DeleteFileW(path.c_str()) || GetLastError() == ERROR_FILE_NOT_FOUND)
+				: file_util::WriteAtomic(path, std::string(text, len));
+		}
 		LUA->PushBool(ok);
 		return 1;
 	}
@@ -3304,6 +3373,19 @@ local meowy = meowy
 
 -- The pack's settings (meowy.Setting) come from settings.lua, run just before this.
 
+-- A setting by name, read the way its own chunk reads it (the policy
+-- included): meowy.SettingOf(name) -> the same object meowy.Setting returned,
+-- or nil. Another chunk reads a setting it doesn't own through this, never
+-- GetConVar's raw value. Asking for one twice gives the same object.
+do
+	local create, byName = meowy.Setting, {}
+	function meowy.Setting(name, default, help)
+		if byName[name] == nil then byName[name] = create(name, default, help) end
+		return byName[name]
+	end
+	function meowy.SettingOf(name) return byName[name] end
+end
+
 -- Signed updates (updater.h): checked a minute after start and every 6 hours;
 -- a new version is downloaded, checked against Meowy Network's signature, and
 -- starts the next time the game opens (never mid-session).
@@ -3760,6 +3842,8 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	SetFunction(LUA, "ResilienceSettingsWrite", Guarded<ResilienceSettingsWrite>);
 	SetFunction(LUA, "MenuSettingsRead", Guarded<MenuSettingsRead>);
 	SetFunction(LUA, "MenuSettingsWrite", Guarded<MenuSettingsWrite>);
+	SetFunction(LUA, "MenuFileRead", Guarded<MenuFileRead>);
+	SetFunction(LUA, "MenuFileWrite", Guarded<MenuFileWrite>);
 	SetFunction(LUA, "ResilienceSession", Guarded<ResilienceSession>);
 	SetFunction(LUA, "ResilienceCrashedSession", Guarded<ResilienceCrashedSession>);
 	SetFunction(LUA, "PrewarmBeginJoin", Guarded<PrewarmBeginJoin>);

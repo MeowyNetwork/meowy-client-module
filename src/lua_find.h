@@ -24,8 +24,10 @@
 //   * the test's matcher is the expected one (literal bytes compared one for
 //     one, '*' and '?' as wildcards);
 //   * the table is an engine.dll CNetworkStringTable (its RTTI says so).
-// The sorted copy is rebuilt whenever the table changes (its entry count or
-// first entry) and at every join. In memory only.
+// The sorted copy is rebuilt whenever the table changes: every entry is
+// compared with it at the start of each search (a map change makes a new table,
+// which can land at the old one's address with the same count and first
+// entry), and it's rebuilt at every join. In memory only.
 
 #include <cstddef>
 #include <cstdint>

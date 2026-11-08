@@ -291,6 +291,7 @@ namespace
 		int index;
 	};
 	std::vector<Entry> g_sorted;         // the table's entries, by byte order
+	std::vector<size_t> g_where;         // index -> its place in g_sorted
 	void* g_indexTable = nullptr;
 	int g_indexCount = -1;
 	std::string g_indexFirst;
@@ -341,12 +342,32 @@ namespace
 		return true;
 	}
 
+	// Every entry still what the sorted copy has at its index.
+	bool SameEntries(void* table, int count)
+	{
+		if (g_where.size() != static_cast<size_t>(count))
+			return false;
+		for (int i = 0; i < count; ++i)
+		{
+			const char* s = GetString(table, i);
+			if (!s || std::strcmp(s, g_sorted[g_where[i]].s.c_str()) != 0)
+				return false;
+		}
+		return true;
+	}
+
 	// The sorted copy, made again when the table isn't the one it was made from.
-	bool Indexed(void* table, int count)
+	// The table's address, count and first entry are checked on every step; at
+	// the start of each search (`whole`), every entry is: a map change makes a
+	// new table, which can land at the old one's address with the same count
+	// and first entry but other files, and a stale copy would skip them.
+	bool Indexed(void* table, int count, bool whole)
 	{
 		const char* first = count > 0 ? GetString(table, 0) : nullptr;
-		if (!g_dirty && table == g_indexTable && count == g_indexCount && first && g_indexFirst == first)
+		if (!g_dirty && table == g_indexTable && count == g_indexCount && first && g_indexFirst == first &&
+			(!whole || SameEntries(table, count)))
 			return true;
+		g_dirty = true;
 		g_sorted.clear();
 		g_sorted.reserve(static_cast<size_t>(count));
 		for (int i = 0; i < count; ++i)
@@ -360,6 +381,9 @@ namespace
 			const int c = std::strcmp(x.s.c_str(), y.s.c_str());
 			return c != 0 ? c < 0 : x.index < y.index;
 		});
+		g_where.assign(static_cast<size_t>(count), 0);
+		for (size_t p = 0; p < g_sorted.size(); ++p)
+			g_where[static_cast<size_t>(g_sorted[p].index)] = p;
 		g_indexTable = table;
 		g_indexCount = count;
 		g_indexFirst = first ? first : "";
@@ -651,7 +675,7 @@ namespace lua_find
 					return kLeaveToGame;
 				}
 				const int count = GetNumStrings(table);
-				if (count <= 0 || !Indexed(table, count))
+				if (count <= 0 || !Indexed(table, count, after < 0))
 				{
 					++g_toGame;
 					return kLeaveToGame;
@@ -696,6 +720,7 @@ namespace lua_find
 			std::lock_guard<std::mutex> lock(g_mutex);
 			g_goodVtable = nullptr;
 			g_sorted.clear();
+			g_where.clear();
 			g_indexTable = nullptr;
 			g_indexCount = -1;
 			g_indexFirst.clear();

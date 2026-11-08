@@ -197,6 +197,15 @@ static void Logic()
 	lua_find::NewJoin();
 	w = Walk(t, "lua/autorun/*");
 	Check("new join: indexed again", std::find(w.begin(), w.end(), 1) == w.end());
+	// A map change: a new table at the same address, the same count and first
+	// entry, other files, and no new join (the menu never left the server).
+	t.entries[1] = "lua/autorun/map_only.lua";
+	t.entries[9] = "lua/autorun/swapped.lua";
+	w = Walk(t, "lua/autorun/*");
+	Check("map change: the new entries are visited", std::find(w.begin(), w.end(), 1) != w.end() && std::find(w.begin(), w.end(), 9) != w.end());
+	t.entries[9] = "lua/weapons/m9k_ak47.lua";
+	w = Walk(t, "lua/autorun/*");
+	Check("map change: an entry gone is no longer visited", std::find(w.begin(), w.end(), 9) == w.end());
 
 	Check("null table left to the game", Next(nullptr, "x", -1) == kLeaveToGame);
 	Check("null pattern left to the game", Next(&t, nullptr, -1) == kLeaveToGame);

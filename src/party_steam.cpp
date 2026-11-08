@@ -40,6 +40,17 @@ namespace party_steam
 				digits += static_cast<char>(line[i++]);
 			return ParseLobbyId(digits);
 		}
+
+		std::string Refusal(const char* version, uint64_t owner, uint64_t self, int ownerRelationship)
+		{
+			if (!version || std::strcmp(version, "1") != 0)
+				return "that isn't a Meowy party";
+			if (!owner)
+				return "Steam couldn't say who leads that party";
+			if (owner != self && ownerRelationship != kFriend)
+				return "that party's leader isn't on your Steam friends list";
+			return std::string();
+		}
 	}
 }
 
@@ -65,6 +76,7 @@ namespace
 	using FriendCountFn = int (__cdecl*)(void* fr, int flags);
 	using FriendByIndexFn = uint64_t (__cdecl*)(void* fr, int index, int flags);
 	using FriendGameFn = bool (__cdecl*)(void* fr, uint64_t user, void* info);
+	using FriendRelationshipFn = int (__cdecl*)(void* fr, uint64_t user);
 	using InviteToGameFn = bool (__cdecl*)(void* fr, uint64_t user, const char* connect);
 	using FriendPresenceFn = const char* (__cdecl*)(void* fr, uint64_t user, const char* key);
 	using RequestPresenceFn = void (__cdecl*)(void* fr, uint64_t user);
@@ -101,6 +113,7 @@ namespace
 		FriendCountFn friendCount;
 		FriendByIndexFn friendByIndex;
 		FriendGameFn friendGame;
+		FriendRelationshipFn friendRelationship;
 		InviteToGameFn inviteToGame;
 		FriendPresenceFn friendPresence;
 		RequestPresenceFn requestPresence;
@@ -155,6 +168,7 @@ namespace
 			&& Find(dll, a.friendCount, "SteamAPI_ISteamFriends_GetFriendCount")
 			&& Find(dll, a.friendByIndex, "SteamAPI_ISteamFriends_GetFriendByIndex")
 			&& Find(dll, a.friendGame, "SteamAPI_ISteamFriends_GetFriendGamePlayed")
+			&& Find(dll, a.friendRelationship, "SteamAPI_ISteamFriends_GetFriendRelationship")
 			&& Find(dll, a.inviteToGame, "SteamAPI_ISteamFriends_InviteUserToGame")
 			&& Find(dll, a.friendPresence, "SteamAPI_ISteamFriends_GetFriendRichPresence")
 			&& Find(dll, a.requestPresence, "SteamAPI_ISteamFriends_RequestFriendRichPresence")
@@ -278,7 +292,22 @@ namespace
 		void Run(void* p) override
 		{
 			const LobbyJoinRequested* r = static_cast<const LobbyJoinRequested*>(p);
-			if (r && r->lobby)
+			if (!r || !r->lobby)
+				return;
+			// Who it came from: a friend's invite, or a join link naming anyone.
+			// Not a friend: the party the player is in isn't left for it.
+			int relationship = party_steam::detail::kFriend;
+			Ifaces i;
+			if (r->friendId && Get(i))
+			{
+				const uint64_t from = r->friendId;
+				auto f = [&] { relationship = g_api.friendRelationship(i.fr, from); };
+				if (!Guard(f))
+					relationship = 0;
+			}
+			if (relationship != party_steam::detail::kFriend)
+				Event("failed: that invite isn't from one of your Steam friends");
+			else
 				Event("invite " + std::to_string(r->lobby));
 		}
 		void Run(void* p, bool, uint64_t) override { Run(p); }
@@ -525,20 +554,42 @@ namespace party_steam
 					auto g = [&] { got = g_api.callResult(i.ut, call, &r, sizeof(r), kLobbyEnter, &failed); };
 					if (Guard(g) && got && !failed && r.response == 1 && r.lobby == g_joining)
 					{
-						g_lobby = r.lobby;
-						// Only a Meowy party: anything else's lobby is left at once.
+						// Only a Meowy party led by a friend (or this player): anything
+						// else's lobby is left at once, before the pack publishes anything
+						// in it. The party the player is in is left only once the new one
+						// passes (a join link or +connect_lobby says nothing about who
+						// sent it, so this is the only check it gets).
+						const uint64_t lobby = r.lobby, previous = g_lobby;
 						const char* v = nullptr;
-						const uint64_t lobby = g_lobby;
-						auto h = [&] { v = g_api.getLobbyData(i.mm, lobby, "v"); };
-						if (Guard(h) && v && std::strcmp(v, "1") == 0)
+						uint64_t owner = 0, self = 0;
+						int relationship = 0;
+						auto h = [&] {
+							v = g_api.getLobbyData(i.mm, lobby, "v");
+							owner = g_api.lobbyOwner(i.mm, lobby);
+							self = g_api.selfId(i.us);
+							relationship = owner ? g_api.friendRelationship(i.fr, owner) : 0;
+						};
+						const std::string why = Guard(h) ? detail::Refusal(v, owner, self, relationship) : "Steam faulted";
+						if (why.empty())
 						{
-							g_last = "joined " + std::to_string(r.lobby);
+							if (previous && previous != lobby)
+							{
+								auto old = [&] { g_api.leaveLobby(i.mm, previous); };
+								Guard(old);
+							}
+							g_lobby = lobby;
+							g_last = "joined " + std::to_string(lobby);
 							Event("joined");
 						}
 						else
 						{
-							Leave();
-							Event("failed: that isn't a Meowy party");
+							if (lobby != previous)
+							{
+								auto drop = [&] { g_api.leaveLobby(i.mm, lobby); };
+								Guard(drop);
+							}
+							g_last = "left " + std::to_string(lobby) + ": " + why;
+							Event("failed: " + why);
 						}
 					}
 					else

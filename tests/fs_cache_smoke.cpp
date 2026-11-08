@@ -181,6 +181,14 @@ int main(int argc, char** argv)
 	Clear();
 	Check("cleared", Folders() == 0);
 
+	// Install after Uninstall: the kept copy goes back over the game's own vtable only.
+	int original = 0, ours = 0, foreign = 0;
+	void* slot = &original;
+	Check("reinstall: the game's vtable is replaced by the kept copy", SwapIn(&slot, &original, &ours) && slot == &ours);
+	Check("reinstall: already ours, nothing to do", SwapIn(&slot, &original, &ours) && slot == &ours);
+	slot = &foreign;
+	Check("reinstall: someone else's vtable is left alone", !SwapIn(&slot, &original, &ours) && slot == &foreign);
+
 	DeleteFileA((root + "\\materials\\Here.VMT").c_str());
 	DeleteFileA((root + "\\materials\\gone.vmt").c_str());
 	RemoveDirectoryA((root + "\\materials").c_str());

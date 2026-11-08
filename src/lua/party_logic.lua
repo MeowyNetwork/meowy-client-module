@@ -4,9 +4,10 @@
 -- A party is a friends-only Steam lobby (party_steam.h). Its owner, the
 -- leader, moves everyone by bumping the lobby's `go` ("<seq>|<address>");
 -- each member's pack then counts down FOLLOW_SECONDS with a Stay button
--- before joining, and never follows more than once every MIN_GAP seconds, so
--- a party can't bounce anyone around. Members publish where they are (`at`,
--- `atname`) so everyone sees the party's servers.
+-- (counting only while it's on screen) before joining, and never follows more
+-- than once every MIN_GAP seconds, so a party can't bounce anyone around: a
+-- move sooner than that waits for the gap. Members publish where they are
+-- (`at`, `atname`) so everyone sees the party's servers.
 local M = {}
 
 M.FOLLOW_SECONDS = 10
@@ -49,7 +50,10 @@ end
 -- (the last one this member saw, nil before the first look), leader (this
 -- member leads), mine (the server this member is on, "" in the menu), now,
 -- lastFollowAt, allowed (address -> bool: public, not blacklisted) }.
--- Returns address or nil, and the seq to remember.
+-- Returns address or nil, the seq to remember, and the earliest time the
+-- join may happen: a move within MIN_GAP of the last follow isn't dropped,
+-- its countdown just can't end before the gap has passed (a newer move
+-- replaces it).
 function M.shouldFollow(f)
 	local seq, address = M.parseGo(f.go)
 	if not seq then return nil, f.lastSeq end
@@ -58,13 +62,26 @@ function M.shouldFollow(f)
 	if seq <= f.lastSeq then return nil, f.lastSeq end
 	if f.leader or address == f.mine then return nil, seq end
 	if f.allowed and not f.allowed(address) then return nil, seq end
-	if f.now - (f.lastFollowAt or -math.huge) < M.MIN_GAP then return nil, seq end
-	return address, seq
+	return address, seq, (f.lastFollowAt or -math.huge) + M.MIN_GAP
+end
+
+-- A countdown: { address, name, by, notBefore, shown }. It only runs while
+-- it's on screen (shown: seconds it was), so nobody is moved without having
+-- seen it with Stay for FOLLOW_SECONDS, and never before notBefore.
+function M.newFollow(address, name, by, notBefore)
+	return { address = address, name = name, by = by, notBefore = notBefore or -math.huge, shown = 0 }
 end
 
 -- Seconds left on a countdown (never below 0).
 function M.left(follow, now)
-	return math.max(0, math.ceil(follow.at - now))
+	local shownLeft = M.FOLLOW_SECONDS - (follow.shown or 0)
+	local gapLeft = (follow.notBefore or -math.huge) - now
+	return math.max(0, math.ceil(math.max(shownLeft, gapLeft)))
+end
+
+-- Whether its time is up: shown long enough, and past notBefore.
+function M.due(follow, now)
+	return (follow.shown or 0) >= M.FOLLOW_SECONDS and now >= (follow.notBefore or -math.huge)
 end
 
 -- What the home screen's party card and the Escape menu's card show.

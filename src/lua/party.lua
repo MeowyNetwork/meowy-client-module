@@ -7,10 +7,14 @@
 -- join it from Steam's friends list or an invite, and Steam shows the members
 -- together (Rich Presence steam_player_group). The leader's "Take the party
 -- here" (Find servers) moves everyone: each member's pack counts down
--- PartyLogic.FOLLOW_SECONDS with Stay (the home screen's card, the Escape
--- menu's card, a banner in game, meowy_party_stay), then joins. Nothing is
--- followed on the first look at a party, more than once every MIN_GAP
--- seconds, or to a server Garry's Mod's blacklist names.
+-- PartyLogic.FOLLOW_SECONDS with Stay, then joins. The countdown is a card
+-- with Stay wherever the menu is up (any screen of it, Garry's Mod's own
+-- menu, Find servers, the Escape menu in game), and a banner over the game
+-- while playing; it only runs while one of them is on screen (not while a
+-- join loads), so nobody is moved without having seen it. Nothing is followed
+-- on the first look at a party, sooner than MIN_GAP seconds after the last
+-- follow (the countdown waits), or to a server Garry's Mod's blacklist names.
+-- The party's next server isn't contacted before the member joins it.
 --
 -- The page (shell.js, browser.js) sees window.MeowyParty, a model of text
 -- only, and asks through meowy.post (menu_page.lua's handlers call
@@ -68,14 +72,16 @@ local function onEvent(e, now)
 		say("Party started: invite your friends")
 		P.lastSeq, P.mine = nil, nil
 	elseif e == "joined" then
+		-- A new party (native left the one before, if any, only now it passed).
 		say("You joined the party")
-		P.lastSeq, P.mine = nil, nil
+		P.lastSeq, P.mine, P.follow, P.presence = nil, nil, nil, nil
 	elseif e:sub(1, 7) == "failed:" then
 		say(e:sub(9))
 	elseif e:sub(1, 7) == "invite " then
 		-- An invite accepted in Steam (or the game started from one): the player's own click.
+		-- The party they're in stays until the new one is checked and joined
+		-- (party_steam.cpp: a Meowy party led by a Steam friend).
 		if not partyOn() then return log("party: invite ignored, parties are off") end
-		if P.state then leave() end
 		if not meowy.PartyJoin(e:sub(8)) then say("Couldn't join that party") end
 	end
 end
@@ -129,22 +135,23 @@ local function tick()
 			meowy.PartySet("presence", "steam_player_group", state.lobby)
 			meowy.PartySet("presence", "steam_player_group_size", tostring(#state.members))
 		end
-		-- The leader's target: content warmed ahead (prewarm), and a member follows.
-		if Home.publicAddress(state.srv) and state.srv ~= P.warmed then
-			P.warmed = state.srv
-			if not leader and MeowyClientPackWarm then MeowyClientPackWarm(state.srv, "the party's next server") end
-		end
+		-- The leader's target: a member follows. (Not warmed ahead: the leader picks
+		-- the address, and nothing is sent to it before the member agreed to go.)
 		local leaderName = ""
 		for _, m in ipairs(state.members) do if m.id == state.owner then leaderName = Home.clean(m.name) end end
-		local to, seq = PartyLogic.shouldFollow({ go = state.go, lastSeq = P.lastSeq, leader = leader, mine = mine,
+		local to, seq, notBefore = PartyLogic.shouldFollow({ go = state.go, lastSeq = P.lastSeq, leader = leader, mine = mine,
 			now = now, lastFollowAt = P.lastFollowAt, allowed = allowed })
 		P.lastSeq = seq
 		if to then
-			P.follow = { address = to, name = Home.clean(state.srvname), by = leaderName ~= "" and leaderName or "the leader",
-				at = now + PartyLogic.FOLLOW_SECONDS }
-			log("party: following %s to %s in %d s unless you stay", P.follow.by, to, PartyLogic.FOLLOW_SECONDS)
+			P.follow = PartyLogic.newFollow(to, Home.clean(state.srvname), leaderName ~= "" and leaderName or "the leader", notBefore)
+			log("party: following %s to %s in %d s unless you stay", P.follow.by, to, PartyLogic.left(P.follow, now))
 		end
-		if P.follow and now >= P.follow.at then
+		-- The countdown runs while it's on screen: the card at the menu (any screen,
+		-- the Escape menu too), the banner in game; not while a join loads.
+		if P.follow and P.lastTick and not IsInLoading() then
+			P.follow.shown = P.follow.shown + math.min(now - P.lastTick, 1)
+		end
+		if P.follow and PartyLogic.due(P.follow, now) then
 			local address = P.follow.address
 			P.follow, P.lastFollowAt = nil, now
 			if address ~= mine and allowed(address) then
@@ -155,6 +162,7 @@ local function tick()
 	else
 		P.follow = nil
 	end
+	P.lastTick = now
 	-- Friends playing Garry's Mod, for inviting: while our home or a party shows.
 	if (menuPage.ours or state) and now - P.friendsAt >= FRIENDS_LOOK and meowy.PartyFriends then
 		P.friendsAt = now
@@ -188,11 +196,68 @@ local function banner()
 	surface.DrawText(text)
 end
 hook.Add("DrawOverlay", "MeowyClientPack.Party", function()
-	if not P.follow or not IsInGame() or not surface or P.bannerFailed then return end
+	if not P.follow or not IsInGame() or IsInLoading() or not surface or P.bannerFailed then return end
 	local ok, err = pcall(banner)
 	if not ok then
 		P.bannerFailed = true
 		ErrorNoHalt("[Meowy Client Pack] party banner: " .. tostring(err) .. "\n")
+	end
+end)
+
+-- Wherever the menu is up (any of its screens, Garry's Mod's own menu, Find
+-- servers, the Escape menu in game): the countdown as a card, top centre,
+-- with Stay and Go now. Clicks only; it never takes the keyboard.
+local card
+local function hideCard()
+	if IsValid(card) then card:Remove() end
+	card = nil
+end
+local function drawCard(now)
+	local f = P.follow
+	if not (f and not IsInLoading() and menuVisible()) then return hideCard() end
+	if not IsValid(card) then
+		UI.fonts()
+		card = vgui.Create("DPanel")
+		card.w = S(460)
+		card.Paint = function(self, w, h)
+			UI.shadow(S(12), 0, 0, w, h)
+			UI.box(S(12), 0, 0, w, h, C.window, C.border)
+			return true
+		end
+		card.title = UI.Text(card, "", "MeowyPack.Heading", C.text)
+		card.sub = UI.Text(card, "", "MeowyPack.Small", C.body)
+		card.buttons = {
+			UI.Button(card, "Stay", "secondary", function() MeowyClientPackParty.action("stay") end),
+			UI.Button(card, "Go now", "primary", function() MeowyClientPackParty.action("go_now") end),
+		}
+		card:MakePopup()
+		card:SetKeyboardInputEnabled(false)
+		UI.fadeIn(card)
+	end
+	local title = "Your party is going to " .. (f.name ~= "" and f.name or f.address)
+	local sub = f.by .. " moved the party. You follow in " .. PartyLogic.left(f, now) .. " s, unless you stay here."
+	if card.key ~= title .. "|" .. sub then
+		card.key = title .. "|" .. sub
+		card.title.text, card.sub.text = title, sub
+		local pad, buttonsW = S(18), 0
+		for _, b in ipairs(card.buttons) do buttonsW = buttonsW + b.w + S(10) end
+		local y = UI.stack({ card.title, card.sub }, pad, pad, card.w - pad * 2 - buttonsW, S(3))
+		local h = math.max(y + pad, S(38) + pad * 2)
+		card:SetSize(card.w, h)
+		UI.row(card.buttons, 0, math.floor((h - S(38)) / 2), card.w - pad)
+	end
+	-- Below the reconnect card when that shows too.
+	local top = IsValid(overlay) and select(2, overlay:GetPos()) + overlay:GetTall() + S(12) or S(28)
+	card:SetPos(math.floor((ScrW() - card.w) / 2), top)
+	card:MoveToFront()
+end
+hook.Add("Think", "MeowyClientPack.PartyCard", function()
+	if P.cardFailed then return end
+	local ok, err = pcall(drawCard, SysTime())
+	if not ok then
+		P.cardFailed = true
+		hideCard()
+		ErrorNoHalt("[Meowy Client Pack] party card: " .. tostring(err) .. "\n")
 	end
 end)
 
@@ -207,6 +272,15 @@ MeowyClientPackParty = {
 		if what == "stay" then
 			if P.follow then log("party: staying here") end
 			P.follow = nil
+		elseif what == "go_now" then
+			-- The player's own click: no countdown and no gap to wait for.
+			local f = P.follow
+			P.follow = nil
+			if f and not IsInLoading() and allowed(f.address) and f.address ~= P.mine then
+				P.lastFollowAt = SysTime()
+				log("party: joining %s with the party (Go now)", f.address)
+				join(f.address)
+			end
 		elseif not partyOn() then
 			return
 		elseif what == "create" then
