@@ -12,7 +12,8 @@ play on Meowy Network.
 
 1. Download **MeowyClientPack.exe** from the [latest release](https://github.com/MeowyNetwork/meowy-client-module/releases/latest).
 2. Close Garry's Mod.
-3. Run the file and click **Install**. It finds Garry's Mod through Steam.
+3. Run the file and click **Install**. It finds Garry's Mod through Steam. Leave **Start with the game**
+   ticked: the pack needs it to update itself.
 
 Then start the game as usual. From then on the pack keeps itself up to date (see [Updates](#updates)).
 
@@ -60,30 +61,34 @@ player count are marked **FAKE** and show the real number. You also get:
 ### Parties
 
 Start a party with your Steam friends from the home screen. When the leader takes the party to a server,
-everyone follows after a 10-second countdown. Anyone can click **Stay** instead.
+everyone follows after a 10-second countdown. Anyone can click **Stay** instead. You only ever join
+parties led by your Steam friends.
 
 ### Staying connected
 
-- If your connection drops on Meowy Network, the pack can rejoin for you, and your job and jail time come
-  back. It asks once whether you want this.
+- If your connection drops on Meowy Network, the pack can rejoin for you. Back within 3 minutes, you
+  usually keep your job and jail time, and your weapons too unless you were just in a fight. It asks once
+  whether you want this.
 - After a crash, the next start offers to rejoin the server you were on. It only joins when you click.
 
 ### Handy tools
 
 - **The Meowy console:** the game's console, but readable, with search, autocomplete and an Errors tab
-  that shows which addon is breaking.
+  that shows which addon is breaking. Passwords you type in it aren't saved.
 - **Settings guard:** if a server changes your graphics or other settings, you're asked when you leave
-  whether to keep them or put them back. Your `config.cfg` is backed up, too.
+  whether to keep them or put them back. If the game closes while you're on that server, you're asked at
+  the next start. Your `config.cfg` is backed up, too.
 - **PC doctor:** checks the usual reasons the game runs slowly (the wrong graphics card, battery saver,
   the 32-bit game) and explains how to fix them. It only looks; it changes nothing.
 - **Sound follows your headphones** when you plug them in mid-game.
 - **The mouse stays in the game window** while you aim, so a fast flick can't click your other screen.
-- **Each server gets its own `garrysmod/data` folder,** so a server can't see which other servers you
-  play on.
+- **Each server gets its own `garrysmod/data` folder,** so a server can't read the files other servers
+  saved there. Your own files stay with the main menu, singleplayer and the games you host.
 
 ### Extras on Meowy Network
 
-- Your Discord status shows your job and the player count, with a **Join** button for friends.
+- Your Discord status shows your job and the player count, with a **Join** button. Anyone who can see
+  your Discord activity sees it, not just your friends.
 - Windows notifications when something happens to you while you're alt-tabbed, such as your printer
   being attacked or staff replying to your ticket.
 - Markers on Steam's game recording when you're arrested, become wanted and so on, so you can find the
@@ -97,24 +102,30 @@ The installer also adds a small app that sits in the tray. It:
 - offers to rejoin after a crash;
 - shows servers while the game is closed.
 
-It never touches the game itself. You can stop it starting with Windows, either in the installer or in
-its own window.
+It doesn't change the running game. To make it start faster, its **Play** turns off Lua autorefresh
+(only addon makers use it) and moves the Workshop fonts aside until the pack has loaded. "Faster start"
+in its window turns that off. You can stop it starting with Windows, either in the installer or in its own
+window. In-game updates don't update the launcher; running a newer installer does.
 
 ## Changing things
 
-Most features have a switch in **Meowy settings**, in the main menu after Options (or type
-`meowy_settings` in the console). The rest have a console setting, listed in
-[How it works](docs/HOW-IT-WORKS.md).
+**Meowy settings**, in the main menu after Options, has switches for staying connected, starting with the
+game, getting servers ready, the console key, the menu and the settings guard. Everything else, including
+the privacy settings below, is a console setting, listed in [How it works](docs/HOW-IT-WORKS.md#settings).
+
+To type console settings, turn the console on first: **Options → Keyboard → Advanced → Enable developer
+console**. Then press the key under Esc.
 
 If the game ever won't start with the pack, hold **Shift** while Garry's Mod starts: the pack is skipped
 for that start. If the game crashes while the pack is starting, the next start skips it on its own.
 
 ## Updates
 
-The pack checks for new versions itself. It only uses a new version that Meowy Network has signed, and it
-switches to it the next time you open the game, never in the middle of a session. If a new version crashes
-your game, the pack goes back to the one before. To turn updates off, type `meowy_updates 0` in the
-console.
+The pack checks for new versions itself, as long as **Start with the game** is on. If you unticked it,
+run the installer again with it ticked. The pack only uses a new version that Meowy Network has signed,
+and it switches to it the next time you open the game, never in the middle of a session. If the game
+closes while a new version is starting, the pack goes back to the one before. To turn updates off, type
+`meowy_updates 0` in the console.
 
 Meowy Network can also switch a feature off for everyone, for example while a bug is being fixed. Your
 own settings come back afterwards.
@@ -122,21 +133,28 @@ own settings come back afterwards.
 ## Your privacy
 
 This is what leaves your PC, and where it goes:
-- **Only on Meowy Network:** when you join, the part of recent crash reports that shows which addon
-  crashed, and a short description of your hardware (CPU, graphics card, memory, Windows version; no
-  serial numbers or names). Both are saved with your Steam ID.
+- **Only on Meowy Network:** when you join, the part of crash reports from crashes on Meowy Network that
+  shows which addon crashed (never crashes on other servers), and a short description of your hardware
+  (CPU, graphics card, memory, Windows version; no serial numbers or names). Both are saved with your
+  Steam ID.
+- **To Discord, on Meowy Network:** your job, the player count and how long you've played, if the Discord
+  app is running. Anyone who can see your Discord activity sees it. Discord's own activity setting turns
+  it off.
 - **On other servers:** to catch fake player counts, the pack sends Meowy Network the server's player
   list as the game's `status` command shows it: other players' Steam IDs, pings and times, never yours.
-  The Steam IDs are scrambled (hashed) as they arrive and deleted after 14 days. `meowy_serverlist_reports 0`
-  stops this.
+  The Steam IDs are scrambled (hashed) as they arrive and deleted after 14 days. Reports never mark a
+  server as fake by themselves. `meowy_serverlist_reports 0` stops this.
 - **To your Steam friends:** your party, and the fact that you have the pack. `meowy_party 0` turns that
   off.
 - **Downloads from meowynetwork.com:** the loading screen, the server list and updates. Like any website,
   it sees your IP address, and the server list uses that to guess your rough location for ping estimates.
+  The site doesn't log the pack's requests with your IP. On Meowy Network, the loading screen sends it
+  your Steam ID to show your name and picture.
 
-Everything else stays on your PC, in `%LOCALAPPDATA%\MeowyClientPack`. The pack changes the game only in
-memory, while it runs. On disk it adds one line to `garrysmod/lua/includes/menu.lua` (so it starts with
-the game) and turns `garrysmod/data` into a link to each server's own folder. Uninstalling undoes both.
+Servers can't read the pack's settings, or change the ones above. Everything else stays on your PC,
+almost all of it in `%LOCALAPPDATA%\MeowyClientPack`. The pack changes the game only in memory, while it
+runs. On disk it adds one line to `garrysmod/lua/includes/menu.lua` (so it starts with the game) and
+turns `garrysmod/data` into a link to each server's own folder. Uninstalling undoes both.
 
 Every detail, feature by feature, is in [How it works](docs/HOW-IT-WORKS.md).
 
@@ -144,7 +162,8 @@ Every detail, feature by feature, is in [How it works](docs/HOW-IT-WORKS.md).
 
 Run **MeowyClientPack.exe** again and click **Uninstall**. It puts your own `garrysmod/data` files back,
 saves each server's files to `Documents\Meowy Client Pack backup`, and then removes the pack, the launcher
-and everything they stored.
+and everything they stored. If you've already removed Garry's Mod, it still removes the launcher and the
+pack's own files.
 
 ## More
 
