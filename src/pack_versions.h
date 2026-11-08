@@ -66,6 +66,11 @@ namespace pack_versions
 	StubPolicy ReadStubPolicy(const std::wstring& dataDir);
 	bool Allowed(const StubPolicy& p, const std::string& version);
 
+	// The player turned updates off ("meowy_updates=0" in the pack's menu_settings.txt,
+	// module.cpp): the stub starts no downloaded version it hasn't started before,
+	// and the launcher stages none. A version already running stays.
+	bool UpdatesOff(const std::wstring& dataDir);
+
 	// Step 1. Returns what happened ("" for nothing to do).
 	std::string Promote(const std::wstring& dataDir);
 

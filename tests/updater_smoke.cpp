@@ -163,6 +163,17 @@ int main(int argc, char** argv)
 	p.version = "1.7.0";
 	p.sha256 = PutVersion(dataDir, "1.7.0", "version 1.7.0");
 	pack_versions::WritePointer(pack_versions::StatePath(dataDir, L"pending"), p);
+	// The player's switch (menu_settings.txt, as the menu Lua writes it).
+	const std::wstring settings = dataDir + L"\\menu_settings.txt";
+	Check("updates off: no settings file means on", !pack_versions::UpdatesOff(dataDir));
+	file_util::WriteAtomic(settings, "meowy_loadingscreen=1\nmeowy_updates=1\n");
+	Check("updates off: 1 is on", !pack_versions::UpdatesOff(dataDir));
+	file_util::WriteAtomic(settings, "meowy_loadingscreen=1\r\nmeowy_updates=0\r\n");
+	Check("updates off: 0 is off", pack_versions::UpdatesOff(dataDir));
+	file_util::WriteAtomic(settings, "meowy_updates_extra=0\n");
+	Check("updates off: only its own name", !pack_versions::UpdatesOff(dataDir));
+	DeleteFileW(settings.c_str());
+
 	Check("promote: pending becomes current", pack_versions::Promote(dataDir) == "updated to 1.7.0");
 	Check("promote: pending gone", GetFileAttributesW(pack_versions::StatePath(dataDir, L"pending").c_str()) == INVALID_FILE_ATTRIBUTES);
 	pack_versions::Choice c = pack_versions::Choose(dataDir);

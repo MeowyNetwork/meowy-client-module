@@ -66,6 +66,23 @@ pub struct Status {
     pub last_check: String,
 }
 
+/// The player turned updates off in the pack ("meowy_updates=0" in its
+/// `menu_settings.txt`, read the engine's way: a number, 0 is off). Then nothing
+/// is staged here, and the start-up stub starts no new version either
+/// (`pack_versions::UpdatesOff`).
+pub fn updates_off(data: &Path) -> bool {
+    let Ok(bytes) = std::fs::read(data.join("menu_settings.txt")) else { return false };
+    let text = String::from_utf8_lossy(&bytes[..bytes.len().min(4096)]).into_owned();
+    for line in text.lines() {
+        if let Some(value) = line.strip_prefix("meowy_updates=") {
+            let value = value.trim_start();
+            let digits = value.strip_prefix(['-', '+']).unwrap_or(value);
+            return !digits.bytes().take_while(u8::is_ascii_digit).any(|b| b != b'0');
+        }
+    }
+    false
+}
+
 #[cfg(windows)]
 pub use staging::*;
 
@@ -228,6 +245,9 @@ mod staging {
         game_running: &dyn Fn() -> bool,
         fetch: &dyn Fn(&str, u64) -> Result<Vec<u8>, String>,
     ) -> (String, Option<String>) {
+        if updates_off(data) {
+            return ("updates are off in the pack's settings (meowy_updates 0)".into(), None);
+        }
         let body = fetch(DOC_PATH, release::MAX_BODY as u64).unwrap_or_default();
         let sig = if body.is_empty() { Vec::new() } else { fetch(SIG_PATH, 256).unwrap_or_default() };
         if body.is_empty() || sig.is_empty() {
@@ -285,6 +305,27 @@ mod tests {
         std::fs::create_dir_all(data.join("state")).unwrap();
         std::fs::create_dir_all(gm.join("lua\\bin")).unwrap();
         (data, gm)
+    }
+
+    #[test]
+    fn updates_off_like_the_stub() {
+        let (data, gm) = setup("off");
+        let settings = data.join("menu_settings.txt");
+        assert!(!updates_off(&data), "no settings file: on");
+        std::fs::write(&settings, "meowy_loadingscreen=1\nmeowy_updates=1\n").unwrap();
+        assert!(!updates_off(&data), "1 is on");
+        std::fs::write(&settings, "meowy_loadingscreen=1\r\nmeowy_updates=0\r\n").unwrap();
+        assert!(updates_off(&data), "0 is off");
+        std::fs::write(&settings, "meowy_updates_extra=0\n").unwrap();
+        assert!(!updates_off(&data), "only its own name");
+        // Off: the check stops before fetching anything.
+        std::fs::write(&settings, "meowy_updates=0\n").unwrap();
+        let keys = crate::policy::Keys::production();
+        let never = || false;
+        let no_fetch = |_: &str, _: u64| -> Result<Vec<u8>, String> { panic!("fetched while updates are off") };
+        let (said, staged) = check_once(&keys, &data, &gm, "win64", None, 0, &never, &no_fetch);
+        assert!(said.contains("updates are off") && staged.is_none(), "{said}");
+        std::fs::remove_dir_all(data.parent().unwrap()).unwrap();
     }
 
     #[test]
