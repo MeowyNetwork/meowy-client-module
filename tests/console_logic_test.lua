@@ -239,6 +239,14 @@ check("masked: the secret part", M.masked('connect 1.2.3.4:27015; password "hunt
 check("masked: the command alone", M.masked("rcon_password"), "rcon_password")
 check("masked: plain as typed", M.masked("say hi;  retry"), "say hi;  retry")
 check("withoutSecrets", table.concat(M.withoutSecrets({ "a", "rcon_password x", "b", "password y" }), ","), "a,b")
+-- A bind or alias that holds one is a secret too, however it's quoted.
+check("secret: a bind holding rcon_password", M.secret('bind k "rcon_password hunter2"'), true)
+check("secret: an alias holding one in its second command", M.secret('alias go "status; rcon_password hunter2"'), true)
+check("secret: unquoted", M.secret("bind k rcon_password hunter2"), true)
+check("secret: an alias of an alias", M.secret('alias a "alias b password"'), true)
+check("secret: an ordinary bind", M.secret('bind k "say hi"'), false)
+check("secret: a bind with no command", M.secret("bind k"), false)
+check("masked: the bind's command hidden", M.masked('status; bind k "rcon_password hunter2"'), "status; bind k ********")
 
 -- A default that can be put back as one value.
 check("plainValue: a number", M.plainValue("0"), true)

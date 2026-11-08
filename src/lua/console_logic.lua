@@ -245,22 +245,40 @@ end
 -- the command without them.
 M.SECRET_COMMANDS = { password = true, rcon_password = true, sv_password = true, rcon = true,
 	sv_setsteamaccount = true, cl_steamauth_token = true }
-local function secretWord(part)
-	return M.SECRET_COMMANDS[string.lower((string.gsub(M.firstWord(part), '"', "")))] == true
-end
-function M.secret(line)
+-- Commands that hold another command line (a key's or an alias's), whose
+-- words from the third on are checked the same way.
+M.WRAPPERS = { bind = true, bindtoggle = true, bind_mac = true, alias = true }
+local secretPart
+local function secretLine(line, depth)
 	for _, part in ipairs(M.parts(line)) do
-		if secretWord(part) then return true end
+		if secretPart(part, depth) then return true end
 	end
 	return false
+end
+-- "secret": the part's own command is one; "wrapped": a bind or alias holds one.
+function secretPart(part, depth)
+	local word = string.lower((string.gsub(M.firstWord(part), '"', "")))
+	if M.SECRET_COMMANDS[word] then return "secret" end
+	if M.WRAPPERS[word] and (depth or 0) < 3 then
+		local words = M.commands(part)[1] or {}
+		if #words >= 3 and secretLine(table.concat(words, " ", 3), (depth or 0) + 1) then return "wrapped" end
+	end
+	return nil
+end
+function M.secret(line)
+	return secretLine(type(line) == "string" and line or "", 0)
 end
 function M.masked(line)
 	if not M.secret(line) then return type(line) == "string" and line or "" end
 	local out = {}
 	for _, part in ipairs(M.parts(line)) do
-		if secretWord(part) then
+		local kind = secretPart(part, 0)
+		if kind == "secret" then
 			local word, more = M.firstWord(part)
 			out[#out + 1] = more and (word .. " ********") or word
+		elseif kind == "wrapped" then
+			local words = M.commands(part)[1]
+			out[#out + 1] = words[1] .. " " .. words[2] .. " ********"
 		else
 			out[#out + 1] = part
 		end

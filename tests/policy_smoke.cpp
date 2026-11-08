@@ -9,8 +9,10 @@
 #include "../src/policy.h"
 #include "../src/file_util.h"
 
+#include <atomic>
 #include <cstdio>
 #include <string>
+#include <thread>
 #include <vector>
 
 #define WIN32_LEAN_AND_MEAN
@@ -162,6 +164,25 @@ int main(int argc, char** argv)
 	Check("stub file: healed from the kept policy", policy::HealStubFile(dir) && file_util::ReadSmall(dir + L"\\policy.bin", 256)
 		== "enabled 1\nseq 5\nmin_version 1.6.0\nnotice Back on.\n");
 	Check("stub file: already right, left alone", !policy::HealStubFile(dir));
+	// The heal (at every start, on the game's thread) while the fetch thread takes
+	// a newer policy: the stub file always ends up the newer one's.
+	{
+		int stale = 0;
+		for (int round = 0; round < 40; ++round)
+		{
+			file_util::WriteAtomic(dir + L"\\policy.txt", P4.body);
+			file_util::WriteAtomic(dir + L"\\policy.sig", std::string(P4.sig) + "\n");
+			file_util::WriteAtomic(dir + L"\\policy.bin", "enabled 1\nseq 4\n");
+			std::atomic<bool> stop{ false };
+			std::thread healer([&] { while (!stop) policy::HealStubFile(dir); });
+			policy::Offer(dir, P5.body, P5.sig, result);
+			stop = true;
+			healer.join();
+			if (file_util::ReadSmall(dir + L"\\policy.bin", 256) != "enabled 1\nseq 5\nmin_version 1.6.0\nnotice Back on.\n")
+				++stale;
+		}
+		Check("stub file: a heal racing a newer policy never puts the older one back", stale == 0);
+	}
 
 	// Edited on disk: no longer verifies, so it isn't kept.
 	file_util::WriteAtomic(dir + L"\\policy.txt", "meowy-pack-policy 1\nseq 9\npack_enabled 1\n");

@@ -47,13 +47,16 @@ end
 local function saveList(kind, list, max)
 	if meowy.ConsoleFileWrite then meowy.ConsoleFileWrite(kind, ConsoleLogic.formatList(list, max)) end
 end
--- Lines typed with a secret in them (passwords, rcon) were never kept; older
--- versions kept them, so they're dropped from what was saved.
+-- Lines typed or pinned with a secret in them (passwords, rcon, a bind or
+-- alias holding one) are never kept; older versions kept them, so they're
+-- dropped from what was saved.
 local history, recallAt = loadList("history", HISTORY_MAX), 0
 local pins = loadList("pins", PINS_MAX)
 do
 	local clean = ConsoleLogic.withoutSecrets(history)
 	if #clean ~= #history then history = clean saveList("history", history, HISTORY_MAX) end
+	local cleanPins = ConsoleLogic.withoutSecrets(pins)
+	if #cleanPins ~= #pins then pins = cleanPins saveList("pins", pins, PINS_MAX) end
 end
 
 -- The pack's marks in the console's text (a `clear`, the command list's start
@@ -1062,8 +1065,10 @@ local function mark(text)
 	pull()
 	lines[#lines + 1] = { id = -2, t = os.time() * 1000, s = 0, c = -1, x = text, marker = true }
 end
+local joinSeenAt = -math.huge   -- SysTime() of the last frame a join was running
 hook.Add("Think", "MeowyClientPack.ConsoleMarkers", function()
 	local loading, ingame = IsInLoading(), IsInGame()
+	if loading or ingame then joinSeenAt = SysTime() end
 	if loading ~= wasLoading or ingame ~= wasInGame then
 		local address = meowy.ServerNow and meowy.ServerNow() or nil
 		local where = isstring(address) and address or "a server"
@@ -1184,8 +1189,16 @@ hook.Add("Think", "MeowyClientPack.ConsoleKey", function()
 	stockShown = shown
 end)
 
-concommand.Add("meowy_console", function() open() end, nil,
-	"Meowy Client Pack: the console, searchable, with warnings and errors only and repeats collapsed")
+-- The command opens the window only at the main menu with no join running or
+-- just ended: a server's Lua can run any menu command (RunConsoleCommand), even
+-- right after a `disconnect` it queued first. In game the console key opens it.
+concommand.Add("meowy_console", function()
+	if IsInLoading() or IsInGame() or SysTime() - joinSeenAt < 2 then
+		log("console: meowy_console only opens it at the main menu; in game, the console key does")
+		return
+	end
+	open()
+end, nil, "Meowy Client Pack: the console, searchable, with warnings and errors only and repeats collapsed")
 concommand.Add("meowy_console_status", function()
 	log("console: %s", meowy.ConsoleState and meowy.ConsoleState() or "unavailable")
 end, nil, "Meowy Client Pack: what the console capture is doing")

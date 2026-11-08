@@ -318,5 +318,42 @@ for _, e in ipairs(list) do byName[e.name] = e end
 check("list: every setting, in order", #list == 7 and list[1].name == "meowy_data_sandbox", true)
 check("list: value, default, help", byName.meowy_loadingscreen.value .. "/" .. byName.meowy_loadingscreen.default .. "/" .. byName.meowy_loadingscreen.help, "0/1/help")
 
+-- menu_settings.txt: whole lines only, the first for a name. A CR inside a
+-- value (from a server's RunConsoleCommand) isn't a second setting.
+w = world({ settings = "meowy_menu_scale=100\rmeowy_data_sandbox=0\rmeowy_updates=0\r\nmeowy_party=1\r\nmeowy_party=0\nmeowy_loadingscreen=1 2" })
+s = settings(w)
+local scale = w.env.meowy.Setting("meowy_menu_scale", "100", "help")
+check("file: a CR inside a value hides no setting", tostring(s.sandbox:GetBool()) .. " " .. tostring(s.updates:GetBool()), "true true")
+check("file: that value stays one value", scale:GetString(), "100\rmeowy_data_sandbox=0\rmeowy_updates=0")
+check("file: CRLF read, the first line for a name counts", s.party:GetString(), "1")
+check("file: the rest of the line is the value", s.loading:GetString(), "1 2")
+-- Saved without control characters: what a server put in an unprotected
+-- setting can't become a line of its own (here or for the stub and launcher).
+w.inGame = true
+w.frame()
+w.server("meowy_loadingscreen", "1\rmeowy_updates=0\tx")
+w.seconds(1.1)
+check("save: no control character written", (w.written or ""):gsub("\n", ""):find("%c") == nil and (w.written or ""):find("meowy_loadingscreen=1meowy_updates=0x", 1, true) ~= nil, true)
+local again = world({ settings = w.written })
+local s2 = settings(again)
+check("save: read back, updates still on", s2.updates:GetBool(), true)
+
+-- What tells players a server lies about its players is protected too.
+w = world()
+for _, n in ipairs({ "meowy_honest_serverlist", "meowy_server_index", "meowy_menu" }) do w.env.meowy.Setting(n, "1", "help") end
+w.loading = true
+w.frame()
+w.server("meowy_honest_serverlist", "0")
+w.server("meowy_server_index", "0")
+w.server("meowy_menu", "0")
+w.frame(3)
+check("protected: honest list, server index and the Meowy home put back",
+	w.env.meowy.SettingOf("meowy_honest_serverlist"):GetString() .. w.env.meowy.SettingOf("meowy_server_index"):GetString()
+		.. w.env.meowy.SettingOf("meowy_menu"):GetString() .. w.convars.meowy_honest_serverlist .. w.convars.meowy_server_index .. w.convars.meowy_menu, "111111")
+w.loading = false
+w.env.RunConsoleCommand("meowy_menu", "0")   -- Meowy settings' switch
+w.frame(2)
+check("protected: still the player's from Meowy settings", w.env.meowy.SettingOf("meowy_menu"):GetBool(), false)
+
 print(("%d checks, %d failed"):format(count, failures))
 os.exit(failures == 0 and 0 or 1)

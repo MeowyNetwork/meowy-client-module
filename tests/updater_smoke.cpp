@@ -172,6 +172,9 @@ int main(int argc, char** argv)
 	Check("updates off: 0 is off", pack_versions::UpdatesOff(dataDir));
 	file_util::WriteAtomic(settings, "meowy_updates_extra=0\n");
 	Check("updates off: only its own name", !pack_versions::UpdatesOff(dataDir));
+	// A CR inside another setting's value (1.7.0 saved them as they came) isn't a line of its own.
+	file_util::WriteAtomic(settings, "meowy_menu_scale=100\rmeowy_updates=0\nmeowy_updates=1\n");
+	Check("updates off: a CR inside a value starts no line", !pack_versions::UpdatesOff(dataDir));
 	DeleteFileW(settings.c_str());
 
 	Check("promote: pending becomes current", pack_versions::Promote(dataDir) == "updated to 1.7.0");

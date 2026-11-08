@@ -2316,7 +2316,7 @@ local saveButton
 for _, p in ipairs(w.panels or {}) do if p.class == "DButton" and p.text == "Save" and not p.removed then saveButton = p end end
 saveButton.DoClick()
 check("save: the real path copied", w.clipboard, "C:\\Users\\Ann\\AppData\\Local\\MeowyClientPack\\logs\\console_2026-11-07_16-00-00.txt")
-w = world({ settings = ON, menu = true, consoleFiles = { history = "first\nrcon_password old\nsecond", pins = "status" } })
+w = world({ settings = ON, menu = true, consoleFiles = { history = "first\nrcon_password old\nsecond", pins = 'status\nbind k "rcon_password old"' } })
 w.concommands.meowy_console()
 local recallEntry, shown
 for _, p in ipairs(w.panels or {}) do if p.class == "DTextEntry" and rawget(p, "OnEnter") then recallEntry = p end end
@@ -2324,6 +2324,7 @@ recallEntry.SetText = function(_, v) shown = v end
 recallEntry:OnKeyCodeTyped(88)   -- Up
 check("history: kept from the last start", shown, "second")
 check("history: an older version's secret lines dropped", w.consoleFiles.history, "first\nsecond")
+check("pins: an older version's secret pins dropped", w.consoleFiles.pins, "status")
 local savedPin
 for _, p in ipairs(w.panels or {}) do if rawget(p, "meowyPin") == "status" then savedPin = p end end
 check("pins: kept from the last start", savedPin ~= nil, true)-- Reading the console: dividers at a join, in game and leaving; the right-click
@@ -2336,7 +2337,17 @@ w.state, w.address, w.loading, w.inGame = "ours", OURS, false, true
 w.run(0.2)
 w.inGame, w.state = false, "none"
 w.run(0.2)
+-- meowy_console right after a join (a server's queued command after its
+-- `disconnect`) or during one doesn't open it; at the main menu it does.
+local function consoleOpen()
+	for _, p in ipairs(w.panels or {}) do if rawget(p, "meowyConsole") and not p.removed then return true end end
+	return false
+end
 w.concommands.meowy_console()
+check("meowy_console: not just after a join", consoleOpen(), false)
+w.run(2)
+w.concommands.meowy_console()
+check("meowy_console: at the main menu it opens", consoleOpen(), true)
 local function panelWith(field, value)
 	for _, p in ipairs(w.panels or {}) do
 		if rawget(p, field) ~= nil and (value == nil or rawget(p, field) == value) and not p.removed then return p end

@@ -51,6 +51,10 @@ namespace policy
 		Keys g_keys = { kReleaseKey, kOpsKey, kRecoveryKey };
 
 		std::mutex g_lock;
+		// The kept files (policy.txt/.sig/.bin): read-check-replace (Offer), the
+		// stub file's heal and the start's read are one step each, so neither
+		// can put an older policy back over a newer one. Taken before g_lock.
+		std::mutex g_fileLock;
 		bool g_haveCurrent = false;
 		Policy g_current;
 		Key g_currentKey = Key::None;
@@ -363,6 +367,7 @@ namespace policy
 		const char* reason = nullptr;
 		if (!Parse(body, &next, &reason))
 			return why = std::string("doesn't parse (") + reason + ")", false;
+		std::lock_guard<std::mutex> files(g_fileLock);
 		Policy cur;
 		const bool haveCur = ReadKept(stateDir, &cur, nullptr);
 		if (!MayReplace(cur, haveCur, next, key, &reason))
@@ -501,6 +506,7 @@ namespace policy
 
 	bool HealStubFile(const std::wstring& stateDir)
 	{
+		std::lock_guard<std::mutex> files(g_fileLock);
 		Policy kept;
 		Key key = Key::None;
 		if (!ReadKept(stateDir, &kept, &key))
@@ -514,6 +520,8 @@ namespace policy
 	void StartFetching(const std::wstring& stateDir)
 	{
 		{
+			// The fetch thread a first call started may be taking a newer one.
+			std::lock_guard<std::mutex> files(g_fileLock);
 			Policy kept;
 			Key key = Key::None;
 			if (ReadKept(stateDir, &kept, &key))

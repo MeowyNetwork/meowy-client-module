@@ -27,22 +27,43 @@
 local meowy = meowy
 local FCVAR_HIDDEN_FLAG = 16   -- FCVAR_HIDDEN; the menu state has no FCVAR_HIDDEN global
 
+-- menu_settings.txt: one "name=value" per line (LF; a CR before it is
+-- dropped), the first line for a name counts. Only whole lines: a value can't
+-- hold a second setting (and none is ever written with a control character in
+-- it, see clean below).
 local saved, names, cvs, helps, defaults = {}, {}, {}, {}, {}
-for name, value in string.gmatch(meowy.MenuSettingsRead and meowy.MenuSettingsRead() or "", "([%w_]+)=([^\r\n]*)") do
-	saved[name] = value
+local function readSaved(text)
+	local out = {}
+	for line in string.gmatch(text .. "\n", "([^\n]*)\n") do
+		line = string.gsub(line, "\r$", "")
+		local name, value = string.match(line, "^([%w_]+)=(.*)$")
+		if name and out[name] == nil then out[name] = value end
+	end
+	return out
 end
+saved = readSaved(meowy.MenuSettingsRead and meowy.MenuSettingsRead() or "")
+-- A value as it's written: control characters (a CR or tab a server's
+-- RunConsoleCommand put in an unprotected setting) left out.
+local function clean(value) return (string.gsub(tostring(value or ""), "%c", "")) end
 
 -- What a protected setting may hold: a number, or for the guard's list,
 -- addresses separated by spaces. Anything else (quotes, ";") is never kept.
+-- Protected: what a hostile server gains from switching off, or on (the data
+-- sandbox, updates, the settings guard, parties, the server-list reports, and
+-- what tells players a server lies about its player count: the honest list,
+-- Meowy's server index and the Meowy home with its Find servers).
 local function number(v) return string.match(v, "^%-?%d+%.?%d*$") ~= nil end
 local function addresses(v) return #v <= 1024 and string.match(v, "^[%w%.:%[%]_ %-]*$") ~= nil end
 local PROTECTED = {
 	meowy_data_sandbox = number,
 	meowy_updates = number,
 	meowy_settings_guard = number,
-	meowy_settings_guard_always = addresses,
+	meowy_settings_guard_always = addresses,   -- a convar until #75's file; harmless after
 	meowy_party = number,
 	meowy_serverlist_reports = number,
+	meowy_honest_serverlist = number,
+	meowy_server_index = number,
+	meowy_menu = number,
 }
 
 -- Meowy Network's signed policy (policy.h) can turn a setting off ("off
@@ -245,7 +266,7 @@ hook.Add("Think", "MeowyClientPack.SaveSettings", function()
 	if now < nextSave then return end
 	nextSave = now + 1
 	local lines = {}
-	for _, name in ipairs(names) do lines[#lines + 1] = name .. "=" .. current(name) end
+	for _, name in ipairs(names) do lines[#lines + 1] = name .. "=" .. clean(current(name)) end
 	local text = table.concat(lines, "\n")
 	if written == nil then written = text return end -- in effect at start; nothing to write
 	if text ~= written and meowy.MenuSettingsWrite(text) then written = text end
