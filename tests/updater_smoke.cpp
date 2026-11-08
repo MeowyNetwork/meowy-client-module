@@ -131,6 +131,12 @@ int main(int argc, char** argv)
 	updater::Facts g = f;
 	g.lastSeq = 3;
 	Check("take: not a seq already taken (no replay)", !updater::ShouldTake(r, g, reason));
+	// Its staged copy gone (the 1.7.0 launcher emptied bin\<version>): the same
+	// document again, never an older one.
+	g.stagedCopyGone = true;
+	Check("take: the same seq again when its staged copy is gone", updater::ShouldTake(r, g, reason));
+	g.lastSeq = 4;
+	Check("take: an older seq never, staged copy or not", !updater::ShouldTake(r, g, reason));
 	g = f;
 	g.now = 4102444800;
 	Check("take: not once expired", !updater::ShouldTake(r, g, reason));

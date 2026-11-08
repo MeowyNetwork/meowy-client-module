@@ -290,28 +290,34 @@ pub fn shell_open(target: &str) -> bool {
     unsafe { ShellExecuteW(null_mut(), op.as_ptr(), t.as_ptr(), null(), null(), SW_SHOWNORMAL) as usize > 32 }
 }
 
-/// Whether this process runs with an administrator's (elevated) token: then
-/// whatever it starts (Steam, and through it the game) would be elevated too.
+/// Whether this process was started "as administrator" from a session that
+/// normally runs unelevated (TokenElevationTypeFull: the elevated half of a
+/// split token): then whatever it starts (Steam, and through it the game)
+/// would be elevated too, unlike everything else the player runs. With UAC off,
+/// or on the built-in Administrator account, every process has the full token
+/// (TokenElevationTypeDefault) and this is false: nothing to step down to.
 pub fn elevated() -> bool {
-    use windows_sys::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
+    use windows_sys::Win32::Security::{
+        GetTokenInformation, TokenElevationType, TokenElevationTypeFull, TOKEN_ELEVATION_TYPE, TOKEN_QUERY,
+    };
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
-    // SAFETY: our own token, query only; the out-buffer is the struct's size.
+    // SAFETY: our own token, query only; the out-buffer is the value's size.
     unsafe {
         let mut token: HANDLE = null_mut();
         if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
             return false;
         }
-        let mut e = TOKEN_ELEVATION { TokenIsElevated: 0 };
+        let mut kind: TOKEN_ELEVATION_TYPE = 0;
         let mut len = 0u32;
         let ok = GetTokenInformation(
             token,
-            TokenElevation,
-            &mut e as *mut TOKEN_ELEVATION as *mut core::ffi::c_void,
-            std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+            TokenElevationType,
+            &mut kind as *mut TOKEN_ELEVATION_TYPE as *mut core::ffi::c_void,
+            std::mem::size_of::<TOKEN_ELEVATION_TYPE>() as u32,
             &mut len,
         );
         CloseHandle(token);
-        ok != 0 && e.TokenIsElevated != 0
+        ok != 0 && kind == TokenElevationTypeFull
     }
 }
 

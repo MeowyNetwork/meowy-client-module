@@ -289,11 +289,13 @@ mod staging {
             bad: bad_list(data, arch),
             policy_allows: release::policy_allows(policy, &r.version),
             arch: arch.into(),
+            staged_copy_gone: release::own_file(&r, arch)
+                .is_some_and(|f| file_sha256(&version_dll(data, &r.version, arch)).as_deref() != Some(f.sha256.as_str())),
         };
         if let Err(why) = release::should_take(&r, &facts) {
             return (why, None);
         }
-        if read_pointer(&state_path(data, "pending", arch)).is_some_and(|p| p.version == r.version) {
+        if !facts.staged_copy_gone && read_pointer(&state_path(data, "pending", arch)).is_some_and(|p| p.version == r.version) {
             return (format!("{} is ready: it starts next time you open Garry's Mod", r.version), None);
         }
         // The pack stages while the game runs; the launcher only while it doesn't.

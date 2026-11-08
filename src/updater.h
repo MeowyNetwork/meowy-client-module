@@ -57,11 +57,16 @@ namespace updater
 	{
 		std::string running;         // this pack's version
 		int stub = 0;                // the start-up stub's version (0: an old stub that can't load updates)
-		uint64_t lastSeq = 0;        // the highest seq taken so far
+		uint64_t lastSeq = 0;        // the highest seq taken so far (this architecture's)
 		uint64_t now = 0;            // unix seconds
 		std::string token;           // this install's random token (hex)
 		std::vector<std::string> bad;
 		bool policyAllows = true;    // the policy allows that version (policy.h VersionAllowed)
+		// This architecture's copy of the document's version is missing or doesn't
+		// match its signed hash (something removed it after it was staged, such as
+		// the 1.7.0 launcher, which emptied the whole bin\<version>): the same
+		// document (seq == lastSeq) may be taken again. Never an older one.
+		bool stagedCopyGone = false;
 	};
 
 	// Whether this install should take `r`; `why` says why not (or "update to x").

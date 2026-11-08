@@ -11,8 +11,10 @@ out like the site (pack/v1/...).
 - The salt picks which installs are in a rollout. Signing the same version
   again (a longer expiry, a bigger rollout) keeps the published one, so the
   installs that had it stay in and the rollout only grows: -Salt, else the
-  salt of the release-stable.txt published at meowynetwork.com (or the one in
-  -OutDir) when it names this version, else a new random one.
+  salt of the release-stable.txt published at meowynetwork.com (or, when the
+  site can't be read, the one in -OutDir) when it names this version, else a
+  new random one. When neither can be read, it stops unless -Salt or -NewSalt
+  says which.
 - Signs it with the release key in the TPM (asks for its PIN); only that key
   can sign a release. Checks the signature before writing release-stable.sig.
 - Copies the DLLs to pack/v1/bin/<version>/.
@@ -51,36 +53,44 @@ $lines = @("meowy-pack-release 1", "seq $Seq", "version $Version",
 	"expires $([DateTimeOffset]::UtcNow.AddDays($Days).ToUnixTimeSeconds())", "min_stub $MinStub", "rollout $Rollout")
 # The salt: kept for the same version (see above), new for a new one.
 function SaltOf([string]$doc) {
-	if ($doc -and $doc.StartsWith("meowy-pack-release 1`n") -and ($doc -match "(?m)^version $([regex]::Escape($Version))$") -and ($doc -match '(?m)^salt ([0-9a-f]{8,64})$')) { return $Matches[1] }
+	if ($doc -and $doc.StartsWith("meowy-pack-release 1`n") -and ($doc -cmatch "(?m)^version $([regex]::Escape($Version))$") -and ($doc -cmatch '(?m)^salt ([0-9a-f]{8,64})$')) { return $Matches[1] }
 	return $null
 }
-$salt = $Salt
+# Lowercase: the pack and the launcher only parse lowercase hex (ValidatePattern ignores case).
+$chosen = if ($Salt) { $Salt.ToLowerInvariant() } else { $null }
 $from = "-Salt"
-if (-not $salt -and -not $NewSalt) {
+$checked = $false   # whether we know what's published (so a new salt is right for a new version)
+if (-not $chosen -and -not $NewSalt) {
 	try {
 		$published = (Invoke-WebRequest -UseBasicParsing -TimeoutSec 15 "https://meowynetwork.com/pack/v1/release-stable.txt").Content
 		if ($published -is [byte[]]) { $published = [System.Text.Encoding]::UTF8.GetString($published) }
-		$salt = SaltOf $published
+		$checked = $true
+		$chosen = SaltOf $published
 		$from = "the published release-stable.txt"
 	} catch {
 		Write-Warning "Couldn't read the published release-stable.txt ($($_.Exception.Message)); trying $OutDir."
 	}
 }
-if (-not $salt -and -not $NewSalt) {
+if (-not $chosen -and -not $NewSalt -and -not $checked) {
 	$local = Join-Path $OutDir "pack\v1\release-stable.txt"
 	if (Test-Path $local) {
-		$salt = SaltOf ([System.IO.File]::ReadAllText($local))
+		$chosen = SaltOf ([System.IO.File]::ReadAllText($local))
 		$from = $local
 	}
 }
-if (-not $salt) {
+if (-not $chosen) {
+	# Not knowing whether this version is out already, a new salt could hand it to
+	# a different set of installs: only when asked for.
+	if (-not $checked -and -not $NewSalt) {
+		throw "Couldn't tell whether $Version is already published (and with which salt). Pass -Salt <its salt> to sign it again, or -NewSalt for a new version."
+	}
 	$random = [byte[]]::new(8)
 	[System.Security.Cryptography.RandomNumberGenerator]::Fill($random)
-	$salt = -join ($random | ForEach-Object { "{0:x2}" -f $_ })
+	$chosen = -join ($random | ForEach-Object { "{0:x2}" -f $_ })
 	$from = "new"
 }
-Write-Host "Salt $salt ($from)."
-$lines += "salt $salt"
+Write-Host "Salt $chosen ($from)."
+$lines += "salt $chosen"
 $sources = @{ win64 = $Win64; win32 = $Win32 }
 foreach ($arch in "win64", "win32") {
 	$src = (Resolve-Path $sources[$arch]).Path

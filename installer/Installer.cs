@@ -50,6 +50,9 @@ namespace MeowyInstaller
 
 		// No arguments: the window. "--install" / "--uninstall" [path] [--no-startup]
 		// [--no-sign-in]: no window; exit code 0 on success, 1 on failure, details on stdout.
+		// "--uninstall --without-game": Garry's Mod is gone, so only the launcher and
+		// the pack's own files (never chosen by itself: a mistyped or undetected path
+		// would leave the pack in the real game).
 		// "--reset-policy": forgets the kept policy (below), with the game closed.
 		[STAThread]
 		static int Main(string[] args)
@@ -70,8 +73,9 @@ namespace MeowyInstaller
 			{
 				bool startup = Array.IndexOf(args, "--no-startup") < 0;
 				bool signIn = Array.IndexOf(args, "--no-sign-in") < 0;
-				string path = args.Length > 1 && !args[1].StartsWith("--") ? args[1] : FindGarrysMod();
-				return RunCommandLine(args[0] == "--install", path, startup, signIn);
+				bool withoutGame = args[0] == "--uninstall" && Array.IndexOf(args, "--without-game") >= 0;
+				string path = withoutGame ? null : args.Length > 1 && !args[1].StartsWith("--") ? args[1] : FindGarrysMod();
+				return RunCommandLine(args[0] == "--install", path, startup, signIn, withoutGame);
 			}
 
 			Application.EnableVisualStyles();
@@ -84,13 +88,15 @@ namespace MeowyInstaller
 		[System.Runtime.InteropServices.DllImport("kernel32.dll")]
 		static extern bool AttachConsole(int processId);
 
-		static int RunCommandLine(bool install, string garrysmod, bool startup, bool signIn)
+		static int RunCommandLine(bool install, string garrysmod, bool startup, bool signIn, bool withoutGame)
 		{
 			AttachConsole(-1);
 			bool found = !string.IsNullOrEmpty(garrysmod) && Directory.Exists(Path.Combine(garrysmod, "lua"));
-			if (!found && install)
+			if (!found && !withoutGame)
 			{
-				Console.WriteLine("Garry's Mod not found. Pass the garrysmod folder as the second argument.");
+				Console.WriteLine(install ? "Garry's Mod not found. Pass the garrysmod folder as the second argument." :
+					"Garry's Mod not found. Pass the garrysmod folder as the second argument, or --uninstall --without-game " +
+					"if Garry's Mod is already gone (removes only the Meowy Launcher and the pack's own files).");
 				return 1;
 			}
 			if (IsGameRunning())
@@ -98,9 +104,10 @@ namespace MeowyInstaller
 				Console.WriteLine("Close Garry's Mod first.");
 				return 1;
 			}
-			// Garry's Mod uninstalled first (the usual order): the launcher and the
-			// pack's own files still go; the vault with the player's files is kept.
-			if (!found)
+			// Garry's Mod uninstalled first (the usual order), said so with
+			// --without-game: the launcher and the pack's own files still go; the
+			// vault with the player's files is kept.
+			if (withoutGame)
 			{
 				try
 				{
@@ -458,11 +465,22 @@ namespace MeowyInstaller
 			return n;
 		}
 
-		// The installer runs with an administrator's token (Run as administrator).
+		// The installer was started "as administrator" from a session that normally
+		// runs unelevated (TokenElevationTypeFull, the elevated half of a split
+		// token). With UAC off or on the built-in Administrator account every
+		// process has the full token (TokenElevationTypeDefault): nothing to step
+		// down to, so that's not "elevated" here (launcher/core/src/win.rs elevated).
+		[System.Runtime.InteropServices.DllImport("advapi32.dll", SetLastError = true)]
+		static extern bool GetTokenInformation(IntPtr token, int infoClass, out int info, int length, out int returned);
+		const int TokenElevationTypeClass = 18, TokenElevationTypeFull = 2;
+
 		public static bool IsElevated()
 		{
 			using (var id = System.Security.Principal.WindowsIdentity.GetCurrent())
-				return new System.Security.Principal.WindowsPrincipal(id).IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator);
+			{
+				int kind, returned;
+				return GetTokenInformation(id.Token, TokenElevationTypeClass, out kind, sizeof(int), out returned) && kind == TokenElevationTypeFull;
+			}
 		}
 
 		// --- The player's files the pack kept apart (src/data_sandbox.cpp) ------

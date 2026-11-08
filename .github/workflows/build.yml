@@ -201,10 +201,13 @@ jobs:
 
       - name: Rejoin-after-crash session file and start-up line (session_smoke, startup_hook_smoke, both bitnesses)
         run: |
+          # A folder each: the test leaves its files behind for the other bitness otherwise.
+          $s64 = New-Item -ItemType Directory -Force (Join-Path $env:RUNNER_TEMP "session64")
+          $s32 = New-Item -ItemType Directory -Force (Join-Path $env:RUNNER_TEMP "session32")
           cmake --build buildtest --config Release --target session_smoke
-          ./buildtest/Release/session_smoke.exe "$env:RUNNER_TEMP"
+          ./buildtest/Release/session_smoke.exe $s64.FullName
           cmake --build buildtest32 --config Release --target session_smoke startup_hook_smoke
-          ./buildtest32/Release/session_smoke.exe "$env:RUNNER_TEMP"
+          ./buildtest32/Release/session_smoke.exe $s32.FullName
           ./buildtest32/Release/startup_hook_smoke.exe
 
       - name: Crash-report masking, data sandbox, notifications, timeline (info, sandbox, notify, timeline smokes, both bitnesses)

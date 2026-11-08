@@ -205,7 +205,8 @@ namespace updater
 
 	bool ShouldTake(const Release& r, const Facts& f, std::string& why)
 	{
-		if (r.seq <= f.lastSeq)
+		// The same document again only to replace a staged copy that's gone (Facts).
+		if (r.seq < f.lastSeq || (r.seq == f.lastSeq && !f.stagedCopyGone))
 			return why = "the release document isn't newer than the last one taken", false;
 		if (f.now >= r.expires)
 			return why = "the release document has expired", false;
@@ -477,11 +478,13 @@ namespace updater
 			f.token = Token(dataDir);
 			f.bad = BadList(dataDir);
 			f.policyAllows = policy::VersionAllowed(policy::Effective(), r.version);
+			const File* own = OwnFile(r);
+			f.stagedCopyGone = own && pack_versions::Sha256File(pack_versions::VersionDll(dataDir, r.version)) != own->sha256;
 			std::string why;
 			if (f.token.empty() || !ShouldTake(r, f, why))
 				return SetState(f.token.empty() ? std::string("no install token") : why);
 			pack_versions::Pointer pending;
-			if (pack_versions::ReadPointer(pack_versions::StatePath(dataDir, L"pending"), &pending) && pending.version == r.version)
+			if (!f.stagedCopyGone && pack_versions::ReadPointer(pack_versions::StatePath(dataDir, L"pending"), &pending) && pending.version == r.version)
 				return SetState(r.version + " is ready: it starts next time you open Garry's Mod");
 			SetState("downloading " + r.version);
 			const bool staged = Stage(dataDir, r, why);
