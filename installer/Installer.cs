@@ -50,9 +50,22 @@ namespace MeowyInstaller
 
 		// No arguments: the window. "--install" / "--uninstall" [path] [--no-startup]
 		// [--no-sign-in]: no window; exit code 0 on success, 1 on failure, details on stdout.
+		// "--reset-policy": forgets the kept policy (below), with the game closed.
 		[STAThread]
 		static int Main(string[] args)
 		{
+			if (args.Length > 0 && args[0] == "--reset-policy")
+			{
+				AttachConsole(-1);
+				if (IsGameRunning())
+				{
+					Console.WriteLine("Close Garry's Mod first.");
+					return 1;
+				}
+				string dir = LocalDir();
+				Console.WriteLine(dir == null ? "no LOCALAPPDATA folder" : ResetPolicy(dir));
+				return 0;
+			}
 			if (args.Length > 0 && (args[0] == "--install" || args[0] == "--uninstall"))
 			{
 				bool startup = Array.IndexOf(args, "--no-startup") < 0;
@@ -261,6 +274,26 @@ namespace MeowyInstaller
 			string temp = file + ".meowy-tmp";
 			File.WriteAllText(temp, text);
 			File.Replace(temp, file, null);
+		}
+
+		// The way back from a policy no newer one can replace (src/policy.h): the
+		// kept policy and the start-up stub's copy go, so the pack and the launcher
+		// take whatever Meowy Network publishes now, as on a fresh install. Only on
+		// purpose (--reset-policy, when Meowy Network says to): a policy that is
+		// still published comes straight back at the next fetch.
+		public static string ResetPolicy(string dir)
+		{
+			int removed = 0;
+			foreach (string name in new[] { "policy.txt", "policy.sig", "policy.bin" })
+			{
+				string file = Path.Combine(dir, "state", name);
+				if (File.Exists(file))
+				{
+					File.Delete(file);
+					removed++;
+				}
+			}
+			return removed > 0 ? "policy: forgotten; the published one is taken at the next start" : "policy: none kept";
 		}
 
 		// %LOCALAPPDATA%\MeowyClientPack, or null.

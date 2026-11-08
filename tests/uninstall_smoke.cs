@@ -305,6 +305,13 @@ static class UninstallSmoke
 			Check(!File.Exists(Path.Combine(d, @"state\current_win64.txt")) && !File.Exists(Path.Combine(d, @"state\pending_win32.txt"))
 				&& !Directory.Exists(Path.Combine(d, "bin")), "reset: pointers and downloads go");
 			Check(File.Exists(Path.Combine(d, @"state\bad_win64.txt")) && File.Exists(Path.Combine(d, @"state\policy.txt")), "reset: the bad list and the policy stay");
+			// --reset-policy: the kept policy and the stub's copy go, nothing else.
+			Put(Path.Combine(d, @"state\policy.sig"), "x");
+			Put(Path.Combine(d, @"state\policy.bin"), "enabled 0\nseq 9999999999999999999\n");
+			Check(Program.ResetPolicy(d).Contains("forgotten") && !File.Exists(Path.Combine(d, @"state\policy.txt"))
+				&& !File.Exists(Path.Combine(d, @"state\policy.sig")) && !File.Exists(Path.Combine(d, @"state\policy.bin"))
+				&& File.Exists(Path.Combine(d, @"state\bad_win64.txt")), "reset policy: the kept policy goes, the rest stays");
+			Check(Program.ResetPolicy(d) == "policy: none kept", "reset policy: again, nothing to do");
 		}
 
 		// 14. Uninstall without Garry's Mod: the pack's own files go, the vault stays.
