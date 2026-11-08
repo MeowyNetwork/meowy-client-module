@@ -15,6 +15,8 @@ out like the site (pack/v1/...).
   site can't be read, the one in -OutDir) when it names this version, else a
   new random one. When neither can be read, it stops unless -Salt or -NewSalt
   says which.
+- -Seq must be above the published document's (the same seq only to sign the
+  very same version and files again); -Offline skips reading it.
 - Signs it with the release key in the TPM (asks for its PIN); only that key
   can sign a release. Checks the signature before writing release-stable.sig.
 - Copies the DLLs to pack/v1/bin/<version>/.
@@ -39,6 +41,8 @@ param(
 	[ValidateRange(1, 99)][int]$MinStub = 1,
 	[ValidatePattern('^[0-9a-f]{8,64}$')][string]$Salt,
 	[switch]$NewSalt,
+	# Sign without reading the published document (its seq and salt aren't checked).
+	[switch]$Offline,
 	[string]$OutDir = (Join-Path (Split-Path $PSScriptRoot -Parent | Split-Path -Parent) "release-out")
 )
 $ErrorActionPreference = "Stop"
@@ -59,17 +63,23 @@ function SaltOf([string]$doc) {
 # Lowercase: the pack and the launcher only parse lowercase hex (ValidatePattern ignores case).
 $chosen = if ($Salt) { $Salt.ToLowerInvariant() } else { $null }
 $from = "-Salt"
+# What's published now: for the seq check below, and the salt.
 $checked = $false   # whether we know what's published (so a new salt is right for a new version)
-if (-not $chosen -and -not $NewSalt) {
+$published = $null
+if (-not $Offline) {
 	try {
 		$published = (Invoke-WebRequest -UseBasicParsing -TimeoutSec 15 "https://meowynetwork.com/pack/v1/release-stable.txt").Content
 		if ($published -is [byte[]]) { $published = [System.Text.Encoding]::UTF8.GetString($published) }
 		$checked = $true
-		$chosen = SaltOf $published
-		$from = "the published release-stable.txt"
+		if (-not $published.StartsWith("meowy-pack-release 1`n")) { $published = $null }   # nothing published yet (the site's own page)
 	} catch {
-		Write-Warning "Couldn't read the published release-stable.txt ($($_.Exception.Message)); trying $OutDir."
+		# Without it neither the seq nor (for the same version) the salt can be checked.
+		throw "Couldn't read the published release-stable.txt ($($_.Exception.Message)). Try again when meowynetwork.com answers, or pass -Offline (the seq isn't checked then; the salt comes from -Salt, -NewSalt or -OutDir's document for this version)."
 	}
+}
+if (-not $chosen -and -not $NewSalt -and $checked) {
+	$chosen = SaltOf $published
+	$from = "the published release-stable.txt"
 }
 if (-not $chosen -and -not $NewSalt -and -not $checked) {
 	$local = Join-Path $OutDir "pack\v1\release-stable.txt"
@@ -82,7 +92,7 @@ if (-not $chosen) {
 	# Not knowing whether this version is out already, a new salt could hand it to
 	# a different set of installs: only when asked for.
 	if (-not $checked -and -not $NewSalt) {
-		throw "Couldn't tell whether $Version is already published (and with which salt). Pass -Salt <its salt> to sign it again, or -NewSalt for a new version."
+		throw "Offline, it can't tell whether $Version is already published (and with which salt). Pass -Salt <its salt> to sign it again, or -NewSalt for a new version."
 	}
 	$random = [byte[]]::new(8)
 	[System.Security.Cryptography.RandomNumberGenerator]::Fill($random)
@@ -99,6 +109,26 @@ foreach ($arch in "win64", "win32") {
 	$size = (Get-Item $src).Length
 	$hash = (Get-FileHash $src -Algorithm SHA256).Hash.ToLowerInvariant()
 	$lines += "file $arch $size $hash /pack/v1/bin/$Version/$name"
+}
+# The seq: above the published document's. The same seq only for the very same
+# version and files (signing it again for a later expiry or another rollout):
+# both updaters may take a document at the floor's seq again when its file went
+# missing, so two different documents must never share one.
+if (-not $checked -and -not $Offline) {
+	throw "Couldn't check -Seq against the published release-stable.txt. Try again when meowynetwork.com answers, or pass -Offline to sign without the check."
+}
+if ($published -and ($published -cmatch '(?m)^seq ([0-9]{1,19})$')) {
+	$publishedSeq = [System.Numerics.BigInteger]::Parse($Matches[1])
+	Write-Host "The published release document has seq $publishedSeq."
+	if ($Seq -lt $publishedSeq) { throw "-Seq $Seq is below the published $($publishedSeq): every install would refuse it." }
+	if ($Seq -eq $publishedSeq) {
+		$same = ($published -cmatch "(?m)^version $([regex]::Escape($Version))$")
+		foreach ($l in ($lines | Where-Object { $_.StartsWith("file ") })) {
+			if (-not ($published -cmatch "(?m)^$([regex]::Escape($l))$")) { $same = $false }
+		}
+		if (-not $same) { throw "-Seq $Seq is the published document's, but this one names another version or other files: use -Seq $($publishedSeq + 1)." }
+		Write-Host "Same seq, version and files as the published document: signing it again."
+	}
 }
 $body = ($lines -join "`n") + "`n"
 $bytes = [System.Text.Encoding]::UTF8.GetBytes($body)

@@ -109,6 +109,15 @@ namespace MeowyInstaller
 			// vault with the player's files is kept.
 			if (withoutGame)
 			{
+				// Not while a Garry's Mod Steam knows still has the pack: that uninstall
+				// would leave its modules and start-up line behind.
+				string game = FindGarrysMod();
+				if (game != null && PackPresentIn(game))
+				{
+					Console.WriteLine("Garry's Mod is still installed at " + game + " with the pack in it. Run --uninstall " +
+						"(without --without-game) to remove it from there too.");
+					return 1;
+				}
 				try
 				{
 					Console.WriteLine(UninstallLauncher());
@@ -425,6 +434,17 @@ namespace MeowyInstaller
 			string launcher = LauncherPath();
 			string dir = LocalDir();
 			return (launcher != null && File.Exists(launcher)) || LauncherAtSignIn(RunKey) || (dir != null && Directory.Exists(dir));
+		}
+
+		// Whether a garrysmod folder still has the pack: a module in lua\bin or the start-up line.
+		public static bool PackPresentIn(string garrysmod)
+		{
+			if (string.IsNullOrEmpty(garrysmod) || !Directory.Exists(garrysmod))
+				return false;
+			foreach (string module in Modules)
+				if (File.Exists(Path.Combine(garrysmod, @"lua\bin", module)))
+					return true;
+			return StartupHookPresent(garrysmod);
 		}
 
 		// The launcher's lazy fonts (launcher/core/src/fonts.rs restore): the Workshop

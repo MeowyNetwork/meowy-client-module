@@ -314,6 +314,20 @@ static class UninstallSmoke
 			Check(Program.ResetPolicy(d) == "policy: none kept", "reset policy: again, nothing to do");
 		}
 
+		// 13b. --without-game refuses while a detected game still has the pack.
+		{
+			string gm = Path.Combine(root, @"withgame\garrysmod");
+			Directory.CreateDirectory(Path.Combine(gm, @"lua\includes"));
+			File.WriteAllText(Path.Combine(gm, @"lua\includes\menu.lua"), "-- stock\r\n");
+			Check(!Program.PackPresentIn(gm), "pack in a game: none");
+			Check(!Program.PackPresentIn(Path.Combine(root, "nowhere")), "pack in a game: no folder");
+			Put(Path.Combine(gm, @"lua\bin\gmcl_meowy_win64.dll"), "x");
+			Check(Program.PackPresentIn(gm), "pack in a game: a module");
+			File.Delete(Path.Combine(gm, @"lua\bin\gmcl_meowy_win64.dll"));
+			Program.AddStartupHook(gm);
+			Check(Program.PackPresentIn(gm), "pack in a game: the start-up line alone");
+		}
+
 		// 14. Uninstall without Garry's Mod: the pack's own files go, the vault stays.
 		{
 			string d = Path.Combine(root, "own");
