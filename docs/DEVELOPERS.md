@@ -145,8 +145,9 @@ shows, most of them on both bitnesses.
 `tools/policy/sign-policy.ps1 policy.txt` signs `policy.txt` (LF line ends) and writes `policy.sig`.
 Publish both under `pack/v1/` like a release.
 - **Release key** (default; the TPM, with its PIN): any policy, but its seq must be above the published one.
-- **Ops and recovery keys** (`-Key ops|recovery -KeyFile <file>`): plain PKCS#8 files from
-  `tools/policy/new-keys.ps1`. The pack and the launcher (1.7.1+) take from them only a policy that is
+- **Ops and recovery keys** (`-Key ops|recovery -KeyFile <file>`, which asks for the file's password):
+  password-protected PKCS#8 files from `tools/policy/new-keys.ps1`. The pack and the launcher (1.7.1+)
+  take from them only a policy that is
   stricter than the one kept (the pack on stays on or goes off, nothing leaves `off` or `revoked`,
   `min_version` only rises), with a seq below 10^15 and at most 1000 above the kept one (at most 1000 on
   an install that has none), and with no notice other than the kept one. The script checks all of that
@@ -154,7 +155,13 @@ Publish both under `pack/v1/` like a release.
   if the published policy can't be read, it stops and asks for `-Kept`.
 - **Keep seqs counting up by one.** A fresh install with no kept policy takes an ops or recovery policy
   only up to seq 1000, so fewer than 1000 published policies keep every case working.
-- `new-keys.ps1` writes the ops and recovery keys as unencrypted files. The recovery key is meant to live
-  off the PC that holds the release key.
+- **Key passwords.** `new-keys.ps1` asks for a password for each of the two files (at least 12 characters)
+  and writes them encrypted (AES-256, PBKDF2-SHA256 at 600,000 rounds). For a file made without one,
+  `tools/policy/protect-key.ps1 -KeyFile <file>` adds a password in place, after checking the new file
+  opens as the same key. Copies made before that still have no password: back the file up again and
+  delete them. A lost password loses that key; the release key can still undo anything it signed.
+  `sign-policy.ps1` still signs with a file that has no password, with a warning.
+  `tests/policy_key_test.ps1` checks all of this on throwaway keys.
+- The recovery key is meant to live off the PC that holds the release key.
 - A player stuck on a bad policy can run `MeowyClientPack.exe --reset-policy` (game closed): it forgets
   the kept policy, and the next fetch takes the published one.

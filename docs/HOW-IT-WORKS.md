@@ -781,9 +781,9 @@ on Meowy Network's servers.
   policy in effect.
   - **Three signing keys.** The release key is in a TPM chip on Meowy Network's PC: it can't be copied off
     it and needs a PIN on every use. It may sign any policy. The ops key (meant for automatic pauses by
-    our backend) and the recovery key are plain key files, so a copy could be stolen. From those two, the
-    pack and the launcher take only a stricter policy: the pack switched off, more features off or
-    versions revoked, a higher minimum version. Their seq must stay below 10^15 (that range is the
+    our backend) and the recovery key are password-protected key files, so a copy could still be stolen.
+    From those two, the pack and the launcher take only a stricter policy: the pack switched off, more
+    features off or versions revoked, a higher minimum version. Their seq must stay below 10^15 (that range is the
     release key's alone) and at most 1000 above the policy you have, and they can't set a notice (only
     keep or drop the one you have). So a stolen copy of either can only switch things off, and the
     release key can always undo that with a higher seq.

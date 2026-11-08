@@ -9,7 +9,8 @@ policy format (LF line ends, ending with one); this script checks the basics
 and refuses otherwise, so a mistake is caught before anything is published.
 
 - release (default): the TPM key made by new-keys.ps1 (asks for its PIN).
-- ops / recovery: -KeyFile <the .key file>. They can only make a policy
+- ops / recovery: -KeyFile <the .key file>, asking for its password (a file
+  without one still signs, with a warning to run protect-key.ps1). They can only make a policy
   stricter than the one players already have (the pack on stays on or goes
   off, nothing leaves off or revoked, min_version only rises), and the pack
   (1.7.1+) also refuses from them: a seq of 10^15 or more, a seq more than 1000
@@ -29,10 +30,13 @@ param(
 	[ValidateSet("release", "ops", "recovery")][string]$Key = "release",
 	[string]$KeyFile,
 	# The policy players keep now (default: the one published at meowynetwork.com).
-	[string]$Kept
+	[string]$Kept,
+	# For tests: the key file's password, instead of asking.
+	[securestring]$KeyPassword
 )
 $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.Security.Cryptography
+Import-Module (Join-Path $PSScriptRoot "PolicyKeyFile.psm1") -Force
 
 $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path $Policy))
 $text = [System.Text.Encoding]::UTF8.GetString($bytes)
@@ -117,8 +121,7 @@ if ($Key -eq "release") {
 	$signer = [System.Security.Cryptography.ECDsaCng]::new($cng)
 } else {
 	if (-not $KeyFile) { throw "-KeyFile is needed for the $Key key." }
-	$signer = [System.Security.Cryptography.ECDsa]::Create()
-	$signer.ImportFromPem([System.IO.File]::ReadAllText((Resolve-Path $KeyFile)))
+	$signer = Import-PolicyKey (Resolve-Path $KeyFile).Path $KeyPassword
 }
 $sig = $signer.SignData($bytes, [System.Security.Cryptography.HashAlgorithmName]::SHA256)   # IEEE P1363: r || s
 if ($sig.Length -ne 64) { throw "Unexpected signature length $($sig.Length)." }
