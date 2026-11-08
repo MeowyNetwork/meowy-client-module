@@ -64,7 +64,14 @@ Files the pack keeps in `%LOCALAPPDATA%\MeowyClientPack` (HOW-IT-WORKS lists the
 `meowy_crashes.txt` (crash reports written while on Meowy Network, the only ones sent),
 `settings_guard_session.txt`, `settings_guard_always.txt`, `repairs.txt` (one-time repairs done) and
 `state\release_seq_<arch>.txt` (the updater's seq floor per architecture; 1.7.0's `release_seq.txt` isn't
-read any more).
+read any more). Added in 1.7.2: `uninstall\MeowyClientPack.exe`, a copy of the installer that Windows'
+installed apps runs to uninstall (installer/Installer.cs, *Apps & features*).
+
+New in 1.7.2 for servers: nothing a server asks for reaches Discord while the player has **Discord status
+on Meowy Network** off in Meowy settings (`meowy_discord`). `DiscordStart` and `DiscordSetActivity` are
+remembered and return as before, `DiscordState()` says `"stopped"`, and the latest status shows once the
+player turns it back on. The menu sets the switch with `meowy.DiscordAllow(on)`, which the client realm
+doesn't have.
 
 ## Building
 Visual Studio 2022+ and CMake 3.20+:
@@ -141,8 +148,12 @@ shows, most of them on both bitnesses.
      document has expired. Put the date in the calendar when you publish (1.7.0's expires 2026-12-08).
 4. **Tell older packs:** Meowy Network's server says a newer version exists through `LATEST_VERSION` in
    the DarkRP repo's `addons/meowy_native_modules/lua/autorun/client/cl_meowy_client_module.lua`.
-5. **Ask players to run the installer** when the launcher changed: the pack's in-game updates replace only
-   the pack, never the Meowy Launcher.
+5. **Ask players to run the installer** when the launcher or the installer changed: the pack's in-game
+   updates replace only the pack, never the Meowy Launcher or the installer's own parts (from 1.7.2, the
+   entry in Windows' installed apps and the copy of the installer it runs).
+6. **Server-list reports (from 1.7.2):** reports carry a Steam ticket, and the backend counts one voice per
+   account. Reports from older packs still count one voice per network. Once 1.7.0 and 1.7.1 are rare, set
+   `SERVER_REP_UNVERIFIED_REPORTS=0` in the backend's `.env` so only accounts count.
 
 ### The kill switch's policy
 `tools/policy/sign-policy.ps1 policy.txt` signs `policy.txt` (LF line ends) and writes `policy.sig`.
