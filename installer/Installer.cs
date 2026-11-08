@@ -29,7 +29,7 @@ using Microsoft.Win32;
 
 [assembly: AssemblyTitle("Meowy Client Pack")]
 [assembly: AssemblyProduct("Meowy Client Pack")]
-[assembly: AssemblyVersion("1.6.0.0")]
+[assembly: AssemblyVersion("1.7.0.0")]
 
 namespace MeowyInstaller
 {
@@ -1164,9 +1164,9 @@ namespace MeowyInstaller
 
 			var intro = new Label
 			{
-				Text = "For Meowy Network: faster joins, our own loading screen with games, Discord status, and " +
-					"Windows notifications while you're alt-tabbed.\n" +
-					"It only works on Meowy Network servers. Source code: " + Program.SourceUrl,
+				Text = "Faster joins on any server, a better main menu and server browser, and our own loading screen. " +
+					"On Meowy Network, also Discord status and Windows notifications while you're alt-tabbed.\n" +
+					"Source code: " + Program.SourceUrl,
 				Location = new Point(12, 12),
 				Size = new Size(496, 52),
 			};
@@ -1180,7 +1180,7 @@ namespace MeowyInstaller
 			m_status.Location = new Point(12, 124);
 			m_status.Size = new Size(496, 48);
 
-			m_startup.Text = @"Start with the game (for faster Meowy joins; adds one line to lua\includes\menu.lua)";
+			m_startup.Text = @"Start with the game (needed for most features; adds one line to lua\includes\menu.lua)";
 			m_startup.Location = new Point(12, 180);
 			m_startup.Size = new Size(496, 22);
 			m_startup.Checked = true;
