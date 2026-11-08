@@ -26,7 +26,7 @@ async function refresh() {
     (s.steam_busy ? ", Steam is updating it" : ""), s.steam_busy ? "warn" : "ok");
   const line = {
     present: ["Yes", "ok"],
-    off: ["Off (Meowy settings)", "warn"],
+    off: ["Off: you turned it off (run the installer again to turn it on)", "warn"],
     missing: ["No: Steam removed the line (Repair puts it back)", "bad"],
     unknown: ["-", ""],
   }[s.line];

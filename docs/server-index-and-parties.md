@@ -122,8 +122,13 @@ the already-loaded `steam_api`, SEH-guarded, off for the session after a fault.
 - **Invites:** `ActivateGameOverlayInviteDialog(lobby)` (Steam's own dialog), or
   `InviteUserToLobby` for a friend picked in our list. Friends playing GMod come first.
 - **Joining:**
-  - The invite callback `GameLobbyJoinRequested_t` (id 333), through `SteamAPI_RegisterCallback`.
+  - The invite callback `GameLobbyJoinRequested_t` (id 333), through `SteamAPI_RegisterCallback`. An
+    invite from someone who isn't a Steam friend (the callback's `friendId`) is ignored (1.7.1).
   - `+connect_lobby <id>` on the command line, when Steam starts the game from an invite.
+  - After entering, a lobby is kept only if it has `v=1` and its owner is the player or a Steam friend
+    (`GetFriendRelationship`, `party_steam.cpp`'s `detail::Refusal`); otherwise it's left before anything
+    is published. The party the player is in is left only once the new one passes (1.7.1). This also
+    covers `steam://joinlobby` links and `+connect_lobby`, which carry no friend ID.
 - **Rich Presence:**
   - `steam_player_group` set to the lobby ID and `steam_player_group_size` set to the member count, so
     Steam's friends list shows the party together;
@@ -135,10 +140,13 @@ the already-loaded `steam_api`, SEH-guarded, off for the session after a fault.
 - A party card on the home screen: members with where each is, Invite, Leave. Every server's details
   panel gets "Take the party here" (for the leader).
 - **Moving:** the leader's "Take the party here" joins the leader to that server and bumps `go`. Each
-  member gets a 10-second "Following <leader> to <server> · Stay" countdown. See open point 4 for in
-  game. A member who was already there does nothing.
-- **Content:** each member's pack warms the target as soon as `srv` changes
-  (`MeowyClientPackWarm`, already there). MR2 can hook in later.
+  member gets a 10-second "Following <leader> to <server>" countdown with Stay and Go now: a card
+  wherever the menu is up (any screen, Garry's Mod's own menu, Find servers, the Escape menu with or
+  without its card) and, in game, a banner. It counts only while one of them is on screen, so it waits
+  while a join loads (1.7.1). A member who was already there does nothing.
+- **Content:** nothing is sent to the target before the member joins it (1.7.1). A change to `srv` no
+  longer warms it or asks it for its content advert, so a leader can't make members' PCs contact a host
+  they haven't agreed to join.
 - **Friends without the pack:** "Invite to this server" uses `InviteUserToGame(friend, "+connect
   <address>")`, which stock GMod already handles. They come along, but don't follow later moves.
 
@@ -146,7 +154,9 @@ the already-loaded `steam_api`, SEH-guarded, off for the session after a fault.
 - A follow always needs the countdown with Stay or a click. A `go` whose address fails
   `publicAddress` is ignored.
 - Only the lobby's owner's `go` counts.
-- At most one follow every 30 s, so a hostile leader can't bounce people around.
+- At most one follow every 30 s, so a hostile leader can't bounce people around. A move sooner than
+  that isn't dropped (1.7.1): its countdown can't end before the gap has passed, and a newer move
+  replaces it.
 - Leaving the party, or `meowy_party 0`, stops all of it.
 
 ## 5. Decided (2026-11-07)
@@ -156,7 +166,8 @@ the already-loaded `steam_api`, SEH-guarded, off for the session after a fault.
 - **Party type:** friends-only lobby, up to 8 people.
 - **In-game move:** a 10-second countdown, then the member follows, unless they choose Stay. Stay is on the
   Escape menu's card and in the home's party card, and `meowy_party_stay` does the same. There's also a
-  banner over the game, and at most one follow every 30 s.
+  banner over the game, and at most one follow every 30 s. (1.7.1: the card shows wherever the menu is
+  up, and a move within 30 s waits instead of being dropped.)
 
 Live numbers (2026-11-07): 5,979 servers, 1,328 with players (17,840 players); 208 KB gzipped; 0.2–0.4 s to
 fetch from the Netherlands. Steam's `\password\0` list hasn't contributed yet; passwords come from the

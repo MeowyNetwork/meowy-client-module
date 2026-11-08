@@ -1,7 +1,11 @@
 # Content platform: a server's content ready before you click Join
 
 Roadmap MR2 (`GMODEnhanced\review_2026-11-06\major-reworks.md` §MR2, `join-pipeline.md` A1). Status:
-**design agreed 2026-11-07; MVP in progress.**
+**the MVP shipped in 1.7.0** (with fixes in 1.7.1): the inline advert, the plan, the menu's Workshop
+downloads, consent and the row status. How it behaves for players is in
+[HOW-IT-WORKS.md](HOW-IT-WORKS.md) (join pre-warm, *Servers you've never joined*). The full manifest
+(§2), FastDL prefetch, the Lua bundle and the progressive join (§5, §6) are **not built**; this page
+keeps their design.
 
 Decided with Catualus (2026-11-07):
 - The advert is the convar **`meowy_content`** (`FCVAR_NOTIFY`, so it's in `A2S_RULES`).
@@ -67,11 +71,11 @@ Download rate on this PC: ~35 MB/s from Steam's CDN, so 1.28 GB is ~40 s here an
  resource.AddWorkshop(...) ──┐        hover / pick / Continue / favourite
  (SDK records the list)      │              │
                              ▼              ▼
- convar content_manifest ─── A2S_RULES ──► rules query (native UDP, cached)
-   FCVAR_NOTIFY                             │
-   "1;ws=id,id,~id;url=https://..#hash"     ▼
+ convar meowy_content ────── A2S_RULES ──► rules query (native UDP; answer kept
+   FCVAR_NOTIFY                             │  in memory for 10 minutes)
+   "1;ws=id,id,~id" (v2: ;url=...#hash)     ▼
                                       plan: Steam state per item (installed, update,
- optional manifest.json (HTTPS) ────►       legacy unpack present, Workshop newer)
+ v2, not built: manifest.json ──────►       legacy unpack present, Workshop newer)
    fastdl files + sha256, lua bundle         │
                                             ▼
                                       prepare: steamworks.DownloadUGC queue
@@ -98,7 +102,9 @@ Download rate on this PC: ~35 MB/s from Steam's CDN, so 1.28 GB is ~40 s here an
     left out and the URL carries the list.
 - **Name:** `meowy_content`. Any server can still publish it; the pack reads it on every server.
 
-### 2. Full manifest v1 (optional, HTTPS, ≤ 256 KB)
+### 2. Full manifest v1 (optional, HTTPS, ≤ 256 KB): not built
+
+The pack reads only `ws=` today; other fields, `url=` included, are skipped (`content_logic.lua`).
 
 ```json
 {
@@ -128,14 +134,17 @@ One server file (Meowy: its own `meowy_*` addon):
 
 ### 4. Client side (pack)
 
-- **When:** the rules query runs for the same moments that warm a server today (`home.lua`
-  `warm()`): the Continue server 3 s after the menu shows, a row the pointer rests on for 0.4 s
-  (home card, Find servers), a server picked in Find servers. Plus, new, servers never joined
-  (today `warm()` needs a recorded join). At most once per server per 10 minutes; the answer is
-  cached in `%LOCALAPPDATA%\MeowyClientPack\content\<address>.txt`.
+- **When:** the rules query runs for the moments that warm a server (`home.lua`
+  `MeowyClientPackWarm`): the Continue server 3 s after the menu shows, a row the pointer rests on
+  for 0.4 s (home card, home screen, Find servers), a server picked in Find servers, for servers
+  joined before and never joined alike. A party's next server is never asked (1.7.1: nothing is sent
+  to it before the member joins). An answer is reused for 10 minutes (`ContentLogic.TTL`) and kept in
+  memory only (`home.lua`'s `adverts`); nothing is written to disk.
 - **Query:** native, plain UDP like `resilience_net.cpp`'s A2S_INFO (challenge round, split
-  replies), public IPv4 `a.b.c.d:port` only, on a worker thread; Lua polls for the answer.
-- **Fetch (URL form):** WinHTTP like `server_rep.cpp`, HTTPS only, ≤ 256 KB, 5 s timeout,
+  replies), public IPv4 `a.b.c.d:port` only, on a worker thread (`content_advert.cpp`, at most 4 in
+  flight); Lua polls for the answer. Only printable ASCII up to 4 KB counts, and at most 200 IDs are
+  taken.
+- **Fetch (URL form, v2, not built):** WinHTTP like `server_rep.cpp`, HTTPS only, ≤ 256 KB, 5 s timeout,
   SHA-256 (BCrypt) checked against the advert's hash before Lua sees it. Parsed with
   `util.JSONToTable` and validated (decimal IDs, relative paths without `..`, an extension
   allow-list matching what FastDL may send).
@@ -145,8 +154,12 @@ One server file (Meowy: its own `meowy_*` addon):
   Workshop's version is newer. The total size comes from `steamworks.FileInfo`.
 - **Prepare:** the existing `steamworks.DownloadUGC` queue, one item at a time (the menu's
   DownloadUGC is single-flight: "DownloadUGCManager::SetActive: There's already a download!"),
-  with the server's row showing "Getting ready: 412 MB of 1.3 GB". It stops asking for new items
-  when a join starts; Steam finishes the one in flight, and the join uses it.
+  with the server's row showing "Getting ready · 412 MB of 1.3 GB". It stops asking for new items
+  when a join starts; Steam finishes the one in flight, and the join uses it. Turning off
+  `meowy_prewarm_workshop` (or the policy turning it off) stops the queue at once (1.7.1).
+- **Failed items:** if Steam didn't download some, the row reads "Partly ready · N items didn't
+  download · Try again" ("Not ready" when none did), as a button that plans again and asks the
+  advert again (`ContentLogic.retry`), instead of "Ready".
 - **Consent** (§7): automatic, or a "Get ready" button.
 - **Join:** untouched. Whatever wasn't prepared downloads in the loading screen, as today.
 
@@ -154,7 +167,7 @@ Not in the MVP: native `ISteamUGC::DownloadItem(id, false)` for several items at
 join runs, GMod's WorkshopDL gets every `DownloadItemResult_t`, and it logs "Received wrong
 downloaded item?" for ones it didn't ask for; what it then does needs its own test.
 
-### 5. Progressive join (v2, server SDK)
+### 5. Progressive join (v2, server SDK): not built
 
 A server marks content-only items deferred (`~id`). The SDK leaves them out of
 `resource.AddWorkshop`, and after spawn the client realm downloads and mounts them
@@ -163,7 +176,7 @@ A server marks content-only items deferred (`~id`). The SDK leaves them out of
 deferred items prepared like the rest, so for them nothing changes. First candidate: Meowy's
 Weaponry item (join-pipeline #7).
 
-### 6. Later (v2)
+### 6. Later (v2): not built
 
 - FastDL prefetch from the manifest: worker threads, keep-alive, `Range` resume into
   `download/<path>.part`, SHA-256 check, rename; never over an existing file (GMod's own rule: an
@@ -180,8 +193,9 @@ Weaponry item (join-pipeline #7).
 - Disk and bandwidth: prepared items are Steam's unsubscribed Workshop cache, exactly what the
   join would have created; GMod's own cache rules apply to them.
 - **Consent:** automatic for Meowy servers and servers you've joined before; for others a
-  "Get ready · 1.3 GB" button (the home card's row, and the picked server's panel in Find
-  servers); never more than 4 GB per server without a click.
+  "Get ready · 1.3 GB" button (the home card's row, the Meowy home screen's rows, where it doesn't
+  join, and the picked server's panel in Find servers); never more than 4 GB per server without a
+  click.
 
 ## Measured (dev, 2026-11-07)
 
@@ -207,9 +221,9 @@ Both consoles were clean.
 
 ## Milestones
 
-1. **MVP (this PR series):** rules query + advert parse + plan + DownloadUGC prepare for servers
+1. **MVP (done, 1.7.0):** rules query + advert parse + plan + DownloadUGC prepare for servers
    never joined + row status + `meowy_prewarm_status` / `meowy_content_get_ready`; tests for the
-   advert parser and planner.
-2. **Meowy server:** the advert from `resource.AddWorkshop` (its own change in the DarkRP repo).
-3. Full manifest + FastDL prefetch.
-4. Progressive join SDK; Lua bundle prefill.
+   advert parser and planner (`tests/content_logic_test.lua`, `content_advert_smoke`).
+2. **Meowy server (done):** the advert from `resource.AddWorkshop` (its own change in the DarkRP repo).
+3. Full manifest + FastDL prefetch (not built).
+4. Progressive join SDK; Lua bundle prefill (not built).
