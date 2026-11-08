@@ -359,7 +359,10 @@ mod tests {
         let image = format!("{real_form}bin\\win64\\gmod.exe");
         assert!(is_game_client(&image, &link), "the real path, the junction configured");
         assert!(is_game_client(&format!("{}bin\\win64\\gmod.exe", forms[0]), &link), "the configured path still");
-        assert_eq!(folder_forms(&real).len(), 1, "no junction: one form");
+        // The real folder resolves to the same final form (a temp path with an 8.3
+        // short name, as on CI, has its long form as the second one).
+        assert_eq!(folder_forms(&real).last(), Some(&real_form), "the real folder: the same final form");
+        assert!(is_game_client(&image, &real));
         let _ = std::fs::remove_dir(&link);
         let _ = std::fs::remove_dir_all(&base);
     }
