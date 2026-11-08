@@ -1,3 +1,14 @@
+**New in 1.7.2:** a Discord switch, uninstalling from Windows, and fixes. **Run the 1.7.2 installer once** to get the pack listed in Windows' installed apps: the in-game update can't add it.
+
+- **Discord status switch.** Meowy settings → **Discord status on Meowy Network** turns it off. What Discord shows is cleared at once, and servers can't turn it back on.
+- **Uninstall from Windows.** The installer adds **Meowy Client Pack** to Settings → Apps → Installed apps. Uninstall works there too, even after Garry's Mod is removed.
+- **Fairer server-list reports.** Each report from another server now carries a Steam ticket, so Meowy Network counts each Steam account once, however many networks it reports from. Meowy Network asks Steam which account sent it and keeps only a scrambled form of it, for 6 hours.
+- **Fixes.**
+  - On installs that updated themselves, the `config.cfg` backups work again, and **Start with the game** shows the right setting in Meowy settings.
+  - Putting back a `config.cfg` backup no longer leaves `meowy_restore.cfg` in the game's `cfg` folder.
+
+Everything in detail: [How it works](https://github.com/MeowyNetwork/meowy-client-module/blob/main/docs/HOW-IT-WORKS.md).
+
 **New in 1.7.1:** fixes from a full review of 1.7.0. **Run the 1.7.1 installer once**, even if the pack already updated itself in the game: the in-game update doesn't replace the Meowy Launcher from 1.7.0.
 
 - **Safer against servers.**

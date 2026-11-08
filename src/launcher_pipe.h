@@ -9,7 +9,7 @@
 // installed launcher (%LOCALAPPDATA%\MeowyClientPack\launcher\MeowyLauncher.exe).
 //
 // Lines of JSON, LF-ended, at most 512 bytes each:
-//   pack -> launcher   {"t":"hello","v":"1.7.1"}
+//   pack -> launcher   {"t":"hello","v":"1.7.2"}
 //                      {"t":"state","s":"menu"}
 //                      {"t":"state","s":"joining"|"ingame","a":"a.b.c.d:port"}
 //   launcher -> pack   {"t":"join","a":"a.b.c.d:port"}

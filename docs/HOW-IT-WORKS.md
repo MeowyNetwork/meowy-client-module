@@ -51,7 +51,9 @@ cache aside (below), it's put back.
   no admin rights), and keeps a copy of itself in `%LOCALAPPDATA%\MeowyClientPack\uninstall`, since the
   one you downloaded may be gone. Uninstall there opens that copy's window and asks at once, with
   Garry's Mod or without it, as above; cancelled, the window stays so you can pick the `garrysmod`
-  folder. No version is shown there, as in-game updates would make it out of date. A program can't
+  folder. Only running the installer adds the entry or updates the kept copy: in-game updates don't, so
+  an install that only updated itself to 1.7.2 isn't listed until you run the 1.7.2 installer once. No
+  version is shown there, as in-game updates would make it out of date. A program can't
   delete itself while it runs, so once the window closes a copy of it in `%TEMP%`
   (`MeowyClientPack-uninstall.exe`, left there for Windows to clean up) removes the `uninstall`
   folder, but only if the entry is gone: an uninstall that stopped partway keeps both, to try again.
@@ -836,7 +838,10 @@ on Meowy Network's servers.
     with the game" off.
   - `/api/pack/index` (Meowy's server index): while Find servers is open, in the game or in the launcher.
   - `/api/pack/servers` (the honest list's verdicts) and `/api/pack/servers/report` (the reports from
-    other servers described under *Honest server list*; `meowy_serverlist_reports 0` stops them).
+    other servers described under *Honest server list*; `meowy_serverlist_reports 0` stops them). Since
+    1.7.2 each report also carries a Steam ticket made for Meowy Network, so the site can ask Steam which
+    account sent it and count each account once; it keeps only a salted hash of the account, in memory,
+    for 6 hours.
   - The loading page (`pack-loading.html` and its files, through WebView2): loaded at start and kept
     hidden. On Meowy Network it sends your SteamID64 to `/api/player-loading-info` for your name and
     avatar.
