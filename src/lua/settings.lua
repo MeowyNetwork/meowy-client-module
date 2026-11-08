@@ -153,7 +153,15 @@ local function current(name) return PROTECTED[name] and settle(name) or cvs[name
 local function truthy(v) local n = tonumber(v) return n ~= nil and n ~= 0 end
 local function int(v) local n = tonumber(v) or 0 return n < 0 and math.ceil(n) or math.floor(n) end
 
+-- One object per setting: asked for twice (another chunk reading a setting it
+-- doesn't own), the first one comes back. meowy.SettingOf(name) is that object,
+-- or nil: how a chunk reads another's setting the way its owner does (the policy
+-- and the put-back included), never GetConVar's raw value.
+local objects = {}
+function meowy.SettingOf(name) return objects[name] end
+
 function meowy.Setting(name, default, help)
+	if objects[name] then return objects[name] end
 	names[#names + 1] = name
 	local start = saved[name] or default
 	-- A protected value that couldn't be set through the pack (saved by an older
@@ -162,7 +170,7 @@ function meowy.Setting(name, default, help)
 	local cv = CreateConVar(name, start, FCVAR_ARCHIVE, help)
 	cvs[name] = cv
 	if PROTECTED[name] then kept[name] = cv:GetString() end
-	return setmetatable({}, { __index = function(_, k)
+	objects[name] = setmetatable({}, { __index = function(_, k)
 		if k == "GetBool" then return function() return not killed(name) and truthy(current(name)) end end
 		if k == "GetInt" then return function() if killed(name) then return 0 end return int(current(name)) end end
 		if k == "GetFloat" then return function() if killed(name) then return 0 end return tonumber(current(name)) or 0 end end
@@ -171,6 +179,7 @@ function meowy.Setting(name, default, help)
 		if isfunction(f) then return function(_, ...) return f(cv, ...) end end
 		return f
 	end })
+	return objects[name]
 end
 
 concommand.Add("meowy_policy_status", function()

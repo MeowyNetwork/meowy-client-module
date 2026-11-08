@@ -273,5 +273,15 @@ s = settings(w)
 w.env.RunConsoleCommand("cl_timeout", "120")
 check("menu: other commands still sent", w.queue[1], 'cl_timeout "120"')
 
+-- One object per setting; SettingOf gives it to another chunk, nil for none.
+check("SettingOf: the same object", w.env.meowy.SettingOf("meowy_updates"), s.updates)
+check("Setting twice: the same object", w.env.meowy.Setting("meowy_updates", "0", "again"), s.updates)
+check("SettingOf: none for an unknown name", w.env.meowy.SettingOf("meowy_nothing"), nil)
+w.seconds(1.1)
+w.env.RunConsoleCommand("meowy_loadingscreen", "0")
+w.seconds(1.1)
+local _, lines = (w.written or ""):gsub("meowy_updates=", "")
+check("Setting twice: saved once", lines, 1)
+
 print(("%d checks, %d failed"):format(count, failures))
 os.exit(failures == 0 and 0 or 1)
