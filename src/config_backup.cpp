@@ -8,6 +8,7 @@
 namespace config_backup
 {
 	const char* const kRestoreName = "meowy_restore.cfg";
+	const char* const kRestoreDoneCommand = "meowy_restore_done";
 
 	namespace
 	{
@@ -122,6 +123,10 @@ namespace config_backup
 			why = "that copy couldn't be read";
 			return false;
 		}
+		// Its last line says the game has run the rest (RestoreDoneCommand).
+		if (!text.empty() && text.back() != '\n')
+			text += '\n';
+		text += std::string(kRestoreDoneCommand) + "\n";
 		if (!file_util::WriteAtomic(cfgDir + L"\\" + Widen(kRestoreName), text))
 		{
 			why = "couldn't write to the game's cfg folder";

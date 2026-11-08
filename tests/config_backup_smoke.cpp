@@ -96,7 +96,10 @@ int main(int argc, char** argv)
 
 	// Back as meowy_restore.cfg.
 	Check("restore", config_backup::Restore(dir, "config-20261108-100005.cfg", cfgDir, r) && r == "meowy_restore.cfg");
-	Check("restore wrote that copy", file_util::ReadSmall(cfgDir + L"\\meowy_restore.cfg", 1024) == "version 5\n");
+	Check("restore wrote that copy, the done marker last", file_util::ReadSmall(cfgDir + L"\\meowy_restore.cfg", 1024) == "version 5\nmeowy_restore_done\n");
+	file_util::WriteAtomic(dir + L"\\config-20261108-100099.cfg", "no line end");
+	Check("restore: a copy without a last line end", config_backup::Restore(dir, "config-20261108-100099.cfg", cfgDir, r)
+		&& file_util::ReadSmall(cfgDir + L"\\meowy_restore.cfg", 1024) == "no line end\nmeowy_restore_done\n");
 	Check("restore: only our names", !config_backup::Restore(dir, "..\\..\\x.cfg", cfgDir, r));
 	Check("restore: a copy that's gone", !config_backup::Restore(dir, "config-20261108-100000.cfg", cfgDir, r));
 

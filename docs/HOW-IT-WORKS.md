@@ -720,8 +720,9 @@ on Meowy Network's servers.
   running) and only after you confirm in a prompt there: any server's Lua can run the command, but not
   click. Put back first saves your current settings (`host_writeconfig`), writes the chosen copy to
   `garrysmod\cfg\meowy_restore.cfg`, then makes a backup of your current `config.cfg`, then runs the
-  copy. `meowy_restore.cfg` is deleted two frames later, once the game has run it, or at the next start
-  if the game closed in between.
+  copy. `meowy_restore.cfg` ends with `meowy_restore_done`, and is deleted as soon as the game has run
+  that line, so after the rest; or after 30 seconds if it hasn't, or at the next start if the game
+  closed in between.
 - **Sound follows the default device.** Plug in headphones mid-game and the game's sound moves to Windows'
   new default device (the pack runs `snd_restart` when Windows says the default changed).
   `meowy_audio_follow 0` turns it off. The PC doctor also has a microphone section (Bluetooth hands-free

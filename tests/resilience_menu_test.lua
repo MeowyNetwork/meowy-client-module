@@ -131,7 +131,6 @@ local function world(opts)
 		ConsoleRun = function(line)
 			w.consoleRuns = w.consoleRuns or {}
 			w.consoleRuns[#w.consoleRuns + 1] = line
-			if line == "exec meowy_restore.cfg" then w.execFrame = w.frames end
 			-- w.applyConsole: "name value" takes effect, as the engine runs it at its next frame.
 			local name, value = line:match("^([%w_]+) (%S+)$")
 			if w.applyConsole and name and w.cvars[name] ~= nil then w.cvars[name] = value end
@@ -2886,9 +2885,15 @@ local restoreRuns = table.concat(w.consoleRuns, "|")
 local wrote, execd = restoreRuns:find("host_writeconfig", 1, true), restoreRuns:find("exec meowy_restore.cfg", 1, true)
 check("settings restore: the settings now saved and copied first", wrote ~= nil and execd ~= nil and wrote < execd, true)
 check("settings restore: a copy of them made", w.backups, backupsBefore + 1)
--- meowy_restore.cfg goes once the game has run it: two frames after the exec.
-check("settings restore: meowy_restore.cfg removed after the exec", w.restoreFile, false)
-check("settings restore: two frames after the exec", w.execFrame and w.restoreRemovedFrame and w.restoreRemovedFrame - w.execFrame, 2)
+-- meowy_restore.cfg goes once the game has run it: when its last line,
+-- meowy_restore_done, runs (not before, however many frames pass).
+w.run(5)
+check("settings restore: meowy_restore.cfg kept until its last line runs", w.restoreFile, true)
+w.concommands.meowy_restore_done()
+check("settings restore: removed when its last line runs", w.restoreFile, false)
+local removes = w.restoreRemoves
+w.concommands.meowy_restore_done()   -- again, or a server running it: nothing under way, nothing done
+check("settings restore: the marker with no restore under way does nothing", w.restoreRemoves, removes)
 w.restored = nil
 w.concommands.meowy_settings_restore(nil, nil, { "9" })
 w.run(1)
@@ -2930,6 +2935,16 @@ w.click("Put back")
 w.run(1)
 check("settings restore: no copy of the settings now, nothing run", (table.concat(w.consoleRuns, "|")):find("exec meowy_restore.cfg", 1, true), nil)
 check("settings restore: no copy of the settings now, the file written is removed", w.restoreFile, false)
+-- The marker never runs (the console held up): removed after 30 s anyway.
+w = world({ settings = ON, menu = true })
+w.backupList = { { name = "config-20261107-120000.cfg", when = "2026-11-07 12:00:00", size = 100 } }
+w.run(3)
+w.concommands.meowy_settings_restore(nil, nil, { "1" })
+w.click("Put back")
+w.run(29)
+check("settings restore: kept while the marker may still run", w.restoreFile, true)
+w.run(2)
+check("settings restore: removed after 30 s without the marker", w.restoreFile, false)
 check("no Lua errors", w.errors, nil)
 
 -- Servers A then B, back to back, both changing the same setting (the player
