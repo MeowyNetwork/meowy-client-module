@@ -190,6 +190,12 @@ namespace pak_cache
 {
 	namespace detail
 	{
+		bool PlausibleSizes(size_t csize, size_t usize)
+		{
+			// LZMA grows incompressible data by well under 1/16, plus its own few bytes.
+			return csize > 9 && usize > 0 && csize - 9 <= usize + usize / 16 + 1024;
+		}
+
 		uint64_t Hash(const uint8_t* p, size_t n, uint64_t seed)
 		{
 			uint64_t h = Mix(seed ^ (static_cast<uint64_t>(n) * 0x9E3779B97F4A7C15ull));
@@ -410,27 +416,22 @@ namespace pak_cache
 			if (!original || !PakEntries(path, entries, why))
 				return 0;
 			std::atomic<size_t> next{ 0 }, done{ 0 };
+			std::atomic<bool> starved{ false };   // an allocation failed: every worker stops, the join goes on
 			const auto work = [&]() {
 				HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
 					nullptr, OPEN_EXISTING, FILE_FLAG_RANDOM_ACCESS, nullptr);
 				if (f == INVALID_HANDLE_VALUE)
 					return;
 				std::vector<uint8_t> src, dest;
-				for (;;)
-				{
-					const size_t i = next++;
-					if (i >= entries.size() || !g_active.load() || g_gen.load() != gen)
-						break;
-					const PakEntry& e = entries[i];
-					if (e.usize > g_perEntry)
-						continue;
+				// One entry: false when it's skipped.
+				const auto one = [&](const PakEntry& e) {
 					uint8_t local[30];
 					LARGE_INTEGER pos;
 					pos.QuadPart = static_cast<LONGLONG>(e.local);
 					DWORD got = 0;
 					if (!SetFilePointerEx(f, pos, nullptr, FILE_BEGIN) || !ReadFile(f, local, 30, &got, nullptr) || got != 30 ||
 						local[0] != 'P' || local[1] != 'K' || local[2] != 3 || local[3] != 4)
-						continue;
+						return false;
 					uint16_t nameLen, extraLen;
 					std::memcpy(&nameLen, local + 26, 2);
 					std::memcpy(&extraLen, local + 28, 2);
@@ -438,14 +439,38 @@ namespace pak_cache
 					src.resize(e.csize);
 					if (!SetFilePointerEx(f, pos, nullptr, FILE_BEGIN) || !ReadFile(f, src.data(), static_cast<DWORD>(e.csize), &got, nullptr) ||
 						got != e.csize)
-						continue;
+						return false;
 					// The zip-LZMA header ReadFromPack checks: version 2609h, props size 5.
 					if (src[0] != 0x09 || src[1] != 0x26 || src[2] != 5 || src[3] != 0)
-						continue;
+						return false;
 					dest.resize(e.usize);
 					size_t destLen = e.usize, srcLen = e.csize;
 					DecodeImpl(original, dest.data(), &destLen, src.data() + 9, &srcLen, src.data() + 4, 5, e.csize - 9, true, gen);
-					++done;
+					return true;
+				};
+				for (;;)
+				{
+					const size_t i = next++;
+					if (i >= entries.size() || !g_active.load() || g_gen.load() != gen || starved.load())
+						break;
+					const PakEntry& e = entries[i];
+					// Sizes the map's directory can't mean: never allocated for.
+					if (e.usize > g_perEntry || !PlausibleSizes(e.csize, e.usize))
+						continue;
+					// An exception out of a std::thread ends the game (std::terminate):
+					// running out of memory (32-bit, mid-join, is where it's
+					// tightest) only stops the reading ahead.
+					try
+					{
+						if (one(e))
+							++done;
+					}
+					catch (...)
+					{
+						starved = true;
+						std::vector<uint8_t>().swap(src);
+						std::vector<uint8_t>().swap(dest);
+					}
 				}
 				CloseHandle(f);
 			};
@@ -654,7 +679,15 @@ namespace
 				SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
 				const auto t0 = std::chrono::steady_clock::now();
 				std::string why;
-				const size_t n = pak_cache::detail::PrefillFile(path, g_original, threads, gen, why);
+				size_t n = 0;
+				try
+				{
+					n = pak_cache::detail::PrefillFile(path, g_original, threads, gen, why);
+				}
+				catch (...)
+				{
+					why = "out of memory";   // the map's directory, or a thread: nothing ahead this join
+				}
 				const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
 				char line[160];
 				if (n || why.empty())

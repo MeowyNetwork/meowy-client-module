@@ -111,8 +111,12 @@ int wmain(int argc, wchar_t** argv)
 	std::string said = data_sandbox::Recover();
 	std::printf("     recover said: %s\n", said.c_str());
 	Check(IsLink(data), "first start: data/ is a link");
-	Check(Text(vault + L"\\before-sandbox\\zrms\\settings.txt") == "zrms", "first start: old data kept in before-sandbox");
-	Check(Entries(data).empty(), "first start: data/ shows the (empty) menu folder");
+	Check(Text(menu + L"\\zrms\\settings.txt") == "zrms", "first start: the player's files are the menu's");
+	Check(Text(data + L"\\zrms\\settings.txt") == "zrms", "first start: data/ shows them at the menu (and in singleplayer)");
+	Check(!Exists(vault + L"\\before-sandbox"), "first start: nothing set apart where the game can't see it");
+	data_sandbox::Enter("1.2.3.4:27015");
+	Check(Entries(data).empty(), "first start: a server sees none of them");
+	data_sandbox::Leave();
 	Check(Text(vault + L"\\active") == "linked", "first start: active says linked (for older uninstallers)");
 	Check(!Exists(data + L".meowy-link"), "first start: no temporary link left");
 
@@ -201,7 +205,31 @@ int wmain(int argc, wchar_t** argv)
 	Put(vault + L"\\before-sandbox\\old.txt", "old");
 	data_sandbox::Recover();
 	Check(IsLink(data) && Text(data + L"\\m.txt") == "m" && !Exists(data + L"\\a.txt"), "old crash on A: data/ links to the menu's files");
-	Check(Text(A + L"\\a.txt") == "a" && Text(vault + L"\\before-sandbox\\old.txt") == "old", "old crash on A: A's and the old files kept");
+	Check(Text(A + L"\\a.txt") == "a" && Text(menu + L"\\old.txt") == "old", "old crash on A: A's kept, the old files with the menu's");
+
+	// 1.7.0 kept a never-sandboxed data/'s files in vault\before-sandbox, seen by
+	// nothing: they join the menu's at the next start (a clash keeps both).
+	fresh();
+	RemoveDirectoryW(data.c_str());
+	Put(menu + L"\\since.txt", "since");
+	Put(menu + L"\\clash.txt", "new");
+	Put(vault + L"\\before-sandbox\\pac3\\outfit.txt", "outfit");
+	Put(vault + L"\\before-sandbox\\clash.txt", "old");
+	Put(vault + L"\\active", "linked");
+	{
+		wchar_t mk[2048];
+		swprintf_s(mk, L"cmd /c mklink /J \"%s\" \"%s\" >nul", data.c_str(), menu.c_str());
+		_wsystem(mk);
+	}
+	said = data_sandbox::Recover();
+	std::printf("     recover said: %s\n", said.c_str());
+	Check(Text(data + L"\\pac3\\outfit.txt") == "outfit" && Text(data + L"\\since.txt") == "since", "1.7.0's set-apart files: back at the menu");
+	Check(Text(menu + L"\\clash.txt") == "new" && Text(menu + L"\\clash.before-pack.txt") == "old", "1.7.0's set-apart files: a clash keeps both");
+	Check(!Exists(vault + L"\\before-sandbox") && !said.empty(), "1.7.0's set-apart files: the folder's gone, and the console says so");
+	Check(data_sandbox::Recover().empty(), "1.7.0's set-apart files: once");
+	data_sandbox::Enter("1.2.3.4:27015");
+	Check(!Exists(data + L"\\pac3"), "1.7.0's set-apart files: still no server sees them");
+	data_sandbox::Leave();
 
 	// The old pack died moving A's files out (phase 1): some in data/, the rest already in A's folder.
 	fresh();
@@ -242,7 +270,7 @@ int wmain(int argc, wchar_t** argv)
 		_wsystem(cmd);
 	}
 	data_sandbox::Recover();
-	Check(IsLink(data) && Text(vault + L"\\before-sandbox\\f.txt") == "f" && !Exists(data + L".meowy-link"), "leftover temporary link: replaced, converted");
+	Check(IsLink(data) && Text(menu + L"\\f.txt") == "f" && !Exists(data + L".meowy-link"), "leftover temporary link: replaced, converted");
 	// Something of the player's with that name: never touched, nothing moved.
 	fresh();
 	Put(data + L"\\f.txt", "f");
@@ -264,7 +292,7 @@ int wmain(int argc, wchar_t** argv)
 	Check(Text(data + L"\\other.txt") == "other", "file open at start: no switching that session");
 	CloseHandle(open);
 	data_sandbox::Recover();
-	Check(IsLink(data) && Text(vault + L"\\before-sandbox\\open.txt") == "open", "next start: converted");
+	Check(IsLink(data) && Text(menu + L"\\open.txt") == "open", "next start: converted");
 
 	// Someone else's link (data/ on another drive, made by the player): left alone.
 	fresh();

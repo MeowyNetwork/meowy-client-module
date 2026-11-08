@@ -5,9 +5,11 @@
 #include "../src/resilience.h"
 
 #include <cstdio>
+#include <ctime>
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <vector>
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -28,6 +30,29 @@ static std::string Read(const std::wstring& path)
 {
 	std::ifstream f(path, std::ios::binary);
 	return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+}
+
+// A crash report the game would write: crashes\<name> with a Lua section, written at `when` (unix).
+static void CrashFile(const std::wstring& root, const wchar_t* name, long long when)
+{
+	const std::wstring path = root + L"\\crashes\\" + name;
+	{
+		std::ofstream f(path, std::ios::binary | std::ios::trunc);
+		f << "Crash\r\n-Lua Stack Traces-\r\n==================\r\n  Client\r\n    0. x - addons/foo/lua/x.lua:1\r\n";
+	}
+	HANDLE h = CreateFileW(path.c_str(), FILE_WRITE_ATTRIBUTES, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+	ULARGE_INTEGER t;
+	t.QuadPart = static_cast<unsigned long long>(when + 11644473600LL) * 10000000ULL;
+	FILETIME ft = { t.LowPart, t.HighPart };
+	SetFileTime(h, nullptr, nullptr, &ft);
+	CloseHandle(h);
+}
+
+// on_server.txt as the menu leaves it: address, the session's start, the name.
+static void Session(const std::wstring& file, const std::string& address, long long since)
+{
+	std::ofstream f(file, std::ios::binary | std::ios::trunc);
+	f << address << " " << since << "\r\nMeowy\r\n";
 }
 
 int main(int argc, char** argv)
@@ -83,6 +108,37 @@ int main(int argc, char** argv)
 	Check("continue: a damaged file offers nothing", LastServer(dir).empty());
 	ForgetLastServer(dir);
 	Check("continue: forgotten", GetFileAttributesW(last.c_str()) == INVALID_FILE_ATTRIBUTES && LastServer(dir).empty());
+
+	// Crash reports: noted as Meowy Network's only when the session left over
+	// was on our server, and only the ones written in it, before this start.
+	const std::wstring crashRoot = dir + L"\\game";
+	CreateDirectoryW(crashRoot.c_str(), nullptr);
+	CreateDirectoryW((crashRoot + L"\\crashes").c_str(), nullptr);
+	const long long now = static_cast<long long>(time(nullptr));
+	CrashFile(crashRoot, L"before.txt", now - 5000);
+	CrashFile(crashRoot, L"ours.txt", now - 100);
+	CrashFile(crashRoot, L"later.txt", now + 600);   // written after this start: not that session's
+	Session(file, "138.201.62.52:27015", now - 200);
+	std::string crashedName;
+	Check("crash on ours: offered", CrashedSession(dir, &crashedName, &crashRoot) == "138.201.62.52:27015" && crashedName == "Meowy");
+	const std::vector<std::string> asked = { "before.txt", "ours.txt", "later.txt", "other.txt" };
+	std::vector<std::string> ours = OurCrashes(dir, asked);
+	Check("crash on ours: only that session's report noted", ours.size() == 1 && ours[0] == "ours.txt");
+	CrashFile(crashRoot, L"other.txt", now - 50);
+	Session(file, "1.2.3.4:27015", now - 80);
+	Check("crash on another server: still offered", CrashedSession(dir, nullptr, &crashRoot) == "1.2.3.4:27015");
+	ours = OurCrashes(dir, asked);
+	Check("crash on another server: never noted as ours", ours.size() == 1 && ours[0] == "ours.txt");
+	Session(file, "138.201.62.52:27015", now - 10);
+	Check("ours, no report since: nothing offered", CrashedSession(dir, nullptr, &crashRoot).empty());
+	Check("ours, no report since: nothing noted", OurCrashes(dir, asked).size() == 1);
+	NoteOurCrashes(dir, { "x\\..\\y.txt", "", "ours.txt" });
+	Check("noted names: no paths, no repeats", OurCrashes(dir, { "x\\..\\y.txt", "ours.txt" }).size() == 1 && Read(dir + L"\\meowy_crashes.txt") == "ours.txt\r\n");
+	std::vector<std::string> many;
+	for (int i = 0; i < 60; ++i)
+		many.push_back("c" + std::to_string(i) + ".txt");
+	NoteOurCrashes(dir, many);
+	Check("noted names: the newest 50 kept", OurCrashes(dir, { "ours.txt", "c9.txt", "c10.txt", "c59.txt" }).size() == 2);
 
 	std::printf("%d/%d checks passed\n", g_count - g_failures, g_count);
 	return g_failures == 0 ? 0 : 1;

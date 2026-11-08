@@ -2,7 +2,8 @@
 //   party_smoke
 // Covers reading a lobby's SteamID (only a lobby's: universe 1, chat type),
 // "+connect_lobby <id>" on the command line Steam starts the game with from an
-// invite, and that without Garry's Mod's steam_api in the process every call
+// invite, which lobbies are kept once entered (a Meowy party led by a friend),
+// and that without Garry's Mod's steam_api in the process every call
 // says no, loads nothing and never faults.
 #include "../src/party_steam.h"
 
@@ -38,6 +39,16 @@ int main()
 	Check(detail::LobbyFromCommandLine(L"gmod.exe +connect 1.2.3.4:27015") == 0, "a server join isn't a party invite");
 	Check(detail::LobbyFromCommandLine(L"gmod.exe +connect_lobby 76561198000000000") == 0, "only a lobby's id");
 	Check(detail::LobbyFromCommandLine(L"gmod.exe") == 0, "nothing");
+
+	// A lobby just entered: only a Meowy party, led by this player or a Steam friend.
+	const unsigned long long me = 76561198000000001ull, friendId = 76561198000000002ull, stranger = 76561198000000003ull;
+	Check(detail::Refusal("1", friendId, me, detail::kFriend).empty(), "a friend's party is kept");
+	Check(detail::Refusal("1", me, me, 0).empty(), "one's own party is kept");
+	Check(!detail::Refusal("1", stranger, me, 0).empty(), "a stranger's party is left");
+	Check(!detail::Refusal("1", stranger, me, 2).empty(), "a friend request isn't a friend");
+	Check(!detail::Refusal("2", friendId, me, detail::kFriend).empty(), "another kind of lobby is left");
+	Check(!detail::Refusal(nullptr, friendId, me, detail::kFriend).empty(), "a lobby without the pack's data is left");
+	Check(!detail::Refusal("1", 0, me, detail::kFriend).empty(), "no owner known: left");
 
 	// No steam_api in this process: everything says no, nothing is loaded.
 	Check(GetModuleHandleW(L"steam_api64.dll") == nullptr && GetModuleHandleW(L"steam_api.dll") == nullptr, "no Steam here");

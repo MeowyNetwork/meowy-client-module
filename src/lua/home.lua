@@ -291,8 +291,11 @@ local function planEnd(address, p, state)
 	log("content: %s", run.result)
 end
 
+local stopAll
 local function pump()
 	if run.inFlight or IsInLoading() or IsInGame() then return end
+	-- Switched off (or by Meowy Network's policy): nothing more is handed to Steam.
+	if not prewarmWorkshopOn() then return stopAll() end
 	local job = table.remove(run.queue, 1)
 	if not job then return end
 	local p = plans[job.address]
@@ -318,8 +321,9 @@ local function pump()
 	end)
 end
 
--- Stop asking for anything new (a join started, or Steam stopped answering).
-local function stopAll()
+-- Stop asking for anything new (a join started, Steam stopped answering, or
+-- the switch went off). What Steam has in hand finishes; nothing after it.
+function stopAll()
 	run.gen = run.gen + 1
 	run.queue, run.inFlight = {}, nil
 	for address, p in pairs(plans) do
@@ -469,8 +473,9 @@ function MeowyClientPackPrepare(address)
 		p.state = "going"
 		log("content: preparing %s: %d of %d Workshop items, %s", address, p.items, p.total, Content.size(p.bytes))
 		enqueue(address, p, true)
-	elseif not p or p.state == "stopped" then
+	elseif Content.retry(p) then
 		plans[address] = nil
+		adverts[address] = nil   -- asked again too: a removed item may be gone from it
 		contentFor(address)
 	end
 end
@@ -508,10 +513,19 @@ local function cvarPutBack(name, own)
 	if meowy.ConsoleRun then meowy.ConsoleRun(name .. " " .. own) end
 	if meowy.CvarRelease then meowy.CvarRelease(name) end
 end
+-- Values a quit or a crash left changed: put back now, and again whenever they
+-- read otherwise until the game has applied config.cfg (it holds the changed
+-- value, and runs a few seconds after this chunk). Released only once a value
+-- has held through that (watchHeld, below); until then the record stays, for
+-- the next start.
+local heldAtStart = {}
 do
 	for name, own in pairs(meowy.CvarHeld and meowy.CvarHeld() or {}) do
-		cvarPutBack(name, own)
-		log("%s put back to %s (the game closed while the pack had it changed)", name, own)
+		if numberText(own) then
+			heldAtStart[name] = own
+			if meowy.ConsoleRun then meowy.ConsoleRun(name .. " " .. own) end
+			log("%s put back to %s (the game closed while the pack had it changed)", name, own)
+		end
 	end
 end
 
@@ -552,9 +566,58 @@ local function idleOn() return idleSetting == nil or idleSetting:GetBool() end
 local MENU_BACKGROUND_FPS, WEB_AFTER_START, WEB_AWAY_KEEP = 15, 5, 120
 local idle = { started = SysTime(), next = 0 }
 local function hasFocus() return not (system and system.HasFocus) or system.HasFocus() end
+-- The loading screen's own setting, read the way module.cpp's menu chunk reads
+-- it (meowy.Setting: Meowy Network's signed policy can turn it off).
+local loadingSetting = meowy.SettingOf and meowy.SettingOf("meowy_loadingscreen")
 local function loadingScreenOn()
-	local c = GetConVar and GetConVar("meowy_loadingscreen")
+	local c = loadingSetting or (GetConVar and GetConVar("meowy_loadingscreen"))
 	return c ~= nil and c:GetBool() and not (system and system.IsWindowed and not system.IsWindowed())
+end
+
+-- The values put back at start (heldAtStart, above), watched for HELD_WATCH
+-- seconds: put back again if config.cfg brought the pack's value back, then
+-- released. One the pack changes again in that time (a join, the menu cap)
+-- is theirs from then on.
+local HELD_WATCH = 30
+local held = { untilAt = SysTime() + HELD_WATCH, next = 0 }
+local function watchHeld(now)
+	if not next(heldAtStart) or now < held.next then return end
+	held.next = now + 1
+	local final = now >= held.untilAt
+	for name, own in pairs(heldAtStart) do
+		local current = cvarText(name)
+		if (name == "fps_max_nofocus" and pw.nofocus) or (name == "fps_max_menu" and idle.capped) then
+			heldAtStart[name] = nil
+		elseif tonumber(current) ~= tonumber(own) then
+			if meowy.ConsoleRun then meowy.ConsoleRun(name .. " " .. own) end
+			held.again = (held.again or 0) + 1
+			if held.again <= 4 then
+				log("%s was %s again %.1f s after start (config.cfg); put back to %s", name, tostring(current), now - idle.started, own)
+			end
+			if final then heldAtStart[name] = nil end   -- the record stays: the next start tries again
+		elseif final then
+			heldAtStart[name] = nil
+			if meowy.CvarRelease then meowy.CvarRelease(name) end
+		end
+	end
+end
+
+-- 1.7.0 could leave fps_max_menu at the menu cap for good (the put-back ran
+-- before config.cfg): a 15 with nothing held, once config.cfg has run, is put
+-- back to the game's default, once (repairs.txt says it's done).
+local function repairMenuCap(now)
+	if held.repairDone or now < held.untilAt or idle.capped or next(heldAtStart) then return end
+	held.repairDone = true
+	if not (meowy.MenuFileRead and meowy.MenuFileWrite) then return end
+	local done = meowy.MenuFileRead("repairs") or ""
+	if done:find("fps_max_menu_cap", 1, true) then return end
+	meowy.MenuFileWrite("repairs", done .. "fps_max_menu_cap\n")
+	if tonumber(cvarText("fps_max_menu")) ~= MENU_BACKGROUND_FPS then return end
+	local cv = GetConVar and GetConVar("fps_max_menu")
+	local default = cv and cv.GetDefault and cv:GetDefault()
+	if not numberText(default) or tonumber(default) == MENU_BACKGROUND_FPS then default = "60" end
+	if meowy.ConsoleRun then meowy.ConsoleRun("fps_max_menu " .. default) end
+	log("fps_max_menu was %d, the pack's background cap, with nothing to put back: set to %s (the game's default), once", MENU_BACKGROUND_FPS, default)
 end
 local function menuCap(on)
 	if on and not idle.capped then
@@ -581,6 +644,8 @@ hook.Add("Think", "MeowyClientPack.IdleSavings", function()
 	local loading, inGame, focus = IsInLoading(), IsInGame(), hasFocus()
 	local atMenu = not loading and not inGame
 	if focus or not atMenu then idle.awaySince = nil else idle.awaySince = idle.awaySince or now end
+	watchHeld(now)
+	repairMenuCap(now)
 	local on = idleOn()
 	menuCap(on and atMenu and not focus and cvarText("fps_max_nofocus") == "0")
 	if loading then return end   -- a join keeps the page it has, or starts it
@@ -607,7 +672,10 @@ hook.Add("Think", "MeowyClientPack.Prewarm", function()
 		local bytes = meowy.WorkshopItemProgress(run.inFlight.id)
 		if bytes and bytes ~= run.lastBytes then run.lastBytes, run.last = bytes, now end
 	end
-	if (run.inFlight and now - run.last > WS_STALL) or (loading and (run.inFlight or #run.queue > 0)) then stopAll() end
+	if (run.inFlight and now - run.last > WS_STALL) or (loading and (run.inFlight or #run.queue > 0))
+		or ((run.inFlight or #run.queue > 0) and not prewarmWorkshopOn()) then
+		stopAll()
+	end
 	for address, p in pairs(plans) do   -- FileInfo that never answered: go on with what's known
 		if p.state == "checking" and now - p.started > WS_CHECK then p.pending = 0 planDecided(address, p) end
 	end
@@ -619,7 +687,13 @@ hook.Add("Think", "MeowyClientPack.Prewarm", function()
 			local ok, why = meowy.PakCache(true)
 			if not ok and not pw.pakWhyLogged then pw.pakWhyLogged = true log("pak cache: off (%s)", tostring(why)) end
 		end
-		meowy.PrewarmBeginJoin()   -- also stops any warming: the join's reads come first
+		-- The join's files are noted (and the read hook goes in) only for pre-warm:
+		-- with both its switches off, or Meowy Network's policy turning them off,
+		-- nothing is hooked and no list is kept.
+		if prewarmOn() or prewarmWorkshopOn() then
+			pw.recording = true
+			meowy.PrewarmBeginJoin()   -- also stops any warming: the join's reads come first
+		end
 	elseif pw.joining and IsInGame() and not loading then
 		pw.joining = false
 		boostOff()
@@ -627,13 +701,20 @@ hook.Add("Think", "MeowyClientPack.Prewarm", function()
 			log("pak cache: %s", meowy.PakCacheState())
 			meowy.PakCache(false)
 		end
-		local kept = meowy.PrewarmEndJoin()
 		pw.warmedFor = nil
-		if kept > 0 then log("prewarm: kept %d files for this server", kept) end
+		if pw.recording then
+			pw.recording = false
+			local kept = meowy.PrewarmEndJoin()
+			if kept > 0 then log("prewarm: kept %d files for this server", kept) end
+		end
 	elseif not loading and not IsInGame() then
 		if pw.joining and meowy.PakCache then meowy.PakCache(false) end
 		if pw.joining then boostOff() end
 		pw.joining = false   -- a join that didn't get in: nothing to keep
+		if pw.recording then
+			pw.recording = false
+			meowy.PrewarmEndJoin()   -- at the menu there's no server: recording stops, nothing is kept
+		end
 	end
 	-- A few seconds at the main menu: the Continue server, once per visit (a
 	-- row the pointer rests on afterwards takes over); and our server's

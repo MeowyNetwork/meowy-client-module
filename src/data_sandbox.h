@@ -27,9 +27,12 @@ namespace data_sandbox
 	// At game start, before any server: data/ back to the menu's folder (after a
 	// crash on a server it still links to that server's). On the first start
 	// with this version, data/ (a plain folder) becomes the link: its files go to
-	// the vault folder of whoever they belong to, and nothing is ever overwritten
-	// (on a clash both are kept). Returns a line for the console when something
-	// happened or went wrong, else "".
+	// the vault folder of whoever they belong to (a data/ that was never
+	// sandboxed is the player's own, and becomes the menu's folder, which the
+	// main menu, singleplayer and the player's own games use), and nothing is
+	// ever overwritten (on a clash both are kept). 1.7.0 kept such files apart,
+	// in vault\before-sandbox, where nothing saw them: they join the menu's.
+	// Returns a line for the console when something happened or went wrong, else "".
 	std::string Recover();
 	// data/ links to the folder for `address` ("1.2.3.4:27015"); a no-op when it
 	// already does. Any other non-empty address (a Steam P2P host, something odd)

@@ -12,7 +12,7 @@
 //     GetNumLobbyMembers, GetLobbyMemberByIndex, GetLobbyOwner),
 //   SteamAPI_ISteamFriends_* (SetRichPresence, GetPersonaName,
 //     GetFriendPersonaName, ActivateGameOverlayInviteDialog, GetFriendCount,
-//     GetFriendByIndex, GetFriendGamePlayed, InviteUserToGame,
+//     GetFriendByIndex, GetFriendGamePlayed, GetFriendRelationship, InviteUserToGame,
 //     GetFriendRichPresence, RequestFriendRichPresence),
 //   SteamAPI_ISteamUtils_IsAPICallCompleted / GetAPICallResult,
 //   SteamAPI_ISteamUser_GetSteamID, SteamAPI_RegisterCallback.
@@ -95,5 +95,12 @@ namespace party_steam
 		uint64_t LobbyFromCommandLine(const std::wstring& line);
 		// A SteamID64 of a lobby (chat-room type, 0x0186...), else 0.
 		uint64_t ParseLobbyId(const std::string& text);
+		// EFriendRelationship's "friend".
+		constexpr int kFriend = 3;
+		// Why a lobby just entered isn't a party to stay in ("" if it is): only
+		// a Meowy party (lobby data v=1), led by this player or a Steam friend.
+		// A stranger's lobby (a join link posted anywhere) would otherwise get
+		// every server this player is on.
+		std::string Refusal(const char* version, uint64_t owner, uint64_t self, int ownerRelationship);
 	}
 }

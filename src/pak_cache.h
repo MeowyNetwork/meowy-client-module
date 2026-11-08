@@ -68,6 +68,12 @@ namespace pak_cache
 		struct PakEntry { uint64_t local; size_t csize, usize; };
 		bool PakEntries(const std::wstring& path, std::vector<PakEntry>& out, std::string& why);
 		size_t PrefillFile(const std::wstring& path, Decoder original, unsigned threads, unsigned gen, std::string& why);
+		// Whether an LZMA entry's sizes can be real: its compressed bytes (with
+		// the 9-byte header) at most a little over the uncompressed size. A
+		// crafted directory could otherwise have every worker allocate the
+		// whole lump at once. A worker that runs out of memory stops reading
+		// ahead (all of them do); the join goes on.
+		bool PlausibleSizes(size_t csize, size_t usize);
 		uint64_t Hash(const uint8_t* p, size_t n, uint64_t seed = 0);
 	}
 }

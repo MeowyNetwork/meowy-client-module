@@ -468,6 +468,7 @@ function UI.Modal(width, onDismiss)
 	local back = vgui.Create("EditablePanel")
 	back:SetSize(ScrW(), ScrH())
 	back:SetPos(0, 0)
+	UI.current = back   -- the newest window, so a prompt that can wait doesn't open over it
 	local card = vgui.Create("EditablePanel", back)
 	card.w, card.r = S(width), S(14)
 	card.Paint = function(self, w, h) UI.box(self.r, 0, 0, w, h, C.window, C.border) end

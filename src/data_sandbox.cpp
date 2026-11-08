@@ -421,9 +421,11 @@ namespace
 	// wrote: "<key>", or mid-switch "switching:<from>><to>:<phase>" (phase 1
 	// moving data/ out: <from>'s; phase 2 moving <to>'s in: <to>'s), or the
 	// oldest "switching:<to>". No file: never sandboxed, data/ is everything from
-	// before the pack. "linked": data/ was a link of this version's that was
-	// removed since (by hand, or an older version); what's in it now was written
-	// since, and goes with the menu's.
+	// before the pack: the player's own, which goes with the menu's (the main
+	// menu, singleplayer and the player's own games see it; no server does).
+	// "linked": data/ was a link of this version's that was removed since (by
+	// hand, or an older version); what's in it now was written since, and goes
+	// with the menu's too.
 	std::wstring LegacyOwner(const std::wstring& active)
 	{
 		std::wstring owner = active;
@@ -436,6 +438,8 @@ namespace
 			else
 				owner = rest;
 		}
+		if (active.empty())
+			return kMenu;
 		if (owner.empty())
 			return kBefore;
 		if (owner == Widen(kLinked))
@@ -555,6 +559,27 @@ namespace
 			"), so every server shares one garrysmod/data";
 	}
 
+	// 1.7.0 kept the files of a never-sandboxed data/ (from before the pack: PAC
+	// outfits, dupes, addon settings) in vault\before-sandbox, where nothing in
+	// the game saw them. They go with the menu's, once: the main menu,
+	// singleplayer and the player's own games see them again; no server does.
+	// On a clash both are kept, the menu's copy (written since) keeping the
+	// name. "" when there was nothing to do.
+	std::string AdoptBefore(const std::wstring& vault)
+	{
+		const std::wstring before = vault + L"\\" + kBefore, menu = vault + L"\\" + kMenu;
+		if (!IsPlainDir(before))
+			return std::string();
+		if (MergeInto(before, menu, L"before-pack", false))
+		{
+			RemoveDirectoryW(before.c_str());
+			return "garrysmod/data: the files you had before the pack are back with the main menu's "
+				"(the main menu, singleplayer and your own games see them; each server still has a folder of its own)";
+		}
+		return "garrysmod/data: some files from before the pack couldn't move to the main menu's folder "
+			"(open elsewhere?); the rest did, and they're tried again next start";
+	}
+
 	// A plain data/ becomes the link: its files go to the vault folder of whoever
 	// they belong to, in one rename, and a link to the menu's folder takes its
 	// place. Every step either completes or is undone; nothing is overwritten.
@@ -618,8 +643,13 @@ namespace
 		//    stopped half-way): merged, data/'s copy (the newer) keeping the name.
 		//    The sweep also picks up any staging folder an earlier start left.
 		SweepStaging(vault);
+		const std::string adopted = AdoptBefore(vault);
+		if (owner == kMenu)
+			return "garrysmod/data is now a link into the pack's vault: every server sees only its own files. Yours "
+				"stay with the main menu's (the main menu, singleplayer and your own games see them; each server "
+				"starts with a folder of its own)" + (adopted.empty() ? std::string() : "; " + adopted);
 		return "garrysmod/data is now a link into the pack's vault: every server sees only its own files "
-			"(the files that were in it are kept with " + Narrow(owner) + "'s)";
+			"(the files that were in it are kept with " + Narrow(owner) + "'s)" + (adopted.empty() ? std::string() : "; " + adopted);
 	}
 }
 
@@ -656,8 +686,9 @@ namespace data_sandbox
 			if (ReadSmallFile(activeFile) != kLinked)
 				file_util::WriteAtomic(activeFile, kLinked);
 			SweepStaging(vault);
+			const std::string adopted = AdoptBefore(vault);
 			Load();
-			return std::string();
+			return adopted;
 		}
 
 		std::string said = Convert(data);

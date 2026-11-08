@@ -37,12 +37,29 @@ check("follow: first look remembered", remember, 4)
 check("follow: seen already", (P.shouldFollow(with({ lastSeq = 4 }))), nil)
 check("follow: not the leader", (P.shouldFollow(with({ leader = true }))), nil)
 check("follow: already there", (P.shouldFollow(with({ mine = "45.10.1.7:27015" }))), nil)
-check("follow: not too soon after the last", (P.shouldFollow(with({ lastFollowAt = 80 }))), nil)
+-- A move soon after the last follow isn't dropped: it waits for the gap.
+local soonTo, soonSeq, notBefore = P.shouldFollow(with({ lastFollowAt = 80 }))
+check("follow: soon after the last, still followed", soonTo, "45.10.1.7:27015")
+check("follow: soon after the last, seq taken", soonSeq, 4)
+check("follow: soon after the last, not before the gap", notBefore, 80 + P.MIN_GAP)
 check("follow: after the gap", (P.shouldFollow(with({ lastFollowAt = 70 }))), "45.10.1.7:27015")
 check("follow: not where it isn't allowed", (P.shouldFollow(with({ allowed = function() return false end }))), nil)
 check("follow: a broken go", (P.shouldFollow(with({ go = "garbage" }))), nil)
-check("left", P.left({ at = 107.2 }, 100), 8)
-check("left: never negative", P.left({ at = 90 }, 100), 0)
+
+-- The countdown runs only while it's on screen (shown), and never ends before notBefore.
+local fl = P.newFollow("45.10.1.7:27015", "Big RP", "Ann", -1e9)
+check("left: the whole countdown at first", P.left(fl, 100), P.FOLLOW_SECONDS)
+check("due: not before it was shown", P.due(fl, 1e6), false)
+fl.shown = 7.2
+check("left: what's still to show", P.left(fl, 100), 3)
+fl.shown = P.FOLLOW_SECONDS
+check("due: shown long enough", P.due(fl, 100), true)
+check("left: never negative", P.left(fl, 100), 0)
+local gap = P.newFollow("45.10.1.7:27015", "", "Ann", 125)
+gap.shown = P.FOLLOW_SECONDS
+check("due: shown, but the gap isn't over", P.due(gap, 110), false)
+check("left: the gap's longer", P.left(gap, 110), 15)
+check("due: once the gap's over", P.due(gap, 125), true)
 
 -- model
 local state = {
@@ -68,7 +85,7 @@ check("model: friends in GMod only", #m.friends, 1)
 check("model: friend has the pack", m.friends[1].p, true)
 check("model: notice", m.notice, "hello")
 check("model: no party", P.model(nil, nil, 0, {}, nil).party, nil)
-local f = P.model(state, { address = "45.10.1.7:27015", name = "", by = "Ann", at = 105 }, 100, {}, nil)
+local f = P.model(state, { address = "45.10.1.7:27015", name = "", by = "Ann", notBefore = -1e9, shown = 5 }, 100, {}, nil)
 check("model: following", f.party.follow.to .. "/" .. f.party.follow.by .. "/" .. f.party.follow.left, "45.10.1.7:27015/Ann/5")
 check("escape line: following", P.escapeLine(f).text, "Following Ann to 45.10.1.7:27015 in 5 s")
 check("escape line: stay", P.escapeLine(f).stay, true)

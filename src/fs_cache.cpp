@@ -383,12 +383,24 @@ namespace fs_cache
 			return 0;
 #endif
 		}
+
+		bool SwapIn(void** slot, void* original, void* ours)
+		{
+#ifdef _WIN32
+			if (*slot == ours)
+				return true;
+			return InterlockedCompareExchangePointer(reinterpret_cast<PVOID volatile*>(slot), ours, original) == original;
+#else
+			(void)slot; (void)original; (void)ours;
+			return false;
+#endif
+		}
 	}
 
 	bool Install(std::string& why)
 	{
 #ifdef _WIN32
-		if (g_copy)
+		if (g_object)
 			return true;
 		HMODULE fs = GetModuleHandleW(L"filesystem_stdio.dll");
 		if (!fs)
@@ -403,6 +415,20 @@ namespace fs_cache
 		{
 			why = "no VFileSystem022";
 			return false;
+		}
+		if (g_copy)
+		{
+			// Taken out earlier this session (Uninstall keeps the copy: another
+			// thread may still be reading through it). The same copy goes back,
+			// over the game's own vtable only. Before 1.7.1 this returned at once,
+			// and the hook stayed out for the rest of the session.
+			if (!detail::SwapIn(static_cast<void**>(object), g_originalVtable, g_copy + 1))
+			{
+				why = "the file system's vtable was replaced by something else since";
+				return false;
+			}
+			g_object = object;
+			return true;
 		}
 		void** vtable = *static_cast<void***>(object);
 		if (!IsFileSystemStdio(fs, vtable))

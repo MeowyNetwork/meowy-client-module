@@ -104,7 +104,8 @@ end
 
 -- A server's row: what its content plan shows, and whether it's the button.
 -- plan = { state = "checking" | "ask" | "going" | "ready" | "stopped",
---          bytes (needed), done (bytes so far), items (needing work) }.
+--          bytes (needed), done (bytes so far), items (needing work),
+--          failed (items Steam didn't download: the button stays, to try again) }.
 -- nil when there's nothing worth a line (checking, nothing needed, stopped).
 function M.label(plan)
 	if type(plan) ~= "table" then return nil end
@@ -116,9 +117,20 @@ function M.label(plan)
 		local done = math.min(tonumber(plan.done) or 0, bytes)
 		return "Getting ready \194\183 " .. M.size(done) .. " of " .. M.size(bytes), false
 	elseif plan.state == "ready" and items > 0 then
+		local failed = math.min(tonumber(plan.failed) or 0, items)
+		if failed > 0 then
+			return (failed == items and "Not ready \194\183 " or "Partly ready \194\183 ")
+				.. (failed == 1 and "1 item" or failed .. " items") .. " didn't download \194\183 Try again", true
+		end
 		return "Ready \194\183 content downloaded", false
 	end
 	return nil
+end
+
+-- Whether "Get ready" on a plan starts it over: none yet, it was stopped, or
+-- some of its items didn't download.
+function M.retry(plan)
+	return type(plan) ~= "table" or plan.state == "stopped" or (plan.state == "ready" and (tonumber(plan.failed) or 0) > 0)
 end
 
 return M

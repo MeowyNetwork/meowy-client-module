@@ -225,4 +225,149 @@ function Guard.listAdd(list, address, max)
 	return out
 end
 
+function Guard.listRemove(list, address)
+	local out = {}
+	for _, a in ipairs(list) do
+		if a ~= address then out[#out + 1] = a end
+	end
+	return out
+end
+
+-- A session has a part for each server the player was on: its address and
+-- name, and a snapshot taken when it was joined. A part ends when the player
+-- joins another server without going back to the menu (a party follow, the
+-- in-game browser, a redirect), when they're back at the menu, or, if the game
+-- closed on a server (a quit, a crash), at the next start. Each server is
+-- answered for its own changes only.
+
+-- A part that ended: { address, name, changes }.
+function Guard.closePart(cur, get)
+	return { address = cur.address, name = cur.name, changes = Guard.diff(cur.snap, get) }
+end
+
+-- What to do with a part that ended: "none" (nothing changed), "keep" (one of
+-- ours: what changes there is the player's own choice), "putback" (a server
+-- whose changes are always put back), or "ask".
+function Guard.verdict(part, isOurs, always)
+	if #part.changes == 0 then return "none" end
+	if part.address and isOurs(part.address) then return "keep" end
+	if part.address and Guard.listHas(always, part.address) then return "putback" end
+	return "ask"
+end
+
+-- Of `changes`, the ones still in place: a server joined later may have
+-- changed the same setting again, and its own part has that.
+function Guard.stillChanged(changes, get)
+	local out = {}
+	for _, c in ipairs(changes) do
+		local now = get(c.name)
+		if type(now) == "string" and Guard.same(now, c.now) then out[#out + 1] = c end
+	end
+	return out
+end
+
+-- Only `keep(name)`'s: at the next start, only settings the game saves to
+-- config.cfg can have stayed changed; the rest are back to their defaults.
+function Guard.only(changes, keep)
+	local out = {}
+	for _, c in ipairs(changes) do
+		if keep(c.name) then out[#out + 1] = c end
+	end
+	return out
+end
+
+-- The snapshot for the next server: the values now, with `putBack`'s changes
+-- as they will be once the commands have run.
+function Guard.snapshotAfter(get, putBack)
+	local snap = Guard.snapshot(get)
+	for _, c in ipairs(putBack or {}) do
+		if snap[c.name] ~= nil then snap[c.name] = c.was end
+	end
+	return snap
+end
+
+-- The session as kept on disk (%LOCALAPPDATA%\MeowyClientPack\settings_guard_session.txt),
+-- so a game closed on a server is still answered for at the next start. Lines:
+--   part <address|-> <name>            a server's part that ended, waiting for the prompt
+--   change <convar> <was> <now>        one of that part's changes
+--   cur <address|-> <name>             the server the player is on (or was, when the game closed)
+--   snap <convar> <value>              its snapshot
+-- Only watched settings and values without spaces are kept; a name is one line of text.
+local watched
+local function isWatched(name)
+	if not watched then
+		watched = {}
+		for _, w in ipairs(Guard.WATCH) do watched[w[1]] = w[2] end
+	end
+	return watched[name]
+end
+
+local function token(v) return type(v) == "string" and v ~= "" and #v <= 64 and not v:find("%s") end
+local function addressToken(a) return type(a) == "string" and #a <= 64 and a:match("^[%w%.%-%[%]:]+$") ~= nil end
+local function nameText(s)
+	if type(s) ~= "string" then return "" end
+	s = s:gsub("%c", "")
+	return #s > 128 and s:sub(1, 128) or s
+end
+
+function Guard.encodeSession(s)
+	local lines = { "v 1" }
+	local function server(kind, address, name)
+		lines[#lines + 1] = kind .. " " .. (addressToken(address) and address or "-") .. " " .. nameText(name)
+	end
+	for _, part in ipairs(s.parts or {}) do
+		server("part", part.address, part.name)
+		for _, c in ipairs(part.changes or {}) do
+			if isWatched(c.name) and token(c.was) and token(c.now) then
+				lines[#lines + 1] = "change " .. c.name .. " " .. c.was .. " " .. c.now
+			end
+		end
+	end
+	if s.cur then
+		server("cur", s.cur.address, s.cur.name)
+		local names = {}
+		for name in pairs(s.cur.snap or {}) do names[#names + 1] = name end
+		table.sort(names)
+		for _, name in ipairs(names) do
+			local v = s.cur.snap[name]
+			if isWatched(name) and token(v) then lines[#lines + 1] = "snap " .. name .. " " .. v end
+		end
+	end
+	return table.concat(lines, "\n") .. "\n"
+end
+
+-- The session from that text, or nil when it holds none.
+function Guard.decodeSession(text)
+	if type(text) ~= "string" or text:sub(1, 3) ~= "v 1" then return nil end
+	local s, part = { parts = {} }, nil
+	for line in text:gmatch("[^\r\n]+") do
+		local kind, rest = line:match("^(%a+) (.*)$")
+		if kind == "part" or kind == "cur" then
+			local address, name = rest:match("^(%S+) ?(.*)$")
+			if address then
+				local server = { address = address ~= "-" and addressToken(address) and address or nil, name = nameText(name) }
+				if server.name == "" then server.name = nil end
+				if kind == "part" then
+					server.changes = {}
+					s.parts[#s.parts + 1] = server
+					part = server
+				else
+					server.snap = {}
+					s.cur, part = server, nil
+				end
+			end
+		elseif kind == "change" and part then
+			local name, was, now = rest:match("^(%S+) (%S+) (%S+)$")
+			if name and isWatched(name) then
+				part.changes[#part.changes + 1] = { name = name, label = isWatched(name), was = was, now = now }
+			end
+		elseif kind == "snap" and s.cur then
+			local name, v = rest:match("^(%S+) (%S+)$")
+			if name and isWatched(name) then s.cur.snap[name] = v end
+		end
+	end
+	if #s.parts == 0 and not s.cur then return nil end
+	return s
+end
+
 return Guard

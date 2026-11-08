@@ -582,6 +582,8 @@ local handlers = {
 	end,
 	join = function(v) MeowyClientPackHomeJoin(tonumber(v)) end,
 	intent = function(v) MeowyClientPackHomeIntent(tonumber(v)) end,
+	-- A home row's "Get ready" (its content line, shell.js).
+	prepare = function(v) MeowyClientPackHomePrepare(tonumber(v)) end,
 	-- A quoted key: Garry's Mod's Lua has `continue` as a keyword.
 	["continue"] = function() MeowyClientPackContinue() end,
 	options = function() if RunGameUICommand then RunGameUICommand("OpenOptionsDialog") end end,

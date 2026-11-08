@@ -11,9 +11,11 @@
 // - %LOCALAPPDATA%\MeowyClientPack\resilience.txt: whether the player was asked,
 //   their answer, and the cl_timeout they had before (key=value lines).
 // - %LOCALAPPDATA%\MeowyClientPack\on_server.txt: "<address> <unix time>" while
-//   the game is connected to one of our servers (the address from the engine's
-//   own connection, server_gate). Still there at the next start means the game
-//   ended on our server; with a crash report written since, the menu offers a rejoin.
+//   the game is connected to a server, ours or a public one (the address from
+//   the engine's own connection, server_gate). Still there at the next start
+//   means the game ended on that server; with a crash report written since,
+//   the menu offers a rejoin, and on ours the report is noted as Meowy
+//   Network's (meowy_crashes.txt), the only kind ever sent to it.
 
 #include <string>
 #include <vector>
@@ -47,9 +49,21 @@ namespace resilience
 	void MarkSession(const std::wstring& dir, const std::string& address, const std::string& name);
 	void ClearSession(const std::wstring& dir);
 	// Once per start: the address (and name) in a leftover on_server.txt when the
-	// game wrote a crash report after it; "" otherwise. Removes the file. The
-	// caller checks the address again before offering anything.
-	std::string CrashedSession(const std::wstring& dir, std::string* name = nullptr);
+	// game wrote a crash report after it (and before this start); "" otherwise.
+	// Removes the file. The caller checks the address again before offering
+	// anything. When the address is ours, those reports are noted as Meowy
+	// Network's (NoteOurCrashes). crashRoot: the folder holding crashes\ (tests;
+	// the game's own by default).
+	std::string CrashedSession(const std::wstring& dir, std::string* name = nullptr, const std::wstring* crashRoot = nullptr);
+
+	// meowy_crashes.txt in `dir`: the file names of crash reports written while
+	// the game was on one of our servers, the newest 50. A report can't say
+	// which server the game was on, and one from another server names that
+	// server's Lua files: only these are ever sent to Meowy Network
+	// (meowy.CrashReports).
+	void NoteOurCrashes(const std::wstring& dir, const std::vector<std::string>& names);
+	// `names` that are noted as ours (order kept).
+	std::vector<std::string> OurCrashes(const std::wstring& dir, const std::vector<std::string>& names);
 
 	// last_server.txt: the last server the player got into the game on (same
 	// format and checks as on_server.txt), for the main menu's "Continue". Kept

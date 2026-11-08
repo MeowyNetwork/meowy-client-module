@@ -619,6 +619,22 @@ ssearch.onkeydown(key(ssearch, 13));
 check('shell: arrows and Enter', JSON.stringify(S.posts.pop()), '["join",20]');
 ssearch.onkeydown(key(ssearch, 27));
 check('shell: Esc clears', ssearch.value, '');
+// A server's content line (home.lua's Content.label), as on the stock-page card:
+// progress as text, "Get ready" as a button that prepares without joining.
+const firstRows = data.sections[1].rows;
+firstRows[0].prep = 'Get ready · 1.3 GB'; firstRows[0].prepAsk = true;
+firstRows[1].prep = 'Getting ready · 200 MB of 1.3 GB';
+S.win.MeowyShellLists();
+const preps = shellEl().querySelectorAll('.ms-prep');
+check('shell: content lines drawn', preps.map(e => e.textContent).join('|'), 'Get ready · 1.3 GB|Getting ready · 200 MB of 1.3 GB');
+const ask = shellEl().querySelectorAll('.ms-prep-ask');
+check('shell: only Get ready is a button', ask.length, 1);
+let stopped = false;
+ask[0].onclick({ stopPropagation: () => { stopped = true; } });
+check('shell: Get ready posts its row, and doesn\'t join', JSON.stringify(S.posts.pop()) + ' ' + stopped, '["prepare",' + firstRows[0].id + '] true');
+delete firstRows[0].prep; delete firstRows[0].prepAsk; delete firstRows[1].prep;
+S.win.MeowyShellLists();
+check('shell: no line once there\'s nothing to say', shellEl().querySelectorAll('.ms-prep').length, 0);
 S.win.MeowyShellContinue();
 check('shell: no Continue without a server', shellEl().querySelector('.ms-cont').className.includes(' on'), false);
 S.win.MeowyContinue = ['Continue', '<b>Meowy</b>', ' · 2 h ago'];

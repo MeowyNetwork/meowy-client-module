@@ -93,6 +93,16 @@ check("label: nothing was needed", C.label({ state = "ready", items = 0 }), nil)
 check("label: checking", C.label({ state = "checking" }), nil)
 check("label: stopped", C.label({ state = "stopped", items = 2 }), nil)
 check("label: no plan", C.label(nil), nil)
+-- Items Steam didn't download: said so, and the button stays, to try again.
+text, button = C.label({ state = "ready", items = 3, failed = 2 })
+check("label: some failed", text, "Partly ready" .. DOT .. "2 items didn't download" .. DOT .. "Try again")
+check("label: failed is the button", button, true)
+check("label: all failed", (C.label({ state = "ready", items = 1, failed = 1 })), "Not ready" .. DOT .. "1 item didn't download" .. DOT .. "Try again")
+check("retry: none yet", C.retry(nil), true)
+check("retry: stopped", C.retry({ state = "stopped" }), true)
+check("retry: failed items", C.retry({ state = "ready", items = 2, failed = 1 }), true)
+check("retry: all downloaded", C.retry({ state = "ready", items = 2, failed = 0 }), false)
+check("retry: still going", C.retry({ state = "going" }), false)
 
 print(("%d checks, %d failed"):format(count, failures))
 if failures > 0 then os.exit(1) end

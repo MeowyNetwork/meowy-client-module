@@ -66,6 +66,50 @@ check("added again: moved to the end, once", table.concat(list, ","), "5.6.7.8:2
 for i = 1, 25 do list = Guard.listAdd(list, "10.0.0." .. i .. ":27015", 20) end
 check("at most 20 kept", #list, 20)
 check("the oldest dropped", Guard.listHas(list, "5.6.7.8:27016"), false)
+list = Guard.listRemove(list, "10.0.0.25:27015")
+check("removed", #list == 19 and not Guard.listHas(list, "10.0.0.25:27015"), true)
+check("removing one that isn't there changes nothing", #Guard.listRemove(list, "9.9.9.9:1"), 19)
+
+-- A server's part of a session, and what's done with it.
+cvars = { mat_specular = "1", r_3dsky = "1", cl_interp = "0.1" }
+local cur = { snap = Guard.snapshot(get), address = "1.2.3.4:27015", name = "Foo RP" }
+cvars.r_3dsky = "0"
+local part = Guard.closePart(cur, get)
+check("part: its address and changes", part.address .. " " .. #part.changes .. " " .. part.changes[1].name, "1.2.3.4:27015 1 r_3dsky")
+local function ours(a) return a == "138.201.62.52:27015" end
+check("verdict: ask", Guard.verdict(part, ours, {}), "ask")
+check("verdict: always", Guard.verdict(part, ours, { "1.2.3.4:27015" }), "putback")
+check("verdict: ours is kept", Guard.verdict({ address = "138.201.62.52:27015", changes = part.changes }, ours, {}), "keep")
+check("verdict: nothing changed", Guard.verdict({ address = "1.2.3.4:27015", changes = {} }, ours, {}), "none")
+check("verdict: no address still asks", Guard.verdict({ changes = part.changes }, ours, { "1.2.3.4:27015" }), "ask")
+check("still changed: in place", #Guard.stillChanged(part.changes, get), 1)
+cvars.r_3dsky = "0.5"
+check("still changed: a later server changed it again", #Guard.stillChanged(part.changes, get), 0)
+check("only: kept by name", #Guard.only({ { name = "a" }, { name = "b" } }, function(n) return n == "b" end), 1)
+cvars.r_3dsky = "0"
+local after = Guard.snapshotAfter(get, part.changes)
+check("snapshot after a put-back: the value it will have", after.r_3dsky, "1")
+check("snapshot after: the rest as they are", after.mat_specular, "1")
+
+-- The session on disk: what's needed to ask at the next start, and nothing else.
+local s = { parts = { { address = "5.6.7.8:27015", name = "Bar\nRP", changes = { { name = "mat_picmip", label = "x", was = "0", now = "2" } } } },
+	cur = { address = "1.2.3.4:27015", name = "Foo RP", snap = { mat_specular = "1", r_3dsky = "1", not_watched = "1", cl_interp = "0 1" } } }
+local text = Guard.encodeSession(s)
+local back = Guard.decodeSession(text)
+check("session: the part ended earlier", back.parts[1].address .. "|" .. back.parts[1].name, "5.6.7.8:27015|BarRP")
+check("session: its change, labelled", back.parts[1].changes[1].name .. " " .. back.parts[1].changes[1].was .. ">" .. back.parts[1].changes[1].now .. " " .. back.parts[1].changes[1].label, "mat_picmip 0>2 Texture detail")
+check("session: the server it was on", back.cur.address .. "|" .. back.cur.name, "1.2.3.4:27015|Foo RP")
+check("session: its snapshot", back.cur.snap.mat_specular .. back.cur.snap.r_3dsky, "11")
+check("session: only watched settings kept", back.cur.snap.not_watched, nil)
+check("session: a value with a space isn't kept", back.cur.snap.cl_interp, nil)
+check("session: none at all", Guard.decodeSession(""), nil)
+check("session: not one", Guard.decodeSession("garbage"), nil)
+local noAddress = Guard.decodeSession(Guard.encodeSession({ parts = {}, cur = { snap = { r_3dsky = "1" } } }))
+check("session: no address yet", noAddress.cur.address == nil and noAddress.cur.snap.r_3dsky == "1", true)
+local evil = Guard.decodeSession("v 1\ncur 1.2.3.4:27015;quit x\nsnap r_3dsky 1\nsnap sv_cheats 1\nchange r_3dsky 1 0\n")
+check("session: a damaged address isn't used", evil.cur.address, nil)
+check("session: an unwatched setting isn't read", evil.cur.snap.sv_cheats, nil)
+check("session: a change outside a part is ignored", #evil.parts, 0)
 
 print(("%d checks, %d failed"):format(count, failures))
 if failures > 0 then os.exit(1) end

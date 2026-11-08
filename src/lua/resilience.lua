@@ -138,6 +138,10 @@ end
 -- UI (ui.lua's kit) ----------------------------------------------------------------
 local C, S = UI.C, UI.S
 
+-- More of the General tab, from the chunks after this one (the settings guard):
+-- functions that return blocks, given a function that draws the tab again.
+local settingsSections = {}
+
 -- The settings window: a left tab list (General, PC doctor) and the tab's
 -- content on the right, scrolled. Escape or the "x" closes it.
 local settingsWindow
@@ -173,7 +177,7 @@ local function openSettings(startTab)
 		if ok then tips, report = a, b else ErrorNoHalt("[Meowy Client Pack] PC doctor: " .. tostring(a) .. "\n") end
 	end
 
-	local pages = {}
+	local pages, show = {}, nil
 	pages.general = function()
 		local blocks = { UI.Label(nil, "Connection") }
 		local t = UI.Toggle(nil, "Stay connected through drops",
@@ -219,9 +223,12 @@ local function openSettings(startTab)
 		end
 		if meowy.PrewarmWorkshop then
 			local wt = UI.Toggle(nil, "Update a server's Workshop items before you join",
-				"At the same moments, Steam is asked whether that server's Workshop items (the ones your last join there "
-				.. "used) are up to date. Up-to-date items cost nothing; an update or a missing item downloads on the main "
-				.. "menu instead of on the loading screen. Only for servers you've joined before.",
+				"A server's Workshop items (what it says it uses, and what your last join there used) are checked with "
+				.. "Steam on the main menu, and anything missing or out of date downloads there instead of on the loading "
+				.. "screen. Meowy Network's own content and servers you've joined before (up to 4 GB) download by "
+				.. "themselves, Meowy's a few seconds after the menu opens; any other server shows Get ready with the "
+				.. "size, and nothing downloads until you click it. Pointing at a server asks it what it uses. Off stops "
+				.. "what's queued.",
 				prewarmWorkshopOn(), function(on) setPrewarmWorkshop(on) end)
 			wt.meowyToggle = "prewarm_workshop"
 			blocks[#blocks + 1] = wt
@@ -229,9 +236,11 @@ local function openSettings(startTab)
 		-- Find servers, faster (module.cpp's server list chunk owns the setting).
 		local fastList = GetConVar and GetConVar("meowy_fast_serverlist")
 		if fastList and meowy.ServerQueryStart then
-			local ft = UI.Toggle(nil, "Find servers: only servers with players",
-				"Steam leaves out empty servers before anything is pinged, so the Internet list is complete in about 20 s "
-				.. "instead of about 90 s. Off lists every server, the game's way. Favourites, History and LAN are always complete.",
+			local ft = UI.Toggle(nil, "Garry's Mod's server list: only servers with players",
+				"In Garry's Mod's own server list, Steam leaves out empty servers before anything is pinged, so the Internet "
+				.. "list is complete in about 20 s instead of about 90 s. Off lists every server, the game's way. Favourites, "
+				.. "History and LAN are always complete. The Meowy home screen's Find servers always lists every server, "
+				.. "the empty ones after the rest.",
 				fastList:GetBool(), function(on) RunConsoleCommand("meowy_fast_serverlist", on and "1" or "0") end)
 			ft.meowyToggle = "fast_serverlist"
 			blocks[#blocks + 1] = ft
@@ -301,6 +310,14 @@ local function openSettings(startTab)
 			mt.gapBefore = S(10)
 			blocks[#blocks + 1] = mt
 		end
+		for _, section in ipairs(settingsSections) do
+			local ok, more = pcall(section, function() if show then show("general") end end)
+			if ok then
+				for _, b in ipairs(more or {}) do blocks[#blocks + 1] = b end
+			else
+				ErrorNoHalt("[Meowy Client Pack] settings: " .. tostring(more) .. "\n")
+			end
+		end
 		return blocks
 	end
 	pages.doctor = function()
@@ -336,7 +353,7 @@ local function openSettings(startTab)
 	local current
 	local maxH = math.floor(ScrH() * 0.8)
 	-- Shows a page and sizes the window to it (between 300 px and 80% of the screen).
-	local function show(id)
+	function show(id)
 		current = id
 		scroll:Clear()
 		local holder = vgui.Create("DPanel")
@@ -562,7 +579,8 @@ local function askOptIn(after)
 		title = "Stay connected through drops?",
 		body = "If your connection drops for a moment, the game keeps waiting instead of giving up, "
 			.. "and if you're disconnected anyway, the pack brings you back to Meowy Network by itself. "
-			.. "Your job and loadout come back if you're in within 3 minutes.",
+			.. "Back within 3 minutes, you usually keep your job, and your health and loadout too unless you'd just "
+			.. "been in a fight or were restrained.",
 		note = "Change it any time in Meowy settings, in the main menu.",
 		buttons = {
 			{ "Not now", "ghost", function() setEnabled(false) if after then after() end end },
@@ -923,7 +941,8 @@ local function startup()
 			closable = true,
 			buttons = {
 				{ "Not now", "ghost", optIn },
-				{ "Rejoin", "primary", function() RunConsoleCommand("connect", address) end },
+				-- JoinServer, as every other join: the engine refuses RunConsoleCommand("connect", address).
+				{ "Rejoin", "primary", function() join(address) end },
 			},
 			onDismiss = optIn,
 		})
