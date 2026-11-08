@@ -463,6 +463,9 @@ end
 -- Opt-in: asked once, Yes sets cl_timeout 60 and remembers the old value
 w = world({})
 w.run(4)
+-- It promises only what the server reliably restores (meowy_resilience).
+local promise = find(function(p) return type(p.text) == "string" and p.text:find("Back within 3 minutes", 1, true) ~= nil end)
+check("opt-in: the promise has its limits", promise ~= nil and promise.text:find("unless you were just in a fight, restrained or downed. Not after a server restart, and at most 3 times an hour.", 1, true) ~= nil, true)
 check("asked at start", w.click("Stay connected"), true)
 check("cl_timeout set", w.cl_timeout, "60")
 check("saved", w.settingsText, "asked=1\r\nenabled=1\r\nsaved_cl_timeout=30\r\n")

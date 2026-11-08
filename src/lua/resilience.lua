@@ -579,8 +579,8 @@ local function askOptIn(after)
 		title = "Stay connected through drops?",
 		body = "If your connection drops for a moment, the game keeps waiting instead of giving up, "
 			.. "and if you're disconnected anyway, the pack brings you back to Meowy Network by itself. "
-			.. "Back within 3 minutes, you usually keep your job, and your health and loadout too unless you'd just "
-			.. "been in a fight or were restrained.",
+			.. "Back within 3 minutes, you usually keep your job, and your weapons, health and armor too unless you "
+			.. "were just in a fight, restrained or downed. Not after a server restart, and at most 3 times an hour.",
 		note = "Change it any time in Meowy settings, in the main menu.",
 		buttons = {
 			{ "Not now", "ghost", function() setEnabled(false) if after then after() end end },
