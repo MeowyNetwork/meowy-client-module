@@ -49,7 +49,9 @@ cache aside (below), it's put back.
 - **From Windows' list of apps.** Since 1.7.2 the installer adds **Meowy Client Pack** to Windows'
   installed apps, for your account only (`HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\MeowyClientPack`,
   no admin rights), and keeps a copy of itself in `%LOCALAPPDATA%\MeowyClientPack\uninstall`, since the
-  one you downloaded may be gone. Uninstall there opens that copy's window and asks at once, with
+  one you downloaded may be gone. The entry shows the version that runs: the installer writes its own,
+  and from 1.7.3 the pack writes its version there at every start, so an in-game update shows too (only
+  when the entry exists; the pack never adds one). Uninstall there opens that copy's window and asks at once, with
   Garry's Mod or without it, as above; cancelled, the window stays so you can pick the `garrysmod`
   folder. Only running the installer adds the entry or updates the kept copy: in-game updates don't, so
   an install that only updated itself to 1.7.2 isn't listed until you run the 1.7.2 installer once. No

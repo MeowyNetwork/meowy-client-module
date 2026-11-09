@@ -377,7 +377,11 @@ static class UninstallSmoke
 					Check(k.GetValue("DisplayIcon") as string == "\"" + exe + "\",0", "apps: its icon");
 					Check((int)k.GetValue("NoModify") == 1 && (int)k.GetValue("NoRepair") == 1, "apps: no Modify or Repair");
 					Check((int)k.GetValue("EstimatedSize") == 1234, "apps: its size in KB");
-					Check(k.GetValue("DisplayVersion") == null, "apps: no version (in-game updates would make it stale)");
+					// The installer's own version; the pack keeps it right after in-game updates (src/apps_entry.cpp).
+					string v = System.Reflection.Assembly.GetAssembly(typeof(Program)).GetName().Version.ToString(3);
+					Check(k.GetValue("DisplayVersion") as string == v, "apps: shows the installer's version");
+					Check((int)k.GetValue("VersionMajor") == int.Parse(v.Split('.')[0]) && (int)k.GetValue("VersionMinor") == int.Parse(v.Split('.')[1]),
+						"apps: VersionMajor/VersionMinor");
 					Check(k.GetValue("InstallLocation") as string == Path.Combine(root, "apps"), "apps: where its files are");
 				}
 				Program.RegisterAppsEntry(key, exe, exe, Path.Combine(root, "apps"), 99);

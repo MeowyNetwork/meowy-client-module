@@ -158,6 +158,12 @@ jobs:
           ./buildtest/Release/config_backup_smoke.exe "$env:RUNNER_TEMP"
           cmake --build buildtest32 --config Release --target config_backup_smoke
           ./buildtest32/Release/config_backup_smoke.exe "$env:RUNNER_TEMP"
+      - name: Installed-apps version (apps_entry_smoke, both bitnesses)
+        run: |
+          cmake --build buildtest --config Release --target apps_entry_smoke
+          ./buildtest/Release/apps_entry_smoke.exe
+          cmake --build buildtest32 --config Release --target apps_entry_smoke
+          ./buildtest32/Release/apps_entry_smoke.exe
       - name: Parties (party_smoke, both bitnesses)
         run: |
           cmake --build buildtest --config Release --target party_smoke

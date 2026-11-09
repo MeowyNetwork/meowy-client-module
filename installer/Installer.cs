@@ -51,7 +51,9 @@ namespace MeowyInstaller
 		static readonly string[] HookHosts = { @"lua\includes\menu.lua", @"lua\menu\menu.lua" };
 
 		// No arguments: the window. "--install" / "--uninstall" [path] [--no-startup]
-		// [--no-sign-in]: no window; exit code 0 on success, 1 on failure, details on stdout.
+		// [--no-sign-in] [--no-launch]: no window; exit code 0 on success, 1 on failure,
+		// details on stdout. "--install" starts the launcher in the tray afterwards, as
+		// the window does (not with --no-launch, nor from an elevated installer).
 		// "--uninstall --without-game": Garry's Mod is gone, so only the launcher and
 		// the pack's own files (never chosen by itself: a mistyped or undetected path
 		// would leave the pack in the real game).
@@ -86,9 +88,10 @@ namespace MeowyInstaller
 			{
 				bool startup = Array.IndexOf(args, "--no-startup") < 0;
 				bool signIn = Array.IndexOf(args, "--no-sign-in") < 0;
+				bool launch = Array.IndexOf(args, "--no-launch") < 0;
 				bool withoutGame = args[0] == "--uninstall" && Array.IndexOf(args, "--without-game") >= 0;
 				string path = withoutGame ? null : args.Length > 1 && !args[1].StartsWith("--") ? args[1] : FindGarrysMod();
-				return RunCommandLine(args[0] == "--install", path, startup, signIn, withoutGame);
+				return RunCommandLine(args[0] == "--install", path, startup, signIn, withoutGame, launch);
 			}
 
 			Application.EnableVisualStyles();
@@ -101,7 +104,7 @@ namespace MeowyInstaller
 		[System.Runtime.InteropServices.DllImport("kernel32.dll")]
 		static extern bool AttachConsole(int processId);
 
-		static int RunCommandLine(bool install, string garrysmod, bool startup, bool signIn, bool withoutGame)
+		static int RunCommandLine(bool install, string garrysmod, bool startup, bool signIn, bool withoutGame, bool launch)
 		{
 			AttachConsole(-1);
 			bool found = !string.IsNullOrEmpty(garrysmod) && Directory.Exists(Path.Combine(garrysmod, "lua"));
@@ -179,7 +182,21 @@ namespace MeowyInstaller
 				{
 					Console.WriteLine(ResetUpdates());
 					SetStartupChoice(startup);
-					Console.WriteLine(InstallLauncher(signIn));
+					string launcher = InstallLauncher(signIn);
+					Console.WriteLine(launcher);
+					// Started now, as after the window's Install: before 1.7.3 it only
+					// started at the next sign-in. Never from an elevated installer (it
+					// would keep the administrator token).
+					if (launch && HasLauncher() && launcher.StartsWith("launcher: " + LauncherPath()))
+					{
+						if (IsElevated())
+							Console.WriteLine("launcher: not started (this installer runs as administrator); it starts at sign-in or from the Start menu");
+						else
+						{
+							StartLauncher();
+							Console.WriteLine("launcher: started in the tray");
+						}
+					}
 				}
 				Console.WriteLine("start with the game: " + (StartupHookPresent(garrysmod) ? "on" : "off"));
 				Console.WriteLine(install ? InstallShortcut(garrysmod) : UninstallShortcut());
@@ -1361,6 +1378,11 @@ namespace MeowyInstaller
 			using (RegistryKey k = Registry.CurrentUser.CreateSubKey(key))
 			{
 				k.SetValue("DisplayName", "Meowy Client Pack");
+				// The version Settings → Apps shows (1.7.2 registered none).
+				Version v = Assembly.GetExecutingAssembly().GetName().Version;
+				k.SetValue("DisplayVersion", v.ToString(3));
+				k.SetValue("VersionMajor", v.Major, RegistryValueKind.DWord);
+				k.SetValue("VersionMinor", v.Minor, RegistryValueKind.DWord);
 				k.SetValue("Publisher", "Meowy Network");
 				k.SetValue("UninstallString", "\"" + exe + "\" " + UninstallPromptArg);
 				k.SetValue("DisplayIcon", "\"" + icon + "\",0");

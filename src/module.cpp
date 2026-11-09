@@ -127,6 +127,7 @@
 #include "audio_watch.h"
 #include "startup_hook.h"
 #include "pack_versions.h"
+#include "apps_entry.h"
 #include "resource.h"
 
 #include <cstdio>
@@ -4024,6 +4025,9 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 			LUA->Pop();
 		}
 	}
+
+	// Settings → Apps shows the running version, also after an in-game update.
+	apps_entry::RefreshVersion(apps_entry::kKey, VERSION);
 
 	LUA->GetField(-1, "print");
 	if (LUA->IsType(-1, Type::Function))
