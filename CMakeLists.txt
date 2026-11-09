@@ -51,6 +51,7 @@ add_library(meowy SHARED
 	src/resilience.cpp
 	src/resilience_net.cpp
 	src/config_backup.cpp
+	src/apps_entry.cpp
 	src/doctor.cpp
 	src/mouse_confine.cpp
 	src/audio_watch.cpp
@@ -267,6 +268,13 @@ if(MEOWY_BUILD_TESTS)
 	if(MSVC)
 		set_property(TARGET pak_cache_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 		target_compile_options(pak_cache_smoke PRIVATE /W4 /utf-8)
+	endif()
+	# The installed-apps entry's version, kept right by the pack (scratch HKCU key):
+	#   apps_entry_smoke
+	add_executable(apps_entry_smoke tests/apps_entry_smoke.cpp src/apps_entry.cpp)
+	if(MSVC)
+		set_property(TARGET apps_entry_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+		target_compile_options(apps_entry_smoke PRIVATE /W4 /utf-8)
 	endif()
 	# Copies of config.cfg: one per change, the newest 10, written back for exec:
 	#   config_backup_smoke <scratch folder>
