@@ -16,6 +16,7 @@ namespace hardware
 #pragma comment(lib, "dxgi.lib")
 
 #include <cstring>
+#include <mutex>
 #include <string>
 
 namespace
@@ -67,11 +68,11 @@ namespace
 	}
 }
 
-namespace hardware
+namespace
 {
-	Info Get()
+	hardware::Info Gather()
 	{
-		Info info;
+		hardware::Info info;
 		info.cpu = CpuBrand();
 
 		SYSTEM_INFO si{};
@@ -105,6 +106,20 @@ namespace hardware
 		}
 
 		info.os = WindowsVersion();
+		return info;
+	}
+}
+
+namespace hardware
+{
+	// Worked out once per game: none of it changes while the game runs (an
+	// eGPU plugged in mid-session is the exception, fine for a profile), and
+	// the DXGI enumeration costs milliseconds on the main thread at each join.
+	Info Get()
+	{
+		static std::once_flag once;
+		static Info info;
+		std::call_once(once, [] { info = Gather(); });
 		return info;
 	}
 }

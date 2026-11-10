@@ -66,6 +66,9 @@ local PROTECTED = {
 	meowy_server_index = number,
 	meowy_menu = number,
 	meowy_menu_version = number,   -- below "2", the next start switches the Meowy home back on (resilience.lua)
+	-- Multicore rendering (multicore.lua): only the player turns it on or off,
+	-- so a change of it is theirs, and resets its crash guard.
+	meowy_multicore = number,
 }
 
 -- Meowy Network's signed policy (policy.h) can turn a setting off ("off
@@ -204,16 +207,19 @@ function meowy.Setting(name, default, help)
 	cvs[name] = cv
 	helps[name], defaults[name] = help, default
 	if PROTECTED[name] then kept[name] = cv:GetString() end
-	objects[name] = setmetatable({}, { __index = function(_, k)
-		if k == "GetBool" then return function() return not killed(name) and truthy(current(name)) end end
-		if k == "GetInt" then return function() if killed(name) then return 0 end return int(current(name)) end end
-		if k == "GetFloat" then return function() if killed(name) then return 0 end return tonumber(current(name)) or 0 end end
-		if k == "GetString" then return function() if killed(name) then return "0" end return current(name) end end
+	-- The four readers are made once, on the object itself (some hooks read
+	-- them every frame); any other ConVar method comes through the metatable.
+	local o = setmetatable({}, { __index = function(_, k)
 		local f = cv[k]
 		if isfunction(f) then return function(_, ...) return f(cv, ...) end end
 		return f
 	end })
-	return objects[name]
+	o.GetBool = function() return not killed(name) and truthy(current(name)) end
+	o.GetInt = function() if killed(name) then return 0 end return int(current(name)) end
+	o.GetFloat = function() if killed(name) then return 0 end return tonumber(current(name)) or 0 end
+	o.GetString = function() if killed(name) then return "0" end return current(name) end
+	objects[name] = o
+	return o
 end
 
 -- The pack's settings for the Meowy console (hidden from cvarlist): name,
@@ -256,20 +262,33 @@ concommand.Add("meowy_policy_status", function()
 	print("[Meowy Client Pack] policy: " .. (istable(st) and st.describe or "unavailable"))
 end)
 
--- Every frame, protected changes are settled (a server's put back at once);
--- once a second, what changed is saved: approved values only.
-local nextSave, written = 0, nil
+-- Four times a second, protected changes are settled (a server's put back
+-- within a quarter of a second; anything reading one settles it first, so a
+-- server's value is never what's read). Once a second, what changed is saved:
+-- approved values only, the file's text made again only when a value differs.
+local SETTLE_EVERY = 0.25
+local nextSettle, nextSave, written, text, values = 0, 0, nil, nil, {}
 hook.Add("Think", "MeowyClientPack.SaveSettings", function()
 	local now, j = SysTime(), joining()
 	if j and not wasJoining then told = {} end   -- each join logs its own put-backs
 	if j then joinedEver = true end
 	wasJoining = j
-	for name in pairs(PROTECTED) do if cvs[name] then settle(name) end end
+	if now >= nextSettle then
+		nextSettle = now + SETTLE_EVERY
+		for name in pairs(PROTECTED) do if cvs[name] then settle(name) end end
+	end
 	if now < nextSave then return end
 	nextSave = now + 1
-	local lines = {}
-	for _, name in ipairs(names) do lines[#lines + 1] = name .. "=" .. clean(current(name)) end
-	local text = table.concat(lines, "\n")
+	local changed = text == nil or #values ~= #names
+	for i, name in ipairs(names) do
+		local v = clean(current(name))
+		if values[i] ~= v then values[i], changed = v, true end
+	end
+	if changed then
+		local lines = {}
+		for i, name in ipairs(names) do lines[i] = name .. "=" .. values[i] end
+		text = table.concat(lines, "\n")
+	end
 	if written == nil then written = text return end -- in effect at start; nothing to write
 	if text ~= written and meowy.MenuSettingsWrite(text) then written = text end
 end)

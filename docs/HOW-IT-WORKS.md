@@ -110,6 +110,7 @@ are fine).
   `cache\workshop\resource\fonts` are renamed to `fonts.meowy-lazy` while the game starts and put back
   as soon as the pack loads; the game registers them again at the first map load anyway. They're also
   put back when the launcher quits (tray Quit, `--quit`, the installer), and by Install and Uninstall.
+  A second Play while the first one's are still aside keeps them aside for its own start.
 - After a Steam update or Verify it puts the start-up line back, once Steam is done and the game is closed
   (never if you turned "Start with the game" off). A repair that can't add the line (start-up off, the
   pack's files missing) is tried once per change, not again and again.
@@ -126,9 +127,14 @@ are fine).
 - Updates: while the game is closed, the launcher downloads a new pack version from the pack's own signed
   release (the same document and checks the pack uses in the game) and sets it up for the next start; the
   start-up stub switches to it. Only with "Start with the game" on: off, it downloads nothing and its
-  Updates panel says updates need it. Its window shows the version you run and what's ready. It also
-  follows Meowy Network's signed policy (the kill switch), and when it starts it rewrites
-  `state\policy.bin` from the kept policy if that file differs (see *Meowy Network's kill switch*).
+  Updates panel says updates need it. If the game starts while it downloads, it keeps the download but
+  sets nothing up and removes no older version until the game is closed again. Its window shows the
+  version you run and what's ready. It also follows Meowy Network's signed policy (the kill switch),
+  and when it starts it rewrites `state\policy.bin` from the kept policy if that file differs (see
+  *Meowy Network's kill switch*).
+- While the game runs, the launcher runs in Windows' efficiency mode (EcoQoS) and only waits for the game
+  to exit; it doesn't look for processes again after the game's first minute. Its window, tray and
+  game connection don't wait on file reads or the network.
 
 ## Settings
 
@@ -139,8 +145,9 @@ Mod's server list: only servers with players (`meowy_fast_serverlist`), The cons
 console (`meowy_console_key`), Menu text size (`meowy_menu_scale`), Continue where you left off
 (`meowy_menu_continue`), Your servers on the main menu (`meowy_menu_home`), Server card in the Escape menu
 (`meowy_menu_escape`), Meowy home screen (`meowy_menu`), Discord status on Meowy Network
-(`meowy_discord`), and the settings guard (`meowy_settings_guard`, with the servers whose changes are
-always put back). Its other tab is the PC doctor.
+(`meowy_discord`), the settings guard (`meowy_settings_guard`, with the servers whose changes are
+always put back), and Multicore rendering (`meowy_multicore`, see *Multicore rendering on by default*).
+Its other tab is the PC doctor.
 
 Everything else is a console setting, named with its feature below: `meowy_party`,
 `meowy_serverlist_reports`, `meowy_honest_serverlist`, `meowy_server_index`, `meowy_data_sandbox`,
@@ -164,9 +171,11 @@ console has to be on: **Options → Keyboard → Advanced → Enable developer c
 - **Servers can't change the ones that guard you.** A server's Lua can run console commands on your game
   (`RunConsoleCommand`; Garry's Mod blocks only a fixed list of names). So for `meowy_data_sandbox`,
   `meowy_updates`, `meowy_settings_guard`, `meowy_party`, `meowy_serverlist_reports`, `meowy_discord`,
-  `meowy_honest_serverlist`, `meowy_server_index`, `meowy_menu` and `meowy_menu_version`, the pack keeps
-  the value it approved and puts any other change back through the console. Until then the setting
-  reads as its approved value (also on the same frame), and only approved values are saved. The console
+  `meowy_honest_serverlist`, `meowy_server_index`, `meowy_menu`, `meowy_menu_version` and
+  `meowy_multicore`, the pack keeps
+  the value it approved and puts any other change back through the console, within a quarter of a
+  second. Until then the setting reads as its approved value (also on the same frame), and only approved
+  values are saved. The console
   says so once per setting per join. A change is approved when Meowy settings, the Meowy console or one
   of the pack's prompts makes it, or when it's made before you've joined any server in that start (your
   config files, launch options and the game's own console count then). After the first join, a change
@@ -190,6 +199,9 @@ on Meowy Network's servers.
   once, and nothing the server asks for reaches Discord until it's back on (then the server's latest
   status shows again). Servers can't turn it back on (see *Settings*). Without "Start with the game" the
   pack reads the saved setting when you join. Discord's own activity setting turns it off too, for every game.
+  Leaving a server (or switching it off) waits at most about a second for that thread, even when the
+  Discord app hangs and stops reading: a write stuck on its pipe is cancelled, and a thread that still
+  doesn't stop is left to finish on its own.
 - Since 1.1 it also reads the game's own crash reports (`GarrysMod/crashes/*.txt`), so the
   server can see which addon crashed your game. Only the "Lua Stack Traces" section is read
   (at most 3 reports per join, 4 KB each, any `C:\...` paths masked). The rest of the report,
@@ -197,12 +209,16 @@ on Meowy Network's servers.
   happened on Meowy Network are sent: at the next start the pack notes which reports were written
   while the game was on our server (`meowy_crashes.txt`, the newest 50; this needs "Start with the
   game"). Crashes on other servers, at the menu, in singleplayer or from before 1.7.1 are never sent.
+  The pack lists the crash folder first, keeps only the reports noted as ours, and opens them
+  newest first until it has enough, so a folder of hundreds of old reports costs nothing at a
+  join, and newer crashes on other servers can't push ours out of the list.
 - Since 1.2 each crash report also says where the game crashed, e.g.
   `engine.dll+0x200660 (0xC0000005)`, read from the game's own crash dump. Only the module's file
   name and the offset are used; the dump itself never leaves your PC.
 - Since 1.2 it can describe your hardware: CPU and GPU model, thread count, RAM, video memory and
   Windows version. No serial numbers or user names. The server stores it with your Steam account
-  ID, next to your frame-time stats, to see what players' machines struggle with.
+  ID, next to your frame-time stats, to see what players' machines struggle with. It's worked out
+  once per game and reused at later joins.
 - Since 1.3 it can make joins faster. At the end of loading a server's Lua, Garry's Mod throws
   away every material it has loaded and loads them all again; on a large map that is 5-15
   seconds of every join. When the server asks for it, the module skips the "throw away" step
@@ -211,7 +227,8 @@ on Meowy Network's servers.
   - It changes 6 bytes of `client.dll`, in memory, for that session only. Nothing on disk
     changes, and no other game is affected.
   - It finds that code by an exact byte pattern and does nothing if anything differs (a
-    Garry's Mod update, for example).
+    Garry's Mod update, for example). The search runs once per game: later joins check that
+    `client.dll` and those bytes are still the same, then change them without searching again.
   - Turn it off with `meowy_skipmatreload 0` in the console. A server can also turn it off for
     everyone.
   - It's switched on only while you join a Meowy Network server and put back as soon as you're
@@ -228,8 +245,13 @@ on Meowy Network's servers.
     entry replaced, in memory; no code bytes change. The copy goes in at the main menu and stays for
     the session, but it answers from its lists only while a join loads; the rest of the time it passes
     every call straight on. Folders other things write to during a join (`data`, `download`, `cache`,
-    `cfg`, Steam's workshop folder) are never listed, a write drops that folder's list, and a list kept
-    from an earlier join is used again only if the folder hasn't changed since.
+    `cfg`, Steam's workshop folder) are never listed, a write drops the lists of that folder and every
+    folder above it, and a list kept from an earlier join is used again only if the folder hasn't
+    changed since. Lists no join used in the last three are dropped.
+  - A folder whose parent was already read this join, and doesn't have it, is answered "not there"
+    without asking Windows at all; any other folder that isn't there costs one call. A folder it
+    can't read is asked about once per join, and a list read while the game was writing a file is
+    not kept. An answer for a folder it already knows costs no memory allocation.
   - Turn it off with `meowy_fast_file_checks 0` (at the main menu it puts the game's own table back;
     `1` puts the copy back in, also in the same session). `meowy_fast_file_checks_status` shows the
     counts.
@@ -259,8 +281,11 @@ on Meowy Network's servers.
   - It changes 31 + 34 bytes (64-bit) or 23 + 29 bytes (32-bit) of `client.dll` in memory. It does
     nothing unless the loop, its wildcard test and the matcher behind it are exactly the expected
     code and the list is the engine's own; otherwise the game's own loop runs.
+  - The sorted copy follows the list: names added while you join are merged in, and every name is
+    compared with the copy again only when a join or map change starts or the list is a new one.
   - Turn it off with `meowy_fast_lua_find 0` (it switches at your next disconnect).
-    `meowy_fast_lua_find_status` shows the walks and the names skipped.
+    `meowy_fast_lua_find_status` shows the walks, the names skipped, and the names checked against
+    the copy next to what checking every name at every search would have been.
 - With "Start with the game" on, the font pass on every join is about twice as fast, on any
   server. At each map load Garry's Mod registers all ~400 custom font files again, and loads
   and frees `gdi32.dll` (through the Steam overlay) for every single one, although it's loaded
@@ -279,6 +304,8 @@ on Meowy Network's servers.
     at low priority: 3 s after the menu shows your Continue server, or when you hold the mouse over a
     server for 0.4 s on the home card or home screen. It reads at most 4 GB, stops the moment a join
     starts, and only on an SSD (on a hard drive the reads would get in the way of everything else).
+    What it reads stays in Windows' memory like any other file data: its low priority is for the disk
+    and the processor only, so it isn't the first data Windows throws out when the join needs memory.
   - Measured on our dev server, from a fresh start of the game with Windows' memory cleared: in game after
     46.2 s without it and 30.0 s with it. It had read 1,516 MB in 42 files, in 2.7 s, before the join.
   - The warming only reads files, and the game opens the same files as before. To see what a join reads,
@@ -287,6 +314,11 @@ on Meowy Network's servers.
     stay for the session, but note anything only while a join loads. With both pre-warm switches off
     (or off by Meowy Network's policy), they're never put in and no `joins\<address>.txt` is written. A
     join you cancel keeps nothing.
+  - Noting stays cheap for the game: each file's name is looked up once, on its first read, from the
+    disk's own name and a table of drive letters made when the join starts (asking Windows for each
+    file's `C:\...` name was most of the cost). Once you're in game, merging the list with what earlier
+    joins learned, checking those files are still there and writing it happen on a background thread,
+    not in the first frame you see. The menu reads each server's list once, until it changes.
   - It needs the fast file checks (`meowy_fast_file_checks`, on by default) to see which files a join
     opens. Turn it off in Meowy settings ("Get servers ready before you join") or with `meowy_prewarm 0`.
     `meowy_prewarm_status` shows what it has written down and read.
@@ -334,6 +366,27 @@ on Meowy Network's servers.
     screen** buttons. If WebView2 or the site isn't available, a simpler built-in screen is shown.
   - The page is loaded, hidden, when the game starts, so a join shows it at once. Between joins
     it waits hidden (WebView2's processes use some memory, outside the game).
+    - A page a join showed is loaded again fresh for the next one: at once if you're back at the menu,
+      but if you're in game only when the next join starts, so it never reloads as you spawn. A page
+      that never showed (another server's join, or one cancelled before it was ready) isn't reloaded.
+    - If the hidden page fails at the menu (its browser closed, or it couldn't load), it's started
+      again after 10 seconds, then a minute, at most three times per visit to the menu. A page that
+      fails during a join (the built-in screen takes over) is started again the same way after that
+      join ends, if it's still wanted. A new browser waits up to 3 seconds for the old one to finish
+      closing, since both use the same profile folder.
+    - While the game is minimised, the page is hidden too, so it stops drawing and its games pause.
+    - Clicks on the page count only while it's on screen, and each one counts, so a **Cancel** in the
+      last moment of a fade-out can't cancel the next join. The built-in screen's buttons count only
+      for the join they were drawn for, in the same way.
+  - Its thread costs next to nothing outside a join: between joins it sleeps until a join starts or
+    the menu loads or unloads the page. During a join it runs up to 30 times a second (60 while the web
+    page shows; the page draws itself). The built-in screen keeps the parts that don't move in a bitmap and
+    redraws only the bottom strip (spinner, progress, clock); the time that takes is in `last_join.txt`.
+    All of it is drawn again whenever what it shows changes, and when the window is shown (at a join's
+    start, or the game is restored after being minimised) or Windows asks for it.
+  - It does its own file work (`last_join.txt`, the stage times) on its thread, so the game never
+    waits on a disk for it. A join that starts while the last one's screen is still up (a retry or map
+    change right after spawning) keeps the screen up.
   - It starts the moment the game says it's connecting to one of our servers, so Garry's Mod's own
     page never shows. The server's name, the map and your SteamID64 are passed to the page only once
     the game's real connection is confirmed to be ours. The page then sends your SteamID64 to
@@ -349,7 +402,9 @@ on Meowy Network's servers.
     browser makes when you click a server. A count far above the list, players whose time doesn't
     grow, or the same player joined at the same moment on two servers mark the server
     `[FAKE - N real]`; it then shows and ranks by N. A server that won't give its list shows
-    `[LIST HIDDEN]`, with its count untouched.
+    `[LIST HIDDEN]`, with its count untouched. A list that comes in several packets is put together
+    only from packets of the same reply (Source's split ID), so a late reply to the first ask can't
+    mix with the answer to the second.
   - It also downloads Meowy Network's own verdicts (`meowynetwork.com/api/pack/servers`), from a
     crawler that adds Steam's own count and the count's history, and from an observer that joins
     servers: `[VERIFIED]` means it joined in the last 7 days and saw nothing fake; `[UNVERIFIED]`
@@ -358,6 +413,10 @@ on Meowy Network's servers.
     with a password, unless it turns the observer away like that three times since it last got in.
     Servers marked `[UNVERIFIED]` or `[LIST HIDDEN]` sit slightly lower in the list than
     otherwise-equal ones; none are hidden.
+  - The tags and rank changes reach the list together, in one call to its page a frame. No check
+    starts while a join loads or while you're in game; the rest wait for the main menu. A server
+    whose second read falls due then is judged on its first read alone, and a second read that
+    comes in much more than 45 seconds after the first isn't compared with it.
   - **What it sends:** on a server you join that isn't ours, it runs the game's `status` command
     twice, about 90 seconds in and four minutes later. It sends meowynetwork.com the server's
     address, its advertised count, the number of bots `status` lists, and for each other account
@@ -391,7 +450,11 @@ on Meowy Network's servers.
   none ended in the last 2 seconds: any server's Lua can run that command, even right after a
   `disconnect` it queued.
   - **Lines:** the last 50,000 console lines with their time and colour, kept from the moment the game
-    starts. Warnings show in amber and errors in red, and text that isn't valid UTF-8 is cleaned.
+    starts, and no more than 16 MB of text (6 MB in the 32-bit game): a server printing long lines in a loop
+    pushes the oldest out sooner instead of filling memory. Warnings show in amber and errors in red, and
+    text that isn't valid UTF-8 is cleaned. The pack keeps them outside the game's Lua; the window reads them
+    all when it opens and lets them go when it closes, so a join never copies its thousands of lines into
+    Lua while the window is shut.
   - **Finding things:**
     - **Search** as you type (Ctrl+F) shows only the lines with it. With "Mark, don't filter", every line
       stays and the matches are marked; Enter (or F3) goes to the next, Shift+Enter to the previous.
@@ -400,8 +463,9 @@ on Meowy Network's servers.
       show how many there are of each and narrow the log to the ones picked.
     - **Collapse repeats** folds the same line into a count, also when it comes back within a few lines and
       10 seconds, so spam ("x512 in 10 s") doesn't bury the rest.
-  - **Dividers** mark where a join starts, where you're in game and where you leave. While you're scrolled up,
-    a pill says how many lines came in below and takes you back down.
+  - **Dividers** mark where a join starts, where you're in game and where you leave, in their place among
+    the lines even if the window opens much later. While you're scrolled up, a pill says how many lines
+    came in below and takes you back down.
   - **Copying:** drag over lines (Shift+click extends) and Ctrl+C or Copy copies them; Copy with nothing
     selected takes everything shown. Right-click a line to copy it, search for it, show only lines like it,
     or, for a Lua file, ask the game which addon it's from (`whereis`).
@@ -437,7 +501,8 @@ on Meowy Network's servers.
     which addon. Garry's Mod's other two notices (a serious problem; the pause menu blocked) show the same
     way. `meowy_console_badge 0` brings Garry's Mod's notices back.
   - **Overlay:** `meowy_console_overlay 1` shows the newest warnings and errors over the game (2: every line),
-    see-through, click-through and fading; off (0) by default.
+    see-through, click-through and fading; off (0) by default. It keeps only the last 8 lines it can show,
+    read a few times a second.
   - **The console key:** when Garry's Mod's console shows, it's hidden at once and this one opens. Off in Meowy
     settings ("The console key opens the Meowy console", `meowy_console_key 0`) for the game's console.
   - It reads tier0's output through its own listener (the logging system or the spew function, whichever
@@ -450,6 +515,8 @@ on Meowy Network's servers.
     query gives (its tags read the same way). So the gamemode list, categories, blacklist and the count
     checks above work as before. Favourites, History and LAN are the game's own, complete lists.
   - It reads Steam's server list through the game's own `steam_api`, `ISteamMatchmakingServers`.
+  - The page gets at most 50 servers a frame. A join started while the list is still filling stops it
+    (the browser asks again the next time it's opened), so it doesn't compete with the join.
   - Off in Meowy settings ("Garry's Mod's server list: only servers with players") or with
     `meowy_fast_serverlist 0` for every server, the game's way. It only affects Garry's Mod's own server
     list: the Meowy home screen's Find servers always lists every server, the empty ones last.
@@ -462,7 +529,11 @@ on Meowy Network's servers.
   removed.
   - The index is `https://meowynetwork.com/api/pack/index`: Steam's master list, refreshed each minute,
     with the honest list's verdicts and no player names. The pack fetches it off the game's thread (gzip,
-    no redirects, 4 MB at most), and fetches it again each minute while the list stays open.
+    no redirects, 4 MB at most, 20 seconds at most), and fetches it again each minute while the list stays
+    open. A download cut off midway counts as failed, and its version tag isn't kept, so the next fetch
+    asks for the whole index again instead of being told nothing changed. Its rows are read and listed a
+    slice a frame, never all in one frame, and only at the main menu: an answer that arrives during a join
+    waits, and one asked for before the join is dropped unread.
   - Pings Steam hasn't measured yet show as `~45`, greyed. That's either your last ping to that server's
     network or an estimate from the distance (IP Geolocation by DB-IP). The pings Steam measures are kept in
     `%LOCALAPPDATA%\MeowyClientPack\pings.json` (per /24 network, 30 days), never in `garrysmod/data`.
@@ -493,6 +564,8 @@ on Meowy Network's servers.
   - A friend without the pack gets Steam's ordinary invite to the party's server instead.
   - Rich Presence: `steam_player_group` (the party) and `meowy_pack` (so friends' packs know who has it).
     Steam shows these to friends only. `meowy_party 0` turns parties off, along with both keys.
+    Only friends playing Garry's Mod are read, and the pack asks Steam for a friend's Rich Presence at
+    most once per game, only while it shows no `meowy_pack` (Steam keeps friends' up to date itself).
     `meowy_party_status` shows the party.
 - **Its own files** are in `%LOCALAPPDATA%\MeowyClientPack`, never in `garrysmod/data`, which any
   server's Lua can read, so the pack leaves no files there for other servers to find. (Like any binary
@@ -604,7 +677,12 @@ on Meowy Network's servers.
   and tiny at 4K. The pack zooms the whole menu page: Auto is the screen height over 1080, so 100% at
   1080p, 133% at 1440p and 200% at 4K. Or pick 100–200% in Meowy settings (`meowy_menu_scale`, 0 =
   auto). It covers the main and Escape menus and every screen in them (Find servers, New game,
-  Addons and the rest). The pack's own windows already scale with the screen.
+  Addons and the rest). The pack's own windows already scale with the screen. The zoom is set when it
+  changes and when the page reloads (a language change does), out of game.
+- **What the pack sends the menu page.** Its scripts (the home screen, the Home and Escape cards, the menu
+  entries) go into the page once each time it loads, and after that only what changed: the home lists
+  when they change, Continue when it changes, and the Escape card's ping, loss and time on their own at
+  most every 2 seconds (ping to the nearest 5 ms), so the card isn't redrawn for them.
 - **Meowy home screen (on by default).** The pack's home in place of Garry's Mod's main screen ("Meowy home
   screen" in Meowy settings, `meowy_menu`). It has:
   - **Continue**, and your servers, as on the card below;
@@ -676,7 +754,10 @@ on Meowy Network's servers.
     stronger one is there, it says so and offers a button to Windows' Graphics settings, with the steps.
     The pack doesn't set the per-app GPU preference itself: that's your Windows setting.
   - **Power:** on battery, battery saver, and Windows' power mode ("Best power efficiency").
-  - **Multicore:** `gmod_mcore_test` and `mat_queue_mode`, with the command to type if it's off.
+  - **Multicore:** `gmod_mcore_test` and `mat_queue_mode`, with the command to type if it's off. Since
+    1.7.2, when it's the pack's (see *Multicore rendering on by default*), the tip points to Meowy
+    settings instead: turned off there, turned off by its crash guard, or turned off since by a server or
+    a config file.
   - **32-bit game:** how to switch to the 64-bit branch (Steam, Properties, Betas).
 - **Windows notifications while you're alt-tabbed** (1.5+). When something happens to you in the city
   and the game isn't the window in front, Windows shows a notification ("Your printer is under
@@ -756,11 +837,13 @@ on Meowy Network's servers.
 - **Sound follows the default device.** Plug in headphones mid-game and the game's sound moves to Windows'
   new default device (the pack runs `snd_restart` when Windows says the default changed).
   `meowy_audio_follow 0` turns it off. The PC doctor also has a microphone section (Bluetooth hands-free
-  mode, two microphones).
+  mode, two microphones). Watching starts on a thread of its own without holding up the menu, so a slow
+  Windows audio service at start no longer turns it off for the session.
 - **The mouse stays in the game while you aim.** In windowed or borderless mode, while the game is in front
   and the cursor is hidden, the cursor is kept inside the game window (Windows' `ClipCursor`), so a fast
   flick can't click another window. It's free whenever a cursor shows and on alt-tab.
-  `meowy_mouse_confine 0` turns it off.
+  `meowy_mouse_confine 0` turns it off. It checks 40 times a second only while the game is in front, 4 times
+  a second while another window is, and not at all while it's off.
 - **The loading screen on other servers.** Servers without a loading page of their own get a neutral
   version of the pack's screen: the server's name and map, each stage's time, and an estimate from your
   earlier joins there (kept per server on your PC). Servers with their own loading page keep it.
@@ -783,6 +866,9 @@ on Meowy Network's servers.
     64-bit, 64 MB on 32-bit) is emptied when the join ends.
   - Worker threads read ahead from the map's pak (`garrysmod\cache\map_pack.bsp`). An entry whose sizes
     can't be real is skipped, and if memory runs out the workers stop and the join goes on.
+  - There's one worker per physical core beyond two (at most 6, 3 on 32-bit), so they don't run on the
+    main thread's own core. The game's reads never wait while a worker copies or frees an entry, and
+    the cache's memory is freed on a background thread when the join ends.
 - **Signed updates.** The pack checks `meowynetwork.com/pack/v1/release-stable.txt` a minute after start and
   every 6 hours. A new version is used only if Meowy Network's release key signed the document and the
   file's SHA-256 matches, and only while the document hasn't expired, Meowy Network's policy allows that
@@ -802,6 +888,10 @@ on Meowy Network's servers.
   - The Meowy Launcher does the same checks while the game is closed. Only installs made with 1.7.0's
     installer or later can update. Running the installer always makes its own version the one that loads
     (see *Installing again*).
+  - **Out of the way of the game:** a check due while a join is loading waits until it has loaded
+    (looked at every 30 seconds). The check runs below normal priority, and the download, its write and
+    its SHA-256 at Windows' background disk priority. A download that doesn't arrive whole, or takes
+    more than 10 minutes, is dropped and tried at the next check.
   - `meowy_updates 0` turns updates off everywhere. Every check (the pack's, mid-session too, and the
     launcher's) reads it first, also when the running version is revoked or too old, so after it's set
     nothing contacts the site or downloads. A version already downloaded waits: the stub starts no
@@ -810,7 +900,15 @@ on Meowy Network's servers.
   Network (`meowynetwork.com/pack/v1/policy.txt` and `.sig`), and the launcher does the same. It can switch
   off one feature, one version (or every version below a minimum) or the whole pack, for example while a
   crash is fixed. Your own settings are kept and come back afterwards. `meowy_policy_status` shows the
-  policy in effect.
+  policy in effect. The 30-minute check waits while a join is loading, and the `.txt` and the `.sig`
+  are fetched back to back over one connection.
+  - **Without "Start with the game"** the pack is loaded only when you join Meowy Network, and the game
+    frees it again when you leave. Then each join fetches the policy once, with no 30-minute repeat, on a
+    thread that keeps the pack loaded until that fetch is done.
+  - **Each join** also reads the kept policy again (the launcher may have kept a newer one meanwhile), but
+    only when `policy.txt` or `policy.sig` changed since it was last read; otherwise the policy in memory
+    is used without touching the files. If the launcher is busy with them, the join doesn't wait more
+    than 100 ms: it keeps the policy in memory and reads the files at the next join.
   - **Three signing keys.** The release key is in a TPM chip on Meowy Network's PC: it can't be copied off
     it and needs a PIN on every use. It may sign any policy. The ops key (meant for automatic pauses by
     our backend) and the recovery key are password-protected key files, so a copy could still be stolen.
@@ -828,13 +926,66 @@ on Meowy Network's servers.
   - **The way back from a bad policy** is `MeowyClientPack.exe --reset-policy` (see *Installing, starting
     and uninstalling*), only when Meowy Network says to.
 
+## Multicore rendering on by default
+
+Since 1.7.2 the pack turns on Garry's Mod's multicore rendering (`gmod_mcore_test 1`) at every start.
+It moves part of the game's drawing work off its main thread, which is what holds most PCs back: on
+Meowy Network's map a frame took 2.65 ms with it on and 5.30 ms with it off. The game doesn't save this
+setting and starts with it off, so without the pack it's off at the main menu, on every other server,
+and on Meowy Network until our server's FPS Booster turns it on.
+
+**This changes an engine setting on every server you join, not only on Meowy Network.** It's the same
+setting as typing `gmod_mcore_test 1` in the console, and it stays on until the game closes (or a server
+changes it).
+
+- **To opt out:** Meowy settings → **Multicore rendering** off (or `meowy_multicore 0` in the Meowy
+  console). The pack then sets it back to 0 at once, if it had turned it on, and leaves it alone from
+  then on. Servers can't turn the setting back on or off for you (see *Settings*); Meowy Network's kill
+  switch can turn it off for everyone.
+- **Your own choice wins.** If `mat_queue_mode` is 0 or 1 (you set it yourself; the game's default is
+  -1), the pack leaves multicore alone, at start and whenever `mat_queue_mode` changes to one of those
+  (Options, a config file). If a config file of yours (`autoexec.cfg`) turns `gmod_mcore_test` off again
+  in the first 30 seconds after start, that start keeps it off.
+- **It's set at the main menu, before any join,** the menu's own way, so the settings guard counts it as
+  your own value, not a server's change. A server that changes it later isn't fought; the settings guard
+  and the PC doctor see that as usual.
+- **Crash guard,** the same as Meowy Network's FPS Booster's. `multicore_guard.txt` keeps a "running"
+  marker with whether multicore was on (the game's own value, whoever set it) and when that start began,
+  written at start and cleared when the game closes normally. A session counts as a crash only when its
+  marker is still there at the next start **and** Garry's Mod's own crash handler wrote a report
+  (`crashes\*.txt` in the game's folder, next to its `.dmp`) after that session began. A marker left
+  without such a report counts as a clean session: nothing is counted, and the console says so
+  (`multicore: the last session didn't record a clean exit, but Garry's Mod wrote no crash report in it`).
+  So a normal quit is never taken for a crash, even if the pack missed it; a game killed while frozen,
+  which leaves no report, isn't counted either. Two crashes in a row with multicore on: the pack turns it
+  off and tells you at the main menu. If the game then crashes again with it off, multicore wasn't the cause and it goes back on (you're
+  told that too). After a second round of two crashes with it on, it stays off. Turning the switch on or
+  off yourself starts the guard over. The guard never changes your setting: its "off" is its own, and the
+  switch shows off while it lasts.
+  - The main menu's Lua gets no dependable "the game is closing" call, so the marker is cleared by the
+    pack's DLL as Windows ends the game's process normally (it stays loaded for the menu until then), and
+    by the menu's `ShutDown` hook should the game send one. A crash ends the process without that step,
+    and the DLL doesn't clear it if the game wrote a crash report during that run. Should neither step
+    run on a normal quit, the crash report rule above still keeps it from counting.
+- **Meowy Network's FPS Booster** (our server's Lua) used to turn multicore on itself, with its own crash
+  guard. On a pack that turned it on at start it now leaves multicore to the pack: the pack tells our
+  server's Lua so with `meowy.MulticoreManaged()` (see DEVELOPERS.md). Ticking or unticking it in the
+  booster's menu still works as before, and if you unticked it there before, it's turned off again on
+  Meowy Network; the pack doesn't turn it back on while you're there (it only acts when its own switch,
+  its guard or `mat_queue_mode` changes, never against a server). Without the pack, or when the pack
+  left multicore alone (switch off, crash guard, `mat_queue_mode`), the booster does what it did before.
+- **PC doctor:** when it's the pack's, its multicore tip points to Meowy settings, not the console.
+
 ## Everything it sends and writes
 
 **Over the network** (the pack and the launcher):
 - **meowynetwork.com, over HTTPS.** Like any website it sees your IP address. It doesn't log the pack's
   requests with it, and the server index uses it only to guess your rough location for ping estimates.
-  - `/pack/v1/policy.txt` and `.sig` (the kill switch): from the pack at start and every 30 minutes, and
-    from the launcher every 30 minutes while the game is closed.
+  The pack's requests share one connection where they can (kept open between requests, HTTP/2 where
+  Windows has it), ask for gzip, never follow a redirect, and use only an answer that arrived whole.
+  - `/pack/v1/policy.txt` and `.sig` (the kill switch): from the pack at start and every 30 minutes
+    (without "Start with the game": once each time you join Meowy Network), and from the launcher every
+    30 minutes while the game is closed.
   - `/pack/v1/release-stable.txt`, `.sig` and a new version's DLL (updates): a minute after start and every
     6 hours, and from the launcher while the game is closed; never with `meowy_updates 0` or with "Start
     with the game" off.
@@ -866,13 +1017,17 @@ on Meowy Network's servers.
 - **In `%LOCALAPPDATA%\MeowyClientPack`:**
   - settings: `menu_settings.txt`, `settings_guard_session.txt`, `settings_guard_always.txt`,
     `cvar_restore.txt` (values the pack changes for a while), `repairs.txt`, `startup_off.txt`,
-    `config_backups\`;
+    `multicore_guard.txt` (multicore rendering's crash guard), `config_backups\`;
   - start-up: `boot.lock` and `recover.lock` (for a moment), `state\` (the kept policy, `policy.bin`, the
     update pointers and floors, `install_token`), `bin\<version>` (downloaded versions);
   - loading screen: `join_times.txt`, `join_times_servers.txt`, `last_join.txt`, `css_scale.txt` and
     WebView2's profile;
   - staying connected and Continue: `resilience.txt`, `on_server.txt`, `last_server.txt`,
-    `meowy_crashes.txt`;
+    `meowy_crashes.txt`. These, `menu_settings.txt`, the settings guard's two files, `repairs.txt`,
+    `multicore_guard.txt`,
+    `cvar_restore.txt` and the console's history and pins are written whole (a temporary file, then renamed over the old one) but not forced to the
+    disk at once: they survive the game crashing, and many are written while a join loads. The
+    policy, the update pointers and the `config.cfg` backups are still flushed to the disk;
   - notifications: `notify.txt`, `notify_icon.png`, `notify_catalogue.txt`;
   - joins and servers: `joins\` (pre-warm), `pings.json`, `serverlist.log`;
   - the console: `console_history.txt`, `console_pins.txt`, `logs\`;

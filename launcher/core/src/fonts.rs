@@ -18,6 +18,7 @@
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
 
 pub const FONTS: &str = "cache\\workshop\\resource\\fonts";
 pub const ASIDE: &str = "cache\\workshop\\resource\\fonts.meowy-lazy";
@@ -43,11 +44,21 @@ pub fn aside_dir(garrysmod: &Path) -> PathBuf {
     garrysmod.join(ASIDE)
 }
 
+/// Held around every set-aside and put-back: several threads may ask (a
+/// launch's timer, the game's exit, the launcher quitting), and two merges at
+/// once would trip over each other's renames.
+static FOLDER: Mutex<()> = Mutex::new(());
+
+fn folder() -> MutexGuard<'static, ()> {
+    FOLDER.lock().unwrap_or_else(|p| p.into_inner())
+}
+
 /// Renames the fonts folder aside. Ok(true) if it did; Ok(false) when there's
 /// nothing to do (no folder, an empty one, or a link). A leftover aside folder
 /// is put back first.
 pub fn set_aside(garrysmod: &Path) -> io::Result<bool> {
-    restore(garrysmod)?;
+    let _one_at_a_time = folder();
+    put_back(garrysmod)?;
     let fonts = fonts_dir(garrysmod);
     if !fonts.is_dir() || is_link(&fonts) || fs::read_dir(&fonts)?.next().is_none() {
         return Ok(false);
@@ -58,6 +69,21 @@ pub fn set_aside(garrysmod: &Path) -> io::Result<bool> {
 
 /// Puts the folder back. Ok(n): files that came back (0 when nothing was aside).
 pub fn restore(garrysmod: &Path) -> io::Result<usize> {
+    let _one_at_a_time = folder();
+    put_back(garrysmod)
+}
+
+/// As `restore`, unless `stale()` says so once it's this caller's turn (a
+/// newer launch set the folder aside again meanwhile): then None, untouched.
+pub fn restore_unless(garrysmod: &Path, stale: impl FnOnce() -> bool) -> Option<io::Result<usize>> {
+    let _one_at_a_time = folder();
+    if stale() {
+        return None;
+    }
+    Some(put_back(garrysmod))
+}
+
+fn put_back(garrysmod: &Path) -> io::Result<usize> {
     let aside = aside_dir(garrysmod);
     if !aside.is_dir() || is_link(&aside) {
         return Ok(0);
@@ -123,6 +149,37 @@ mod tests {
         assert_eq!(restore(&root).unwrap(), 1, "b came back; a was there");
         assert_eq!(fs::read_to_string(fonts_dir(&root).join("a.ttf")).unwrap(), "newer", "the game's copy wins");
         assert!(fonts_dir(&root).join("b.otf").is_file() && fonts_dir(&root).join("c.ttf").is_file());
+        assert!(!aside_dir(&root).exists());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_stale_put_back_leaves_it_aside() {
+        let root = setup("stale");
+        assert!(set_aside(&root).unwrap());
+        assert!(restore_unless(&root, || true).is_none(), "a newer launch owns it");
+        assert!(aside_dir(&root).is_dir() && !fonts_dir(&root).exists());
+        assert_eq!(restore_unless(&root, || false).unwrap().unwrap(), 2);
+        assert!(fonts_dir(&root).join("b.otf").is_file());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Put-backs from several threads at once (a timer, the game's exit, a
+    /// quit), in the merge case: one at a time, so none trips on another's renames.
+    #[test]
+    fn put_backs_at_once_take_turns() {
+        let root = setup("turns");
+        for i in 0..40 {
+            fs::write(fonts_dir(&root).join(format!("f{i}.ttf")), "x").unwrap();
+        }
+        assert!(set_aside(&root).unwrap());
+        fs::create_dir_all(fonts_dir(&root)).unwrap();
+        let results: Vec<io::Result<usize>> = std::thread::scope(|s| {
+            let hs: Vec<_> = (0..4).map(|_| s.spawn(|| restore(&root))).collect();
+            hs.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        assert!(results.iter().all(|r| r.is_ok()), "{results:?}");
+        assert_eq!(results.iter().map(|r| *r.as_ref().unwrap()).sum::<usize>(), 42, "each file came back once");
         assert!(!aside_dir(&root).exists());
         fs::remove_dir_all(&root).unwrap();
     }

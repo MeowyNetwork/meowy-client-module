@@ -37,6 +37,13 @@ MeowyLauncher.exe  (x64, per user, no admin; %LOCALAPPDATA%\MeowyClientPack\laun
   running one and exits (`tauri-plugin-single-instance`).
 - **Light at rest.** Windows are destroyed on close, not hidden, so WebView2's processes exit; only the
   Rust core and the tray stay (target ≤20 MB, measured in the PR). The app keeps running with no window.
+- **Threads.** The window system's thread never reads files, hashes or starts programs, and nothing does
+  that while holding the launcher's state lock (copy out, unlock, work, store). Commands that touch the
+  disk run on a small async runtime (2 workers, at most 8 blocking threads); the tray's Play, Join and
+  Repair get a thread of their own. Each background loop (game watcher, pipe, Steam files, back-up
+  check, policy, updates) runs on a named thread that's started again 5 s after a panic (logged), waits
+  on one stop event instead of sleeping, and is joined for about 2 s when the launcher quits, before the
+  fonts are put back once.
 - **WebView2 profile** in `%LOCALAPPDATA%\MeowyClientPack\launcher\webview`, so uninstall removes it.
 - **UI** is static HTML/JS bundled into the exe (no bundler, no remote pages, strict CSP). Pages call a
   handful of typed Rust commands; nothing else is exposed.
@@ -87,11 +94,15 @@ What Steam can undo, and what the launcher does about it:
 
 ## 5. Crash recovery
 
-**Watching.** Every 2 s while no game runs, one process snapshot looks for `gmod.exe`/`hl2.exe` whose image
-is inside the GarrysMod folder (`QueryFullProcessImageNameW` with `PROCESS_QUERY_LIMITED_INFORMATION`).
-Each is opened with `SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION` and waited on. Steam's 32-bit root
-`gmod.exe` exits after starting `bin\win64\gmod.exe`, so a session ends when the last one exits, and that
-one's exit code counts. GMod's own Chromium helpers are `bin\win64\gmod.exe` too (`--type=renderer`, ...);
+**Watching.** Every 5 s while no game runs (every 500 ms for a minute after the launcher's own Play), one
+process snapshot looks for `gmod.exe`/`hl2.exe` whose image is inside the GarrysMod folder
+(`QueryFullProcessImageNameW` with `PROCESS_QUERY_LIMITED_INFORMATION`). Same-named processes that aren't
+the game are remembered only while they exist, so a game that gets a reused PID is still seen. Each game
+process is opened with `SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION` and waited on. In a session's
+first minute the snapshot is repeated every 2 s (Steam's root starts its child then); after that the
+launcher only waits for an exit, with no timer. Steam's 32-bit root `gmod.exe` exits after starting
+`bin\win64\gmod.exe`, so a session ends when the last one exits (after one more snapshot and a 3 s
+grace), and that one's exit code counts. While the game runs, the launcher's own process runs with EcoQoS. GMod's own Chromium helpers are `bin\win64\gmod.exe` too (`--type=renderer`, ...);
 they're recognised without reading their command line (that would need memory access): a process whose
 parent is a followed process with the same image isn't followed. No other rights are ever asked for: no
 memory read or write, no thread, no injection.
@@ -266,8 +277,10 @@ signed policy (after the pack's K1 lands) and the early-entry prototype (§9).
 **Find servers, from the index (done):**
 - `GET https://meowynetwork.com/api/pack/index` (MR3, the website backend): every GMod server Steam lists,
   rebuilt each minute, with the honest list's verdicts. Fetched through WinHTTP (the OS's TLS and proxy,
-  no redirects, gzip, a 16 MB cap) only while the window is used, at most once a minute, with
-  `If-None-Match` (a 304 keeps the copy in memory). Measured: 837 KB in 0.18 s, 5,834 servers.
+  no redirects, gzip, a 16 MB cap, one session shared by all the launcher's fetches, a total deadline)
+  only while the window is used, at most once a minute (a failed try waits the minute too), with
+  `If-None-Match` (a 304 keeps the copy in memory). Keystrokes during a fetch wait for it rather than
+  starting their own. The copy is dropped when the window closes. Measured: 837 KB in 0.18 s, 5,834 servers.
 - Columns are read by name (`a n d m p x b pw h r l`), so the backend may add or reorder them; `v` must
   be 1. Text is cleaned and capped; only public addresses are kept.
 - Search as you type over name, gamemode, map and address; Meowy first, then by people (Steam's count,
@@ -285,7 +298,12 @@ signed policy (after the pack's K1 lands) and the early-entry prototype (§9).
   `{"t":"join","a":"a.b.c.d:port"}`, ours or public, which the menu Lua runs as `connect`. Nothing else is
   taken: no Lua, no commands, no passwords.
 - Each end does all its I/O on one thread (`PeekNamedPipe` before reads), so a read never blocks a write.
-  The pack retries every 5 s while the launcher isn't there.
+  While the launcher isn't there the pack looks again after 5 s, then 10, 20, 40 and every 60 s; once a
+  connection ends it starts again from 5 s.
+- The launcher makes its one instance once and serves client after client on it (`DisconnectNamedPipe`,
+  then `ConnectNamedPipe` again), so the name is never let go between two games. If it can't make the
+  pipe it says so in its log and tries again after 1 s, 5 s, then every 30 s; a client that isn't the
+  game is dropped and the next one waits 250 ms.
 - Used for "In the game" in the window, and for joins while the game runs (falling back to
   `steam://connect` when the pack isn't connected).
 

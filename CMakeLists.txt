@@ -28,6 +28,7 @@ add_library(meowy SHARED
 	src/console_capture.cpp
 	src/server_query.cpp
 	src/server_index.cpp
+	src/net_http.cpp
 	src/steam_ugc.cpp
 	src/content_advert.cpp
 	src/server_gate.cpp
@@ -56,7 +57,8 @@ add_library(meowy SHARED
 	src/mouse_confine.cpp
 	src/audio_watch.cpp
 	src/launcher_pipe.cpp
-	src/startup_hook.cpp)
+	src/startup_hook.cpp
+	src/multicore.cpp)
 target_include_directories(meowy PRIVATE ${gmod_module_base_SOURCE_DIR}/include)
 if(WIN32)
 	target_link_libraries(meowy PRIVATE msimg32 shlwapi winhttp ws2_32 shell32 bcrypt)   # GradientFill and file streams for the loading screen; HTTPS for the server list
@@ -138,6 +140,13 @@ if(MEOWY_BUILD_TESTS)
 	if(MSVC)
 		set_property(TARGET discord_switch_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 	endif()
+	# Multicore rendering's native half (the managed flag, the crash guard's write at exit), no game:
+	#   multicore_smoke <scratch folder>
+	add_executable(multicore_smoke tests/multicore_smoke.cpp src/multicore.cpp src/crash_reports.cpp src/file_util.cpp)
+	if(MSVC)
+		set_property(TARGET multicore_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+		target_compile_options(multicore_smoke PRIVATE /W4 /utf-8)
+	endif()
 endif()
 if(MEOWY_BUILD_TESTS)
 	# Hardware profile and crash-dump faults, without the game:
@@ -167,7 +176,7 @@ if(MEOWY_BUILD_TESTS)
 	endif()
 	# The signed policy (kill switch): parsing, keys, only-stricter ops key, replay, keeping:
 	#   policy_smoke <scratch folder>
-	add_executable(policy_smoke tests/policy_smoke.cpp src/policy.cpp src/notify_catalogue.cpp src/notify.cpp src/file_util.cpp)
+	add_executable(policy_smoke tests/policy_smoke.cpp src/policy.cpp src/net_http.cpp src/notify_catalogue.cpp src/notify.cpp src/file_util.cpp)
 	target_link_libraries(policy_smoke PRIVATE bcrypt winhttp)
 	if(MSVC)
 		set_property(TARGET policy_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
@@ -175,7 +184,7 @@ if(MEOWY_BUILD_TESTS)
 	endif()
 	# The signed updater: release documents, who takes them, and the stub's versions (promote, roll back, choose):
 	#   updater_smoke <scratch folder>
-	add_executable(updater_smoke tests/updater_smoke.cpp src/updater.cpp src/pack_versions.cpp src/policy.cpp src/notify_catalogue.cpp src/notify.cpp src/file_util.cpp)
+	add_executable(updater_smoke tests/updater_smoke.cpp src/updater.cpp src/pack_versions.cpp src/policy.cpp src/net_http.cpp src/notify_catalogue.cpp src/notify.cpp src/file_util.cpp)
 	target_link_libraries(updater_smoke PRIVATE bcrypt winhttp)
 	if(MSVC)
 		set_property(TARGET updater_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
@@ -305,7 +314,7 @@ if(MEOWY_BUILD_TESTS)
 	endif()
 	# Content platform adverts (the meowy_content rule in A2S_RULES), no game:
 	#   content_advert_smoke [a.b.c.d:port to ask for real]
-	add_executable(content_advert_smoke tests/content_advert_smoke.cpp src/content_advert.cpp src/server_rep.cpp src/steam_ticket.cpp)
+	add_executable(content_advert_smoke tests/content_advert_smoke.cpp src/content_advert.cpp src/server_rep.cpp src/server_index.cpp src/net_http.cpp src/steam_ticket.cpp)
 	target_link_libraries(content_advert_smoke PRIVATE winhttp ws2_32)
 	target_compile_definitions(content_advert_smoke PRIVATE _CRT_SECURE_NO_WARNINGS)   # server_rep.cpp's _wfopen
 	if(MSVC)
@@ -314,7 +323,7 @@ if(MEOWY_BUILD_TESTS)
 	endif()
 	# The Meowy Launcher's pipe, the pack's end: what it takes and sends, no game:
 	#   launcher_pipe_smoke
-	add_executable(launcher_pipe_smoke tests/launcher_pipe_smoke.cpp src/launcher_pipe.cpp src/server_gate.cpp src/server_rep.cpp src/steam_ticket.cpp)
+	add_executable(launcher_pipe_smoke tests/launcher_pipe_smoke.cpp src/launcher_pipe.cpp src/server_gate.cpp src/server_rep.cpp src/net_http.cpp src/steam_ticket.cpp)
 	target_link_libraries(launcher_pipe_smoke PRIVATE winhttp ws2_32 advapi32)
 	target_compile_definitions(launcher_pipe_smoke PRIVATE _CRT_SECURE_NO_WARNINGS)   # server_rep.cpp's _wfopen
 	if(MSVC)

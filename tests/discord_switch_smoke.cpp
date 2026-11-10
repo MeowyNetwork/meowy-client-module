@@ -3,14 +3,21 @@
 // client realm reads it when the menu state didn't load.
 //   discord_switch_smoke
 // With the Discord app running it connects for a moment with a made-up
-// application id (Discord refuses the handshake; nothing is shown).
+// application id (Discord refuses the handshake; nothing is shown). Last, a
+// stand-in pipe of its own (never Discord's) that stops reading checks that
+// stopping stays bounded.
 // Exit code 0 when every check passes.
 #include "../src/discord_ipc.h"
 
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <thread>
+
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
 
 static int g_failures = 0, g_count = 0;
 
@@ -82,6 +89,60 @@ int main()
 	discord::Shutdown();
 	discord::SetAllowed(true);
 	Check("off from the start, left: on starts nothing", Stopped());
+
+	// A Discord that stopped reading (a hung app with its end of the pipe full):
+	// leaving the server still returns within about a second (the worker's
+	// stuck write is cancelled), and the next server's Start works again. A
+	// pipe of this test's own stands in for Discord.
+	{
+		const std::wstring prefix = L"\\\\.\\pipe\\meowy-discord-switch-smoke-" + std::to_wstring(GetCurrentProcessId()) + L"-";
+		discord::detail::SetPipePrefix(prefix);
+		HANDLE server = CreateNamedPipeW((prefix + L"0").c_str(), PIPE_ACCESS_DUPLEX, PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+			1, 4096, 4096, 0, nullptr);
+		Check("hung Discord: the stand-in pipe", server != INVALID_HANDLE_VALUE);
+		// The stand-in answers the handshake with READY, then never reads again.
+		std::thread fake([server]
+		{
+			ConnectNamedPipe(server, nullptr);
+			uint32_t header[2] = {};
+			DWORD got = 0;
+			if (!ReadFile(server, header, 8, &got, nullptr) || got != 8 || header[1] > 4096)
+				return;
+			std::string hello(header[1], '\0');
+			if (header[1] > 0 && !ReadFile(server, &hello[0], header[1], &got, nullptr))
+				return;
+			const std::string ready = "{\"cmd\":\"DISPATCH\",\"evt\":\"READY\",\"data\":{}}";
+			std::string frame(8, '\0');
+			const uint32_t reply[2] = { 1, static_cast<uint32_t>(ready.size()) };
+			std::memcpy(&frame[0], reply, 8);
+			frame += ready;
+			DWORD wrote = 0;
+			WriteFile(server, frame.data(), static_cast<DWORD>(frame.size()), &wrote, nullptr);
+		});
+		// Far bigger than the pipe holds: the worker's write blocks once it's ready.
+		discord::SetActivity("{\"details\":\"" + std::string(512 * 1024, 'x') + "\"}");
+		discord::Start(id);
+		for (int i = 0; i < 100 && std::string(discord::State()) != "ready"; ++i)
+			std::this_thread::sleep_for(std::chrono::milliseconds(20));
+		Check("hung Discord: connected to the stand-in", std::string(discord::State()) == "ready");
+		std::this_thread::sleep_for(std::chrono::milliseconds(200));   // into the write
+		t0 = std::chrono::steady_clock::now();
+		discord::Shutdown();
+		const auto stuckMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+		std::printf("hung Discord: Shutdown took %lld ms\n", static_cast<long long>(stuckMs));
+		Check("hung Discord: Shutdown within 1.2 s", stuckMs < 1200);
+		Check("hung Discord: stopped", Stopped());
+		fake.join();
+		DisconnectNamedPipe(server);
+		CloseHandle(server);
+
+		// The next server: a worker runs again (nothing to connect to now).
+		discord::SetActivity(activity);
+		discord::Start(id);
+		Check("after a hung Discord: Start runs the worker", !Stopped());
+		discord::Shutdown();
+		Check("after a hung Discord: stopped again", Stopped());
+	}
 
 	std::printf("%d/%d checks passed\n", g_count - g_failures, g_count);
 	return g_failures == 0 ? 0 : 1;

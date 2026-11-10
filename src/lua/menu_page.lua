@@ -15,14 +15,17 @@
 -- Also, on or off: the menu page's zoom (meowy_menu_scale, U1). Garry's Mod
 -- draws the page at the same pixel size on any screen; a CSS zoom on the root
 -- makes it readable at 1440p and 4K (auto: screen height / 1080).
-local REFRESH = 1   -- seconds between sends (the script is safe to run again)
+local REFRESH = 1   -- seconds between MeowyShell(on) calls while our home shows
 
-local ZOOM_RESEND = 3         -- seconds
-local zoomSent, zoomAt = nil, 0
+local zoomSent                -- the zoom this page has (nil after a reload)
 local hatch = false           -- "Use Garry's Mod's menu": stock for the rest of this start
 local bridged                 -- the menu's browser panel the bridge is on
 local nextLook, sent, sentAt, wasOn, failedTick = 0, nil, 0, false, false
-local loaded                  -- the script is in this page (shell.js; it stays until the page reloads)
+local loaded                  -- the script is in this page (shell.js; it stays until the page reloads): sent once a page
+local wasAway = false         -- loading or in game, as of the last look
+-- Bumped when a join starts (Find servers' join, the party's "Take the party
+-- here", or any loading): work for the browser from before it is dropped.
+local joinGen = 0
 
 local js
 local function shellJs()
@@ -85,20 +88,35 @@ local function pings()
 	end
 	return pingMem
 end
+-- Not while a join loads or plays: they wait for the menu (tick).
 local function savePings()
 	if not pingDirty or not pingMem or not meowy.PingMemorySave then return end
+	if IsInLoading() or IsInGame() then return end
 	pingDirty = false
 	meowy.PingMemorySave(util.TableToJSON(BrowseLogic.prunePings(pingMem)))
 end
 
 local function indexFetch()
-	if indexWanted() and not idx.fetching and meowy.ServerIndexFetch() then idx.fetching = true end
+	if indexWanted() and not idx.fetching and not idx.parse and meowy.ServerIndexFetch() then
+		idx.fetching, idx.fetchGen = true, joinGen
+	end
 end
 
-local function browseStop()
+-- Steam's list stopped (and the answers not worked through yet dropped).
+-- `joining`: the pings are saved back at the menu, not now.
+local function browseStop(joining)
 	if browse.id and meowy.ServerQueryCancel then meowy.ServerQueryCancel(browse.id) end
 	browse.id, browse.stock = nil, nil
-	savePings()
+	browse.pq, browse.pqAt, browse.pqDone = nil, nil, false
+	if not joining then savePings() end
+end
+
+-- A join starting: the list's work stops, and an index fetched before it is
+-- dropped when it's taken (back at the menu) instead of shown.
+local function browseSuspend()
+	joinGen = joinGen + 1
+	browse.tab, browse.index, browse.job, browse.refresh = nil, nil, nil, nil
+	idx.parse = nil
 end
 
 -- Internet stage 1: servers with players; 2: the empty ones. Friends: one list.
@@ -159,6 +177,7 @@ local function browseStart(tab)
 	for i, r in pairs(browse.rows) do if r.tab == tab then browse.rows[i] = nil end end
 	browse.count, browse.seen, browse.blocked, browse.full, browse.started = 0, {}, 0, false, SysTime()
 	browse.byAddr, browse.fromIndex, browse.known, browse.ping, browse.indexCount, browse.job = {}, {}, {}, {}, 0, nil
+	browse.refresh = nil
 	if meowy.FetchServerRep then meowy.FetchServerRep() end
 	-- The index first (the Internet list only): shown as soon as it's here.
 	browse.index = nil
@@ -324,9 +343,19 @@ end
 
 -- A newer index while the list is open: rows whose numbers changed are sent
 -- again with the ping they have (Steam's or a hint), new servers are added.
-local function browseIndexRefresh(now)
-	local updates, added = {}, {}
-	for _, s in ipairs(idx.rows) do
+-- A slice a frame (refreshSlice), like the first listing.
+local function browseIndexRefresh()
+	browse.refresh = { rows = idx.rows, at = 1, gen = browse.gen, changed = 0, new = 0 }
+end
+
+local function refreshSlice()
+	local job = browse.refresh
+	if job.gen ~= browse.gen or browse.tab ~= "internet" or browse.index ~= "shown" then browse.refresh = nil return end
+	local updates, added, rows = {}, {}, job.rows
+	local stop = SysTime() + INDEX_SLICE
+	while job.at <= #rows and SysTime() < stop do
+		local s = rows[job.at]
+		job.at = job.at + 1
 		local address = s.address
 		local i, old = browse.byAddr[address], browse.known[address]
 		if i and old then
@@ -344,26 +373,45 @@ local function browseIndexRefresh(now)
 			end
 		end
 	end
+	local now = SysTime()
 	if #updates > 0 then browseUpdate(updates) end
 	if #added > 0 then browseSend(added, false, now) end
-	browseSource()
-	log("browse: index refreshed, %d changed, %d new", #updates, #added)
+	job.changed, job.new = job.changed + #updates, job.new + #added
+	if job.at > #rows then
+		browse.refresh = nil
+		browseSource()
+		log("browse: index refreshed, %d changed, %d new", job.changed, job.new)
+	end
 end
 
-local function browsePump(now)
+-- Steam's answers since the last look go in a queue (a few times a second,
+-- from tick); browsePumpSlice works through it a slice a frame.
+local function browsePump()
 	if not browse.id and not browse.stock then return end
-	local list, finished
+	if browse.pqDone then return end   -- all in; the rest of the queue is being worked through
+	local list, finished = browse.pq or {}, nil
 	if browse.id then
 		local got
 		got, finished = meowy.ServerQueryTake(browse.id)
-		list = {}
 		for _, s in ipairs(istable(got) and got or {}) do list[#list + 1] = fromNative(s) end
 	else
-		list, finished = browse.stock.queue, browse.stock.done
+		for _, s in ipairs(browse.stock.queue) do list[#list + 1] = s end
+		finished = browse.stock.done
 		browse.stock.queue = {}
 	end
+	browse.pq, browse.pqAt, browse.pqDone = list, browse.pqAt or 1, finished == true
+end
+
+local function browsePumpSlice(now)
+	local list = browse.pq
+	if not list then return end
+	-- The servers with players get more of a frame (Internet's first stage), as for the index.
+	local stop = SysTime() + ((browse.tab ~= "internet" or browse.stage == 1) and INDEX_BUSY_SLICE or INDEX_SLICE)
 	local batch, updates, lan, day = {}, {}, browse.tab == "lan", today()
-	for _, s in ipairs(list) do
+	local at = browse.pqAt or 1
+	while at <= #list and SysTime() < stop do
+		local s = list[at]
+		at = at + 1
 		local address = s.address
 		local fits = lan and ipv4(address) or (not lan and Home.publicAddress(address))
 		local ms = tonumber(s.ping)
@@ -376,7 +424,8 @@ local function browsePump(now)
 			browse.fromIndex[address] = nil
 			updates[#updates + 1] = browseRow(s, browse.tab, browse.byAddr[address])
 		elseif browse.count >= BROWSE_MAX then
-			finished, browse.full = true, true
+			browse.pqDone, browse.full = true, true
+			at = #list + 1
 			break
 		elseif fits and not browse.seen[address] then
 			browse.seen[address] = true
@@ -390,6 +439,10 @@ local function browsePump(now)
 			end
 		end
 	end
+	browse.pqAt = at
+	if at > #list then browse.pq, browse.pqAt = nil, nil end
+	-- Finished: Steam's list is complete and every answer is worked through.
+	local finished = browse.pqDone and browse.pq == nil
 	-- Internet: the servers with players, then the empty ones; with the index
 	-- shown, it already listed the empty ones, so Steam's first stage is enough.
 	local twoStages = browse.tab == "internet" and browse.index ~= "shown"
@@ -409,15 +462,9 @@ local function browsePump(now)
 	end
 end
 
--- The index's fetch, when it finishes: the list waiting for it gets its rows
--- (or goes on with Steam alone); an open list gets the changes.
-local function indexTake(now)
-	if not idx.fetching then return end
-	local status, body, geo, secs = meowy.ServerIndexTake()
-	if not status then return end
-	idx.fetching = false
+-- The rest of a fetch's handling, once its rows are read (or it brought none).
+local function indexDone(status, rows, at, geo, secs, now)
 	if status == "ok" then
-		local rows, at = BrowseLogic.indexRows(util.JSONToTable(body))
 		if rows then
 			idx.rows, idx.at, idx.got = rows, at, now
 		else
@@ -442,8 +489,52 @@ local function indexTake(now)
 			if not browse.id and not browse.stock then browseSend({}, true, now) end
 		end
 	elseif browse.index == "shown" and usable and status == "ok" and not browse.job then
-		browseIndexRefresh(now)
+		browseIndexRefresh()
 	end
+end
+
+-- The index's fetch, when it finishes (only at the main menu with our home
+-- showing: server_index keeps the answer until it's taken). Its rows are read
+-- a slice a frame (indexParseSlice), then the list waiting for it gets them
+-- (or goes on with Steam alone), or an open list gets the changes. An answer
+-- to a fetch from before a join is dropped (and asked again if a list waits).
+local indexParseSlice
+local function indexTake(now)
+	if not idx.fetching then return end
+	local status, body, geo, secs = meowy.ServerIndexTake()
+	if not status then return end
+	idx.fetching = false
+	if idx.fetchGen ~= joinGen then
+		log("browse: Meowy's index from before a join: dropped")
+		if browse.index == "waiting" then indexFetch() end
+		return
+	end
+	if status == "ok" then
+		local job, why = BrowseLogic.indexRowsBegin(util.JSONToTable(body))
+		if job then
+			idx.parse = { job = job, geo = geo, secs = secs, gen = joinGen, started = now, frames = 0 }
+			return indexParseSlice()   -- the first slice now (a small index is done at once)
+		end
+		return indexDone(status, nil, why, geo, secs, now)
+	end
+	indexDone(status, nil, nil, geo, secs, now)
+end
+
+local INDEX_PARSE_STEP = 64   -- rows between looks at the clock
+function indexParseSlice()
+	local p = idx.parse
+	if p.gen ~= joinGen then idx.parse = nil return end
+	p.frames = p.frames + 1
+	local stop = SysTime() + INDEX_SLICE
+	repeat
+		if BrowseLogic.indexRowsStep(p.job, INDEX_PARSE_STEP) then
+			idx.parse = nil
+			local now = SysTime()
+			log("browse: Meowy's index read: %d servers over %d frames (%.2f s)", #p.job.out, p.frames, now - p.started)
+			indexDone("ok", p.job.out, p.job.at, p.geo, p.secs, now)
+			return
+		end
+	until SysTime() >= stop
 end
 
 local function browseAddress(v)
@@ -504,7 +595,8 @@ local handlers = {
 		local address = browseAddress(v)
 		local r = browse.rows[math.floor(tonumber(v) or 0)]
 		if address and Home.publicAddress(address) and MeowyClientPackParty then
-			browseStop()
+			browseStop(true)
+			browseSuspend()
 			MeowyClientPackParty.go(address, r and r.name or "")
 		end
 	end,
@@ -512,11 +604,14 @@ local handlers = {
 	browse_refresh = function()
 		if browse.tab == "internet" and browse.index == "shown" then indexFetch() end
 	end,
+	-- The page's script is missing (the page reloaded without our knowing): sent again.
+	need_shell = function() loaded, nextLook = nil, 0 end,
 	browse_join = function(v)
 		local address = browseAddress(v)
 		if not address then return end
 		log("browse: joining %s", address)
-		browseStop()
+		browseStop(true)
+		browseSuspend()
 		if browsePassword and browsePassword.i == math.floor(tonumber(v) or 0) then
 			RunConsoleCommand("password", browsePassword.password)
 		end
@@ -658,6 +753,8 @@ local function tick()
 		html.OnDocumentReady = function(self, url, ...)
 			sent, zoomSent, nextLook, addonsSent, loaded = nil, nil, 0, nil, nil
 			browse.prepSent = nil
+			-- A new document: every script put in once a page (home.lua's, resilience.lua's) goes in again.
+			menuPage.doc = (menuPage.doc or 0) + 1
 			if ready then return ready(self, url, ...) end
 		end
 		loaded = nil
@@ -667,35 +764,51 @@ local function tick()
 	if on and not wasOn then hatch = false end
 	wasOn = on
 
+	-- A join starting drops the browser's work; back at the menu, the pings Steam
+	-- measured are saved (never during a join).
+	local away = IsInLoading() or IsInGame()
+	if away and not wasAway then browseSuspend() end
+	if wasAway and not away then savePings() end
+	wasAway = away
+
 	local want = wanted()
 	menuPage.ours = want
 	if not (IsValid(pnlMainMenu) and pnlMainMenu.Call) then return end
-	indexTake(now)
-	if browse.index == "waiting" and not idx.fetching and want then
+	-- The index's answer is only taken (and read) at the main menu with our home showing.
+	if want then indexTake(now) end
+	if browse.index == "waiting" and not idx.fetching and not idx.parse and want then
 		-- Fetched recently enough to use as it is (nothing was asked), or the ask didn't start.
 		if indexFresh(now) then browseFromIndex(now) else browse.index = "failed" browseSource() end
 	end
 	if browse.id or browse.stock then
-		if want then browsePump(now) else browseStop() end   -- in game or switched off: stop asking Steam
+		if want then browsePump() else browseStop(away) end   -- in game or switched off: stop asking Steam
 	end
 	if want then browsePrep() end
 
-	-- The page's zoom (meowy_menu_scale), on whatever it shows. Sent again every
-	-- few seconds: the page may have been reloaded (a language change does).
+	-- The page's zoom (meowy_menu_scale), on whatever it shows: sent when it
+	-- changes or the page has reloaded (a language change does), and only while
+	-- the page is on screen out of game.
 	local zoom = Home.menuZoom(menuScale(), ScrH())
-	if zoom ~= zoomSent or (zoom ~= 1 and now - zoomAt >= ZOOM_RESEND) then
+	if zoom ~= zoomSent and not away and menuVisible() then
 		if zoom ~= 1 or zoomSent then
 			pnlMainMenu:Call("document.documentElement.style.zoom = '" .. string.format("%.2f", zoom) .. "';")
 		end
 		if zoom ~= zoomSent then log("menu page: zoom %s", string.format("%.2f", zoom)) end
-		zoomSent, zoomAt = zoom, now
+		zoomSent = zoom
 	end
 	if want ~= sent or (want and now - sentAt >= REFRESH) or (not loaded and shellJs() ~= "") then
 		-- Sent to every page once, the home off too: the script also adds Find
 		-- servers' Friends tab. After that, while off, there's nothing to send.
+		-- The script (~90 KB) goes in once a page; then only the call, and a
+		-- page that has lost it asks for it again (need_shell).
 		if want or sent or (not loaded and shellJs() ~= "") then
-			pnlMainMenu:Call(shellJs() .. "\nwindow.MeowyShell(" .. tostring(want) .. ");\n")
-			loaded = shellJs() ~= ""
+			if loaded then
+				pnlMainMenu:Call("if (!window.MeowyShell && window.meowy && window.meowy.post) window.meowy.post('need_shell');\n"
+					.. "window.MeowyShell && window.MeowyShell(" .. tostring(want) .. ");\n")
+			else
+				pnlMainMenu:Call(shellJs() .. "\nwindow.MeowyShell(" .. tostring(want) .. ");\n")
+				loaded = shellJs() ~= ""
+			end
 		end
 		if want then sendAddons(now) end
 		if want ~= sent then log("menu page: %s", want and "our home is on" or "Garry's Mod's main screen") end
@@ -703,12 +816,20 @@ local function tick()
 	end
 end
 
--- The index's rows, a slice a frame while our home shows (indexSlice).
+-- Find servers' work, a slice a frame while our home shows: reading a fetched
+-- index (indexParseSlice), then listing it (indexSlice) or a newer one's
+-- changes (refreshSlice); and Steam's answers (browsePumpSlice).
+local function browseWork()
+	if idx.parse then indexParseSlice()
+	elseif browse.refresh then refreshSlice()
+	elseif browse.job then indexSlice() end
+	if browse.pq then browsePumpSlice(SysTime()) end
+end
 hook.Add("Think", "MeowyClientPack.MenuPageIndex", function()
-	if not browse.job or not menuPage.ours then return end
-	local ok, err = pcall(indexSlice)
+	if not (idx.parse or browse.job or browse.refresh or browse.pq) or not menuPage.ours then return end
+	local ok, err = pcall(browseWork)
 	if not ok then
-		browse.job = nil
+		browse.job, browse.refresh, browse.pq, idx.parse = nil, nil, nil, nil
 		ErrorNoHalt("[Meowy Client Pack] menu page (index): " .. tostring(err) .. "\n")
 	end
 end)

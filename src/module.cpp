@@ -62,6 +62,13 @@
 //                                     then, players who opted in to staying
 //                                     connected are rejoined once it's back.
 //                                     See resilience.h
+//   meowy.MulticoreManaged()          true | false, reason (1.7.2+): the pack
+//                                     turned multicore rendering on this start
+//                                     and still has it on (Meowy settings'
+//                                     Multicore rendering on, its crash guard
+//                                     allowing it, mat_queue_mode not the
+//                                     player's own 0 or 1): leave
+//                                     gmod_mcore_test to the pack. See multicore.h
 //
 // Since 1.2.1 everything except VERSION, DiscordState, DiscordClear,
 // RestoreMaterialReload and MaterialReloadState only
@@ -102,6 +109,7 @@
 #include "server_gate.h"
 #include "data_sandbox.h"
 #include "server_rep.h"
+#include "net_http.h"
 #include "steam_ticket.h"
 #include "launcher_pipe.h"
 #include "notify.h"
@@ -128,10 +136,12 @@
 #include "startup_hook.h"
 #include "pack_versions.h"
 #include "apps_entry.h"
+#include "multicore.h"
 #include "resource.h"
 
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <exception>
 #include <string>
 #include <algorithm>
@@ -335,6 +345,19 @@ namespace
 		return 1;
 	}
 
+	// meowy.MulticoreManaged() -> true | false (false, reason off our servers):
+	// the menu realm turned multicore rendering on this start and still has it
+	// on (multicore.h), so Meowy Network's FPS Booster leaves it to the pack.
+	int MulticoreManaged(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		int results = 0;
+		if (Refuse(LUA, results))
+			return results;
+		LUA->PushBool(multicore::Managed());
+		return 1;
+	}
+
 	int DiscordStart(lua_State* L)
 	{
 		ILuaBase* LUA = L->luabase;
@@ -404,7 +427,12 @@ namespace
 	// Only crashes on Meowy Network (resilience::OurCrashes): a report from a
 	// crash on another server names that server's Lua files, and a report
 	// can't say where the game was, so one the pack didn't note as ours is
-	// never sent.
+	// never sent. The folder is listed first and filtered to ours by name,
+	// newest first, and only then are reports read, one at a time, until
+	// `want` have a Lua trace: this runs on the main thread, often during a
+	// join, and a long-time player's crashes folder holds hundreds of reports
+	// and dumps. (Filtering after reading also let 20 newer reports from other
+	// servers hide every one of ours.)
 	int CrashReports(lua_State* L)
 	{
 		ILuaBase* LUA = L->luabase;
@@ -421,14 +449,27 @@ namespace
 		std::vector<crashes::Report> reports;
 #ifdef _WIN32
 		{
-			std::vector<crashes::Report> all = crashes::Since(since, 20);
+			const std::wstring root = crashes::Root();
+			std::vector<crashes::Candidate> listed = crashes::Candidates(root, since);
 			std::vector<std::string> names;
-			for (const crashes::Report& r : all)
-				names.push_back(r.name);
+			names.reserve(listed.size());
+			for (const crashes::Candidate& c : listed)
+				names.push_back(c.name);
 			const std::vector<std::string> ours = resilience::OurCrashes(DataDir(), names);
-			for (crashes::Report& r : all)
-				if (reports.size() < want && std::find(ours.begin(), ours.end(), r.name) != ours.end())
+			listed.erase(std::remove_if(listed.begin(), listed.end(), [&ours](const crashes::Candidate& c) {
+				return std::find(ours.begin(), ours.end(), c.name) == ours.end();
+			}), listed.end());
+			std::stable_sort(listed.begin(), listed.end(), [](const crashes::Candidate& a, const crashes::Candidate& b) {
+				return a.time > b.time;
+			});
+			for (const crashes::Candidate& c : listed)
+			{
+				if (reports.size() >= want)
+					break;
+				crashes::Report r;
+				if (crashes::Read(root, c, r))
 					reports.push_back(std::move(r));
+			}
 		}
 #endif
 
@@ -821,14 +862,27 @@ namespace
 	}
 #endif
 
+	// The last body and signature that passed Verify. Our server sends the same
+	// catalogue at every join, usually the one already kept on disk: the same
+	// bytes skip the signature check (ECDSA through freshly opened BCrypt
+	// providers, a few ms on the main thread). Parse and the version check
+	// still run every time.
+	std::string g_verifiedBody, g_verifiedSig;
+
 	// Verifies, parses and installs a catalogue. True when it's in use (a
 	// re-send of the current version included); else false with *why.
 	bool TakeCatalogue(const std::string& body, const std::string& sig, bool persist, std::string* why)
 	{
-		if (!notify_catalogue::Verify(body, sig))
+		const bool known = !g_verifiedSig.empty() && sig == g_verifiedSig && body == g_verifiedBody;
+		if (!known)
 		{
-			*why = "bad signature";
-			return false;
+			if (!notify_catalogue::Verify(body, sig))
+			{
+				*why = "bad signature";
+				return false;
+			}
+			g_verifiedBody = body;
+			g_verifiedSig = sig;
 		}
 		notify_catalogue::Catalogue c;
 		const char* parseWhy = nullptr;
@@ -1082,6 +1136,7 @@ namespace
 		if (server_gate::Check() != server_gate::Result::Allowed && !connect_watch::HeadingToUs(10000))
 			return 0;
 		connect_watch::JoinStarted();
+		net_http::SetJoining(true);
 #ifdef _WIN32
 		ILuaBase* LUA = L->luabase;
 		loading_screen::Begin(DataDir(), LUA->IsType(1, Type::Number) ? LUA->GetNumber(1) : -1);
@@ -1099,6 +1154,7 @@ namespace
 		std::string address;
 		if (server_gate::Check(&address) != server_gate::Result::OtherServer)
 			return 0;
+		net_http::SetJoining(true);
 #ifdef _WIN32
 		ILuaBase* LUA = L->luabase;
 		loading_screen::BeginOther(DataDir(), LUA->IsType(1, Type::Number) ? LUA->GetNumber(1) : -1,
@@ -1153,8 +1209,20 @@ namespace
 
 	int LoadingInGame(lua_State*)
 	{
+		net_http::SetJoining(false);
 		TimelineLoading(false);
 		loading_screen::InGame();
+		return 0;
+	}
+
+	// JoinLoading(loading): IsInLoading() changed, sent by the menu's Loading
+	// hook on every edge, whichever server it is and whether or not the pack's
+	// screen shows: background network work (the updater, the policy refresh)
+	// waits while a join loads (net_http.h). A join cancelled or failed ends
+	// here too.
+	int JoinLoading(lua_State* L)
+	{
+		net_http::SetJoining(L->luabase->GetBool(1));
 		return 0;
 	}
 
@@ -1231,14 +1299,55 @@ namespace
 		return 1;
 	}
 
-	// JSON array of finished player-list queries, or nil.
+	// TakePlayers() -> { { address, ok, answered, declared, players = { { name,
+	// score, time }, ... } }, ... } | nil: the player-list queries finished
+	// since the last call, nil when none. Built straight from the results: the
+	// server list's Think asks every frame, and parsing a JSON copy of up to
+	// 255 names a server in Lua cost more than the query itself. `declared`
+	// and `players` only when ok; `time` in whole seconds, as before.
 	int TakePlayers(lua_State* L)
 	{
-		std::string json = server_rep::TakePlayers();
-		if (json.empty())
-			L->luabase->PushNil();
-		else
-			L->luabase->PushString(json.c_str(), (unsigned int)json.size());
+		ILuaBase* LUA = L->luabase;
+		const std::vector<server_rep::PlayerResult> results = server_rep::TakePlayerResults();
+		if (results.empty())
+		{
+			LUA->PushNil();
+			return 1;
+		}
+		LUA->CreateTable();
+		int i = 0;
+		for (const server_rep::PlayerResult& r : results)
+		{
+			LUA->PushNumber(++i);
+			LUA->CreateTable();
+			LUA->PushString(r.address.c_str(), static_cast<unsigned int>(r.address.size()));
+			LUA->SetField(-2, "address");
+			LUA->PushBool(r.ok);
+			LUA->SetField(-2, "ok");
+			LUA->PushBool(r.answered);
+			LUA->SetField(-2, "answered");
+			if (r.ok)
+			{
+				LUA->PushNumber(r.declared);
+				LUA->SetField(-2, "declared");
+				LUA->CreateTable();
+				int k = 0;
+				for (const server_rep::PlayerResult::P& p : r.players)
+				{
+					LUA->PushNumber(++k);
+					LUA->CreateTable();
+					LUA->PushString(p.name.c_str(), static_cast<unsigned int>(p.name.size()));
+					LUA->SetField(-2, "name");
+					LUA->PushNumber(p.score);
+					LUA->SetField(-2, "score");
+					LUA->PushNumber(static_cast<double>(static_cast<int>(p.time)));
+					LUA->SetField(-2, "time");
+					LUA->SetTable(-3);
+				}
+				LUA->SetField(-2, "players");
+			}
+			LUA->SetTable(-3);
+		}
 		return 1;
 	}
 
@@ -1625,7 +1734,7 @@ namespace
 		unsigned int len = 0;
 		const char* text = LUA->IsType(1, Type::String) ? LUA->GetString(1, &len) : nullptr;
 		const bool ok = text && len <= kMaxMenuSettings &&
-			file_util::WriteAtomic(DataDir() + L"\\menu_settings.txt", std::string(text, len));
+			file_util::WriteAtomic(DataDir() + L"\\menu_settings.txt", std::string(text, len), file_util::Durability::Relaxed);
 		LUA->PushBool(ok);
 		return 1;
 	}
@@ -1634,7 +1743,8 @@ namespace
 	// (only these): the settings guard's session (settings_guard.lua: a game
 	// that closed on a server is asked about at the next start) and its list of
 	// servers always put back (kept here, not in a convar any server's Lua can
-	// read), and one-time repairs done (home.lua).
+	// read), one-time repairs done (home.lua), and multicore rendering's crash
+	// guard (multicore.lua).
 	constexpr size_t kMaxMenuFile = 16384;
 	const wchar_t* MenuFileName(const char* kind)
 	{
@@ -1642,6 +1752,7 @@ namespace
 			{ "settings_guard_session", L"settings_guard_session.txt" },
 			{ "settings_guard_always", L"settings_guard_always.txt" },
 			{ "repairs", L"repairs.txt" },
+			{ "multicore_guard", L"multicore_guard.txt" },
 		};
 		for (const auto& f : kFiles)
 			if (kind && std::strcmp(kind, f.kind) == 0)
@@ -1671,9 +1782,64 @@ namespace
 		{
 			const std::wstring path = DataDir() + L"\\" + file;
 			ok = len == 0 ? (DeleteFileW(path.c_str()) || GetLastError() == ERROR_FILE_NOT_FOUND)
-				: file_util::WriteAtomic(path, std::string(text, len));
+				: file_util::WriteAtomic(path, std::string(text, len), file_util::Durability::Relaxed);
 		}
 		LUA->PushBool(ok);
+		return 1;
+	}
+
+	// Menu only: meowy.SetMulticoreManaged(on), whether the menu turned
+	// multicore rendering on this start and still has it on (multicore.lua).
+	// The client realm reads it (meowy.MulticoreManaged) and can't set it.
+	int SetMulticoreManaged(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		multicore::SetManaged(LUA->IsType(1, Type::Bool) && LUA->GetBool(1));
+		return 0;
+	}
+
+	// When this process started (unix time).
+	long long ProcessStartedUnix()
+	{
+		FILETIME created, exited, kernel, user;
+		if (!GetProcessTimes(GetCurrentProcess(), &created, &exited, &kernel, &user))
+			return static_cast<long long>(std::time(nullptr));
+		ULARGE_INTEGER t;
+		t.LowPart = created.dwLowDateTime;
+		t.HighPart = created.dwHighDateTime;
+		return static_cast<long long>(t.QuadPart / 10000000ULL) - 11644473600LL;
+	}
+
+	// Menu only: meowy.MulticoreGuardAtExit(text), what multicore_guard.txt holds
+	// after a clean exit (the crash guard's state with `running` cleared). The
+	// pinned DLL writes it as the process exits (DllMain, below), unless the game
+	// wrote a crash report during this run. Anything but a non-empty string:
+	// nothing is written.
+	int MulticoreGuardAtExit(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		unsigned int len = 0;
+		const char* text = LUA->IsType(1, Type::String) ? LUA->GetString(1, &len) : nullptr;
+		if (!text || len == 0 || len > kMaxMenuFile)
+		{
+			multicore::Disarm();
+			return 0;
+		}
+		static const std::wstring crashRoot = crashes::Root();
+		static const long long started = ProcessStartedUnix();
+		multicore::ArmExitWrite(DataDir() + L"\\multicore_guard.txt", std::string(text, len), crashRoot, started);
+		return 0;
+	}
+
+	// Menu only: meowy.CrashSince(unix) -> bool, whether Garry's Mod's crash
+	// handler wrote a report (crashes\*.txt) after `unix` and before this
+	// process started: multicore rendering's crash guard counts a session whose
+	// marker was left behind as a crash only then (multicore.h).
+	int CrashSince(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		const long long since = LUA->IsType(1, Type::Number) ? static_cast<long long>(LUA->GetNumber(1)) : 0;
+		LUA->PushBool(multicore::CrashSince(crashes::Root(), since, ProcessStartedUnix()));
 		return 1;
 	}
 
@@ -1799,7 +1965,7 @@ namespace
 		std::string text;
 		for (const auto& h : held)
 			text += h.first + " " + h.second + "\n";
-		file_util::WriteAtomic(HeldCvarFile(), text);
+		file_util::WriteAtomic(HeldCvarFile(), text, file_util::Durability::Relaxed);
 	}
 
 	// meowy.CvarHold(name, value) -> whether it's kept: the player's own value,
@@ -1900,7 +2066,7 @@ namespace
 	}
 
 	// In game: keep the list for this server (ours or public, the engine's own
-	// address). -> files kept.
+	// address). -> entries noted this join (the merge with the kept list runs on the prewarm I/O thread).
 	int PrewarmEndJoin(lua_State* L)
 	{
 		std::string address;
@@ -2022,13 +2188,20 @@ namespace
 		return 1;
 	}
 
-	// ContentTake() -> { { address =, answered = bool, value = string | nil }, ... }:
-	// the answers since the last call. `value` is the server's own text
-	// (printable ASCII, at most 4 KB); content_logic.lua checks it.
+	// ContentTake() -> { { address =, answered = bool, value = string | nil }, ... }
+	// | nil: the answers since the last call, nil when there are none (home.lua
+	// polls it every frame, so an empty call makes no table). `value` is the
+	// server's own text (printable ASCII, at most 4 KB); content_logic.lua
+	// checks it.
 	int ContentTake(lua_State* L)
 	{
 		ILuaBase* LUA = L->luabase;
 		const std::vector<content_advert::Answer> answers = content_advert::Take();
+		if (answers.empty())
+		{
+			LUA->PushNil();
+			return 1;
+		}
 		LUA->CreateTable();
 		int i = 0;
 		for (const content_advert::Answer& a : answers)
@@ -2143,7 +2316,7 @@ namespace
 		const wchar_t* name = ConsoleFileName(LUA->IsType(1, Type::String) ? LUA->GetString(1) : nullptr);
 		unsigned int size = 0;
 		const char* text = LUA->IsType(2, Type::String) ? LUA->GetString(2, &size) : nullptr;
-		LUA->PushBool(name && text && size <= kMaxConsoleFile && file_util::WriteAtomic(DataDir() + name, std::string(text, size)));
+		LUA->PushBool(name && text && size <= kMaxConsoleFile && file_util::WriteAtomic(DataDir() + name, std::string(text, size), file_util::Durability::Relaxed));
 		return 1;
 	}
 
@@ -2516,8 +2689,8 @@ namespace
 		return 1;
 	}
 
-	// PartyFriends() -> { { id, name, ingmod, pack }, ... }: Steam friends, those
-	// playing Garry's Mod first (and whether their pack says so), at most 200.
+	// PartyFriends() -> { { id, name, ingmod, pack }, ... }: Steam friends
+	// playing Garry's Mod (and whether their pack says so), at most 200.
 	int PartyFriends(lua_State* L)
 	{
 		ILuaBase* LUA = L->luabase;
@@ -2843,6 +3016,12 @@ namespace
 		std::string guardGlue = ResourceText(IDR_SETTINGS_GUARD_LUA);
 		if (!guardLogic.empty() && !guardGlue.empty())
 			home += ";(function()\nlocal SettingsGuard = (function()\n" + guardLogic + "\nend)()\n" + guardGlue + "\nend)()\n";
+		// Multicore rendering on by default, with its crash guard
+		// (multicore_logic.lua as `MulticoreLogic`, then multicore.lua), likewise.
+		std::string multicoreLogic = ResourceText(IDR_MULTICORE_LOGIC_LUA);
+		std::string multicoreGlue = ResourceText(IDR_MULTICORE_LUA);
+		if (!multicoreLogic.empty() && !multicoreGlue.empty())
+			home += ";(function()\nlocal MulticoreLogic = (function()\n" + multicoreLogic + "\nend)()\n" + multicoreGlue + "\nend)()\n";
 		return "local UI = (function()\n" + ui + "\nend)()\n"
 			"local Logic = (function()\n" + logic + "\nend)()\n" + doctor + glue + home;
 	}
@@ -2961,57 +3140,117 @@ local function tagOf(address)
 	return tag, v
 end
 
-local MARK_JS = [[
-if (!window.MeowyMark) window.MeowyMark = function (addr, real, tag, penalty) {
+-- The page's helpers, sent once per page (markHelpers). MeowyMarkMany takes a
+-- frame's marks ([address, real, tag, penalty]) and rank moves ([address,
+-- penalty]) together: one map from address to the listed servers, every
+-- change applied through it, one redraw. (One call per server used to walk
+-- every list and redraw the page each time.)
+local MARK_JS = [=[
+if (!window.MeowyMarkMany) {
+window.MeowyMark = function (s, gm, real, tag, penalty) {
+	if (s.meowyTag) return false;
+	s.meowyTag = tag; s.name = tag + s.name;
+	if (real >= 0 && real < s.players) {
+		var d = s.players - real; s.players = real;
+		gm.num_players -= d; if (!s.isAnon) gm.sort_players -= d; gm.order = gm.sort_players;
+		s.recommended = CalculateRank(s);
+	}
+	if (penalty > 0 && !s.meowyRankAdj) { s.meowyRankAdj = true; s.recommended += penalty; }
+	return true;
+};
+window.MeowyRank = function (s, penalty) {
+	if (s.meowyRankAdj) return false;
+	s.meowyRankAdj = true; s.recommended += penalty;
+	return true;
+};
+window.MeowyMarkMany = function (marks, ranks) {
+	var byAddress = {}, changed = false, j, n, at;
 	for (var t in ServerTypes) { var g = ServerTypes[t].gamemodes;
 	for (var k in g) { var gm = g[k];
 	for (var i = 0; i < gm.servers.length; i++) { var s = gm.servers[i];
-		if (s.address != addr || s.meowyTag) continue;
-		s.meowyTag = tag; s.name = tag + s.name;
-		if (real >= 0 && real < s.players) {
-			var d = s.players - real; s.players = real;
-			gm.num_players -= d; if (!s.isAnon) gm.sort_players -= d; gm.order = gm.sort_players;
-			s.recommended = CalculateRank(s);
-		}
-		if (penalty > 0 && !s.meowyRankAdj) { s.meowyRankAdj = true; s.recommended += penalty; }
+		(byAddress[s.address] = byAddress[s.address] || []).push([s, gm]);
 	} } }
-	UpdateDigest(RootScope, 50);
+	for (j = 0; j < marks.length; j++) { at = byAddress[marks[j][0]] || [];
+		for (n = 0; n < at.length; n++) if (MeowyMark(at[n][0], at[n][1], marks[j][1], marks[j][2], marks[j][3])) changed = true; }
+	for (j = 0; j < ranks.length; j++) { at = byAddress[ranks[j][0]] || [];
+		for (n = 0; n < at.length; n++) if (MeowyRank(at[n][0], ranks[j][1])) changed = true; }
+	if (changed) UpdateDigest(RootScope, 50);
 };
-]]
+}
+]=]
 
--- For a server tagged as it arrived: the browser adds it to its list only
--- after the callback returns, so the rank is moved a moment later.
-local RANK_JS = [[
-if (!window.MeowyRank) window.MeowyRank = function (addr, penalty) {
-	var found = false;
-	for (var t in ServerTypes) { var g = ServerTypes[t].gamemodes;
-	for (var k in g) { var gm = g[k];
-	for (var i = 0; i < gm.servers.length; i++) { var s = gm.servers[i];
-		if (s.address != addr || s.meowyRankAdj) continue;
-		s.meowyRankAdj = true; s.recommended += penalty; found = true;
-	} } }
-	if (found) UpdateDigest(RootScope, 50);
-};
-]]
+-- Marks and rank moves wait here and go to the page together, once a frame
+-- (flushMarks, from the ServerList Think).
+local markQueue, rankQueue = {}, {}
+local markHtml, markDefined   -- the page panel last seen; whether its page has the helpers
 
-local function rankLater(address, penalty)
-	if penalty <= 0 then return end
-	local js = RANK_JS .. string.format("MeowyRank('%s', %d);", address:JavascriptSafe(), penalty)
-	-- Twice: a busy browser may not have the server yet; the flag stops a double penalty.
-	for _, delay in ipairs({ 0.5, 3 }) do
-		after(delay, function() if pnlMainMenu then pnlMainMenu:Call(js) end end)
+-- The helpers when the page doesn't have them yet: a new menu panel, or a
+-- page that has loaded anew (the game starting, a language change), which
+-- OnDocumentReady says. Without a panel to watch they go every time (the
+-- page keeps its first copy).
+local function markHelpers()
+	local html = IsValid(pnlMainMenu) and pnlMainMenu.HTML or nil
+	if html ~= markHtml then
+		markHtml, markDefined = html, false
+		if IsValid(html) then
+			local ready = html.OnDocumentReady
+			html.OnDocumentReady = function(self, ...)
+				markDefined = false
+				if ready then return ready(self, ...) end
+			end
+		end
 	end
+	if markDefined then return "" end
+	markDefined = IsValid(html)
+	return MARK_JS
 end
 
--- Shows a verdict that arrived after the server was already listed.
+local function jsonList(list) return #list > 0 and util.TableToJSON(list) or "[]" end
+
+local function flushMarks()
+	if #markQueue == 0 and #rankQueue == 0 then return end
+	local marks, ranks = markQueue, rankQueue
+	markQueue, rankQueue = {}, {}
+	if not pnlMainMenu then return end
+	-- Guarded: a flush between a page starting to load and its OnDocumentReady
+	-- reaches a page without the helpers. Its lists are empty until the next
+	-- serverlist.Query, which clears tagged[] and marks them again.
+	pnlMainMenu:Call(markHelpers() .. "if (window.MeowyMarkMany) MeowyMarkMany(" .. jsonList(marks) .. ", " .. jsonList(ranks) .. ");")
+end
+
+-- For servers tagged as they arrived: the browser adds a server to its list
+-- only after the callback returns, so the rank is moved a moment later. Every
+-- server tagged within half a second shares one pass at 0.5 s and one more at
+-- 3 s (a busy browser may not have them yet; the page's flag stops a double
+-- penalty).
+local rankBatch
+local function rankLater(address, penalty)
+	if penalty <= 0 then return end
+	if not rankBatch then
+		local batch = {}
+		rankBatch = batch
+		local function pass()
+			for a, p in pairs(batch) do rankQueue[#rankQueue + 1] = { a, p } end
+		end
+		after(0.5, function()
+			if rankBatch == batch then rankBatch = nil end
+			pass()
+		end)
+		after(3, pass)
+	end
+	rankBatch[address] = penalty
+end
+
+-- Shows a verdict that arrived after the server was already listed (with the
+-- next flush).
 local function mark(address)
 	local s = seen[address]
 	if not s or not pnlMainMenu or tagged[s.type .. address] then return end
 	local tag, v = tagOf(address)
 	if not tag then return end
 	tagged[s.type .. address] = true
-	pnlMainMenu:Call(MARK_JS .. string.format("MeowyMark('%s', %d, '%s', %d);",
-		address:JavascriptSafe(), v and v.verdict == "fake" and (v.real or -1) or -1, tag:JavascriptSafe(), rankPenalty(v)))
+	local real = v and v.verdict == "fake" and tonumber(v.real) or -1
+	markQueue[#markQueue + 1] = { address, math.floor(real), tag, rankPenalty(v) }
 end
 
 local function fetchRep()
@@ -3105,6 +3344,11 @@ end
 -- Check queue: sample A, then B GAP seconds later, then judge.
 local queue, running, pending = {}, 0, {}
 
+-- The time-growth rule in judge() expects two samples about GAP apart. A
+-- second sample much later than that (a menu that stalled) would make real
+-- players who left and came back look frozen, so it isn't used.
+local MAX_GAP = GAP * 2
+
 -- Player lists come from the pack's own query (server_rep.cpp), not
 -- serverlist.PlayerList, which shows nothing for a reply that doesn't add up.
 -- (waiting and declared are declared above judge(), which reads declared.)
@@ -3174,7 +3418,7 @@ hook.Add("Think", "MeowyClientPack.ServerList", function()
 	end
 	local results = meowy.TakePlayers()
 	if results then
-		for _, r in ipairs(util.JSONToTable(results) or {}) do
+		for _, r in ipairs(results) do
 			if istable(r) and isstring(r.address) then
 				if r.ok then declared[r.address] = tonumber(r.declared) end
 				if panelWanted[r.address] and not r.ok then
@@ -3195,7 +3439,10 @@ hook.Add("Think", "MeowyClientPack.ServerList", function()
 	for address, w in pairs(waiting) do
 		if SysTime() > w.deadline then deliver(address, false) end
 	end
-	while running < PARALLEL and #queue > 0 do
+	-- While a join loads or the game runs, no check starts: its queries would
+	-- compete with the join, and the queue is still there at the menu.
+	local busy = IsInLoading() or IsInGame()
+	while not busy and running < PARALLEL and #queue > 0 do
 		local address = table.remove(queue, 1)
 		sample(address, function(listA)
 			local atA = SysTime()
@@ -3209,17 +3456,24 @@ hook.Add("Think", "MeowyClientPack.ServerList", function()
 				mark(address)
 				return
 			end
+			-- A second sample due while a join loads or the game runs isn't
+			-- asked for (its query would compete with the join): the first is
+			-- judged alone, as when the second gets no answer.
 			after(GAP, function()
-				sample(address, function(listB)
+				local function finish(listB)
 					pending[address] = nil
-					if listB == false then listB = nil end -- no second answer: judge on the first alone
-					mine[address] = judge(address, listA, listB, SysTime() - atA)
+					local gap = SysTime() - atA
+					if listB == false or gap > MAX_GAP then listB = nil end -- no usable second answer: judge on the first alone
+					mine[address] = judge(address, listA, listB, listB and gap or 0)
 					mine[address].at = SysTime()
 					mark(address)
-				end)
+				end
+				if IsInLoading() or IsInGame() then finish(false) return end
+				sample(address, finish)
 			end)
 		end)
 	end
+	flushMarks()
 end)
 
 local stockQuery = serverlist.Query
@@ -3243,7 +3497,8 @@ meowy.FetchServerRep = function() if enabled:GetBool() then fetchRep() end end
 -- and the count checks above see no difference.
 local fastList = meowy.Setting("meowy_fast_serverlist", "1",
 	"Meowy Client Pack: Find servers lists only servers with players, straight from Steam (0 = every server, the game's way)")
-local fastRuns = {}   -- [list id] = { data, started, count }
+local fastRuns = {}   -- [list id] = { data, started, count, rows, head, tail, finished, inGame }
+local FAST_ROWS = 50   -- rows handed to the browser a frame at most; the rest wait (Steam sends ~50-80 a second)
 local function tagValue(tags, key) return (" " .. tags .. " "):match(" " .. key .. ":(%S+)") end
 local function fastQuery(data)
 	if not (fastList:GetBool() and meowy.ServerQueryStart and istable(data) and isfunction(data.Callback)) then return false end
@@ -3251,14 +3506,41 @@ local function fastQuery(data)
 	for id in pairs(fastRuns) do meowy.ServerQueryCancel(id) fastRuns[id] = nil end   -- a refresh replaces the last list
 	local id = meowy.ServerQueryStart("internet", "gamedir", "garrysmod", "hasplayers", "1")
 	if not id then return false end
-	fastRuns[id] = { data = data, started = SysTime(), count = 0 }
+	fastRuns[id] = { data = data, started = SysTime(), count = 0, rows = {}, head = 1, tail = 0, inGame = IsInGame() }
 	return true
 end
 hook.Add("Think", "MeowyClientPack.FastServerList", function()
+	if next(fastRuns) == nil then return end
+	-- A join starting (or the game, for a list asked for at the menu) stops the
+	-- list: Steam's pings and the browser's rows would compete with the join
+	-- on the main thread, and rows queued while the game was busy would all
+	-- land in one frame. The browser asks again when it's opened next, so
+	-- Finished isn't called.
+	local loading, inGame = IsInLoading(), IsInGame()
 	for id, run in pairs(fastRuns) do
-		local list, finished = meowy.ServerQueryTake(id)
+		if loading or (inGame and not run.inGame) then
+			meowy.ServerQueryCancel(id)
+			fastRuns[id] = nil
+			print(string.format("[Meowy Client Pack] fast server list: stopped for a join after %d servers (%.1f s)", run.count,
+				SysTime() - run.started))
+		end
+	end
+	local budget = FAST_ROWS
+	for id, run in pairs(fastRuns) do
+		if not run.finished then
+			local list, finished = meowy.ServerQueryTake(id)
+			for _, s in ipairs(list) do run.tail = run.tail + 1 run.rows[run.tail] = s end
+			if finished then
+				run.finished = true
+				meowy.ServerQueryCancel(id)   -- everything is taken; the rest is Lua's
+			end
+		end
 		local stop = false
-		for _, s in ipairs(list) do
+		while budget > 0 and run.head <= run.tail do
+			local s = run.rows[run.head]
+			run.rows[run.head] = nil
+			run.head = run.head + 1
+			budget = budget - 1
 			local tags = s.tags or ""
 			run.count = run.count + 1
 			local ok, more = pcall(run.data.Callback, s.ping, s.name, s.desc, s.map, s.players, s.max, s.bots, s.pass,
@@ -3269,12 +3551,12 @@ hook.Add("Think", "MeowyClientPack.FastServerList", function()
 			if not ok then ErrorNoHalt("[Meowy Client Pack] fast server list: " .. tostring(more) .. "\n") end
 			if not ok or more == false then stop = true break end
 		end
-		if stop or finished then
+		if stop or (run.finished and run.head > run.tail) then
 			fastRuns[id] = nil
-			meowy.ServerQueryCancel(id)
+			if not run.finished then meowy.ServerQueryCancel(id) end
 			print(string.format("[Meowy Client Pack] fast server list: %d servers with players in %.1f s%s", run.count,
 				SysTime() - run.started, stop and " (stopped)" or ""))
-			if finished and not stop and isfunction(run.data.Finished) then run.data.Finished() end
+			if run.finished and not stop and isfunction(run.data.Finished) then run.data.Finished() end
 		end
 	end
 end)
@@ -3486,12 +3768,15 @@ end)
 -- on any server. Switched only between servers, never while one is loading.
 local fastLookup = meowy.Setting("meowy_fast_lua_lookup", "1",
 	"Meowy Client Pack: find a server's Lua files through the string table's index (0 = the game's own scan)")
-local fastLookupApplied, wasJoining
+local fastLookupApplied, wasJoining, wasLoading
 hook.Add("Think", "MeowyClientPack.FastLuaLookup", function()
-	local joining = IsInLoading() or IsInGame()
-	-- Each join's table is checked again before it's used (lua_lookup.h).
-	if joining and not wasJoining then meowy.FastLuaLookupNewJoin() end
-	wasJoining = joining
+	local loading = IsInLoading()
+	local joining = loading or IsInGame()
+	-- Each join's table is checked again before it's used (lua_lookup.h,
+	-- lua_find.h): at every loading start, a changelevel's on the same server
+	-- included (its new table can sit where the old one was).
+	if (joining and not wasJoining) or (loading and not wasLoading) then meowy.FastLuaLookupNewJoin() end
+	wasJoining, wasLoading = joining, loading
 	local want = fastLookup:GetBool()
 	if want == fastLookupApplied or joining then return end
 	fastLookupApplied = want
@@ -3509,8 +3794,9 @@ local fastFind = meowy.Setting("meowy_fast_lua_find", "1",
 	"Meowy Client Pack: let file.Find on a server's Lua skip the files that can't match (0 = the game's own walk)")
 local fastFindApplied
 hook.Add("Think", "MeowyClientPack.FastLuaFind", function()
+	if IsInLoading() or IsInGame() then return end
 	local want = fastFind:GetBool()
-	if want == fastFindApplied or IsInLoading() or IsInGame() then return end
+	if want == fastFindApplied then return end
 	fastFindApplied = want
 	local ok, why = meowy.FastLuaFind(want)
 	if not ok then print("[Meowy Client Pack] fast file.Find: " .. tostring(why)) end
@@ -3526,8 +3812,9 @@ local fastFonts = meowy.Setting("meowy_fast_fonts", "1",
 	"Meowy Client Pack: don't load gdi32.dll again for every font file on each join (0 = the game's own way)")
 local fastFontsApplied
 hook.Add("Think", "MeowyClientPack.FastFonts", function()
+	if IsInLoading() or IsInGame() then return end
 	local want = fastFonts:GetBool()
-	if want == fastFontsApplied or IsInLoading() or IsInGame() then return end
+	if want == fastFontsApplied then return end
 	fastFontsApplied = want
 	local ok, why = meowy.FastFonts(want)
 	if not ok then print("[Meowy Client Pack] fast fonts: " .. tostring(why)) end
@@ -3616,8 +3903,14 @@ if isfunction(stockGameDetails) then
 	end
 end
 
+local joinLoading = false
 hook.Add("Think", "MeowyClientPack.Loading", function()
 	local loading = IsInLoading()
+	-- Every join, the pack's screen or not: background downloads wait it out.
+	if loading ~= joinLoading then
+		joinLoading = loading
+		meowy.JoinLoading(loading)
+	end
 	if not active then
 		if not loading then details, panelSince = nil, nil return end
 		panelSince = panelSince or SysTime()
@@ -3704,11 +3997,43 @@ bool DiscordOffSaved()
 }
 #endif
 
-int ClientOpen(ILuaBase* LUA)
+// A C++ exception out of a realm's open (std::bad_alloc in a 32-bit game, say)
+// must never unwind into the game: the stack goes back to how the game passed
+// it, one line says what happened, and the realm opens without the pack (or
+// with what was set up before it). Lua's own errors aren't std::exceptions and
+// pass through untouched, as in Guarded.
+template <int (*Open)(ILuaBase*)>
+int OpenGuarded(ILuaBase* LUA, const char* realm)
+{
+	const int top = LUA->Top();
+	try
+	{
+		return Open(LUA);
+	}
+	catch (const std::exception& e)
+	{
+		const int pushed = LUA->Top() - top;
+		if (pushed > 0)
+			LUA->Pop(pushed);
+		try
+		{
+			PrintLine(LUA, std::string("[Meowy Client Pack] the ") + realm + " realm couldn't open: " + e.what());
+		}
+		catch (const std::exception&)
+		{
+		}
+	}
+	return 0;
+}
+
+int ClientOpenBody(ILuaBase* LUA)
 {
 #ifdef _WIN32
 	// Switched off by the signed policy (policy.h): only the version, nothing runs.
-	policy::StartFetching(PolicyDir());
+	// The menu realm's fetch already runs when the start-up stub loaded this
+	// DLL (pinned); without it, one fetch on a thread holding its own reference
+	// to the DLL, which the game frees after the realm closes.
+	policy::StartFetching(PolicyDir(), startup_hook::MenuLoaded() ? policy::Fetch::Periodic : policy::Fetch::OnceUnpinned);
 	if (!PolicyAllows())
 	{
 		LUA->PushSpecial(SPECIAL_GLOB);
@@ -3745,6 +4070,7 @@ int ClientOpen(ILuaBase* LUA)
 	SetFunction(LUA, "NotifyCatalogue", Guarded<NotifyCatalogue>);
 	SetFunction(LUA, "TimelineEvent", Guarded<TimelineEvent>);
 	SetFunction(LUA, "ExpectRestart", Guarded<ExpectRestart>);
+	SetFunction(LUA, "MulticoreManaged", Guarded<MulticoreManaged>);
 
 	LUA->SetField(-2, "meowy");
 	LUA->Pop();
@@ -3801,6 +4127,11 @@ int ClientOpen(ILuaBase* LUA)
 	return 0;
 }
 
+int ClientOpen(ILuaBase* LUA)
+{
+	return OpenGuarded<ClientOpenBody>(LUA, "client");
+}
+
 int ClientClose(ILuaBase* LUA)
 {
 	(void)LUA;
@@ -3808,7 +4139,12 @@ int ClientClose(ILuaBase* LUA)
 	// kicked or dropped before InitPostEntity put it back, too): the material
 	// reload is never skipped for whatever is joined next. Unpinned (the pack
 	// didn't start with the game), the DLL is freed after this, and with it the
-	// only record of where the patch is.
+	// only record of where the patch is. So no thread may run in an unpinned
+	// copy without its own reference to the DLL (thread_util.h): the policy's
+	// one-shot fetch and a toast worker hold one and keep the DLL mapped until
+	// they end, and nothing here waits for them. Discord's worker is stopped
+	// here with a bounded wait; one that doesn't stop in time holds its own
+	// reference too.
 	engine_patches::RestoreMaterialReload();
 	discord::Shutdown();
 	// No more notifications; the badge and the toasts' click handlers go.
@@ -3831,21 +4167,15 @@ GMOD_MODULE_OPEN()
 }
 
 #ifdef _WIN32
-// Menu-state entry point, called by gmsv_meowy_boot when the game starts
-// (src/boot/boot.cpp). Only the version is exposed there for now; the menu
-// realm is where the join features (our loading screen) will live.
-GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
+namespace
 {
-	// The client realm's require("meowy") gets this same DLL and frees it when
-	// the player leaves a server. Pinned, it stays loaded for the menu realm.
-	HMODULE self = nullptr;
-	GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
-		reinterpret_cast<LPCWSTR>(&meowy_menu_open), &self);
-
+// The menu realm's open (meowy_menu_open, below).
+int MenuOpenBody(ILuaBase* LUA)
+{
 	// The kill switch first (policy.h): the policy kept from last time decides
 	// this start; a newer one is fetched in the background and applies to
 	// settings at once (meowy.Setting) and to the whole pack from the next start.
-	policy::StartFetching(PolicyDir());
+	policy::StartFetching(PolicyDir(), policy::Fetch::Periodic);
 	const bool allowed = PolicyAllows();
 
 	LUA->PushSpecial(SPECIAL_GLOB);
@@ -3886,6 +4216,7 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	SetFunction(LUA, "LoadingCancelRequested", Guarded<LoadingCancelRequested>);
 	SetFunction(LUA, "LoadingInGame", Guarded<LoadingInGame>);
 	SetFunction(LUA, "LoadingEnd", Guarded<LoadingEnd>);
+	SetFunction(LUA, "JoinLoading", Guarded<JoinLoading>);
 	SetFunction(LUA, "LoadingPrewarm", Guarded<LoadingPrewarm>);
 	SetFunction(LUA, "LoadingPark", Guarded<LoadingPark>);
 	SetFunction(LUA, "ServerRepFetch", Guarded<ServerRepFetch>);
@@ -3916,6 +4247,9 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	SetFunction(LUA, "MenuSettingsWrite", Guarded<MenuSettingsWrite>);
 	SetFunction(LUA, "MenuFileRead", Guarded<MenuFileRead>);
 	SetFunction(LUA, "MenuFileWrite", Guarded<MenuFileWrite>);
+	SetFunction(LUA, "SetMulticoreManaged", Guarded<SetMulticoreManaged>);
+	SetFunction(LUA, "MulticoreGuardAtExit", Guarded<MulticoreGuardAtExit>);
+	SetFunction(LUA, "CrashSince", Guarded<CrashSince>);
 	SetFunction(LUA, "ResilienceSession", Guarded<ResilienceSession>);
 	SetFunction(LUA, "ResilienceCrashedSession", Guarded<ResilienceCrashedSession>);
 	SetFunction(LUA, "PrewarmBeginJoin", Guarded<PrewarmBeginJoin>);
@@ -4042,6 +4376,34 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	}
 	LUA->Pop();
 	return 0;
+}
+}
+
+// Menu-state entry point, called by gmsv_meowy_boot when the game starts
+// (src/boot/boot.cpp). Only the version is exposed there for now; the menu
+// realm is where the join features (our loading screen) will live.
+GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
+{
+	// The client realm's require("meowy") gets this same DLL and frees it when
+	// the player leaves a server. Pinned, it stays loaded for the menu realm.
+	HMODULE self = nullptr;
+	GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+		reinterpret_cast<LPCWSTR>(&meowy_menu_open), &self);
+	return OpenGuarded<MenuOpenBody>(LUA, "menu");
+}
+
+// The process is ending the normal way (ExitProcess: `reserved` is set; a
+// FreeLibrary of an unpinned client-realm copy leaves it null). The menu state
+// has no dependable "the game is closing" hook, so this is where multicore
+// rendering's crash guard learns of a clean exit (multicore.h). A crash ends
+// the process without getting here. Only file calls run here (a listing of
+// crashes\ and one small write), and only when the menu armed it. Other
+// threads are gone by now; nothing here waits on one.
+BOOL WINAPI DllMain(HINSTANCE, DWORD reason, LPVOID reserved)
+{
+	if (reason == DLL_PROCESS_DETACH && reserved != nullptr)
+		multicore::AtProcessExit();
+	return TRUE;
 }
 #endif
 

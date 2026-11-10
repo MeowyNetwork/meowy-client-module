@@ -21,3 +21,5 @@
 #define IDR_PARTY_LOGIC_LUA 117       // src/lua/party_logic.lua: parties' rules (PartyLogic)
 #define IDR_PARTY_LUA 118             // src/lua/party.lua: parties, menu glue
 #define IDR_SETTINGS_LUA 140            // src/lua/settings.lua: meowy.Setting, menu_settings.txt, what servers may not change (the first menu chunk)
+#define IDR_MULTICORE_LOGIC_LUA 141      // src/lua/multicore_logic.lua: multicore rendering's crash guard, its rules (MulticoreLogic)
+#define IDR_MULTICORE_LUA 142            // src/lua/multicore.lua: multicore rendering on by default, menu glue and its switch

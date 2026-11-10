@@ -12,15 +12,20 @@
 local query = meowy.StockServerQuery or (serverlist and serverlist.Query)
 local REFRESH = 60   -- seconds between asks while the card shows (at most one query per server per minute)
 local STUCK = 30     -- a list not finished after this is asked again at the next refresh
-local RESEND = 5     -- seconds: the same data again, in case the page was rebuilt
+local LIVE_EVERY = 2  -- seconds: the Escape card's ping, loss and time at most this often
 
 local st = { oursAddress = meowy.OurServerAddress and meowy.OurServerAddress() or nil }
 local pending = {}            -- kind -> SysTime it was asked
 local addresses = {}          -- row number -> address, from the model last sent
 local nextLook, nextRefresh, shown = 0, 0, false
 local tickEsc                 -- the Escape menu's card, below
-local sentText, sentAt, version = nil, 0, 0
+local sentText, version = nil, 0
 local lastOurs = false        -- menuPage.ours when last sent
+-- Each card's code goes into a page once: the page is menuPage.doc (bumped by
+-- menu_page.lua when one loads, a language change say) and the menu panel. A
+-- new page is sent everything again; otherwise data goes only when it changes.
+local homeDoc, homeMenu       -- the page HOME_JS went into
+local function samePage(doc, menu) return doc == (menuPage.doc or 0) and menu == pnlMainMenu end
 
 local HOME_JS = [==[
 (function () {
@@ -708,8 +713,8 @@ hook.Add("Think", "MeowyClientPack.Prewarm", function()
 		pw.warmedFor = nil
 		if pw.recording then
 			pw.recording = false
-			local kept = meowy.PrewarmEndJoin()
-			if kept > 0 then log("prewarm: kept %d files for this server", kept) end
+			local noted = meowy.PrewarmEndJoin()
+			if noted > 0 then log("prewarm: noted %d files this join (merged into the server's list in the background)", noted) end
 		end
 	elseif not loading and not IsInGame() then
 		if pw.joining and meowy.PakCache then meowy.PakCache(false) end
@@ -779,8 +784,10 @@ end
 local function send(text)
 	if not (IsValid(pnlMainMenu) and pnlMainMenu.Call) then return end
 	if text ~= sentText then version = version + 1 end
-	sentText, sentAt = text, SysTime()
-	pnlMainMenu:Call(HOME_JS .. "window.MeowyHome(" .. text .. "," .. version .. ");\n"
+	sentText = text
+	local fresh = not samePage(homeDoc, homeMenu)
+	if fresh then homeDoc, homeMenu = menuPage.doc or 0, pnlMainMenu end
+	pnlMainMenu:Call((fresh and HOME_JS or "") .. "window.MeowyHome(" .. text .. "," .. version .. ");\n"
 		.. "if (window.MeowyShellLists) window.MeowyShellLists();\n")   -- the Meowy home screen's lists (shell.js)
 end
 
@@ -788,9 +795,10 @@ local function tick()
 	local now = SysTime()
 	if now < nextLook then return end
 	nextLook = now + 0.5
-	-- Our own menu page (menu_page.lua) shows the same lists, whatever the card's setting.
-	if menuPage.ours ~= lastOurs then
-		lastOurs, sentText, sentAt = menuPage.ours, nil, 0   -- a new page: send it everything now
+	-- Our own menu page (menu_page.lua) shows the same lists, whatever the card's
+	-- setting; it, or a page just loaded, is sent everything now.
+	if menuPage.ours ~= lastOurs or not samePage(homeDoc, homeMenu) then
+		lastOurs, sentText = menuPage.ours, nil
 	end
 	local visible = (homeOn() or menuPage.ours) and menuVisible() and not IsInGame() and not IsInLoading()
 		and IsValid(pnlMainMenu) and pnlMainMenu.Call ~= nil
@@ -812,7 +820,7 @@ local function tick()
 			end
 		end
 		local text = Home.encode({ sections = model.sections })
-		if text ~= sentText or now - sentAt >= RESEND then send(text) end
+		if text ~= sentText then send(text) end   -- only when it changed
 	elseif shown then
 		send("null")   -- in game (the Escape menu is the same page) or turned off
 	end
@@ -897,7 +905,10 @@ local ESC_JS = [==[
 			name.title = data.server.name;
 			box.appendChild(name);
 			if (data.server.line1) box.appendChild(node('div', 'me-line', data.server.line1));
-			if (data.server.line2) box.appendChild(node('div', 'me-line', data.server.line2));
+			// Ping, loss and time here: their own small call (MeowyEscLive), not a redraw.
+			var live = node('div', 'me-line me-live', window.MeowyEscLiveText || '');
+			if (!window.MeowyEscLiveText) live.style.display = 'none';
+			box.appendChild(live);
 			var addr = node('div', 'me-line');
 			var copy = node('span', 'me-btn', 'Copy');
 			copy.onclick = function () {
@@ -932,13 +943,23 @@ local ESC_JS = [==[
 		window.MeowyEscVersion = version;
 		draw();
 	};
+	window.MeowyEscLive = function (text) {
+		window.MeowyEscLiveText = text;
+		var e = document.querySelector('#meowy-esc .me-live');
+		if (!e) return;
+		if (e.textContent !== text) e.textContent = text;
+		e.style.display = text ? '' : 'none';
+	};
 	document.addEventListener('mouseup', function () { dragging = false; }, true);
 	var MO = window.MutationObserver || window.WebKitMutationObserver;
 	if (MO && document.body) new MO(draw).observe(document.body, { childList: true, subtree: true });
 })();
 ]==]
 
-local esc = { info = {}, nextAsk = 0, sentText = nil, sentAt = 0, version = 0, shown = false, askedFor = nil }
+-- sentText: the card last sent (its fixed parts); liveText/liveAt: its ping,
+-- loss and time line, and when; doc/menu: the page ESC_JS went into.
+local esc = { info = {}, nextAsk = 0, sentText = nil, version = 0, shown = false, askedFor = nil,
+	liveText = nil, liveAt = -math.huge, doc = nil, menu = nil }
 
 local function convarNumber(name)
 	local cv = GetConVar and GetConVar(name)
@@ -973,8 +994,16 @@ end
 local function sendEsc(text)
 	if not (IsValid(pnlMainMenu) and pnlMainMenu.Call) then return end
 	if text ~= esc.sentText then esc.version = esc.version + 1 end
-	esc.sentText, esc.sentAt = text, SysTime()
-	pnlMainMenu:Call(ESC_JS .. "window.MeowyEsc(" .. text .. "," .. esc.version .. ");\n")
+	esc.sentText = text
+	local fresh = not samePage(esc.doc, esc.menu)
+	if fresh then esc.doc, esc.menu = menuPage.doc or 0, pnlMainMenu end
+	pnlMainMenu:Call((fresh and ESC_JS or "") .. "window.MeowyEsc(" .. text .. "," .. esc.version .. ");\n")
+end
+
+-- The card's ping, loss and time line on its own (they change all the time).
+local function sendEscLive(text, now)
+	esc.liveText, esc.liveAt = text, now
+	pnlMainMenu:Call("if (window.MeowyEscLive) window.MeowyEscLive(" .. Home.encode(text) .. ");\n")
 end
 
 function tickEsc(now)
@@ -982,16 +1011,19 @@ function tickEsc(now)
 		and IsValid(pnlMainMenu) and pnlMainMenu.Call ~= nil and meowy.ServerNow ~= nil
 	if not visible then
 		if esc.shown then sendEsc("null") end
-		esc.shown = false
+		esc.shown, esc.liveText = false, nil
 		return
 	end
+	-- A page just loaded: sent everything again.
+	if not samePage(esc.doc, esc.menu) then esc.sentText, esc.liveText = nil, nil end
 	local info = esc.info
 	local address, latency, loss, connected = meowy.ServerNow()
 	if address ~= esc.askedFor then   -- another server: what we knew is about the last one
 		esc.askedFor, esc.nextAsk = address, 0
 		info.map, info.players, info.max, info.answerName = nil, nil, nil, nil
 	end
-	info.address, info.latency, info.loss, info.connected = address, latency, loss, connected
+	-- The card itself without the live numbers (they go in their own line, below).
+	info.address, info.latency, info.loss, info.connected = address, nil, nil, nil
 	info.updaterate = convarNumber("cl_updaterate")
 	info.name = info.answerName or meowy.JoiningName
 	info.values = {}
@@ -1007,7 +1039,15 @@ function tickEsc(now)
 		end)
 	end
 	local text = Home.encode(Home.escapeModel(info))
-	if text ~= esc.sentText or now - esc.sentAt >= RESEND then sendEsc(text) end
+	if text ~= esc.sentText then sendEsc(text) end
+	-- Ping (as net_graph shows it, to the nearest 5 ms), loss and time here: at
+	-- most every LIVE_EVERY seconds, and only when the line reads differently.
+	local ms, rate = tonumber(latency), info.updaterate
+	if ms and rate and rate > 0 then ms = math.max(0, ms - 500 / rate) end
+	if ms then ms = math.floor(ms / 5 + 0.5) * 5 end
+	local live = Home.escapeModel({ address = address, latency = ms, loss = loss, connected = connected })
+	local liveText = live.server and live.server.line2 or ""
+	if liveText ~= esc.liveText and (esc.liveText == nil or now - esc.liveAt >= LIVE_EVERY) then sendEscLive(liveText, now) end
 	esc.shown = true
 end
 

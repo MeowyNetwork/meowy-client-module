@@ -7,9 +7,12 @@
 //                                           the previous one still runs first-hand)
 // Lines are assembled from the pieces Msg/MsgC send (a line ends at "\n"), kept
 // with the time, severity (0 message, 1 warning, 2 assert, 3 error) and colour,
-// in a ring of the last kMaxLines. Text is cleaned to valid UTF-8 (a server
-// name cut mid-character is common). Thread-safe: the engine logs from several
-// threads; the menu reads.
+// in a ring of the last kMaxLines, and no more than kMaxTextBytes of text in
+// all (a server printing long lines in a loop can't fill a 32-bit client's
+// memory). Text is cleaned to valid UTF-8 (a server name cut mid-character is
+// common). Thread-safe: the engine logs from several threads; the menu reads.
+// The lock is a critical section, never freed: a thread killed while holding
+// it as the game exits doesn't hang the exit (a slim reader/writer lock would).
 
 #include <cstdint>
 #include <string>
@@ -19,6 +22,8 @@ namespace console_capture
 {
 	constexpr size_t kMaxLines = 50000;
 	constexpr size_t kMaxLineBytes = 4096;
+	// The oldest lines go first once the text kept passes this.
+	constexpr size_t kMaxTextBytes = sizeof(void*) == 8 ? 16 * 1024 * 1024 : 6 * 1024 * 1024;
 
 	struct Line
 	{
@@ -35,7 +40,8 @@ namespace console_capture
 	bool Installed();
 
 	// Lines after `sinceId`, at most `max` (the newest when there are more);
-	// `nextId` is what to pass next time.
+	// `nextId` is the id the next line will get. With `max` 0, no lines: only
+	// `nextId` (the newest line is nextId - 1).
 	std::vector<Line> Read(uint64_t sinceId, size_t max, uint64_t* nextId);
 
 	std::string Describe();

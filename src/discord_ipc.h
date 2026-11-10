@@ -20,7 +20,10 @@ namespace discord
 	void SetActivity(const std::string& activityJson);
 
 	// Clears the activity and stops the worker, and forgets that a server asked
-	// for it (the client realm closed). Blocks briefly.
+	// for it (the client realm closed). Blocks briefly: at most about a second,
+	// even with Discord hung (a worker stuck in a pipe write has it cancelled,
+	// and one that still doesn't stop is let go; it holds its own reference to
+	// the DLL, and the next Start waits a moment for it, or starts nothing).
 	void Shutdown();
 
 	// The player's switch (the menu setting meowy_discord), game thread only.
@@ -41,4 +44,11 @@ namespace discord
 
 	// Raw JSON of Discord's last error or close frame, or "" if none.
 	std::string LastError();
+
+	namespace detail
+	{
+		// Tests: the pipes are "<prefix>0".."<prefix>9" instead of Discord's
+		// (\\.\pipe\discord-ipc-N). Set before Start.
+		void SetPipePrefix(const std::wstring& prefix);
+	}
 }

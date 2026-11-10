@@ -109,6 +109,31 @@ int main()
 
 	Check("hash: different data, different hash", pak_cache::detail::Hash(a.data(), a.size()) != pak_cache::detail::Hash(b.data(), b.size()));
 	Check("hash: the seed counts", pak_cache::detail::Hash(a.data(), 10, 1) != pak_cache::detail::Hash(a.data(), 10, 2));
+	// The four lanes: a change in any one of them, and the same words in other
+	// lanes, give another hash.
+	{
+		using pak_cache::detail::Hash;
+		std::vector<uint8_t> h(256);
+		for (size_t i = 0; i < h.size(); ++i)
+			h[i] = static_cast<uint8_t>(i * 13 + 1);
+		const uint64_t base = Hash(h.data(), h.size());
+		bool each = true;
+		for (size_t at : { size_t(0), size_t(8), size_t(16), size_t(24), size_t(200), size_t(255) })
+		{
+			std::vector<uint8_t> x = h;
+			x[at] ^= 0x40;
+			each = each && Hash(x.data(), x.size()) != base;
+		}
+		Check("hash: a byte changed in any lane counts", each);
+		std::vector<uint8_t> swapped = h;
+		std::memcpy(&swapped[0], &h[8], 8);
+		std::memcpy(&swapped[8], &h[0], 8);
+		Check("hash: words swapped between lanes count", Hash(swapped.data(), swapped.size()) != base);
+		std::vector<uint8_t> same1(64, 0xAB), same2(64, 0xCD);
+		Check("hash: the same word in every lane doesn't cancel out", Hash(same1.data(), 64) != Hash(same2.data(), 64));
+		Check("hash: the same for the same bytes", Hash(h.data(), h.size()) == base);
+		Check("hash: the length counts", Hash(h.data(), 64) != Hash(h.data(), 65));
+	}
 
 	// A main-thread read of an entry another thread is decompressing waits for it.
 	pak_cache::detail::SetCap(1 << 20, 1 << 18);
@@ -193,6 +218,72 @@ int main()
 	const int callsOff = g_calls.load();
 	Check("ahead: nothing once the join is over", pak_cache::detail::PrefillFile(path, &Fake, 2, gen, why) == 0 && g_calls.load() == callsOff);
 	Check("pak: not a pak", !pak_cache::detail::PakEntries(std::wstring(tmp) + L"meowy_no_such_pak.bsp", entries, why));
+
+	// Under load: the game's reads (hits copied out after g_mutex is let go)
+	// while workers move their entries in and the cache is emptied (freed off
+	// the thread that empties it), over and over. Every read must get the right
+	// bytes, and nothing may crash.
+	{
+		pak_cache::detail::SetCap(8u << 20, 2u << 20);
+		pak_cache::detail::SetActiveForTest(true);
+		const unsigned stressGen = pak_cache::detail::GenerationForTest();
+		std::atomic<bool> stop{ false };
+		std::atomic<int> wrong{ 0 }, reads{ 0 }, clears{ 0 }, fills{ 0 };
+		// The game: entry a as the map reads it (prefilled by the workers), and
+		// big entries of its own (1.5 MB each, so a clear frees on a thread).
+		const auto game = [&](int seed) {
+			std::vector<uint8_t> entry = zs[0].data, outRead(800);
+			std::vector<uint8_t> bigSrc(64, static_cast<uint8_t>(seed)), bigOut;
+			while (!stop.load())
+			{
+				size_t dl = 800, sl = entry.size();
+				if (pak_cache::detail::Decode(&Fake, outRead.data(), &dl, entry.data() + 9, &sl, entry.data() + 4, 5, entry.size() - 9) != 0 || dl != 800)
+					++wrong;
+				for (size_t i = 0; i < 800; ++i)
+					if (outRead[i] != static_cast<uint8_t>(10 + (i % 200) + 1))
+					{
+						++wrong;
+						break;
+					}
+				bigSrc[0] = static_cast<uint8_t>(reads.load() % 6);   // a handful of keys, so some hit
+				size_t got = 0;
+				if (Run(bigSrc, bigOut, 1536u << 10, &got) != 0 || got != (1536u << 10) ||
+					bigOut[0] != static_cast<uint8_t>(bigSrc[0] + 1) || bigOut[63] != static_cast<uint8_t>(bigSrc[63] + 1) ||
+					bigOut[64] != static_cast<uint8_t>(bigSrc[0] + 1) || bigOut.back() != static_cast<uint8_t>(bigSrc[(bigOut.size() - 1) % 64] + 1))
+					++wrong;
+				++reads;
+			}
+		};
+		std::thread g1(game, 1), g2(game, 2);
+		std::thread workers([&]() {
+			std::string w;
+			while (!stop.load())
+			{
+				pak_cache::detail::PrefillFile(path, &Fake, 2, stressGen, w);
+				++fills;
+			}
+		});
+		std::thread clearer([&]() {
+			while (!stop.load())
+			{
+				pak_cache::detail::Clear();
+				++clears;
+				std::this_thread::sleep_for(std::chrono::milliseconds(5));
+			}
+		});
+		std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+		stop = true;
+		g1.join();
+		g2.join();
+		workers.join();
+		clearer.join();
+		std::printf("  stress: %d reads, %d prefills, %d clears\n", reads.load(), fills.load(), clears.load());
+		Check("stress: every read got the right bytes", wrong.load() == 0 && reads.load() > 0 && fills.load() > 0 && clears.load() > 0);
+		Check("stress: held within the cap", Get().heldBytes <= (8u << 20));
+		pak_cache::detail::Clear();
+		Check("stress: empty once cleared", Get().entries == 0 && Get().heldBytes == 0);
+		pak_cache::detail::SetActiveForTest(false);
+	}
 	DeleteFileW(path.c_str());
 
 	// Sizes a directory entry can't mean are never allocated for (a crafted map

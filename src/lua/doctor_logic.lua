@@ -6,7 +6,9 @@
 --   battery_saver, power_mode, adapters = { { name, vram_mb, perf_rank,
 --   power_rank, share } }, audio = { output, input, comms_input,
 --   output_handsfree, input_handsfree, inputs } }. Any field may be missing.
--- cvars: { mcore = gmod_mcore_test, queue = mat_queue_mode } as strings, or nil.
+-- cvars: { mcore = gmod_mcore_test, queue = mat_queue_mode } as strings, or nil;
+--   pack: what the pack does with multicore (meowy.MulticoreStatus, multicore.lua),
+--   so the tip points to Meowy settings, not the console, when it's the pack's.
 -- Everything stays on this PC. Nothing is changed: tips say what to do.
 
 local M = {}
@@ -115,7 +117,29 @@ function M.diagnose(facts, cvars)
 		return v or "unknown"
 	end
 	report[#report + 1] = ("Multicore: gmod_mcore_test %s, mat_queue_mode %s"):format(plain(cvars.mcore), plain(cvars.queue))
-	if mcore == 0 then
+	-- cvars.pack: what the pack does with it (multicore_logic.lua's status):
+	-- "managed", "setting_off", "guard_off", or nil (the pack leaves it alone).
+	local pack = cvars.pack
+	if pack == "managed" then
+		report[#report + 1] = "Multicore setting: on (Meowy settings), turned on by the pack"
+	elseif pack == "setting_off" then
+		report[#report + 1] = "Multicore setting: off in Meowy settings"
+	elseif pack == "guard_off" then
+		report[#report + 1] = "Multicore setting: off after two crashes in a row with it on"
+	end
+	if mcore == 0 and pack == "managed" then
+		tips[#tips + 1] = { id = "mcore", title = "Multicore rendering is off.",
+			text = "The pack turns it on at every start (Meowy settings, Multicore rendering), but something turned it "
+				.. "off since: a server or a config file. Restarting Garry's Mod turns it on again." }
+	elseif mcore == 0 and pack == "setting_off" then
+		tips[#tips + 1] = { id = "mcore", title = "Multicore rendering is off.",
+			text = "Turn on Multicore rendering in Meowy settings (General). It's much faster on most PCs, and the pack "
+				.. "then turns it on at every start. If the game gets unstable, turn it off again." }
+	elseif mcore == 0 and pack == "guard_off" then
+		tips[#tips + 1] = { id = "mcore", title = "Multicore rendering is off.",
+			text = "The pack turned it off after Garry's Mod closed unexpectedly twice in a row with it on. To try it "
+				.. "again, turn on Multicore rendering in Meowy settings (General)." }
+	elseif mcore == 0 then
 		tips[#tips + 1] = { id = "mcore", title = "Multicore rendering is off.",
 			text = "Type gmod_mcore_test 1 in the console, then rejoin. It's much faster on most PCs. If the game "
 				.. "gets unstable, set it back to 0." }

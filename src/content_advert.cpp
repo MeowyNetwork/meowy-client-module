@@ -5,13 +5,13 @@
 #define WIN32_LEAN_AND_MEAN
 #include <winsock2.h>
 #include <windows.h>
+#include "thread_util.h"
 #endif
 
 #include <atomic>
 #include <cstring>
 #include <mutex>
 #include <set>
-#include <thread>
 
 namespace
 {
@@ -70,8 +70,13 @@ namespace content_advert
 			if (g_asking.size() >= static_cast<size_t>(kMaxInFlight) || !g_asking.insert(address).second)
 				return false;
 		}
-		++g_asked;
-		std::thread([address] {
+		const bool started = thread_util::Spawn(L"Meowy content advert", [address] {
+			// The address is free to be asked again however the body ends (an
+			// exception too); a finished answer is queued first.
+			thread_util::OnExit done([address] {
+				std::lock_guard<std::mutex> lock(g_mutex);
+				g_asking.erase(address);
+			});
 			static std::once_flag wsa;
 			std::call_once(wsa, [] { WSADATA d; WSAStartup(MAKEWORD(2, 2), &d); });
 			Answer a;
@@ -83,9 +88,15 @@ namespace content_advert
 			if (a.found)
 				++g_found;
 			std::lock_guard<std::mutex> lock(g_mutex);
-			g_asking.erase(address);
 			g_done.push_back(std::move(a));
-		}).detach();
+		}, thread_util::Priority::BelowNormal);
+		if (!started)
+		{
+			std::lock_guard<std::mutex> lock(g_mutex);
+			g_asking.erase(address);
+			return false;
+		}
+		++g_asked;
 		return true;
 #else
 		(void)address;

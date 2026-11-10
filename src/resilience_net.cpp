@@ -13,12 +13,12 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#include "thread_util.h"
 
 #include <atomic>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
-#include <thread>
 
 namespace
 {
@@ -113,14 +113,19 @@ namespace resilience
 			return true;   // one already on its way
 		g_probe = 0;
 		g_locked = false;
-		std::thread([to]() {
+		const bool started = thread_util::Spawn(L"Meowy probe", [to]() {
+			// Done however the body ends: an exception reads as no answer, never
+			// as a probe still waiting for ever.
+			thread_util::OnExit done([] { g_running = false; });
+			g_probe = -1;
 			bool locked = false;
 			int r = AskInfo(to, locked);
 			g_locked = locked;
 			g_probe = r;
-			g_running = false;
-		}).detach();
-		return true;
+		}, thread_util::Priority::BelowNormal);
+		if (!started)
+			g_running = false;   // not asked: the caller falls back, and the next call tries again
+		return started;
 	}
 
 	int ProbeResult(bool& locked)
