@@ -10,7 +10,7 @@
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#include <winhttp.h>
+#include "net_http.h"
 #include "thread_util.h"
 #endif
 
@@ -521,45 +521,24 @@ namespace policy
 		// locks are waited for before that policy is kept for now.
 		constexpr unsigned long kQuickWaitMs = 100;
 
-		// GET https://meowynetwork.com<path>: the body for a 200 (at most kMaxBody), else "".
-		std::string Get(const wchar_t* path)
+		// GET https://meowynetwork.com<path> on `session`: the body of a 200 that
+		// arrived whole (at most kMaxBody), else "".
+		std::string Get(net_http::Session& session, const wchar_t* path)
 		{
-			std::string out;
-			HINTERNET session = WinHttpOpen(L"MeowyClientPack", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-			if (!session)
-				return out;
-			WinHttpSetTimeouts(session, 5000, 5000, 8000, 8000);
-			HINTERNET connect = WinHttpConnect(session, L"meowynetwork.com", INTERNET_DEFAULT_HTTPS_PORT, 0);
-			HINTERNET request = connect ? WinHttpOpenRequest(connect, L"GET", path, nullptr, WINHTTP_NO_REFERER,
-				WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE) : nullptr;
-			if (request)
-			{
-				DWORD never = WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
-				WinHttpSetOption(request, WINHTTP_OPTION_REDIRECT_POLICY, &never, sizeof(never));
-				if (WinHttpSendRequest(request, L"Cache-Control: no-cache\r\n", static_cast<DWORD>(-1L), WINHTTP_NO_REQUEST_DATA, 0, 0, 0)
-					&& WinHttpReceiveResponse(request, nullptr))
-				{
-					DWORD status = 0, size = sizeof(status);
-					WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX,
-						&status, &size, WINHTTP_NO_HEADER_INDEX);
-					DWORD avail = 0;
-					while (status == 200 && WinHttpQueryDataAvailable(request, &avail) && avail > 0 && out.size() <= kMaxBody)
-					{
-						std::string chunk(avail, '\0');
-						DWORD read = 0;
-						if (!WinHttpReadData(request, &chunk[0], avail, &read) || read == 0)
-							break;
-						out.append(chunk.data(), read);
-					}
-					if (status != 200 || out.size() > kMaxBody)
-						out.clear();
-				}
-				WinHttpCloseHandle(request);
-			}
-			if (connect)
-				WinHttpCloseHandle(connect);
-			WinHttpCloseHandle(session);
-			return out;
+			net_http::Request req;
+			req.host = L"meowynetwork.com";
+			req.path = path;
+			req.headers = L"Cache-Control: no-cache\r\n";
+			req.maxBody = kMaxBody;
+			req.t.resolve = 5000;
+			req.t.connect = 5000;
+			req.t.send = 8000;
+			req.t.receive = 8000;
+			req.t.totalMs = 30000;
+			net_http::Response resp = session.Send(req);
+			if (resp.status != 200 || !resp.complete)
+				return std::string();
+			return std::move(resp.body);
 		}
 
 		std::string Now()
@@ -571,15 +550,17 @@ namespace policy
 			return s;
 		}
 
-		void FetchOnce(const std::wstring& stateDir)
+		// policy.txt then policy.sig, back to back on `session` (one connection
+		// for both while the server keeps it open), offered to the kept policy.
+		void FetchOnce(net_http::Session& session, const std::wstring& stateDir)
 		{
 			std::string result;
 			if (g_offline)
 				result = "not fetched (offline)";
 			else
 			{
-				const std::string body = Get(L"/pack/v1/policy.txt");
-				const std::string sig = body.empty() ? std::string() : Get(L"/pack/v1/policy.sig");
+				const std::string body = Get(session, L"/pack/v1/policy.txt");
+				const std::string sig = body.empty() ? std::string() : Get(session, L"/pack/v1/policy.sig");
 				if (body.empty() || sig.empty())
 					result = "couldn't fetch";
 				else if (body.compare(0, 20, "meowy-pack-policy 1\n") != 0)
@@ -693,9 +674,15 @@ namespace policy
 				return;
 			if (!thread_util::Spawn(L"Meowy policy", [stateDir]
 				{
+					// Ends only with the process, or through an exception: then
+					// the next call starts it again.
+					thread_util::OnExit done([] { g_fetching = false; });
 					for (;;)
 					{
-						FetchOnce(stateDir);
+						// Not while a join loads (checked every 30 s): the
+						// process-wide session, as this is the pinned menu realm.
+						net_http::WaitWhileJoining();
+						FetchOnce(net_http::Session::Shared(), stateDir);
 						Sleep(30 * 60 * 1000);
 					}
 				}, thread_util::Priority::Background))
@@ -705,16 +692,16 @@ namespace policy
 		// The client realm without the start-up stub: this DLL isn't pinned and is
 		// freed after the realm closes, so one fetch and no loop. The thread holds
 		// its own reference to the DLL (thread_util), which stays mapped until the
-		// fetch is done. One at a time; the next join starts the next.
+		// fetch is done. One at a time; the next join starts the next. A session
+		// of its own, closed when the fetch ends (the shared one is never closed,
+		// which only the pinned realm can afford); the .txt and the .sig share it.
 		if (g_fetching.load() || g_fetchingOnce.exchange(true))
 			return;
 		if (!thread_util::Spawn(L"Meowy policy (once)", [stateDir]
 			{
-				struct Done
-				{
-					~Done() { g_fetchingOnce = false; }
-				} done;
-				FetchOnce(stateDir);
+				thread_util::OnExit done([] { g_fetchingOnce = false; });
+				net_http::Session session = net_http::Session::Private();
+				FetchOnce(session, stateDir);
 			}, thread_util::Priority::Background))
 			g_fetchingOnce = false;
 	}

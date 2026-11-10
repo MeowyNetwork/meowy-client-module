@@ -8,6 +8,7 @@
 // Exit code 0 when every check passes.
 #include "../src/policy.h"
 #include "../src/file_util.h"
+#include "../src/thread_util.h"
 
 #include <atomic>
 #include <cstdio>
@@ -267,6 +268,25 @@ int main(int argc, char** argv)
 		CloseHandle(other);
 		policy::StartFetching(dir, policy::Fetch::OnceUnpinned);
 		Check("start, files free again: read", KeptReads() == reads + 3 && policy::Effective().seq == 5);
+
+		// A fetch thread that can't start leaves nothing taken: the next call
+		// starts one. The periodic loop last: it runs until the process ends.
+		Sleep(200);   // the one-shot fetches above have ended
+		unsigned before = Fetches();
+		thread_util::FailNextSpawns(1);
+		policy::StartFetching(dir, policy::Fetch::OnceUnpinned);
+		Sleep(200);
+		Check("one-shot fetch: a failed spawn fetches nothing", Fetches() == before);
+		policy::StartFetching(dir, policy::Fetch::OnceUnpinned);
+		Check("one-shot fetch: the next call starts one", waitFetches(before + 1));
+		Sleep(200);
+		before = Fetches();
+		thread_util::FailNextSpawns(1);
+		policy::StartFetching(dir, policy::Fetch::Periodic);
+		Sleep(200);
+		Check("periodic fetch: a failed spawn fetches nothing", Fetches() == before);
+		policy::StartFetching(dir, policy::Fetch::Periodic);
+		Check("periodic fetch: the next call starts it", waitFetches(before + 1));
 	}
 
 	// Edited on disk: no longer verifies, so it isn't kept.

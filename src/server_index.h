@@ -4,9 +4,10 @@
 // Garry's Mod server Steam lists, refreshed each minute by the backend, so
 // Find servers fills in about a second instead of waiting ~20 s for Steam's
 // pings. One HTTPS GET of https://meowynetwork.com/api/pack/index on a worker
-// thread: gzip, If-None-Match (a 304 when nothing changed), no redirects, a
-// 4 MB cap on the unpacked body. menu_page.lua decodes and checks every row;
-// nothing here trusts the body beyond its size.
+// thread (net_http's shared session): gzip, If-None-Match (a 304 when nothing
+// changed), no redirects, a 4 MB cap on the unpacked body, 20 s at most. Only a
+// body that arrived whole is "ok" and has its ETag kept. menu_page.lua decodes
+// and checks every row; nothing here trusts the body beyond its size.
 //
 // Ping hints are kept here too, because garrysmod/data and the game's cookies
 // can be read by any server's Lua: the pings this PC measured, per server
@@ -16,7 +17,8 @@
 
 namespace server_index
 {
-	// Starts a fetch unless one is running. False when one is.
+	// Starts a fetch unless one is running. False when one is (or no thread
+	// could be started: the next call tries again).
 	bool Fetch();
 
 	struct Result
@@ -37,4 +39,11 @@ namespace server_index
 	std::string LoadPings(const std::wstring& dataDir);
 	// Replaces it. False for anything but a JSON object of at most 256 KB.
 	bool SavePings(const std::wstring& dataDir, const std::string& json);
+
+	namespace detail
+	{
+		// Tests: fetch from host:port (plain HTTP unless `secure`) instead of
+		// https://meowynetwork.com. Before any Fetch.
+		void SetEndpoint(const std::wstring& host, unsigned short port, bool secure);
+	}
 }

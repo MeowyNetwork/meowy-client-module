@@ -30,6 +30,7 @@
 #endif
 #include <windows.h>
 
+#include <atomic>
 #include <functional>
 #include <string>
 #include <utility>
@@ -71,6 +72,10 @@ namespace thread_util
 
 	namespace detail
 	{
+		// Tests: how many of the next spawns fail as if Windows couldn't start a
+		// thread (FailNextSpawns). One per executable or DLL (an inline variable).
+		inline std::atomic<int> g_failSpawns{ 0 };
+
 		struct Start
 		{
 			std::function<void()> fn;
@@ -111,6 +116,8 @@ namespace thread_util
 	template <class F>
 	HANDLE SpawnHandle(const wchar_t* name, F&& fn, Priority p = Priority::Normal)
 	{
+		if (detail::g_failSpawns.load() > 0 && detail::g_failSpawns.fetch_sub(1) > 0)
+			return nullptr;
 		detail::Start* start = nullptr;
 		try
 		{
@@ -148,6 +155,39 @@ namespace thread_util
 		CloseHandle(thread);
 		return true;
 	}
+
+	// Tests: the next `n` Spawn/SpawnHandle calls fail (nothing runs), so a
+	// caller's roll-back of its flag or slot can be checked.
+	inline void FailNextSpawns(int n)
+	{
+		detail::g_failSpawns = n;
+	}
+
+	// Scope guard for a thread body: runs `fn` when the body ends, normally or
+	// through an exception (Spawn's catch runs only after the body's locals are
+	// gone), so a single-flight flag or slot is always given back.
+	template <class F>
+	class OnExit
+	{
+	public:
+		explicit OnExit(F fn) : m_fn(std::move(fn)) {}
+		~OnExit()
+		{
+			// A destructor that throws ends the game: whatever `fn` throws stops here.
+			try
+			{
+				m_fn();
+			}
+			catch (...)
+			{
+			}
+		}
+		OnExit(const OnExit&) = delete;
+		OnExit& operator=(const OnExit&) = delete;
+
+	private:
+		F m_fn;
+	};
 }
 
 #endif
