@@ -2053,13 +2053,20 @@ namespace
 		return 1;
 	}
 
-	// ContentTake() -> { { address =, answered = bool, value = string | nil }, ... }:
-	// the answers since the last call. `value` is the server's own text
-	// (printable ASCII, at most 4 KB); content_logic.lua checks it.
+	// ContentTake() -> { { address =, answered = bool, value = string | nil }, ... }
+	// | nil: the answers since the last call, nil when there are none (home.lua
+	// polls it every frame, so an empty call makes no table). `value` is the
+	// server's own text (printable ASCII, at most 4 KB); content_logic.lua
+	// checks it.
 	int ContentTake(lua_State* L)
 	{
 		ILuaBase* LUA = L->luabase;
 		const std::vector<content_advert::Answer> answers = content_advert::Take();
+		if (answers.empty())
+		{
+			LUA->PushNil();
+			return 1;
+		}
 		LUA->CreateTable();
 		int i = 0;
 		for (const content_advert::Answer& a : answers)
