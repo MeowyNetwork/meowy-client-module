@@ -1656,7 +1656,7 @@ namespace
 		unsigned int len = 0;
 		const char* text = LUA->IsType(1, Type::String) ? LUA->GetString(1, &len) : nullptr;
 		const bool ok = text && len <= kMaxMenuSettings &&
-			file_util::WriteAtomic(DataDir() + L"\\menu_settings.txt", std::string(text, len));
+			file_util::WriteAtomic(DataDir() + L"\\menu_settings.txt", std::string(text, len), file_util::Durability::Relaxed);
 		LUA->PushBool(ok);
 		return 1;
 	}
@@ -1702,7 +1702,7 @@ namespace
 		{
 			const std::wstring path = DataDir() + L"\\" + file;
 			ok = len == 0 ? (DeleteFileW(path.c_str()) || GetLastError() == ERROR_FILE_NOT_FOUND)
-				: file_util::WriteAtomic(path, std::string(text, len));
+				: file_util::WriteAtomic(path, std::string(text, len), file_util::Durability::Relaxed);
 		}
 		LUA->PushBool(ok);
 		return 1;
@@ -1830,7 +1830,7 @@ namespace
 		std::string text;
 		for (const auto& h : held)
 			text += h.first + " " + h.second + "\n";
-		file_util::WriteAtomic(HeldCvarFile(), text);
+		file_util::WriteAtomic(HeldCvarFile(), text, file_util::Durability::Relaxed);
 	}
 
 	// meowy.CvarHold(name, value) -> whether it's kept: the player's own value,
@@ -2174,7 +2174,7 @@ namespace
 		const wchar_t* name = ConsoleFileName(LUA->IsType(1, Type::String) ? LUA->GetString(1) : nullptr);
 		unsigned int size = 0;
 		const char* text = LUA->IsType(2, Type::String) ? LUA->GetString(2, &size) : nullptr;
-		LUA->PushBool(name && text && size <= kMaxConsoleFile && file_util::WriteAtomic(DataDir() + name, std::string(text, size)));
+		LUA->PushBool(name && text && size <= kMaxConsoleFile && file_util::WriteAtomic(DataDir() + name, std::string(text, size), file_util::Durability::Relaxed));
 		return 1;
 	}
 
