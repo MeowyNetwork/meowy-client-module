@@ -63,6 +63,18 @@ namespace multicore
 		LeaveCriticalSection(&e.lock);
 	}
 
+	bool CrashSince(const std::wstring& crashRoot, long long since, long long until)
+	{
+		if (crashRoot.empty() || since <= 0)
+			return false;
+		// Candidates lists reports written after its `since`: one in the same
+		// second as the session's start counts.
+		for (const crashes::Candidate& c : crashes::Candidates(crashRoot, since - 1))
+			if (c.time >= since && c.time <= until)
+				return true;
+		return false;
+	}
+
 	bool AtProcessExit()
 	{
 		Exit& e = E();
@@ -84,6 +96,7 @@ namespace multicore
 #else
 	void ArmExitWrite(const std::wstring&, const std::string&, const std::wstring&, long long) {}
 	void Disarm() {}
+	bool CrashSince(const std::wstring&, long long, long long) { return false; }
 	bool AtProcessExit() { return false; }
 #endif
 }

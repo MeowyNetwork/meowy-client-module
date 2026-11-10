@@ -80,6 +80,8 @@ local function world(opts)
 		-- and the text native writes at a clean exit.
 		SetMulticoreManaged = function(on) w.mcManaged = on end,
 		MulticoreGuardAtExit = function(text) w.mcAtExit = text end,
+		-- Whether Garry's Mod wrote a crash report since (opts.crashReport); what was asked.
+		CrashSince = function(since) w.crashSinceAsked = since return opts.crashReport == true end,
 		-- Discord status (module.cpp's DiscordAllow): each call kept, in order.
 		DiscordAllow = function(on) w.discordCalls = w.discordCalls or {} w.discordCalls[#w.discordCalls + 1] = on w.discord = on end,
 		ResilienceSession = function(on, name) w.session = on w.sessionName = name w.marks = (w.marks or 0) + 1 end,
@@ -3359,7 +3361,7 @@ check("multicore: native's exit text follows", (w.mcAtExit or ""):find("mode=off
 
 -- The second unclean session in a row with it on: off, and the player told.
 w = world({ settings = ON, menu = true, convars = MC_ON, cvars = { gmod_mcore_test = "0", mat_queue_mode = "-1" }, applyConsole = true,
-	menuFiles = { multicore_guard = "running=1\nmode=on\nunclean=1\noff=0\nreverted=0\nreverts=0\n" } })
+	menuFiles = { multicore_guard = "running=1\nmode=on\nunclean=1\noff=0\nreverted=0\nreverts=0\nstarted=999000\n" }, crashReport = true })
 check("multicore: two crashes, not turned on", mcRuns(w), "")
 check("multicore: two crashes, not managed", w.mcManaged, false)
 check("multicore: two crashes, the guard has it off", (w.menuFiles.multicore_guard or ""):find("off=1\nreverted=1\nreverts=1", 1, true) ~= nil, true)
@@ -3382,7 +3384,7 @@ check("multicore: settings window paints", w.paintAll(), "")
 
 -- Crashed with it off after the guard turned it off: back on, and said so.
 w = world({ settings = ON, menu = true, convars = MC_ON, cvars = { gmod_mcore_test = "0", mat_queue_mode = "-1" }, applyConsole = true,
-	menuFiles = { multicore_guard = "running=1\nmode=off\nunclean=0\noff=1\nreverted=1\nreverts=1\n" } })
+	menuFiles = { multicore_guard = "running=1\nmode=off\nunclean=0\noff=1\nreverted=1\nreverts=1\nstarted=999000\n" }, crashReport = true })
 check("multicore: back on after a crash without it", mcRuns(w), "gmod_mcore_test 1")
 w.run(5)
 check("multicore: back on, the player told", find(function(p) return p.text == "Multicore rendering is back on" end) ~= nil, true)
@@ -3446,7 +3448,7 @@ check("multicore: someone else's 1, mode on", (w.menuFiles.multicore_guard or ""
 -- The kill switch turns it off: set back to 0, and the guard isn't reset
 -- (that's not the player's choice); back on when the policy lets it.
 w = world({ settings = ON, menu = true, convars = MC_ON, cvars = { gmod_mcore_test = "0", mat_queue_mode = "-1" }, applyConsole = true,
-	menuFiles = { multicore_guard = "running=1\nmode=on\nunclean=0\noff=0\nreverted=0\nreverts=0\n" } })
+	menuFiles = { multicore_guard = "running=1\nmode=on\nunclean=0\noff=0\nreverted=0\nreverts=0\nstarted=999000\n" }, crashReport = true })
 w.run(1)
 check("multicore policy: one crash counted", (w.menuFiles.multicore_guard or ""):find("unclean=1", 1, true) ~= nil, true)
 w.env.meowy.PolicyState = function() return { off = { "meowy_multicore" }, pack_enabled = true } end
@@ -3464,6 +3466,46 @@ w.run(1)
 check("multicore policy: on again", mcRuns(w), "gmod_mcore_test 1|gmod_mcore_test 0|gmod_mcore_test 1")
 check("multicore policy: the guard's count still kept", (w.menuFiles.multicore_guard or ""):find("unclean=1", 1, true) ~= nil, true)
 check("multicore policy: no Lua errors", w.errors, nil)
+
+-- The marker left behind, but no crash report from that session (the exit
+-- write didn't happen on a normal quit): a clean session, no count, logged.
+w = world({ settings = ON, menu = true, convars = MC_ON, cvars = { gmod_mcore_test = "0", mat_queue_mode = "-1" }, applyConsole = true,
+	menuFiles = { multicore_guard = "running=1\nmode=on\nunclean=1\noff=0\nreverted=0\nreverts=0\nstarted=999000\n" } })
+check("multicore evidence: asked since the session's start", w.crashSinceAsked, 999000)
+check("multicore evidence: no report, still on", mcRuns(w), "gmod_mcore_test 1")
+check("multicore evidence: no report, no count", (w.menuFiles.multicore_guard or ""):find("unclean=0", 1, true) ~= nil, true)
+check("multicore evidence: this session's start kept", (w.menuFiles.multicore_guard or ""):find("started=1000000", 1, true) ~= nil, true)
+check("multicore evidence: said so", (w.logs or ""):find("wrote no crash report in it: counted as clean", 1, true) ~= nil, true)
+w.run(6)
+check("multicore evidence: no prompt", find(function(p) return p.text == "Multicore rendering is off" end), nil)
+-- With a report from that session: the second crash in a row, off.
+w = world({ settings = ON, menu = true, convars = MC_ON, cvars = { gmod_mcore_test = "0", mat_queue_mode = "-1" }, applyConsole = true,
+	menuFiles = { multicore_guard = "running=1\nmode=on\nunclean=1\noff=0\nreverted=0\nreverts=0\nstarted=999000\n" }, crashReport = true })
+check("multicore evidence: a report, off", mcRuns(w), "")
+check("multicore evidence: a report, logged", (w.logs or ""):find("the last session crashed", 1, true) ~= nil, true)
+-- A clean exit: nothing asked.
+w = world({ settings = ON, menu = true, convars = MC_ON, cvars = { gmod_mcore_test = "0", mat_queue_mode = "-1" }, applyConsole = true,
+	menuFiles = { multicore_guard = "running=0\nmode=on\nunclean=1\noff=0\nreverted=0\nreverts=0\nstarted=999000\n" }, crashReport = true })
+check("multicore evidence: clean exit, nothing asked", w.crashSinceAsked, nil)
+check("multicore evidence: clean exit, on", mcRuns(w), "gmod_mcore_test 1")
+
+-- On our server, the FPS Booster puts back a player's past untick
+-- (revertOptimizationCommands: gmod_mcore_test and mat_queue_mode to their
+-- defaults, 0 and -1): the pack doesn't fight it, in game or back at the menu.
+w = world({ settings = ON, menu = true, convars = MC_ON, cvars = { gmod_mcore_test = "0", mat_queue_mode = "-1", cl_threaded_bone_setup = "1" }, applyConsole = true })
+w.run(40)   -- past the config-file watch
+w.state, w.address, w.loading = "ours", OURS, true
+w.run(1)
+w.loading, w.inGame = false, true
+w.run(1)
+w.cvars.gmod_mcore_test, w.cvars.mat_queue_mode, w.cvars.cl_threaded_bone_setup = "0", "-1", "0"   -- the booster's revert
+w.run(10)
+check("multicore booster revert: not fought in game", mcRuns(w), "gmod_mcore_test 1")
+check("multicore booster revert: the game keeps 0", w.cvars.gmod_mcore_test, "0")
+w.state, w.address, w.inGame = "none", nil, false
+w.run(10)
+check("multicore booster revert: not fought back at the menu", mcRuns(w), "gmod_mcore_test 1")
+check("multicore booster revert: no Lua errors", w.errors, nil)
 
 print(("%d checks, %d failed"):format(count, failures))
 os.exit(failures == 0 and 0 or 1)

@@ -17,7 +17,10 @@
 -- Its `running` marker is cleared at a clean exit by native code (module.cpp's
 -- DllMain at process exit, meowy.MulticoreGuardAtExit: the menu state has no
 -- dependable "the game is closing" hook), and by the ShutDown hook here too,
--- should the menu state get one.
+-- should the menu state get one. Neither is relied on: a marker left behind
+-- counts as a crash only when Garry's Mod's crash handler wrote a report
+-- (crashes\*.txt) during that session (meowy.CrashSince, given the session's
+-- start time kept in the file); otherwise that session counts as clean.
 --
 -- meowy.SetMulticoreManaged(bool) tells native, which tells our server's
 -- Lua (meowy.MulticoreManaged in the client realm), so Meowy Network's FPS
@@ -118,10 +121,21 @@ local notice
 do
 	local queue = cvarText("mat_queue_mode")
 	local last = Logic.decode(meowy.MenuFileRead and meowy.MenuFileRead("multicore_guard") or "")
-	local on
-	guard, on, notice = Logic.start(last, settingOn() and not Logic.queueIsChoice(queue))
+	-- A marker left behind is a crash only with a crash report from that session.
+	local crashed = false
+	if last.running and meowy.CrashSince then
+		local ok, r = pcall(meowy.CrashSince, last.started)
+		crashed = ok and r == true
+	end
+	local on, how
+	guard, on, notice, how = Logic.start(last, settingOn() and not Logic.queueIsChoice(queue), crashed, os.time())
 	save()
 	mc.setting, mc.policyOff = settingOn(), policyOff()
+	if how == "no_report" then
+		log("multicore: the last session didn't record a clean exit, but Garry's Mod wrote no crash report in it: counted as clean")
+	elseif how == "crashed" then
+		log("multicore: the last session crashed (Garry's Mod wrote a crash report) with multicore %s", last.mode)
+	end
 	if notice == "off" then
 		log("multicore: the game closed unexpectedly twice in a row with it on, so it's off (round %d of %d)", guard.reverts, Logic.ROUNDS)
 	elseif notice == "back_on" then

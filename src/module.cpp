@@ -1831,6 +1831,18 @@ namespace
 		return 0;
 	}
 
+	// Menu only: meowy.CrashSince(unix) -> bool, whether Garry's Mod's crash
+	// handler wrote a report (crashes\*.txt) after `unix` and before this
+	// process started: multicore rendering's crash guard counts a session whose
+	// marker was left behind as a crash only then (multicore.h).
+	int CrashSince(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		const long long since = LUA->IsType(1, Type::Number) ? static_cast<long long>(LUA->GetNumber(1)) : 0;
+		LUA->PushBool(multicore::CrashSince(crashes::Root(), since, ProcessStartedUnix()));
+		return 1;
+	}
+
 	// A server a crash card may offer: ours, or any public a.b.c.d:port (never a
 	// LAN, loopback or P2P address).
 	bool RejoinableAddress(const std::string& address)
@@ -4237,6 +4249,7 @@ int MenuOpenBody(ILuaBase* LUA)
 	SetFunction(LUA, "MenuFileWrite", Guarded<MenuFileWrite>);
 	SetFunction(LUA, "SetMulticoreManaged", Guarded<SetMulticoreManaged>);
 	SetFunction(LUA, "MulticoreGuardAtExit", Guarded<MulticoreGuardAtExit>);
+	SetFunction(LUA, "CrashSince", Guarded<CrashSince>);
 	SetFunction(LUA, "ResilienceSession", Guarded<ResilienceSession>);
 	SetFunction(LUA, "ResilienceCrashedSession", Guarded<ResilienceCrashedSession>);
 	SetFunction(LUA, "PrewarmBeginJoin", Guarded<PrewarmBeginJoin>);

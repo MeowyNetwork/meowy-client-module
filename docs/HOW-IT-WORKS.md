@@ -950,22 +950,30 @@ changes it).
   your own value, not a server's change. A server that changes it later isn't fought; the settings guard
   and the PC doctor see that as usual.
 - **Crash guard,** the same as Meowy Network's FPS Booster's. `multicore_guard.txt` keeps a "running"
-  marker with whether multicore was on (the game's own value, whoever set it), written at start and
-  cleared when the game closes normally. Still there at the next start means the game crashed or was
-  killed. Two such sessions in a row with multicore on: the pack turns it off and tells you at the main
-  menu. If the game then crashes again with it off, multicore wasn't the cause and it goes back on (you're
+  marker with whether multicore was on (the game's own value, whoever set it) and when that start began,
+  written at start and cleared when the game closes normally. A session counts as a crash only when its
+  marker is still there at the next start **and** Garry's Mod's own crash handler wrote a report
+  (`crashes\*.txt` in the game's folder, next to its `.dmp`) after that session began. A marker left
+  without such a report counts as a clean session: nothing is counted, and the console says so
+  (`multicore: the last session didn't record a clean exit, but Garry's Mod wrote no crash report in it`).
+  So a normal quit is never taken for a crash, even if the pack missed it; a game killed while frozen,
+  which leaves no report, isn't counted either. Two crashes in a row with multicore on: the pack turns it
+  off and tells you at the main menu. If the game then crashes again with it off, multicore wasn't the cause and it goes back on (you're
   told that too). After a second round of two crashes with it on, it stays off. Turning the switch on or
   off yourself starts the guard over. The guard never changes your setting: its "off" is its own, and the
   switch shows off while it lasts.
   - The main menu's Lua gets no dependable "the game is closing" call, so the marker is cleared by the
-    pack's DLL as Windows ends the game's process normally (it stays loaded for the menu until then). A
-    crash ends the process without that step; a crash report the game wrote during that run
-    (`crashes\*.txt`) also counts as a crash.
+    pack's DLL as Windows ends the game's process normally (it stays loaded for the menu until then), and
+    by the menu's `ShutDown` hook should the game send one. A crash ends the process without that step,
+    and the DLL doesn't clear it if the game wrote a crash report during that run. Should neither step
+    run on a normal quit, the crash report rule above still keeps it from counting.
 - **Meowy Network's FPS Booster** (our server's Lua) used to turn multicore on itself, with its own crash
   guard. On a pack that turned it on at start it now leaves multicore to the pack: the pack tells our
   server's Lua so with `meowy.MulticoreManaged()` (see DEVELOPERS.md). Ticking or unticking it in the
-  booster's menu still works as before. Without the pack, or when the pack left multicore alone (switch
-  off, crash guard, `mat_queue_mode`), the booster does what it did before.
+  booster's menu still works as before, and if you unticked it there before, it's turned off again on
+  Meowy Network; the pack doesn't turn it back on while you're there (it only acts when its own switch,
+  its guard or `mat_queue_mode` changes, never against a server). Without the pack, or when the pack
+  left multicore alone (switch off, crash guard, `mat_queue_mode`), the booster does what it did before.
 - **PC doctor:** when it's the pack's, its multicore tip points to Meowy settings, not the console.
 
 ## Everything it sends and writes

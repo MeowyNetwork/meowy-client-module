@@ -86,6 +86,17 @@ int wmain(int argc, wchar_t** argv)
 	multicore::ArmExitWrite(path, "sixth\n", L"", now - 60);
 	Check("no root: written", multicore::AtProcessExit() && file_util::ReadSmall(path, 4096) == "sixth\n");
 
+	// The guard's evidence at the next start (CrashSince): a report written in
+	// the session (after its start, before this process's start) counts.
+	Check("evidence: a report in the session", multicore::CrashSince(root, now - 60, now + 60));
+	Check("evidence: a report in the same second as the start", multicore::CrashSince(root, now, now + 60));
+	Check("evidence: the session started after the report", !multicore::CrashSince(root, now + 3600, now + 7200));
+	Check("evidence: the report is from after this process started", !multicore::CrashSince(root, now - 3600, now - 60));
+	Check("evidence: unknown start", !multicore::CrashSince(root, 0, now + 60));
+	Check("evidence: no root", !multicore::CrashSince(L"", now - 60, now + 60));
+	DeleteFileW((root + L"\\crashes\\smoke.txt").c_str());
+	Check("evidence: no report", !multicore::CrashSince(root, now - 60, now + 60));
+
 	DeleteFileW((root + L"\\crashes\\smoke.txt").c_str());
 	RemoveDirectoryW((root + L"\\crashes").c_str());
 	RemoveDirectoryW(root.c_str());

@@ -5,9 +5,14 @@
 -- The pack turns gmod_mcore_test on at every start (multicore.lua). The same
 -- guard as Meowy Network's FPS Booster (its cl_menu.lua), kept in
 -- multicore_guard.txt:
---   * A `running` marker with the mode (whether multicore was on), written at
---     start and cleared at a clean exit. Still set at the next start: that
---     session ended uncleanly (a crash, or the game killed).
+--   * A `running` marker with the mode (whether multicore was on) and the
+--     session's start time, written at start and cleared at a clean exit.
+--   * A session counts as unclean only when its marker was left behind AND
+--     Garry's Mod's own crash handler wrote a report (crashes/*.txt) after it
+--     started (`crashed`, from native: meowy.CrashSince). A marker left with
+--     no report counts as clean: should the clean-exit write not happen (the
+--     game ending its process without it), a normal quit isn't a crash. A game
+--     killed while frozen, with no report, isn't counted either.
 --   * Two unclean sessions in a row with it on: off, and the player is told.
 --   * Garry's Mod crashes for plenty of other reasons, and multicore off nearly
 --     doubles frame time (2.65 -> 5.30 ms on our map). So an unclean session
@@ -28,6 +33,7 @@ M.ROUNDS = 2   -- turned off this many times: it stays off until the player turn
 -- it ("on"/"off"). unclean: unclean sessions in a row with it on. off: the
 -- guard has it off. reverted: the guard turned it off and watches whether the
 -- game still crashes without it. reverts: times the guard turned it off.
+-- started: when the session began (unix time; 0 when unknown).
 local function int(v)
 	local n = tonumber(v)
 	if not n or n ~= n or n < 0 then return 0 end
@@ -48,6 +54,7 @@ function M.decode(text)
 		off = raw.off == "1",
 		reverted = raw.reverted == "1",
 		reverts = int(raw.reverts),
+		started = math.max(0, math.floor(tonumber(raw.started) or 0)),
 	}
 end
 
@@ -60,7 +67,8 @@ function M.encode(s)
 		"off=" .. b(s.off),
 		"reverted=" .. b(s.reverted),
 		"reverts=" .. int(s.reverts),
-	}, "\n") .. "\n"
+		"started=" .. string.format("%d", math.max(0, math.floor(tonumber(s.started) or 0))),
+	},"\n") .. "\n"
 end
 
 local function copy(s)
@@ -84,14 +92,26 @@ function M.queueIsChoice(queue)
 	return n == 0 or n == 1
 end
 
+-- Whether the last session ended uncleanly: its marker left behind and a crash
+-- report written since it started. Also says why, for the log: "clean",
+-- "crashed", or "no_report" (the marker was left, but there's no crash report).
+function M.lastSession(s, crashed)
+	if not (s and s.running == true) then return false, "clean" end
+	if crashed == true then return true, "crashed" end
+	return false, "no_report"
+end
+
 -- At start. s: the state read back (M.decode). wanted: the player's setting
 -- is on (read through the policy) and the queue mode isn't their choice.
--- Returns the new state (running, with this session's mode), whether
--- multicore goes on now, and what to tell the player: "off" (turned off after
--- crashes), "back_on" (crashed without it too), or nil.
-function M.start(s, wanted)
+-- crashed: Garry's Mod wrote a crash report after s.started (asked only when
+-- s.running). now: this session's start (unix time).
+-- Returns the new state (running, with this session's mode and start), whether
+-- multicore goes on now, what to tell the player: "off" (turned off after
+-- crashes), "back_on" (crashed without it too), or nil; and how the last
+-- session ended (M.lastSession's reason).
+function M.start(s, wanted, crashed, now)
 	s = copy(s)
-	local lastCrashed = s.running == true
+	local lastCrashed, how = M.lastSession(s, crashed)
 	local lastMode = s.mode == "on" and "on" or "off"
 	local notice
 
@@ -119,7 +139,8 @@ function M.start(s, wanted)
 
 	s.running = true
 	s.mode = on and "on" or "off"
-	return s, on, notice
+	s.started = math.max(0, math.floor(tonumber(now) or 0))
+	return s, on, notice, how
 end
 
 -- The player turned it on or off themselves: no back-on watch, a fresh count,

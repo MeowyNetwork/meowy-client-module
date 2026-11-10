@@ -14,6 +14,10 @@
 //   detach). A crash doesn't get there; a crash report the game wrote during
 //   this run (crashes/*.txt) also stops it, in case the game's crash handler
 //   exits normally after writing it.
+// - That write is the first signal, not the only one: a marker left behind
+//   counts as a crash only when the game's crash handler wrote a report during
+//   that session (CrashSince, meowy.CrashSince in the menu). So a quit that
+//   ends the process without the exit write is never taken for a crash.
 
 #include <string>
 
@@ -28,6 +32,13 @@ namespace multicore
 	// after it is this run's). Game thread only; called again, the latest wins.
 	void ArmExitWrite(const std::wstring& path, const std::string& text, const std::wstring& crashRoot, long long since);
 	void Disarm();
+
+	// The crash guard's evidence: whether Garry's Mod's crash handler wrote a
+	// report (crashRoot's crashes\*.txt) after `since` and no later than
+	// `until` (unix times: the session's start, and this process's start). A
+	// marker left behind without one counts as a clean session (the exit write
+	// may not have happened). since <= 0 (unknown) or no root: false.
+	bool CrashSince(const std::wstring& crashRoot, long long since, long long until);
 
 	// At process exit (DLL_PROCESS_DETACH with the process ending): writes the
 	// armed text unless a crash report was written during this run. True when

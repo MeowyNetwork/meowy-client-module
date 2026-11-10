@@ -65,6 +65,9 @@ where it's run from or asks the player first.
 -- meowy.MulticoreGuardAtExit(text)   (1.7.2+) what the DLL writes to multicore_guard.txt as the process
 --   ends normally (DllMain, process detach), unless the game wrote a crash report during the run;
 --   anything but a non-empty string disarms it
+-- meowy.CrashSince(unix) -> bool   (1.7.2+) whether Garry's Mod's crash handler wrote a report
+--   (crashes\*.txt) after `unix` and before this process started: multicore_guard.txt's marker left
+--   behind counts as a crash only then
 -- meowy.MulticoreStatus() -> "managed" | "setting_off" | "guard_off" | nil   (Lua, multicore.lua; the
 --   PC doctor's multicore tip)
 ```
