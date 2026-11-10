@@ -282,6 +282,8 @@ on Meowy Network's servers.
     at low priority: 3 s after the menu shows your Continue server, or when you hold the mouse over a
     server for 0.4 s on the home card or home screen. It reads at most 4 GB, stops the moment a join
     starts, and only on an SSD (on a hard drive the reads would get in the way of everything else).
+    What it reads stays in Windows' memory like any other file data: its low priority is for the disk
+    and the processor only, so it isn't the first data Windows throws out when the join needs memory.
   - Measured on our dev server, from a fresh start of the game with Windows' memory cleared: in game after
     46.2 s without it and 30.0 s with it. It had read 1,516 MB in 42 files, in 2.7 s, before the join.
   - The warming only reads files, and the game opens the same files as before. To see what a join reads,
@@ -290,6 +292,11 @@ on Meowy Network's servers.
     stay for the session, but note anything only while a join loads. With both pre-warm switches off
     (or off by Meowy Network's policy), they're never put in and no `joins\<address>.txt` is written. A
     join you cancel keeps nothing.
+  - Noting stays cheap for the game: each file's name is looked up once, on its first read, from the
+    disk's own name and a table of drive letters made when the join starts (asking Windows for each
+    file's `C:\...` name was most of the cost). Once you're in game, merging the list with what earlier
+    joins learned, checking those files are still there and writing it happen on a background thread,
+    not in the first frame you see. The menu reads each server's list once, until it changes.
   - It needs the fast file checks (`meowy_fast_file_checks`, on by default) to see which files a join
     opens. Turn it off in Meowy settings ("Get servers ready before you join") or with `meowy_prewarm 0`.
     `meowy_prewarm_status` shows what it has written down and read.
@@ -788,6 +795,9 @@ on Meowy Network's servers.
     64-bit, 64 MB on 32-bit) is emptied when the join ends.
   - Worker threads read ahead from the map's pak (`garrysmod\cache\map_pack.bsp`). An entry whose sizes
     can't be real is skipped, and if memory runs out the workers stop and the join goes on.
+  - There's one worker per physical core beyond two (at most 6, 3 on 32-bit), so they don't run on the
+    main thread's own core. The game's reads never wait while a worker copies or frees an entry, and
+    the cache's memory is freed on a background thread when the join ends.
 - **Signed updates.** The pack checks `meowynetwork.com/pack/v1/release-stable.txt` a minute after start and
   every 6 hours. A new version is used only if Meowy Network's release key signed the document and the
   file's SHA-256 matches, and only while the document hasn't expired, Meowy Network's policy allows that
