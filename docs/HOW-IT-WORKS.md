@@ -334,6 +334,22 @@ on Meowy Network's servers.
     screen** buttons. If WebView2 or the site isn't available, a simpler built-in screen is shown.
   - The page is loaded, hidden, when the game starts, so a join shows it at once. Between joins
     it waits hidden (WebView2's processes use some memory, outside the game).
+    - A page a join showed is loaded again fresh for the next one: at once if you're back at the menu,
+      but if you're in game only when the next join starts, so it never reloads as you spawn. A page
+      that never showed (another server's join, or one cancelled before it was ready) isn't reloaded.
+    - If the hidden page fails at the menu (its browser closed, or it couldn't load), it's started
+      again after 10 seconds, then a minute, at most three times per visit to the menu. A new browser
+      waits up to 3 seconds for the old one to finish closing, since both use the same profile folder.
+    - While the game is minimised, the page is hidden too, so it stops drawing and its games pause.
+    - Clicks on the page count only while it's on screen, and each one counts, so a **Cancel** in the
+      last moment of a fade-out can't cancel the next join.
+  - Its thread costs next to nothing outside a join: between joins it sleeps until a join starts or
+    the menu loads or unloads the page. During a join it runs up to 30 times a second (60 while the web
+    page shows; the page draws itself). The built-in screen keeps the parts that don't move in a bitmap and
+    redraws only the bottom strip (spinner, progress, clock); the time that takes is in `last_join.txt`.
+  - It does its own file work (`last_join.txt`, the stage times) on its thread, so the game never
+    waits on a disk for it. A join that starts while the last one's screen is still up (a retry or map
+    change right after spawning) keeps the screen up.
   - It starts the moment the game says it's connecting to one of our servers, so Garry's Mod's own
     page never shows. The server's name, the map and your SteamID64 are passed to the page only once
     the game's real connection is confirmed to be ours. The page then sends your SteamID64 to
