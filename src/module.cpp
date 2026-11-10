@@ -62,6 +62,13 @@
 //                                     then, players who opted in to staying
 //                                     connected are rejoined once it's back.
 //                                     See resilience.h
+//   meowy.MulticoreManaged()          true | false, reason (1.7.2+): the pack
+//                                     turned multicore rendering on this start
+//                                     and still has it on (Meowy settings'
+//                                     Multicore rendering on, its crash guard
+//                                     allowing it, mat_queue_mode not the
+//                                     player's own 0 or 1): leave
+//                                     gmod_mcore_test to the pack. See multicore.h
 //
 // Since 1.2.1 everything except VERSION, DiscordState, DiscordClear,
 // RestoreMaterialReload and MaterialReloadState only
@@ -129,10 +136,12 @@
 #include "startup_hook.h"
 #include "pack_versions.h"
 #include "apps_entry.h"
+#include "multicore.h"
 #include "resource.h"
 
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <exception>
 #include <string>
 #include <algorithm>
@@ -333,6 +342,19 @@ namespace
 		if (Refuse(LUA, results))
 			return results;
 		LUA->PushBool(true);
+		return 1;
+	}
+
+	// meowy.MulticoreManaged() -> true | false (false, reason off our servers):
+	// the menu realm turned multicore rendering on this start and still has it
+	// on (multicore.h), so Meowy Network's FPS Booster leaves it to the pack.
+	int MulticoreManaged(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		int results = 0;
+		if (Refuse(LUA, results))
+			return results;
+		LUA->PushBool(multicore::Managed());
 		return 1;
 	}
 
@@ -1721,7 +1743,8 @@ namespace
 	// (only these): the settings guard's session (settings_guard.lua: a game
 	// that closed on a server is asked about at the next start) and its list of
 	// servers always put back (kept here, not in a convar any server's Lua can
-	// read), and one-time repairs done (home.lua).
+	// read), one-time repairs done (home.lua), and multicore rendering's crash
+	// guard (multicore.lua).
 	constexpr size_t kMaxMenuFile = 16384;
 	const wchar_t* MenuFileName(const char* kind)
 	{
@@ -1729,6 +1752,7 @@ namespace
 			{ "settings_guard_session", L"settings_guard_session.txt" },
 			{ "settings_guard_always", L"settings_guard_always.txt" },
 			{ "repairs", L"repairs.txt" },
+			{ "multicore_guard", L"multicore_guard.txt" },
 		};
 		for (const auto& f : kFiles)
 			if (kind && std::strcmp(kind, f.kind) == 0)
@@ -1762,6 +1786,49 @@ namespace
 		}
 		LUA->PushBool(ok);
 		return 1;
+	}
+
+	// Menu only: meowy.SetMulticoreManaged(on), whether the menu turned
+	// multicore rendering on this start and still has it on (multicore.lua).
+	// The client realm reads it (meowy.MulticoreManaged) and can't set it.
+	int SetMulticoreManaged(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		multicore::SetManaged(LUA->IsType(1, Type::Bool) && LUA->GetBool(1));
+		return 0;
+	}
+
+	// When this process started (unix time).
+	long long ProcessStartedUnix()
+	{
+		FILETIME created, exited, kernel, user;
+		if (!GetProcessTimes(GetCurrentProcess(), &created, &exited, &kernel, &user))
+			return static_cast<long long>(std::time(nullptr));
+		ULARGE_INTEGER t;
+		t.LowPart = created.dwLowDateTime;
+		t.HighPart = created.dwHighDateTime;
+		return static_cast<long long>(t.QuadPart / 10000000ULL) - 11644473600LL;
+	}
+
+	// Menu only: meowy.MulticoreGuardAtExit(text), what multicore_guard.txt holds
+	// after a clean exit (the crash guard's state with `running` cleared). The
+	// pinned DLL writes it as the process exits (DllMain, below), unless the game
+	// wrote a crash report during this run. Anything but a non-empty string:
+	// nothing is written.
+	int MulticoreGuardAtExit(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		unsigned int len = 0;
+		const char* text = LUA->IsType(1, Type::String) ? LUA->GetString(1, &len) : nullptr;
+		if (!text || len == 0 || len > kMaxMenuFile)
+		{
+			multicore::Disarm();
+			return 0;
+		}
+		static const std::wstring crashRoot = crashes::Root();
+		static const long long started = ProcessStartedUnix();
+		multicore::ArmExitWrite(DataDir() + L"\\multicore_guard.txt", std::string(text, len), crashRoot, started);
+		return 0;
 	}
 
 	// A server a crash card may offer: ours, or any public a.b.c.d:port (never a
@@ -2937,6 +3004,12 @@ namespace
 		std::string guardGlue = ResourceText(IDR_SETTINGS_GUARD_LUA);
 		if (!guardLogic.empty() && !guardGlue.empty())
 			home += ";(function()\nlocal SettingsGuard = (function()\n" + guardLogic + "\nend)()\n" + guardGlue + "\nend)()\n";
+		// Multicore rendering on by default, with its crash guard
+		// (multicore_logic.lua as `MulticoreLogic`, then multicore.lua), likewise.
+		std::string multicoreLogic = ResourceText(IDR_MULTICORE_LOGIC_LUA);
+		std::string multicoreGlue = ResourceText(IDR_MULTICORE_LUA);
+		if (!multicoreLogic.empty() && !multicoreGlue.empty())
+			home += ";(function()\nlocal MulticoreLogic = (function()\n" + multicoreLogic + "\nend)()\n" + multicoreGlue + "\nend)()\n";
 		return "local UI = (function()\n" + ui + "\nend)()\n"
 			"local Logic = (function()\n" + logic + "\nend)()\n" + doctor + glue + home;
 	}
@@ -3985,6 +4058,7 @@ int ClientOpenBody(ILuaBase* LUA)
 	SetFunction(LUA, "NotifyCatalogue", Guarded<NotifyCatalogue>);
 	SetFunction(LUA, "TimelineEvent", Guarded<TimelineEvent>);
 	SetFunction(LUA, "ExpectRestart", Guarded<ExpectRestart>);
+	SetFunction(LUA, "MulticoreManaged", Guarded<MulticoreManaged>);
 
 	LUA->SetField(-2, "meowy");
 	LUA->Pop();
@@ -4161,6 +4235,8 @@ int MenuOpenBody(ILuaBase* LUA)
 	SetFunction(LUA, "MenuSettingsWrite", Guarded<MenuSettingsWrite>);
 	SetFunction(LUA, "MenuFileRead", Guarded<MenuFileRead>);
 	SetFunction(LUA, "MenuFileWrite", Guarded<MenuFileWrite>);
+	SetFunction(LUA, "SetMulticoreManaged", Guarded<SetMulticoreManaged>);
+	SetFunction(LUA, "MulticoreGuardAtExit", Guarded<MulticoreGuardAtExit>);
 	SetFunction(LUA, "ResilienceSession", Guarded<ResilienceSession>);
 	SetFunction(LUA, "ResilienceCrashedSession", Guarded<ResilienceCrashedSession>);
 	SetFunction(LUA, "PrewarmBeginJoin", Guarded<PrewarmBeginJoin>);
@@ -4301,6 +4377,20 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
 		reinterpret_cast<LPCWSTR>(&meowy_menu_open), &self);
 	return OpenGuarded<MenuOpenBody>(LUA, "menu");
+}
+
+// The process is ending the normal way (ExitProcess: `reserved` is set; a
+// FreeLibrary of an unpinned client-realm copy leaves it null). The menu state
+// has no dependable "the game is closing" hook, so this is where multicore
+// rendering's crash guard learns of a clean exit (multicore.h). A crash ends
+// the process without getting here. Only file calls run here (a listing of
+// crashes\ and one small write), and only when the menu armed it. Other
+// threads are gone by now; nothing here waits on one.
+BOOL WINAPI DllMain(HINSTANCE, DWORD reason, LPVOID reserved)
+{
+	if (reason == DLL_PROCESS_DETACH && reserved != nullptr)
+		multicore::AtProcessExit();
+	return TRUE;
 }
 #endif
 

@@ -26,6 +26,9 @@ local chunkText = "local UI = (function()\n" .. readFile(here .. "/../src/lua/ui
 	-- The settings guard, likewise.
 	.. ";(function()\nlocal SettingsGuard = (function()\n" .. readFile(here .. "/../src/lua/settings_guard_logic.lua") .. "\nend)()\n"
 	.. readFile(here .. "/../src/lua/settings_guard.lua") .. "\nend)()\n"
+	-- Multicore rendering, likewise.
+	.. ";(function()\nlocal MulticoreLogic = (function()\n" .. readFile(here .. "/../src/lua/multicore_logic.lua") .. "\nend)()\n"
+	.. readFile(here .. "/../src/lua/multicore.lua") .. "\nend)()\n"
 local loadstring = loadstring or load
 
 local failures, count = 0, 0
@@ -73,6 +76,10 @@ local function world(opts)
 		ResilienceClearRestart = function() w.restartUntil = nil end,
 		ResilienceSettingsRead = function() return w.settingsText end,
 		ResilienceSettingsWrite = function(t) w.settingsText = t return true end,
+		-- Multicore rendering (module.cpp): the managed flag the client realm reads,
+		-- and the text native writes at a clean exit.
+		SetMulticoreManaged = function(on) w.mcManaged = on end,
+		MulticoreGuardAtExit = function(text) w.mcAtExit = text end,
 		-- Discord status (module.cpp's DiscordAllow): each call kept, in order.
 		DiscordAllow = function(on) w.discordCalls = w.discordCalls or {} w.discordCalls[#w.discordCalls + 1] = on w.discord = on end,
 		ResilienceSession = function(on, name) w.session = on w.sessionName = name w.marks = (w.marks or 0) + 1 end,
@@ -240,8 +247,9 @@ local function world(opts)
 		Setting = function(name, default)
 			w.convars = w.convars or {}
 			-- Unless a test says otherwise, a player who chose Garry's Mod's main
-			-- screen after the home screen left preview (opts.fresh: nothing saved).
-			local saved = not opts.fresh and ({ meowy_menu = "0", meowy_menu_version = "2" })[name] or nil
+			-- screen after the home screen left preview, and multicore rendering
+			-- off (it runs its own console line at start; opts.fresh: nothing saved).
+			local saved = not opts.fresh and ({ meowy_menu = "0", meowy_menu_version = "2", meowy_multicore = "0" })[name] or nil
 			if w.convars[name] == nil then w.convars[name] = (opts.convars and opts.convars[name]) or saved or default end
 			-- As in game: SetBool on these is refused ("not created by Lua"); the
 			-- console sets them (RunConsoleCommand below).
@@ -287,6 +295,8 @@ local function world(opts)
 	end or nil
 	-- Engine convars the Escape card reads and sets.
 	w.cvars = { volume = "0.7", voice_scale = "1", fov_desired = "90" }
+	for k, v in pairs(opts.cvars or {}) do w.cvars[k] = v end
+	if opts.applyConsole then w.applyConsole = true end
 	env.GetConVarString = function(n) if n == "cl_timeout" then return w.cl_timeout end return w.cvars[n] or "" end
 	env.RunConsoleCommand = function(cmd, ...)
 		w.commands[#w.commands + 1] = table.concat({ cmd, ... }, " ")
@@ -3309,5 +3319,151 @@ check("find servers: then how far", (w.prepJS or ""):find('"Getting ready \194\1
 w.post("browse_prepare", 9999)
 check("find servers: an unknown row prepares nothing", #w.ugc, 1)
 check("find servers: no Lua errors", w.errors, nil)
+-- Multicore rendering (multicore.lua): on by default at start, through the
+-- menu's own console line, before any join; the crash guard's file and the
+-- text native writes at a clean exit.
+local function mcRuns(w)
+	local t = {}
+	for _, l in ipairs(w.consoleRuns or {}) do if l:find("^gmod_mcore_test") then t[#t + 1] = l end end
+	return table.concat(t, "|")
+end
+local MC_ON = { meowy_multicore = "1" }
+w = world({ settings = ON, menu = true, convars = MC_ON, cvars = { gmod_mcore_test = "0", mat_queue_mode = "-1" }, applyConsole = true })
+check("multicore: on at start, before any frame", mcRuns(w), "gmod_mcore_test 1")
+check("multicore: managed", w.mcManaged, true)
+check("multicore: running marked", (w.menuFiles.multicore_guard or ""):find("running=1\nmode=on\n", 1, true) ~= nil, true)
+check("multicore: native writes the clean exit", (w.mcAtExit or ""):find("running=0\nmode=on\n", 1, true) ~= nil, true)
+w.run(1)
+check("multicore: the game has it", w.cvars.gmod_mcore_test, "1")
+check("multicore: the doctor knows it's the pack's", w.env.meowy.MulticoreStatus(), "managed")
+w.run(40)
+check("multicore: set once", mcRuns(w), "gmod_mcore_test 1")
+check("multicore: no prompt on a normal start", find(function(p) return type(p.text) == "string" and p.text:find("Multicore rendering is", 1, true) ~= nil end), nil)
+-- The menu's ShutDown, if the game sends one: running cleared.
+w.fire("ShutDown")
+check("multicore: ShutDown clears running", (w.menuFiles.multicore_guard or ""):find("running=0\n", 1, true) ~= nil, true)
+check("multicore: no Lua errors", w.errors, nil)
+
+-- A server's change mid-join isn't fought, and the session's mode follows it.
+w = world({ settings = ON, menu = true, convars = MC_ON, cvars = { gmod_mcore_test = "0", mat_queue_mode = "-1" }, applyConsole = true })
+w.run(1)
+w.state, w.loading = "other", true
+w.otherNow = "9.9.9.9:27015"
+w.run(1)
+w.cvars.gmod_mcore_test = "0"   -- the server's Lua
+w.loading, w.inGame = false, true
+w.run(5)
+check("multicore: a server's 0 not fought", mcRuns(w), "gmod_mcore_test 1")
+check("multicore: a crash now counts as with it off", (w.menuFiles.multicore_guard or ""):find("mode=off", 1, true) ~= nil, true)
+check("multicore: native's exit text follows", (w.mcAtExit or ""):find("mode=off", 1, true) ~= nil, true)
+
+-- The second unclean session in a row with it on: off, and the player told.
+w = world({ settings = ON, menu = true, convars = MC_ON, cvars = { gmod_mcore_test = "0", mat_queue_mode = "-1" }, applyConsole = true,
+	menuFiles = { multicore_guard = "running=1\nmode=on\nunclean=1\noff=0\nreverted=0\nreverts=0\n" } })
+check("multicore: two crashes, not turned on", mcRuns(w), "")
+check("multicore: two crashes, not managed", w.mcManaged, false)
+check("multicore: two crashes, the guard has it off", (w.menuFiles.multicore_guard or ""):find("off=1\nreverted=1\nreverts=1", 1, true) ~= nil, true)
+w.run(3)
+check("multicore: the notice waits a moment", find(function(p) return p.text == "Multicore rendering is off" end), nil)
+w.run(2)
+check("multicore: the player told", find(function(p) return p.text == "Multicore rendering is off" end) ~= nil, true)
+check("multicore: the doctor says the guard did it", w.env.meowy.MulticoreStatus(), "guard_off")
+-- Meowy settings shows it off; turning it on starts the guard over.
+w.concommands.meowy_settings()
+local mt = find(function(p) return p.meowyToggle == "multicore" end)
+check("multicore: a toggle in settings, off", mt ~= nil and mt.on, false)
+if mt then mt:SetOn(true) end
+check("multicore: on again from settings", mcRuns(w), "gmod_mcore_test 1")
+check("multicore: managed again", w.mcManaged, true)
+check("multicore: the guard starts over", (w.menuFiles.multicore_guard or ""):find("unclean=0\noff=0\nreverted=0", 1, true) ~= nil, true)
+w.run(1)
+check("multicore: still on", mcRuns(w), "gmod_mcore_test 1")
+check("multicore: settings window paints", w.paintAll(), "")
+
+-- Crashed with it off after the guard turned it off: back on, and said so.
+w = world({ settings = ON, menu = true, convars = MC_ON, cvars = { gmod_mcore_test = "0", mat_queue_mode = "-1" }, applyConsole = true,
+	menuFiles = { multicore_guard = "running=1\nmode=off\nunclean=0\noff=1\nreverted=1\nreverts=1\n" } })
+check("multicore: back on after a crash without it", mcRuns(w), "gmod_mcore_test 1")
+w.run(5)
+check("multicore: back on, the player told", find(function(p) return p.text == "Multicore rendering is back on" end) ~= nil, true)
+
+-- mat_queue_mode 0 or 1 is the player's: left alone.
+w = world({ settings = ON, menu = true, convars = MC_ON, cvars = { gmod_mcore_test = "0", mat_queue_mode = "0" }, applyConsole = true })
+check("multicore: queue 0, left alone", mcRuns(w), "")
+check("multicore: queue 0, not managed", w.mcManaged, false)
+check("multicore: queue 0, the doctor's own tip", w.env.meowy.MulticoreStatus(), nil)
+-- config.cfg sets it after start: set back to 0.
+w = world({ settings = ON, menu = true, convars = MC_ON, cvars = { gmod_mcore_test = "0", mat_queue_mode = "-1" }, applyConsole = true })
+w.run(1)
+w.cvars.mat_queue_mode = "1"   -- config.cfg runs
+w.run(1)
+check("multicore: queue 1 from config.cfg, set back", mcRuns(w), "gmod_mcore_test 1|gmod_mcore_test 0")
+check("multicore: queue 1 from config.cfg, not managed", w.mcManaged, false)
+-- autoexec.cfg turns it off again: the player's, left off this start.
+w = world({ settings = ON, menu = true, convars = MC_ON, cvars = { gmod_mcore_test = "0", mat_queue_mode = "-1" }, applyConsole = true })
+w.run(2)
+w.cvars.gmod_mcore_test = "0"   -- autoexec.cfg
+w.run(2)
+check("multicore: autoexec's 0 kept", mcRuns(w), "gmod_mcore_test 1")
+check("multicore: autoexec's 0, not managed", w.mcManaged, false)
+w.run(40)
+check("multicore: autoexec's 0, still kept", mcRuns(w), "gmod_mcore_test 1")
+
+-- Off in Meowy settings: set back to 0 at once, and the frame before the
+-- console runs the command doesn't turn it back on.
+w = world({ settings = ON, menu = true, convars = MC_ON, cvars = { gmod_mcore_test = "0", mat_queue_mode = "-1" }, applyConsole = true })
+w.run(1)
+w.concommands.meowy_settings()
+mt = find(function(p) return p.meowyToggle == "multicore" end)
+check("multicore: toggle shows on", mt ~= nil and mt.on, true)
+local rawRunMc, queuedMc = w.env.RunConsoleCommand, nil
+w.env.RunConsoleCommand = function(cmd, ...) if cmd == "meowy_multicore" then queuedMc = (...) else rawRunMc(cmd, ...) end end
+if mt then mt:SetOn(false) end
+check("multicore: off at once", mcRuns(w), "gmod_mcore_test 1|gmod_mcore_test 0")
+check("multicore: off, not managed", w.mcManaged, false)
+w.run(0.6)
+check("multicore: not turned back on while the command waits", mcRuns(w), "gmod_mcore_test 1|gmod_mcore_test 0")
+w.env.RunConsoleCommand = rawRunMc
+rawRunMc("meowy_multicore", queuedMc)
+w.run(1)
+check("multicore: the setting saved off", w.convars.meowy_multicore, "0")
+check("multicore: still off", mcRuns(w), "gmod_mcore_test 1|gmod_mcore_test 0")
+check("multicore: the doctor points to the setting", w.env.meowy.MulticoreStatus(), "setting_off")
+-- Turned on another way (the Meowy console): applied at the next check.
+rawRunMc("meowy_multicore", "1")
+w.run(1)
+check("multicore: on again from the console", mcRuns(w), "gmod_mcore_test 1|gmod_mcore_test 0|gmod_mcore_test 1")
+check("multicore: no Lua errors (toggles)", w.errors, nil)
+
+-- Off (the default world here): nothing run, and someone else's 1 makes a crash count as with it on.
+w = world({ settings = ON, menu = true, cvars = { gmod_mcore_test = "0", mat_queue_mode = "-1" } })
+check("multicore: setting off, nothing run", mcRuns(w), "")
+check("multicore: setting off, mode off", (w.menuFiles.multicore_guard or ""):find("mode=off", 1, true) ~= nil, true)
+w.cvars.gmod_mcore_test = "1"   -- a server's FPS booster
+w.run(1)
+check("multicore: someone else's 1, mode on", (w.menuFiles.multicore_guard or ""):find("mode=on", 1, true) ~= nil, true)
+
+-- The kill switch turns it off: set back to 0, and the guard isn't reset
+-- (that's not the player's choice); back on when the policy lets it.
+w = world({ settings = ON, menu = true, convars = MC_ON, cvars = { gmod_mcore_test = "0", mat_queue_mode = "-1" }, applyConsole = true,
+	menuFiles = { multicore_guard = "running=1\nmode=on\nunclean=0\noff=0\nreverted=0\nreverts=0\n" } })
+w.run(1)
+check("multicore policy: one crash counted", (w.menuFiles.multicore_guard or ""):find("unclean=1", 1, true) ~= nil, true)
+w.env.meowy.PolicyState = function() return { off = { "meowy_multicore" }, pack_enabled = true } end
+w.run(1)
+w.convars.meowy_multicore = "0"   -- the setting reads off through the policy (settings.lua), up to 2 s later
+w.run(1)
+check("multicore policy: set back to 0", mcRuns(w), "gmod_mcore_test 1|gmod_mcore_test 0")
+check("multicore policy: not managed", w.mcManaged, false)
+check("multicore policy: the guard's count kept", (w.menuFiles.multicore_guard or ""):find("unclean=1", 1, true) ~= nil, true)
+check("multicore policy: the doctor leaves it to the console tip", w.env.meowy.MulticoreStatus(), nil)
+w.env.meowy.PolicyState = function() return { off = {}, pack_enabled = true } end
+w.run(1)
+w.convars.meowy_multicore = "1"
+w.run(1)
+check("multicore policy: on again", mcRuns(w), "gmod_mcore_test 1|gmod_mcore_test 0|gmod_mcore_test 1")
+check("multicore policy: the guard's count still kept", (w.menuFiles.multicore_guard or ""):find("unclean=1", 1, true) ~= nil, true)
+check("multicore policy: no Lua errors", w.errors, nil)
+
 print(("%d checks, %d failed"):format(count, failures))
 os.exit(failures == 0 and 0 or 1)

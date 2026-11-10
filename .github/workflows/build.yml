@@ -33,6 +33,7 @@ jobs:
           lua5.1 tests/content_logic_test.lua
           lua5.1 tests/browse_logic_test.lua
           lua5.1 tests/party_logic_test.lua
+          lua5.1 tests/multicore_logic_test.lua
           node tests/home_page_test.js
           node tests/launcher_card_test.js
 
@@ -113,6 +114,13 @@ jobs:
           ./buildtest/Release/discord_switch_smoke.exe
           cmake --build buildtest32 --config Release --target discord_switch_smoke
           ./buildtest32/Release/discord_switch_smoke.exe
+
+      - name: Multicore rendering (multicore_smoke, both bitnesses)
+        run: |
+          cmake --build buildtest --config Release --target multicore_smoke
+          ./buildtest/Release/multicore_smoke.exe "$env:RUNNER_TEMP"
+          cmake --build buildtest32 --config Release --target multicore_smoke
+          ./buildtest32/Release/multicore_smoke.exe "$env:RUNNER_TEMP"
 
       - name: Signed policy (policy_smoke, both bitnesses)
         run: |

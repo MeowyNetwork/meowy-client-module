@@ -380,6 +380,26 @@ check("discord: on again from Meowy settings", discord:GetBool(), true)
 w.seconds(1.1)
 check("discord: saved", w.saved("meowy_discord"), "1")
 
+-- Multicore rendering: a server can't switch the player's choice either way
+-- (a change of it is the player's, and resets its crash guard).
+w = world({ settings = "meowy_multicore=0" })
+local multicore = w.env.meowy.Setting("meowy_multicore", "1", "help")
+check("multicore: the player's off read back", multicore:GetBool(), false)
+w.inGame = true
+w.frame()
+w.server("meowy_multicore", "1")
+w.seconds(0.3)
+check("multicore: a server can't turn it on", multicore:GetBool(), false)
+check("multicore: put back in the console too", w.convars.meowy_multicore, "0")
+w.inGame = false
+w.env.RunConsoleCommand("meowy_multicore", "1")   -- Meowy settings' switch
+w.frame(2)
+check("multicore: on from Meowy settings", multicore:GetBool(), true)
+w.inGame = true
+w.server("meowy_multicore", "0")
+w.seconds(0.3)
+check("multicore: a server can't turn it off", multicore:GetBool(), true)
+
 -- Cheap to read: the readers are made once per setting, not on every
 -- access; other ConVar methods still come through.
 w = world()

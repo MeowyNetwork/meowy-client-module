@@ -145,8 +145,9 @@ Mod's server list: only servers with players (`meowy_fast_serverlist`), The cons
 console (`meowy_console_key`), Menu text size (`meowy_menu_scale`), Continue where you left off
 (`meowy_menu_continue`), Your servers on the main menu (`meowy_menu_home`), Server card in the Escape menu
 (`meowy_menu_escape`), Meowy home screen (`meowy_menu`), Discord status on Meowy Network
-(`meowy_discord`), and the settings guard (`meowy_settings_guard`, with the servers whose changes are
-always put back). Its other tab is the PC doctor.
+(`meowy_discord`), the settings guard (`meowy_settings_guard`, with the servers whose changes are
+always put back), and Multicore rendering (`meowy_multicore`, see *Multicore rendering on by default*).
+Its other tab is the PC doctor.
 
 Everything else is a console setting, named with its feature below: `meowy_party`,
 `meowy_serverlist_reports`, `meowy_honest_serverlist`, `meowy_server_index`, `meowy_data_sandbox`,
@@ -170,7 +171,8 @@ console has to be on: **Options → Keyboard → Advanced → Enable developer c
 - **Servers can't change the ones that guard you.** A server's Lua can run console commands on your game
   (`RunConsoleCommand`; Garry's Mod blocks only a fixed list of names). So for `meowy_data_sandbox`,
   `meowy_updates`, `meowy_settings_guard`, `meowy_party`, `meowy_serverlist_reports`, `meowy_discord`,
-  `meowy_honest_serverlist`, `meowy_server_index`, `meowy_menu` and `meowy_menu_version`, the pack keeps
+  `meowy_honest_serverlist`, `meowy_server_index`, `meowy_menu`, `meowy_menu_version` and
+  `meowy_multicore`, the pack keeps
   the value it approved and puts any other change back through the console, within a quarter of a
   second. Until then the setting reads as its approved value (also on the same frame), and only approved
   values are saved. The console
@@ -752,7 +754,10 @@ on Meowy Network's servers.
     stronger one is there, it says so and offers a button to Windows' Graphics settings, with the steps.
     The pack doesn't set the per-app GPU preference itself: that's your Windows setting.
   - **Power:** on battery, battery saver, and Windows' power mode ("Best power efficiency").
-  - **Multicore:** `gmod_mcore_test` and `mat_queue_mode`, with the command to type if it's off.
+  - **Multicore:** `gmod_mcore_test` and `mat_queue_mode`, with the command to type if it's off. Since
+    1.7.2, when it's the pack's (see *Multicore rendering on by default*), the tip points to Meowy
+    settings instead: turned off there, turned off by its crash guard, or turned off since by a server or
+    a config file.
   - **32-bit game:** how to switch to the 64-bit branch (Steam, Properties, Betas).
 - **Windows notifications while you're alt-tabbed** (1.5+). When something happens to you in the city
   and the game isn't the window in front, Windows shows a notification ("Your printer is under
@@ -921,6 +926,48 @@ on Meowy Network's servers.
   - **The way back from a bad policy** is `MeowyClientPack.exe --reset-policy` (see *Installing, starting
     and uninstalling*), only when Meowy Network says to.
 
+## Multicore rendering on by default
+
+Since 1.7.2 the pack turns on Garry's Mod's multicore rendering (`gmod_mcore_test 1`) at every start.
+It moves part of the game's drawing work off its main thread, which is what holds most PCs back: on
+Meowy Network's map a frame took 2.65 ms with it on and 5.30 ms with it off. The game doesn't save this
+setting and starts with it off, so without the pack it's off at the main menu, on every other server,
+and on Meowy Network until our server's FPS Booster turns it on.
+
+**This changes an engine setting on every server you join, not only on Meowy Network.** It's the same
+setting as typing `gmod_mcore_test 1` in the console, and it stays on until the game closes (or a server
+changes it).
+
+- **To opt out:** Meowy settings → **Multicore rendering** off (or `meowy_multicore 0` in the Meowy
+  console). The pack then sets it back to 0 at once, if it had turned it on, and leaves it alone from
+  then on. Servers can't turn the setting back on or off for you (see *Settings*); Meowy Network's kill
+  switch can turn it off for everyone.
+- **Your own choice wins.** If `mat_queue_mode` is 0 or 1 (you set it yourself; the game's default is
+  -1), the pack leaves multicore alone, at start and whenever `mat_queue_mode` changes to one of those
+  (Options, a config file). If a config file of yours (`autoexec.cfg`) turns `gmod_mcore_test` off again
+  in the first 30 seconds after start, that start keeps it off.
+- **It's set at the main menu, before any join,** the menu's own way, so the settings guard counts it as
+  your own value, not a server's change. A server that changes it later isn't fought; the settings guard
+  and the PC doctor see that as usual.
+- **Crash guard,** the same as Meowy Network's FPS Booster's. `multicore_guard.txt` keeps a "running"
+  marker with whether multicore was on (the game's own value, whoever set it), written at start and
+  cleared when the game closes normally. Still there at the next start means the game crashed or was
+  killed. Two such sessions in a row with multicore on: the pack turns it off and tells you at the main
+  menu. If the game then crashes again with it off, multicore wasn't the cause and it goes back on (you're
+  told that too). After a second round of two crashes with it on, it stays off. Turning the switch on or
+  off yourself starts the guard over. The guard never changes your setting: its "off" is its own, and the
+  switch shows off while it lasts.
+  - The main menu's Lua gets no dependable "the game is closing" call, so the marker is cleared by the
+    pack's DLL as Windows ends the game's process normally (it stays loaded for the menu until then). A
+    crash ends the process without that step; a crash report the game wrote during that run
+    (`crashes\*.txt`) also counts as a crash.
+- **Meowy Network's FPS Booster** (our server's Lua) used to turn multicore on itself, with its own crash
+  guard. On a pack that turned it on at start it now leaves multicore to the pack: the pack tells our
+  server's Lua so with `meowy.MulticoreManaged()` (see DEVELOPERS.md). Ticking or unticking it in the
+  booster's menu still works as before. Without the pack, or when the pack left multicore alone (switch
+  off, crash guard, `mat_queue_mode`), the booster does what it did before.
+- **PC doctor:** when it's the pack's, its multicore tip points to Meowy settings, not the console.
+
 ## Everything it sends and writes
 
 **Over the network** (the pack and the launcher):
@@ -962,13 +1009,14 @@ on Meowy Network's servers.
 - **In `%LOCALAPPDATA%\MeowyClientPack`:**
   - settings: `menu_settings.txt`, `settings_guard_session.txt`, `settings_guard_always.txt`,
     `cvar_restore.txt` (values the pack changes for a while), `repairs.txt`, `startup_off.txt`,
-    `config_backups\`;
+    `multicore_guard.txt` (multicore rendering's crash guard), `config_backups\`;
   - start-up: `boot.lock` and `recover.lock` (for a moment), `state\` (the kept policy, `policy.bin`, the
     update pointers and floors, `install_token`), `bin\<version>` (downloaded versions);
   - loading screen: `join_times.txt`, `join_times_servers.txt`, `last_join.txt`, `css_scale.txt` and
     WebView2's profile;
   - staying connected and Continue: `resilience.txt`, `on_server.txt`, `last_server.txt`,
     `meowy_crashes.txt`. These, `menu_settings.txt`, the settings guard's two files, `repairs.txt`,
+    `multicore_guard.txt`,
     `cvar_restore.txt` and the console's history and pins are written whole (a temporary file, then renamed over the old one) but not forced to the
     disk at once: they survive the game crashing, and many are written while a join loads. The
     policy, the update pointers and the `config.cfg` backups are still flushed to the disk;

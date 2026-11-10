@@ -110,8 +110,9 @@ window. In-game updates don't update the launcher; running a newer installer doe
 ## Changing things
 
 **Meowy settings**, in the main menu after Options, has switches for staying connected, starting with the
-game, getting servers ready, the console key, the menu, Discord status and the settings guard. Everything
-else, including the other privacy settings below, is a console setting, listed in
+game, getting servers ready, the console key, the menu, Discord status, the settings guard and
+multicore rendering (on by default, on every server you join; turn it off there). Everything else,
+including the other privacy settings below, is a console setting, listed in
 [How it works](docs/HOW-IT-WORKS.md#settings).
 
 To type console settings, turn the console on first: **Options → Keyboard → Advanced → Enable developer

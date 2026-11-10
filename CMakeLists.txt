@@ -57,7 +57,8 @@ add_library(meowy SHARED
 	src/mouse_confine.cpp
 	src/audio_watch.cpp
 	src/launcher_pipe.cpp
-	src/startup_hook.cpp)
+	src/startup_hook.cpp
+	src/multicore.cpp)
 target_include_directories(meowy PRIVATE ${gmod_module_base_SOURCE_DIR}/include)
 if(WIN32)
 	target_link_libraries(meowy PRIVATE msimg32 shlwapi winhttp ws2_32 shell32 bcrypt)   # GradientFill and file streams for the loading screen; HTTPS for the server list
@@ -138,6 +139,13 @@ if(MEOWY_BUILD_TESTS)
 	add_executable(discord_switch_smoke tests/discord_switch_smoke.cpp src/discord_ipc.cpp)
 	if(MSVC)
 		set_property(TARGET discord_switch_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+	endif()
+	# Multicore rendering's native half (the managed flag, the crash guard's write at exit), no game:
+	#   multicore_smoke <scratch folder>
+	add_executable(multicore_smoke tests/multicore_smoke.cpp src/multicore.cpp src/crash_reports.cpp src/file_util.cpp)
+	if(MSVC)
+		set_property(TARGET multicore_smoke PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+		target_compile_options(multicore_smoke PRIVATE /W4 /utf-8)
 	endif()
 endif()
 if(MEOWY_BUILD_TESTS)

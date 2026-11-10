@@ -66,6 +66,9 @@ local PROTECTED = {
 	meowy_server_index = number,
 	meowy_menu = number,
 	meowy_menu_version = number,   -- below "2", the next start switches the Meowy home back on (resilience.lua)
+	-- Multicore rendering (multicore.lua): only the player turns it on or off,
+	-- so a change of it is theirs, and resets its crash guard.
+	meowy_multicore = number,
 }
 
 -- Meowy Network's signed policy (policy.h) can turn a setting off ("off

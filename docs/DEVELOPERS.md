@@ -36,6 +36,10 @@ end
 -- meowy.ExpectRestart(seconds) -> true, seconds | false, reason   (1.6+; the server restarts within
 --   `seconds`, clamped to 30..600. If the connection ends before then, players who chose to stay
 --   connected are rejoined once the server answers again, within 5 minutes)
+-- meowy.MulticoreManaged() -> true | false (false, reason off our servers)   (1.7.2+; the pack turned
+--   multicore rendering on this start and still has it on: Meowy settings' Multicore rendering on, its
+--   crash guard allowing it, mat_queue_mode not the player's own 0 or 1. Then leave gmod_mcore_test to
+--   the pack. Check it as `meowy.MulticoreManaged and meowy.MulticoreManaged()`, in a pcall)
 ```
 Identical updates are dropped, and updates are sent at most once every 4 s (Discord's rate limit).
 
@@ -54,8 +58,15 @@ where it's run from or asks the player first.
 -- meowy.SettingsList() -> { { name, value, default, help }, ... }   for the Meowy console's completion
 -- meowy.MenuFileRead(kind) -> text ("" when there's none)
 -- meowy.MenuFileWrite(kind, text) -> ok   ("" removes the file). Kinds, and nothing else:
---   "settings_guard_session", "settings_guard_always", "repairs" (the .txt of that name)
+--   "settings_guard_session", "settings_guard_always", "repairs", "multicore_guard" (the .txt of that name)
 -- meowy.ConsoleRun(line)   runs a line as typed into the console; counts as the menu's own change
+-- meowy.SetMulticoreManaged(on)   (1.7.2+) what the client realm's meowy.MulticoreManaged() answers;
+--   process-wide, false until the menu says otherwise (multicore.lua)
+-- meowy.MulticoreGuardAtExit(text)   (1.7.2+) what the DLL writes to multicore_guard.txt as the process
+--   ends normally (DllMain, process detach), unless the game wrote a crash report during the run;
+--   anything but a non-empty string disarms it
+-- meowy.MulticoreStatus() -> "managed" | "setting_off" | "guard_off" | nil   (Lua, multicore.lua; the
+--   PC doctor's multicore tip)
 ```
 In the menu state `GetConVar`, `GetConVarString` and `ConVarExists` answer a pack setting's name with its
 setting object, since the hidden convars are invisible to the raw functions there too.
@@ -72,6 +83,15 @@ on Meowy Network** off in Meowy settings (`meowy_discord`). `DiscordStart` and `
 remembered and return as before, `DiscordState()` says `"stopped"`, and the latest status shows once the
 player turns it back on. The menu sets the switch with `meowy.DiscordAllow(on)`, which the client realm
 doesn't have.
+
+Also new in 1.7.2: the pack turns multicore rendering on at every start (HOW-IT-WORKS, *Multicore
+rendering on by default*; `multicore_guard.txt` keeps its crash guard). Server Lua that sets
+`gmod_mcore_test` (Meowy Network's FPS Booster) should check `meowy.MulticoreManaged()` first and leave
+multicore alone while it's true; a player's own choice in the server's menu can still apply:
+```lua
+local ok, managed = pcall(function() return meowy and meowy.MulticoreManaged and meowy.MulticoreManaged() end)
+if ok and managed == true then return end   -- the pack owns multicore this start
+```
 
 ## Building
 Visual Studio 2022+ and CMake 3.20+:
@@ -111,7 +131,7 @@ is, as the backend does (so it says whether a key can check Garry's Mod tickets;
 
 The menu Lua's rules and glue have offline tests, run by CI with Lua 5.1 (each `tests/*_test.lua`,
 including `settings_test.lua`, `settings_guard_logic_test.lua`, `console_logic_test.lua`,
-`content_logic_test.lua` and `party_logic_test.lua`), and the pages have Node tests:
+`content_logic_test.lua`, `party_logic_test.lua` and `multicore_logic_test.lua`), and the pages have Node tests:
 ```
 for f in tests/*_test.lua; do lua "$f"; done
 node tests/home_page_test.js
@@ -120,7 +140,8 @@ node tests/launcher_card_test.js
 `-DMEOWY_BUILD_TESTS=ON` also adds `doctor_smoke [power]`: the PC doctor's facts on this PC, after
 rendering a little with Direct3D 11 on the default adapter (or with `power`, Windows' power-saving one),
 so the per-process GPU time should point at that adapter. The other smoke tests (`policy_smoke`,
-`updater_smoke`, `sandbox_smoke`, `session_smoke`, `launcher_pipe_smoke` and the rest in `tests/`) and
+`updater_smoke`, `sandbox_smoke`, `session_smoke`, `launcher_pipe_smoke`, `multicore_smoke <scratch
+folder>` and the rest in `tests/`) and
 `uninstall_smoke.cs` (the installer's rules, built with `csc`) run in CI as `.github/workflows/build.yml`
 shows, most of them on both bitnesses.
 
