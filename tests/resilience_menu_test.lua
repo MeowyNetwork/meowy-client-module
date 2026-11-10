@@ -373,14 +373,21 @@ local function world(opts)
 		-- The menu page: w.js is the last menu-entry call, w.homeJS the last Home card call.
 		env.pnlMainMenu = { Call = function(self, js)
 			w.jsCalls = w.jsCalls + 1
-			if js:find("window.MeowyHome(", 1, true) then w.homeJS = js w.homeCalls = (w.homeCalls or 0) + 1
+			if js:find("window.MeowyHome(", 1, true) then
+				w.homeJS, w.homeCalls = js, (w.homeCalls or 0) + 1
+				if js:find("meowy-home-style", 1, true) then w.homeCodeSends = (w.homeCodeSends or 0) + 1 end
 			elseif js:find("window.MeowyEsc(", 1, true) then w.escJS = js
+			elseif js:find("window.MeowyEscLive(", 1, true) then w.escLiveJS = js w.escLiveSends = (w.escLiveSends or 0) + 1
 			elseif js:find("window.MeowyAddons", 1, true) then w.addonsJS = js w.addonsSends = (w.addonsSends or 0) + 1
 			elseif js:find("MeowyBrowse.prep(", 1, true) then w.prepJS = js
 			elseif js:find("window.MeowyBrowse", 1, true) then w.browseJS = js w.browseCalls = w.browseCalls or {} w.browseCalls[#w.browseCalls + 1] = js
 			elseif js:find("window.MeowyShell(", 1, true) then w.shellJS = js w.shellSends = (w.shellSends or 0) + 1
 			elseif js:find("style.zoom", 1, true) then w.zoomCalls = w.zoomCalls or {} w.zoomCalls[#w.zoomCalls + 1] = js
-			else w.js = js end
+			else
+				w.js = js
+				if js:find("OpenOptionsDialog", 1, true) then w.entryCode = js w.entryCodeSends = (w.entryCodeSends or 0) + 1 end
+				if js:find("window.MeowyContinue = ", 1, true) then w.entrySends = (w.entrySends or 0) + 1 end
+			end
 		end }
 		-- The menu's browser (DHTML): its callbacks, the bridge, what it loads.
 		local stockRun = function() w.stockRuns = (w.stockRuns or 0) + 1 end
@@ -1091,7 +1098,15 @@ local function continueJS(w) return (w.js or ""):match("window%.MeowyContinue = 
 w = world({ settings = ON, menu = true })
 w.run(4)
 check("continue: nothing kept, none shown", continueJS(w), "null")
-check("continue: the page code is still sent", (w.js or ""):find("OpenOptionsDialog", 1, true) ~= nil, true)
+check("continue: the page code is still sent", (w.entryCode or ""):find("OpenOptionsDialog", 1, true) ~= nil, true)
+-- The code goes in once a page, the data only when it changes.
+local entrySends = w.entrySends
+w.run(5)
+check("entry: the same data isn't sent again", w.entrySends, entrySends)
+check("entry: the code once a page", w.entryCodeSends, 1)
+w.env.pnlMainMenu.HTML:OnDocumentReady("asset://garrysmod/html/menu.html")
+w.run(1.5)
+check("entry: a page just loaded gets the code again", w.entryCodeSends, 2)
 w.env.meowy.JoiningName = "Meowy Network | DarkRP"
 w.state, w.address, w.loading = "ours", OURS, true
 w.run(3)
@@ -1106,7 +1121,7 @@ w.osTime = w.osTime + 7200
 w.cut()
 w.run(2)
 check("continue: shown in the menu after leaving", continueJS(w), '["Continue","Meowy Network | DarkRP"," \194\183 2 h ago"]')
-check("continue: the entry goes before Start New Game", (w.js or ""):find("#/newgame/", 1, true) ~= nil, true)
+check("continue: the entry goes before Start New Game", (w.entryCode or ""):find("#/newgame/", 1, true) ~= nil, true)
 check("continue: nothing joined on its own", w.connects(), 0)
 w.env.MeowyClientPackContinue()
 check("continue: click joins our server", w.lastConnect(), "connect " .. OURS)
@@ -1209,6 +1224,13 @@ check("home: asked again after a minute", w.queried.favorite, 2)
 local calls = w.homeCalls
 w.run(3)
 check("home: unchanged data not resent every frame", w.homeCalls - calls <= 1, true)
+calls = w.homeCalls
+w.run(12)
+check("home: unchanged data not sent again at all", w.homeCalls, calls)
+check("home: its code once a page", w.homeCodeSends, 1)
+w.env.pnlMainMenu.HTML:OnDocumentReady("asset://garrysmod/html/menu.html")
+w.run(1)
+check("home: a page just loaded gets the code and the data again", w.homeCalls == calls + 1 and w.homeCodeSends == 2, true)
 -- Clicks: a row number in, the address from Lua's own list.
 w.env.MeowyClientPackHomeJoin(1)
 check("home: row 1 joins our server", w.lastConnect(), "connect " .. OURS)
@@ -1280,7 +1302,23 @@ data = escData(w) or ""
 check("escape: shown when opened", data ~= "" and data ~= "null", true)
 check("escape: the server's own name", data:find('"name":"Meowy"', 1, true) ~= nil, true)
 check("escape: map and players from its answer", data:find('"line1":"map \194\183 10/64 players"', 1, true) ~= nil, true)
-check("escape: the engine's ping, loss, time here", data:find('"line2":"ping 46 ms \194\183 loss 1% \194\183 1 h 12 min here"', 1, true) ~= nil, true)
+check("escape: the card without the live numbers", data:find('"line2":""', 1, true) ~= nil, true)
+check("escape: the engine's ping (to 5 ms), loss, time here, on their own", (w.escLiveJS or ""):find('MeowyEscLive("ping 45 ms \194\183 loss 1% \194\183 1 h 12 min here")', 1, true) ~= nil, true)
+-- The numbers change all the time: the card isn't redrawn for them, and their
+-- line goes at most every 2 seconds.
+local escSends, liveSends = w.escJS, w.escLiveSends
+w.latency = 61.2
+w.connected = 4380
+w.run(0.6)
+check("escape: new numbers, the card isn't sent again", w.escJS, escSends)
+w.run(2.5)
+check("escape: new numbers, their line sent", (w.escLiveJS or ""):find("ping 60 ms", 1, true) ~= nil and (w.escLiveJS or ""):find("1 h 13 min", 1, true) ~= nil, true)
+check("escape: not more than every 2 s", w.escLiveSends - liveSends <= 2, true)
+w.latency = 61.9
+liveSends = w.escLiveSends
+w.run(3)
+check("escape: the same line isn't sent again", w.escLiveSends, liveSends)
+data = escData(w) or ""
 check("escape: the address", data:find('"address":"' .. OURS .. '"', 1, true) ~= nil, true)
 check("escape: quick settings with current values", data:find('"label":"Master volume"', 1, true) ~= nil and data:find('"value":0.7', 1, true) ~= nil, true)
 check("escape: the Home card isn't shown in game", (homeData(w) or "null"), "null")

@@ -453,12 +453,13 @@ end
 
 -- The main menu's own list (Start New Game ... Options, Quit) gets a "Meowy
 -- settings" entry after Options, through the menu page's JS: the stock
--- entry's look, plus a small accent dot. It's put back whenever the menu
--- page redraws (a MutationObserver, and the Lua side asks again every second),
--- and it reports back through lua.Run so we know it's there.
+-- entry's look, plus a small accent dot. The code goes in once a page; it puts
+-- the entry back whenever the page redraws (a MutationObserver), and reports
+-- back through lua.Run so we know it's there.
 -- "Continue" goes before Start New Game, out of game only: window.MeowyContinue
--- is [title, server, when] or null, set by the Lua side every second, and only
--- ever shown as text. A long server name is cut short; the time always shows.
+-- is [title, server, when] or null, set by the Lua side when it changes (looked
+-- at every second), and only ever shown as text. A long server name is cut
+-- short; the time always shows.
 local ENTRY_JS = [==[
 (function () {
 	if (!window.MeowyEntry) {
@@ -528,10 +529,11 @@ local ENTRY_JS = [==[
 })();
 ]==]
 
--- The whole call: the functions (once per page), then this second's Continue
--- data, then the entries put in.
-local function entryJS(continueData)
-	return ENTRY_JS .. "window.MeowyContinue = " .. continueData .. ";\nwindow.MeowyEntry();\n"
+-- The whole call: the functions (with `withCode`: once a page), then the
+-- Continue data, then the entries put in.
+local function entryJS(continueData, withCode)
+	return (withCode and ENTRY_JS or "") .. "window.MeowyContinue = " .. continueData .. ";\n"
+		.. "if (window.MeowyEntry) window.MeowyEntry();\n"
 		.. "if (window.MeowyShellContinue) window.MeowyShellContinue();\n"   -- the Meowy home screen's Continue (shell.js)
 end
 
@@ -547,7 +549,9 @@ end
 -- Called from the menu page (lua.Run): menu state only, no arguments.
 function MeowyClientPackOpenSettings() openSettings() end
 
-local entry = { menu = nil, ok = false, since = 0, nextCall = 0 }
+-- doc: the page (menuPage.doc, bumped by menu_page.lua when one loads) the
+-- code went into; data: the Continue data that page was last sent.
+local entry = { menu = nil, ok = false, since = 0, nextCall = 0, doc = nil, data = nil }
 function MeowyClientPackMenuEntry() entry.ok = true end
 
 local function menuVisible()
@@ -595,11 +599,17 @@ local function updateMenuEntry(now, hideContinue)
 	local visible = menuVisible()
 	if visible and IsValid(pnlMainMenu) and pnlMainMenu.Call then
 		if entry.menu ~= pnlMainMenu then
-			entry.menu, entry.ok, entry.since = pnlMainMenu, false, now   -- a new menu page
+			entry.menu, entry.ok, entry.since, entry.doc = pnlMainMenu, false, now, nil   -- a new menu page
 		end
+		-- The code once a page (it puts the entries back itself when the page
+		-- redraws), the Continue data when it changes (in game it's null: once).
 		if now >= entry.nextCall then
 			entry.nextCall = now + 1
-			pnlMainMenu:Call(entryJS(continueData(hideContinue)))
+			local doc, data = menuPage.doc or 0, continueData(hideContinue)
+			if entry.doc ~= doc or entry.data ~= data then
+				pnlMainMenu:Call(entryJS(data, entry.doc ~= doc))
+				entry.doc, entry.data = doc, data
+			end
 		end
 	end
 	-- The pill only when the entry hasn't shown up within 6 s of the menu being
