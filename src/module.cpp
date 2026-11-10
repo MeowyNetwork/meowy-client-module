@@ -3517,12 +3517,15 @@ end)
 -- on any server. Switched only between servers, never while one is loading.
 local fastLookup = meowy.Setting("meowy_fast_lua_lookup", "1",
 	"Meowy Client Pack: find a server's Lua files through the string table's index (0 = the game's own scan)")
-local fastLookupApplied, wasJoining
+local fastLookupApplied, wasJoining, wasLoading
 hook.Add("Think", "MeowyClientPack.FastLuaLookup", function()
-	local joining = IsInLoading() or IsInGame()
-	-- Each join's table is checked again before it's used (lua_lookup.h).
-	if joining and not wasJoining then meowy.FastLuaLookupNewJoin() end
-	wasJoining = joining
+	local loading = IsInLoading()
+	local joining = loading or IsInGame()
+	-- Each join's table is checked again before it's used (lua_lookup.h,
+	-- lua_find.h): at every loading start, a changelevel's on the same server
+	-- included (its new table can sit where the old one was).
+	if (joining and not wasJoining) or (loading and not wasLoading) then meowy.FastLuaLookupNewJoin() end
+	wasJoining, wasLoading = joining, loading
 	local want = fastLookup:GetBool()
 	if want == fastLookupApplied or joining then return end
 	fastLookupApplied = want
