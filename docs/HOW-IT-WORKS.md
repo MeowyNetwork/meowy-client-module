@@ -338,15 +338,20 @@ on Meowy Network's servers.
       but if you're in game only when the next join starts, so it never reloads as you spawn. A page
       that never showed (another server's join, or one cancelled before it was ready) isn't reloaded.
     - If the hidden page fails at the menu (its browser closed, or it couldn't load), it's started
-      again after 10 seconds, then a minute, at most three times per visit to the menu. A new browser
-      waits up to 3 seconds for the old one to finish closing, since both use the same profile folder.
+      again after 10 seconds, then a minute, at most three times per visit to the menu. A page that
+      fails during a join (the built-in screen takes over) is started again the same way after that
+      join ends, if it's still wanted. A new browser waits up to 3 seconds for the old one to finish
+      closing, since both use the same profile folder.
     - While the game is minimised, the page is hidden too, so it stops drawing and its games pause.
     - Clicks on the page count only while it's on screen, and each one counts, so a **Cancel** in the
-      last moment of a fade-out can't cancel the next join.
+      last moment of a fade-out can't cancel the next join. The built-in screen's buttons count only
+      for the join they were drawn for, in the same way.
   - Its thread costs next to nothing outside a join: between joins it sleeps until a join starts or
     the menu loads or unloads the page. During a join it runs up to 30 times a second (60 while the web
     page shows; the page draws itself). The built-in screen keeps the parts that don't move in a bitmap and
     redraws only the bottom strip (spinner, progress, clock); the time that takes is in `last_join.txt`.
+    All of it is drawn again whenever what it shows changes, and when the window is shown (at a join's
+    start, or the game is restored after being minimised) or Windows asks for it.
   - It does its own file work (`last_join.txt`, the stage times) on its thread, so the game never
     waits on a disk for it. A join that starts while the last one's screen is still up (a retry or map
     change right after spawning) keeps the screen up.
