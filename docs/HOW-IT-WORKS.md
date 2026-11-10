@@ -207,12 +207,16 @@ on Meowy Network's servers.
   happened on Meowy Network are sent: at the next start the pack notes which reports were written
   while the game was on our server (`meowy_crashes.txt`, the newest 50; this needs "Start with the
   game"). Crashes on other servers, at the menu, in singleplayer or from before 1.7.1 are never sent.
+  The pack lists the crash folder first, keeps only the reports noted as ours, and opens them
+  newest first until it has enough, so a folder of hundreds of old reports costs nothing at a
+  join, and newer crashes on other servers can't push ours out of the list.
 - Since 1.2 each crash report also says where the game crashed, e.g.
   `engine.dll+0x200660 (0xC0000005)`, read from the game's own crash dump. Only the module's file
   name and the offset are used; the dump itself never leaves your PC.
 - Since 1.2 it can describe your hardware: CPU and GPU model, thread count, RAM, video memory and
   Windows version. No serial numbers or user names. The server stores it with your Steam account
-  ID, next to your frame-time stats, to see what players' machines struggle with.
+  ID, next to your frame-time stats, to see what players' machines struggle with. It's worked out
+  once per game and reused at later joins.
 - Since 1.3 it can make joins faster. At the end of loading a server's Lua, Garry's Mod throws
   away every material it has loaded and loads them all again; on a large map that is 5-15
   seconds of every join. When the server asks for it, the module skips the "throw away" step
@@ -221,7 +225,8 @@ on Meowy Network's servers.
   - It changes 6 bytes of `client.dll`, in memory, for that session only. Nothing on disk
     changes, and no other game is affected.
   - It finds that code by an exact byte pattern and does nothing if anything differs (a
-    Garry's Mod update, for example).
+    Garry's Mod update, for example). The search runs once per game: later joins check that
+    `client.dll` and those bytes are still the same, then change them without searching again.
   - Turn it off with `meowy_skipmatreload 0` in the console. A server can also turn it off for
     everyone.
   - It's switched on only while you join a Meowy Network server and put back as soon as you're
@@ -274,8 +279,11 @@ on Meowy Network's servers.
   - It changes 31 + 34 bytes (64-bit) or 23 + 29 bytes (32-bit) of `client.dll` in memory. It does
     nothing unless the loop, its wildcard test and the matcher behind it are exactly the expected
     code and the list is the engine's own; otherwise the game's own loop runs.
+  - The sorted copy follows the list: names added while you join are merged in, and every name is
+    compared with the copy again only when a join or map change starts or the list is a new one.
   - Turn it off with `meowy_fast_lua_find 0` (it switches at your next disconnect).
-    `meowy_fast_lua_find_status` shows the walks and the names skipped.
+    `meowy_fast_lua_find_status` shows the walks, the names skipped, and the names checked against
+    the copy next to what checking every name at every search would have been.
 - With "Start with the game" on, the font pass on every join is about twice as fast, on any
   server. At each map load Garry's Mod registers all ~400 custom font files again, and loads
   and frees `gdi32.dll` (through the Steam overlay) for every single one, although it's loaded
@@ -403,6 +411,10 @@ on Meowy Network's servers.
     with a password, unless it turns the observer away like that three times since it last got in.
     Servers marked `[UNVERIFIED]` or `[LIST HIDDEN]` sit slightly lower in the list than
     otherwise-equal ones; none are hidden.
+  - The tags and rank changes reach the list together, in one call to its page a frame. No check
+    starts while a join loads or while you're in game; the rest wait for the main menu. A server
+    whose second read falls due then is judged on its first read alone, and a second read that
+    comes in much more than 45 seconds after the first isn't compared with it.
   - **What it sends:** on a server you join that isn't ours, it runs the game's `status` command
     twice, about 90 seconds in and four minutes later. It sends meowynetwork.com the server's
     address, its advertised count, the number of bots `status` lists, and for each other account
@@ -501,6 +513,8 @@ on Meowy Network's servers.
     query gives (its tags read the same way). So the gamemode list, categories, blacklist and the count
     checks above work as before. Favourites, History and LAN are the game's own, complete lists.
   - It reads Steam's server list through the game's own `steam_api`, `ISteamMatchmakingServers`.
+  - The page gets at most 50 servers a frame. A join started while the list is still filling stops it
+    (the browser asks again the next time it's opened), so it doesn't compete with the join.
   - Off in Meowy settings ("Garry's Mod's server list: only servers with players") or with
     `meowy_fast_serverlist 0` for every server, the game's way. It only affects Garry's Mod's own server
     list: the Meowy home screen's Find servers always lists every server, the empty ones last.
@@ -548,6 +562,8 @@ on Meowy Network's servers.
   - A friend without the pack gets Steam's ordinary invite to the party's server instead.
   - Rich Presence: `steam_player_group` (the party) and `meowy_pack` (so friends' packs know who has it).
     Steam shows these to friends only. `meowy_party 0` turns parties off, along with both keys.
+    Only friends playing Garry's Mod are read, and the pack asks Steam for a friend's Rich Presence at
+    most once per game, only while it shows no `meowy_pack` (Steam keeps friends' up to date itself).
     `meowy_party_status` shows the party.
 - **Its own files** are in `%LOCALAPPDATA%\MeowyClientPack`, never in `garrysmod/data`, which any
   server's Lua can read, so the pack leaves no files there for other servers to find. (Like any binary
@@ -952,7 +968,10 @@ on Meowy Network's servers.
   - loading screen: `join_times.txt`, `join_times_servers.txt`, `last_join.txt`, `css_scale.txt` and
     WebView2's profile;
   - staying connected and Continue: `resilience.txt`, `on_server.txt`, `last_server.txt`,
-    `meowy_crashes.txt`;
+    `meowy_crashes.txt`. These, `menu_settings.txt`, the settings guard's two files, `repairs.txt`,
+    `cvar_restore.txt` and the console's history and pins are written whole (a temporary file, then renamed over the old one) but not forced to the
+    disk at once: they survive the game crashing, and many are written while a join loads. The
+    policy, the update pointers and the `config.cfg` backups are still flushed to the disk;
   - notifications: `notify.txt`, `notify_icon.png`, `notify_catalogue.txt`;
   - joins and servers: `joins\` (pre-warm), `pings.json`, `serverlist.log`;
   - the console: `console_history.txt`, `console_pins.txt`, `logs\`;

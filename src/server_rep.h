@@ -58,13 +58,9 @@ namespace server_rep
 		};
 		std::vector<P> players;  // at most 255
 	};
-	// Finished queries since the last call (Take: each result is handed out once,
-	// by this or by TakePlayers).
+	// Finished queries since the last call (each result is handed out once).
+	// meowy.TakePlayers pushes them to Lua as tables.
 	std::vector<PlayerResult> TakePlayerResults();
-	// The same, as a JSON array (until the menu Lua uses TakePlayerResults):
-	// [{"address":..,"ok":bool,"declared":n,"players":[{"name":..,"score":n,"time":s}]}]
-	// (ok false: "answered" says whether the server replied at all)
-	std::string TakePlayers();
 
 	// One A2S request of `kind` ('V' rules, 'U' players) to a public
 	// "a.b.c.d:port", with the challenge rounds newer servers ask for: the
@@ -109,7 +105,10 @@ namespace server_rep
 		// that aren't numbers or are out of range 0. `answered`: the server
 		// replied at all.
 		PlayerResult ParsePlayers(const std::string& address, const std::string& reply, bool answered);
-		// One result as TakePlayers' JSON object.
+		// One result as a JSON object (what the menu Lua parsed before it got
+		// tables): {"address":..,"ok":bool,"declared":n,"players":[{"name":..,
+		// "score":n,"time":s}]}; ok false: "answered" says whether the server
+		// replied at all.
 		std::string PlayersJson(const PlayerResult& r);
 	}
 }

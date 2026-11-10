@@ -339,21 +339,6 @@ namespace server_rep
 		return started;
 	}
 
-	std::string TakePlayers()
-	{
-		std::vector<PlayerResult> done = TakePlayerResults();
-		if (done.empty())
-			return "";
-		std::string out = "[";
-		for (size_t k = 0; k < done.size(); ++k)
-		{
-			if (k > 0)
-				out += ',';
-			out += detail::PlayersJson(done[k]);
-		}
-		return out + "]";
-	}
-
 	std::vector<PlayerResult> TakePlayerResults()
 	{
 		std::lock_guard<std::mutex> lock(g_playersMutex);
