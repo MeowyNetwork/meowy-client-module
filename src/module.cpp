@@ -102,6 +102,7 @@
 #include "server_gate.h"
 #include "data_sandbox.h"
 #include "server_rep.h"
+#include "net_http.h"
 #include "steam_ticket.h"
 #include "launcher_pipe.h"
 #include "notify.h"
@@ -1113,6 +1114,7 @@ namespace
 		if (server_gate::Check() != server_gate::Result::Allowed && !connect_watch::HeadingToUs(10000))
 			return 0;
 		connect_watch::JoinStarted();
+		net_http::SetJoining(true);
 #ifdef _WIN32
 		ILuaBase* LUA = L->luabase;
 		loading_screen::Begin(DataDir(), LUA->IsType(1, Type::Number) ? LUA->GetNumber(1) : -1);
@@ -1130,6 +1132,7 @@ namespace
 		std::string address;
 		if (server_gate::Check(&address) != server_gate::Result::OtherServer)
 			return 0;
+		net_http::SetJoining(true);
 #ifdef _WIN32
 		ILuaBase* LUA = L->luabase;
 		loading_screen::BeginOther(DataDir(), LUA->IsType(1, Type::Number) ? LUA->GetNumber(1) : -1,
@@ -1184,8 +1187,20 @@ namespace
 
 	int LoadingInGame(lua_State*)
 	{
+		net_http::SetJoining(false);
 		TimelineLoading(false);
 		loading_screen::InGame();
+		return 0;
+	}
+
+	// JoinLoading(loading): IsInLoading() changed, sent by the menu's Loading
+	// hook on every edge, whichever server it is and whether or not the pack's
+	// screen shows: background network work (the updater, the policy refresh)
+	// waits while a join loads (net_http.h). A join cancelled or failed ends
+	// here too.
+	int JoinLoading(lua_State* L)
+	{
+		net_http::SetJoining(L->luabase->GetBool(1));
 		return 0;
 	}
 
@@ -3689,8 +3704,9 @@ local fastFind = meowy.Setting("meowy_fast_lua_find", "1",
 	"Meowy Client Pack: let file.Find on a server's Lua skip the files that can't match (0 = the game's own walk)")
 local fastFindApplied
 hook.Add("Think", "MeowyClientPack.FastLuaFind", function()
+	if IsInLoading() or IsInGame() then return end
 	local want = fastFind:GetBool()
-	if want == fastFindApplied or IsInLoading() or IsInGame() then return end
+	if want == fastFindApplied then return end
 	fastFindApplied = want
 	local ok, why = meowy.FastLuaFind(want)
 	if not ok then print("[Meowy Client Pack] fast file.Find: " .. tostring(why)) end
@@ -3706,8 +3722,9 @@ local fastFonts = meowy.Setting("meowy_fast_fonts", "1",
 	"Meowy Client Pack: don't load gdi32.dll again for every font file on each join (0 = the game's own way)")
 local fastFontsApplied
 hook.Add("Think", "MeowyClientPack.FastFonts", function()
+	if IsInLoading() or IsInGame() then return end
 	local want = fastFonts:GetBool()
-	if want == fastFontsApplied or IsInLoading() or IsInGame() then return end
+	if want == fastFontsApplied then return end
 	fastFontsApplied = want
 	local ok, why = meowy.FastFonts(want)
 	if not ok then print("[Meowy Client Pack] fast fonts: " .. tostring(why)) end
@@ -3796,8 +3813,14 @@ if isfunction(stockGameDetails) then
 	end
 end
 
+local joinLoading = false
 hook.Add("Think", "MeowyClientPack.Loading", function()
 	local loading = IsInLoading()
+	-- Every join, the pack's screen or not: background downloads wait it out.
+	if loading ~= joinLoading then
+		joinLoading = loading
+		meowy.JoinLoading(loading)
+	end
 	if not active then
 		if not loading then details, panelSince = nil, nil return end
 		panelSince = panelSince or SysTime()
@@ -4102,6 +4125,7 @@ int MenuOpenBody(ILuaBase* LUA)
 	SetFunction(LUA, "LoadingCancelRequested", Guarded<LoadingCancelRequested>);
 	SetFunction(LUA, "LoadingInGame", Guarded<LoadingInGame>);
 	SetFunction(LUA, "LoadingEnd", Guarded<LoadingEnd>);
+	SetFunction(LUA, "JoinLoading", Guarded<JoinLoading>);
 	SetFunction(LUA, "LoadingPrewarm", Guarded<LoadingPrewarm>);
 	SetFunction(LUA, "LoadingPark", Guarded<LoadingPark>);
 	SetFunction(LUA, "ServerRepFetch", Guarded<ServerRepFetch>);
