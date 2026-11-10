@@ -49,6 +49,10 @@ namespace discord
 	bool Allowed() { return true; }
 	const char* State() { return "unsupported"; }
 	std::string LastError() { return std::string(); }
+	namespace detail
+	{
+		void SetPipePrefix(const std::wstring&) {}
+	}
 }
 
 #else
@@ -62,6 +66,8 @@ namespace discord
 #include <cstdint>
 #include <mutex>
 #include <thread>
+
+#include "thread_util.h"
 
 namespace
 {
@@ -77,7 +83,11 @@ namespace
 
 	std::mutex g_mutex;
 	std::condition_variable g_wake;
-	std::thread g_thread;
+	// The worker's thread, and one that didn't stop in time and was let go
+	// (StopWorker). Plain handles, never a std::thread: nothing is joined or
+	// terminated when the DLL's statics go at exit. Game thread only.
+	HANDLE g_thread = nullptr;
+	HANDLE g_stale = nullptr;
 	std::atomic<bool> g_stop{ false };
 	std::atomic<int> g_state{ STOPPED };
 
@@ -92,6 +102,9 @@ namespace
 	bool g_allowed = true;
 	bool g_wanted = false;
 
+	// Discord's pipes, "<prefix>0".."<prefix>9" (tests: detail::SetPipePrefix).
+	std::wstring g_pipePrefix = L"\\\\.\\pipe\\discord-ipc-";
+
 	constexpr uint32_t kMaxFrame = 64 * 1024;
 	constexpr ULONGLONG kReadWaitMs = 2000;
 
@@ -104,7 +117,7 @@ namespace
 		{
 			for (int i = 0; i < 10; ++i)
 			{
-				std::wstring name = L"\\\\.\\pipe\\discord-ipc-" + std::to_wstring(i);
+				std::wstring name = g_pipePrefix + std::to_wstring(i);
 				// Identification only: whatever owns the pipe (Discord, or something
 				// squatting its name) can't act as this user through it.
 				m_handle = CreateFileW(name.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
@@ -178,7 +191,8 @@ namespace
 
 		// Reads only what the pipe already holds, waiting up to kReadWaitMs for
 		// the rest of a frame: a frame that announces more than it sends must not
-		// block this thread (Shutdown joins it as the player leaves a server).
+		// block this thread (Shutdown waits for it as the player leaves a
+		// server). A stop ends the wait at once.
 		bool ReadAll(void* out, DWORD size)
 		{
 			char* p = static_cast<char*>(out);
@@ -190,7 +204,7 @@ namespace
 					return false;
 				if (avail == 0)
 				{
-					if (GetTickCount64() > deadline)
+					if (g_stop || GetTickCount64() > deadline)
 						return false;
 					Sleep(5);
 					continue;
@@ -330,8 +344,11 @@ namespace
 				lastSend = Clock::now();
 			}
 
+			// Woken early by a stop, or by a new activity once the update interval
+			// allows sending it (before that, waking for it would only spin).
 			std::unique_lock<std::mutex> lock(g_mutex);
-			g_wake.wait_for(lock, std::chrono::milliseconds(250), [] { return g_stop.load(); });
+			g_wake.wait_for(lock, std::chrono::milliseconds(250),
+				[&lastSend] { return g_stop.load() || (g_dirty && Clock::now() - lastSend >= MIN_UPDATE_INTERVAL); });
 		}
 
 		if (pipe.IsOpen())
@@ -342,20 +359,46 @@ namespace
 
 namespace
 {
+	// How long StopWorker waits for the worker (game thread), and how long a
+	// new start waits for one that was let go.
+	constexpr DWORD kStopWaitMs = 1000;
+	constexpr DWORD kStaleWaitMs = 250;
+
 	void StartWorker()
 	{
-		if (g_thread.joinable())
+		if (g_thread)
 			return;
+		// A worker that didn't stop in time still runs on the same state (g_stop,
+		// the activity): never two at once. Given a moment more; still there, no
+		// worker this time (the next Start or switch on tries again).
+		if (g_stale)
+		{
+			if (WaitForSingleObject(g_stale, kStaleWaitMs) == WAIT_TIMEOUT)
+			{
+				g_state = STOPPED;
+				std::lock_guard<std::mutex> lock(g_mutex);
+				g_lastError = "{\"message\":\"the previous connection to Discord is still stopping\"}";
+				return;
+			}
+			CloseHandle(g_stale);
+			g_stale = nullptr;
+		}
 		g_stop = false;
 		g_state = CONNECTING;
-		g_thread = std::thread(Worker);
+		g_thread = thread_util::SpawnHandle(L"Meowy Discord", Worker, thread_util::Priority::BelowNormal);
+		if (!g_thread)
+			g_state = STOPPED;
 	}
 
 	// The worker clears what Discord shows on its way out (a "null" activity),
-	// whatever the update interval.
+	// whatever the update interval. Waits at most about kStopWaitMs (the game's
+	// thread is waiting here as the player leaves a server): a worker stuck in a
+	// pipe write (Discord not reading) has that write cancelled, and one that
+	// still doesn't stop is let go. It holds its own reference to this DLL
+	// (thread_util), so that's safe even as the DLL is freed.
 	void StopWorker()
 	{
-		if (!g_thread.joinable())
+		if (!g_thread)
 			return;
 		{
 			// Under the lock the worker waits with, so the wake-up can't fall
@@ -365,7 +408,31 @@ namespace
 			g_stop = true;
 		}
 		g_wake.notify_one();
-		g_thread.join();
+		bool done = false;
+		const ULONGLONG deadline = GetTickCount64() + kStopWaitMs;
+		for (;;)
+		{
+			if (WaitForSingleObject(g_thread, 50) == WAIT_OBJECT_0)
+			{
+				done = true;
+				break;
+			}
+			if (GetTickCount64() >= deadline)
+				break;
+			// Breaks a synchronous WriteFile/ReadFile on the pipe (Discord hung
+			// with its end full); nothing when the worker isn't in one.
+			CancelSynchronousIo(g_thread);
+		}
+		if (done)
+			CloseHandle(g_thread);
+		else
+		{
+			if (g_stale)
+				CloseHandle(g_stale);   // can't be: StartWorker doesn't start beside one
+			g_stale = g_thread;
+			g_state = STOPPED;
+		}
+		g_thread = nullptr;
 	}
 }
 
@@ -430,6 +497,14 @@ namespace discord
 	{
 		std::lock_guard<std::mutex> lock(g_mutex);
 		return g_lastError;
+	}
+
+	namespace detail
+	{
+		void SetPipePrefix(const std::wstring& prefix)
+		{
+			g_pipePrefix = prefix;
+		}
 	}
 }
 
