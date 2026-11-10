@@ -1200,11 +1200,21 @@ namespace
 		{
 			{
 				std::lock_guard<std::mutex> lock(g.m);
-				g.running = false;
 				g.joining = false;
 				EndLogLocked();
 			}
-			DoFileWork();   // what this join logged so far, and the log closed
+			// What this join logged so far, and the log closed, while this is still
+			// the only screen's thread: a join can't start another until running
+			// is cleared below.
+			DoFileWork();
+			{
+				std::lock_guard<std::mutex> lock(g.m);
+				g.running = false;
+				// A join that began meanwhile ends here too; its file work waits
+				// for the next thread.
+				g.joining = false;
+				EndLogLocked();
+			}
 			if (SUCCEEDED(com))
 				CoUninitialize();
 			return 0;
