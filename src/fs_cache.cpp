@@ -1,27 +1,150 @@
 #include "fs_cache.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstring>
+#include <iterator>
 #include <memory>
+#include <string_view>
 #include <unordered_map>
-#include <unordered_set>
+#include <vector>
 
 namespace
 {
-	// ASCII lowercase in place; false if there's anything but ASCII.
-	bool LowerAscii(std::string& s)
+	// 64-bit FNV-1a: the keys for folders and the names in them.
+	constexpr uint64_t kFnvBasis = 14695981039346656037ULL;
+	constexpr uint64_t kFnvPrime = 1099511628211ULL;
+
+	inline uint64_t Fnv(uint64_t h, char c)
 	{
-		for (char& c : s)
+		return (h ^ static_cast<unsigned char>(c)) * kFnvPrime;
+	}
+
+	uint64_t Fnv(const char* s, size_t n)
+	{
+		uint64_t h = kFnvBasis;
+		for (size_t i = 0; i < n; ++i)
+			h = Fnv(h, s[i]);
+		return h;
+	}
+
+	inline char Lower(char c)
+	{
+		return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
+	}
+
+	inline bool IsSep(char c)
+	{
+		return c == '\\' || c == '/';
+	}
+
+	// A path split for the cache, on the stack: buf holds the lowercase folder,
+	// a '\' and the name ("x:\a\b\name"), NUL-terminated.
+	struct Parts
+	{
+		char buf[260];
+		uint32_t dirLen = 0;     // "x:\a\b" (2, "x:", for a file in a drive's root)
+		uint32_t nameOff = 0;    // dirLen + 1
+		uint32_t nameLen = 0;
+		uint64_t dirHash = 0;    // Fnv of the folder's bytes
+		uint64_t nameHash = 0;   // Fnv of the name's bytes
+	};
+
+	// detail::Split's rules in one pass, with no allocation: the same paths are
+	// refused (too short or long, not "X:\", ".", "..", a trailing dot or
+	// space, the characters below, anything but ASCII, a trailing separator),
+	// doubled separators are skipped, and the rest is written out lowercase with
+	// '\' between the parts. The output is never longer than the path (each part
+	// comes after at least one separator), so it fits.
+	bool SplitFast(const char* path, Parts& p)
+	{
+		if (!path)
+			return false;
+		size_t n = 0;
+		while (n < sizeof(p.buf) && path[n])
+			++n;
+		if (n < 4 || n >= sizeof(p.buf))
+			return false;
+		const char d = path[0];
+		if (!((d >= 'A' && d <= 'Z') || (d >= 'a' && d <= 'z')) || path[1] != ':' || !IsSep(path[2]))
+			return false;
+		char* out = p.buf;
+		size_t len = 0;
+		uint64_t h = kFnvBasis;
+		out[len++] = Lower(d);
+		h = Fnv(h, Lower(d));
+		out[len++] = ':';
+		h = Fnv(h, ':');
+		bool open = false, any = false;
+		size_t sep = 0, lastSep = 0;   // where the part's '\' is in buf
+		uint64_t before = 0, lastBefore = 0, part = 0, lastPart = 0;   // hashes of buf up to that '\', of the part
+		for (size_t i = 3; i <= n; ++i)
 		{
-			const unsigned char u = static_cast<unsigned char>(c);
-			if (u >= 0x80)
+			const char c = i < n ? path[i] : '\\';
+			if (IsSep(c))
+			{
+				if (!open)
+					continue;   // a doubled separator
+				const char back = out[len - 1];
+				if (back == '.' || back == ' ')
+					return false;   // ".", "..", or a trailing dot or space
+				open = false;
+				any = true;
+				lastSep = sep;
+				lastBefore = before;
+				lastPart = part;
+				continue;
+			}
+			// wildcards, streams, short names, line breaks: not for the cache
+			if (c == '*' || c == '?' || c == '"' || c == '<' || c == '>' || c == '|' || c == ':' || c == '~' ||
+				c == '\r' || c == '\n' || static_cast<unsigned char>(c) < 0x20)
 				return false;
-			if (c >= 'A' && c <= 'Z')
-				c = static_cast<char>(c - 'A' + 'a');
+			if (static_cast<unsigned char>(c) >= 0x80)
+				return false;   // anything but ASCII
+			if (!open)
+			{
+				sep = len;
+				before = h;
+				out[len++] = '\\';
+				h = Fnv(h, '\\');
+				part = kFnvBasis;
+				open = true;
+			}
+			const char lc = Lower(c);
+			out[len++] = lc;
+			h = Fnv(h, lc);
+			part = Fnv(part, lc);
 		}
+		if (!any || IsSep(path[n - 1]))
+			return false;
+		out[len] = '\0';
+		p.dirLen = static_cast<uint32_t>(lastSep);
+		p.nameOff = static_cast<uint32_t>(lastSep + 1);
+		p.nameLen = static_cast<uint32_t>(len - lastSep - 1);
+		p.dirHash = lastBefore;
+		p.nameHash = lastPart;
 		return true;
 	}
 
+	// detail::Excluded with no allocation.
+	bool ExcludedFast(const char* dir, size_t len)
+	{
+		static constexpr std::string_view kWritten[] = {
+			"\\garrysmod\\data", "\\garrysmod\\download", "\\garrysmod\\cache", "\\garrysmod\\downloadlists",
+			"\\garrysmod\\screenshots", "\\garrysmod\\cfg", "\\garrysmod\\settings", "\\steamapps\\workshop",
+		};
+		const std::string_view d(dir, len);
+		for (const std::string_view w : kWritten)
+		{
+			const size_t at = d.find(w);
+			if (at == std::string_view::npos)
+				continue;
+			const size_t end = at + w.size();
+			if (end == len || dir[end] == '\\')
+				return true;
+		}
+		return false;
+	}
 }
 
 #ifdef _WIN32
@@ -31,30 +154,108 @@ namespace
 namespace
 {
 	using fs_cache::detail::Answer;
+	using fs_cache::detail::TestPoint;
 
 	// --- The folder listings -----------------------------------------------------
+	// Everything but `join` is set before a listing is kept, and never changes.
 	struct Listing
 	{
+		std::string dir;                   // lowercase, as Split gives it
 		bool exists = false;
-		bool reusable = false;                   // a plain folder: its write time tells when names change
-		FILETIME written = {};                   // the folder's last-write time when it was listed
-		std::unordered_set<std::string> names;   // lowercase
-		std::atomic<unsigned> join{ 0 };         // the join it was last listed or checked in
+		bool reusable = false;             // a plain folder that had settled before it was listed: its write time tells when names change
+		bool link = false;                 // a reparse point: its own write time doesn't follow its target's names
+		bool unknown = false;              // couldn't be read: "can't tell", for this join only
+		bool excluded = false;             // something else writes to it: never listed
+		FILETIME written = {};             // the folder's last-write time, read after the listing
+		std::vector<uint64_t> names;       // Fnv of each lowercase ASCII name, sorted
+		std::atomic<unsigned> join{ 0 };   // the join it was last listed or checked in
 	};
 
+	// The folder hash is already well mixed.
+	struct KeyHash
+	{
+		size_t operator()(uint64_t h) const noexcept { return static_cast<size_t>(h ^ (h >> 32)); }
+	};
+
+	// By folder hash; the few folders that share one are told apart by `dir`.
 	SRWLOCK g_lock = SRWLOCK_INIT;
-	std::unordered_map<std::string, std::shared_ptr<Listing>> g_folders;
+	std::unordered_map<uint64_t, std::vector<std::shared_ptr<Listing>>, KeyHash> g_folders;
 
 	std::atomic<bool> g_active{ false };
 	std::atomic<unsigned> g_join{ 1 };
-	std::atomic<long long> g_opens{ 0 }, g_absent{ 0 }, g_listed{ 0 }, g_reused{ 0 }, g_passed{ 0 };
+	std::atomic<uint64_t> g_epoch{ 0 };   // counts up at every drop: a listing made meanwhile isn't kept
+	std::atomic<long long> g_opens{ 0 }, g_absent{ 0 }, g_listed{ 0 }, g_reused{ 0 }, g_passed{ 0 }, g_inferred{ 0 };
+	std::atomic<void (*)(TestPoint)> g_testHook{ nullptr };
+
+	constexpr unsigned kKeepJoins = 3;    // a listing not used in this many joins is dropped
+	constexpr size_t kMaxAncestors = 8;   // how far up a folder's answer may come from
+	constexpr size_t kMaxSeps = 260;      // a path in a 260-byte buffer has fewer separators
+
+	void AtTestPoint(TestPoint at)
+	{
+		if (auto hook = g_testHook.load(std::memory_order_acquire))
+			hook(at);
+	}
+
+	// Under g_lock, either mode: the folder's entry, or null.
+	std::shared_ptr<Listing>* FindLocked(uint64_t hash, const char* dir, size_t len)
+	{
+		auto it = g_folders.find(hash);
+		if (it == g_folders.end())
+			return nullptr;
+		for (std::shared_ptr<Listing>& l : it->second)
+			if (l->dir.size() == len && std::memcmp(l->dir.data(), dir, len) == 0)
+				return &l;
+		return nullptr;
+	}
+
+	// Under g_lock, exclusive: takes the folder's entry out into `dropped`, to be
+	// freed after the lock.
+	void DropLocked(uint64_t hash, const char* dir, size_t len, std::vector<std::shared_ptr<Listing>>& dropped)
+	{
+		auto it = g_folders.find(hash);
+		if (it == g_folders.end())
+			return;
+		std::vector<std::shared_ptr<Listing>>& v = it->second;
+		for (size_t i = 0; i < v.size(); ++i)
+		{
+			if (v[i]->dir.size() == len && std::memcmp(v[i]->dir.data(), dir, len) == 0)
+			{
+				dropped.push_back(std::move(v[i]));
+				v[i] = std::move(v.back());
+				v.pop_back();
+				break;
+			}
+		}
+		if (v.empty())
+			g_folders.erase(it);
+	}
+
+	// The '\' positions in a folder's path ("x:\a\b": 2, 4), with the hash of
+	// the path before each, which is the hash of the folder above. Returns how many.
+	size_t Seps(const char* dir, size_t len, uint32_t (&at)[kMaxSeps], uint64_t (&before)[kMaxSeps])
+	{
+		size_t k = 0;
+		uint64_t h = kFnvBasis;
+		for (size_t i = 0; i < len; ++i)
+		{
+			if (dir[i] == '\\' && k < kMaxSeps)
+			{
+				at[k] = static_cast<uint32_t>(i);
+				before[k] = h;
+				++k;
+			}
+			h = Fnv(h, dir[i]);
+		}
+		return k;
+	}
 
 	// The folder as it is now: absent, or present with its write time and
 	// whether it's a link (a link's own time doesn't follow its target's names).
-	bool Probe(const std::string& dir, bool& exists, FILETIME& written, bool& link)
+	bool Probe(const char* dir, bool& exists, FILETIME& written, bool& link)
 	{
 		WIN32_FILE_ATTRIBUTE_DATA a;
-		if (!GetFileAttributesExA(dir.c_str(), GetFileExInfoStandard, &a))
+		if (!GetFileAttributesExA(dir, GetFileExInfoStandard, &a))
 		{
 			const DWORD e = GetLastError();
 			exists = false;
@@ -66,62 +267,249 @@ namespace
 		return true;
 	}
 
-	// A listing from an earlier join still holds if the folder is as it was:
-	// still absent, or a plain folder whose write time (it changes whenever a
-	// name is added, removed or renamed) hasn't moved.
-	bool StillHolds(const std::string& dir, const Listing& l)
+	// A present listing from an earlier join still holds if the folder is a
+	// plain folder whose write time (it changes whenever a name is added,
+	// removed or renamed) hasn't moved. Never one that couldn't be read.
+	bool StillHolds(const Listing& l)
 	{
+		if (l.unknown || !l.exists || !l.reusable)
+			return false;
 		bool exists = false, link = false;
 		FILETIME written = {};
-		if (!Probe(dir, exists, written, link))
+		if (!Probe(l.dir.c_str(), exists, written, link))
 			return false;
-		if (!l.exists)
-			return !exists;
-		return exists && l.reusable && !link && CompareFileTime(&written, &l.written) == 0;
+		return exists && !link && CompareFileTime(&written, &l.written) == 0;
 	}
 
-	// Reads one folder. Null: couldn't tell (access denied, say), don't cache.
-	std::shared_ptr<Listing> List(const std::string& dir)
+	unsigned long long Ticks(const FILETIME& f)
+	{
+		return (static_cast<unsigned long long>(f.dwHighDateTime) << 32) | f.dwLowDateTime;
+	}
+
+	// Reads one folder: absent, present with its names, or "can't tell"
+	// (access denied, say). The listing first, its write time after (fs_cache.h
+	// has why): a folder that isn't there costs one call.
+	std::shared_ptr<Listing> List(const char* dir, size_t len, unsigned join)
 	{
 		auto listing = std::make_shared<Listing>();
-		listing->join = g_join.load();
-		bool exists = false, link = false;
-		// Before the listing: a name added in between moves the time, so the
-		// next join lists again rather than trusting a listing that missed it.
-		// Unless the folder changed within the last couple of seconds: the
-		// clock can be 15 ms coarse, so a second change in the same tick
-		// wouldn't move the time. Such a listing is only for this join.
-		if (Probe(dir, exists, listing->written, link) && exists && !link)
+		listing->dir.assign(dir, len);
+		listing->join = join;
+		char pattern[sizeof(Parts::buf) + 4];
+		if (len + 3 > sizeof(pattern))
 		{
-			FILETIME now;
-			GetSystemTimeAsFileTime(&now);
-			const auto ticks = [](const FILETIME& f) {
-				return (static_cast<unsigned long long>(f.dwHighDateTime) << 32) | f.dwLowDateTime;
-			};
-			const unsigned long long kSettled = 2ULL * 10000000ULL;   // 2 s in 100 ns units
-			listing->reusable = ticks(now) >= ticks(listing->written) + kSettled;
+			listing->exists = true;
+			listing->unknown = true;
+			return listing;
 		}
+		std::memcpy(pattern, dir, len);
+		pattern[len] = '\\';
+		pattern[len + 1] = '*';
+		pattern[len + 2] = '\0';
+		FILETIME start;
+		GetSystemTimeAsFileTime(&start);
 		WIN32_FIND_DATAA fd;
-		HANDLE h = FindFirstFileExA((dir + "\\*").c_str(), FindExInfoBasic, &fd, FindExSearchNameMatch, nullptr,
-			FIND_FIRST_EX_LARGE_FETCH);
+		HANDLE h = FindFirstFileExA(pattern, FindExInfoBasic, &fd, FindExSearchNameMatch, nullptr, FIND_FIRST_EX_LARGE_FETCH);
 		if (h == INVALID_HANDLE_VALUE)
 		{
 			const DWORD e = GetLastError();
 			if (e == ERROR_PATH_NOT_FOUND || e == ERROR_FILE_NOT_FOUND || e == ERROR_DIRECTORY || e == ERROR_INVALID_NAME)
 				return listing;   // no such folder: nothing in it can be opened
-			return nullptr;
+			listing->exists = true;
+			listing->unknown = true;
+			return listing;
 		}
 		listing->exists = true;
 		do
 		{
-			std::string name = fd.cFileName;
-			if (LowerAscii(name))
-				listing->names.insert(std::move(name));
+			uint64_t hash = kFnvBasis;
+			bool ascii = true;
+			for (const char* s = fd.cFileName; *s; ++s)
+			{
+				if (static_cast<unsigned char>(*s) >= 0x80)
+				{
+					ascii = false;
+					break;
+				}
+				hash = Fnv(hash, Lower(*s));
+			}
 			// A name with other characters can't match a query (queries are
 			// ASCII), so leaving it out never answers "absent" for a real file.
+			if (ascii)
+				listing->names.push_back(hash);
 		} while (FindNextFileA(h, &fd));
 		FindClose(h);
+		AtTestPoint(TestPoint::Listed);
+		std::sort(listing->names.begin(), listing->names.end());
+		listing->names.erase(std::unique(listing->names.begin(), listing->names.end()), listing->names.end());
+		listing->names.shrink_to_fit();
+		// Reusable in a later join only if nothing changed in the 2 s before the
+		// listing started, nor since. A changed folder is listed again next join.
+		bool exists = false, link = false;
+		pattern[len] = '\0';
+		if (Probe(pattern, exists, listing->written, link) && exists)
+		{
+			const unsigned long long kSettled = 2ULL * 10000000ULL;   // 2 s in 100 ns units
+			listing->link = link;
+			listing->reusable = !link && Ticks(listing->written) + kSettled <= Ticks(start);
+		}
 		return listing;
+	}
+
+	// A folder this join doesn't know yet, from the nearest folder above it that
+	// this join does know: absent if that one is absent, or was listed without
+	// the next name on the way down. Never from a link, a folder that couldn't
+	// be read or one not checked this join. No system call.
+	bool InferAbsent(const Parts& p, unsigned join)
+	{
+		uint32_t at[kMaxSeps];
+		uint64_t before[kMaxSeps];
+		const size_t k = Seps(p.buf, p.dirLen, at, before);
+		const size_t stop = k > kMaxAncestors ? k - kMaxAncestors : 0;
+		bool absent = false;
+		AcquireSRWLockShared(&g_lock);
+		for (size_t i = k; i-- > stop;)
+		{
+			const std::shared_ptr<Listing>* found = FindLocked(before[i], p.buf, at[i]);
+			if (!found)
+				continue;
+			const Listing& above = **found;
+			if (!above.excluded && !above.link && !above.unknown && above.join.load() == join)
+			{
+				if (!above.exists)
+				{
+					absent = true;
+				}
+				else
+				{
+					const size_t from = at[i] + 1;
+					const size_t to = i + 1 < k ? at[i + 1] : p.dirLen;
+					absent = !std::binary_search(above.names.begin(), above.names.end(), Fnv(p.buf + from, to - from));
+				}
+			}
+			break;   // the nearest folder known above decides
+		}
+		ReleaseSRWLockShared(&g_lock);
+		return absent;
+	}
+
+	// Keeps a new listing for this join unless a write dropped anything since
+	// `epoch` was read (then null: it may have missed what the write made).
+	// Another thread's listing for this join, kept meanwhile, wins.
+	std::shared_ptr<Listing> Keep(std::shared_ptr<Listing> fresh, uint64_t hash, uint64_t epoch, unsigned join)
+	{
+		AtTestPoint(TestPoint::BeforeInsert);
+		std::shared_ptr<Listing> kept, displaced;   // displaced is freed after the lock
+		AcquireSRWLockExclusive(&g_lock);
+		if (g_epoch.load(std::memory_order_acquire) == epoch)
+		{
+			std::shared_ptr<Listing>* slot = FindLocked(hash, fresh->dir.data(), fresh->dir.size());
+			if (slot && (*slot)->join.load() == join)
+			{
+				kept = *slot;
+			}
+			else
+			{
+				kept = fresh;
+				if (slot)
+				{
+					displaced = std::move(*slot);
+					*slot = std::move(fresh);
+				}
+				else
+				{
+					g_folders[hash].push_back(std::move(fresh));
+				}
+			}
+		}
+		ReleaseSRWLockExclusive(&g_lock);
+		return kept;
+	}
+
+	// A folder this join doesn't know yet: excluded, absent from the folder
+	// above, or listed. Null if a write got in the way.
+	std::shared_ptr<Listing> Fill(const Parts& p, unsigned join)
+	{
+		const uint64_t epoch = g_epoch.load(std::memory_order_acquire);
+		std::shared_ptr<Listing> fresh;
+		if (ExcludedFast(p.buf, p.dirLen))
+		{
+			fresh = std::make_shared<Listing>();
+			fresh->dir.assign(p.buf, p.dirLen);
+			fresh->exists = true;
+			fresh->excluded = true;
+			fresh->join = join;
+		}
+		else if (InferAbsent(p, join))
+		{
+			fresh = std::make_shared<Listing>();
+			fresh->dir.assign(p.buf, p.dirLen);
+			fresh->join = join;   // not reusable: a later join checks it again
+			++g_inferred;
+		}
+		else
+		{
+			fresh = List(p.buf, p.dirLen, join);
+			++g_listed;
+		}
+		return Keep(std::move(fresh), p.dirHash, epoch, join);
+	}
+
+	Answer LookupParts(const Parts& p)
+	{
+		const unsigned join = g_join.load();
+		std::shared_ptr<Listing> listing;
+		AcquireSRWLockShared(&g_lock);
+		if (std::shared_ptr<Listing>* found = FindLocked(p.dirHash, p.buf, p.dirLen))
+			listing = *found;
+		ReleaseSRWLockShared(&g_lock);
+		if (listing && listing->join.load() != join)
+		{
+			// From an earlier join: used again only if the folder is as it was.
+			// An absent one is looked at again (from the folder above, or one call).
+			if (listing->excluded)
+			{
+				listing->join = join;   // still in use: not dropped
+			}
+			else if (StillHolds(*listing))
+			{
+				listing->join = join;
+				++g_reused;
+			}
+			else
+			{
+				listing = nullptr;
+			}
+		}
+		if (!listing)
+		{
+			listing = Fill(p, join);
+			if (!listing)
+				return Answer::Unknown;
+		}
+		if (listing->excluded || listing->unknown)
+			return Answer::Unknown;
+		if (!listing->exists)
+			return Answer::Absent;
+		return std::binary_search(listing->names.begin(), listing->names.end(), p.nameHash) ? Answer::Present : Answer::Absent;
+	}
+
+	// What a write does: drops the folder and every folder above it, so none of
+	// them can answer for a name the write makes. Counts the epoch up first, so
+	// a listing that's under way isn't kept.
+	void InvalidateDir(const char* dir, size_t len)
+	{
+		uint32_t at[kMaxSeps];
+		uint64_t before[kMaxSeps];
+		const size_t k = Seps(dir, len, at, before);
+		const uint64_t whole = Fnv(dir, len);
+		std::vector<std::shared_ptr<Listing>> dropped;   // freed after the lock
+		dropped.reserve(k + 1);
+		AcquireSRWLockExclusive(&g_lock);
+		g_epoch.fetch_add(1, std::memory_order_acq_rel);
+		DropLocked(whole, dir, len, dropped);
+		for (size_t i = 0; i < k; ++i)
+			DropLocked(before[i], dir, at[i], dropped);
+		ReleaseSRWLockExclusive(&g_lock);
 	}
 
 	// --- The hook ------------------------------------------------------------------
@@ -156,29 +544,35 @@ namespace
 	void* Fopen(void* self, const char* name, const char* options, uintptr_t flags, int64_t* size)
 	{
 		const bool active = g_active.load(std::memory_order_relaxed);
+		Parts parts;
+		bool wrote = false;
 		if (active)
 		{
 			++g_opens;
-			std::string dir, file;
-			if (fs_cache::detail::Split(name, dir, file) && !fs_cache::detail::Excluded(dir))
+			if (SplitFast(name, parts))
 			{
 				if (ReadsOnly(options))
 				{
-					if (fs_cache::detail::Lookup(dir, file) == Answer::Absent)
+					if (LookupParts(parts) == Answer::Absent)
 					{
 						++g_absent;
 						SetLastError(ERROR_FILE_NOT_FOUND);
 						return nullptr;   // what FS_fopen returns for a file that isn't there
 					}
 				}
-				else
+				else if (!ExcludedFast(parts.buf, parts.dirLen))
 				{
-					fs_cache::detail::Invalidate(dir);   // a write: the listing may be stale
+					InvalidateDir(parts.buf, parts.dirLen);   // a write: the listings may be stale
+					wrote = true;
 				}
 			}
 			++g_passed;
 		}
 		void* file = g_fopen(self, name, options, flags, size);
+		// Again now the file exists: a listing made since the first drop may
+		// have missed it, and the epoch keeps one still under way from being kept.
+		if (wrote)
+			InvalidateDir(parts.buf, parts.dirLen);
 		// The join's big files, for warming them before the next join to this
 		// server, and its Workshop items (prewarm.h). FS_fopen gives back the
 		// file's size; prewarm keeps only what it needs.
@@ -241,104 +635,35 @@ namespace fs_cache
 	{
 		bool Split(const char* path, std::string& dir, std::string& name)
 		{
-			if (!path)
+			Parts p;
+			if (!SplitFast(path, p))
 				return false;
-			const size_t n = std::strlen(path);
-			if (n < 4 || n >= 260)
-				return false;
-			const char d = path[0];
-			if (!((d >= 'A' && d <= 'Z') || (d >= 'a' && d <= 'z')) || path[1] != ':' || (path[2] != '\\' && path[2] != '/'))
-				return false;
-			std::string out = std::string(1, path[0]) + ":";
-			std::string component;
-			std::string last;
-			for (size_t i = 3; i <= n; ++i)
-			{
-				const char c = i < n ? path[i] : '\\';
-				if (c == '\\' || c == '/')
-				{
-					if (component.empty())
-						continue;   // a doubled separator
-					if (component == "." || component == ".." || component.back() == '.' || component.back() == ' ')
-						return false;
-					if (!last.empty())
-						out += "\\" + last;
-					last = component;
-					component.clear();
-					continue;
-				}
-				// wildcards, streams, short names, line breaks: not for the cache
-				if (c == '*' || c == '?' || c == '"' || c == '<' || c == '>' || c == '|' || c == ':' || c == '~' ||
-					c == '\r' || c == '\n' || static_cast<unsigned char>(c) < 0x20)
-					return false;
-				component += c;
-			}
-			if (last.empty() || path[n - 1] == '\\' || path[n - 1] == '/')
-				return false;
-			if (!LowerAscii(out) || !LowerAscii(last))
-				return false;
-			dir = out;
-			name = last;
+			dir.assign(p.buf, p.dirLen);
+			name.assign(p.buf + p.nameOff, p.nameLen);
 			return true;
 		}
 
 		bool Excluded(const std::string& dir)
 		{
-			static const char* const kWritten[] = {
-				"\\garrysmod\\data", "\\garrysmod\\download", "\\garrysmod\\cache", "\\garrysmod\\downloadlists",
-				"\\garrysmod\\screenshots", "\\garrysmod\\cfg", "\\garrysmod\\settings", "\\steamapps\\workshop",
-			};
-			for (const char* w : kWritten)
-			{
-				const size_t at = dir.find(w);
-				if (at == std::string::npos)
-					continue;
-				const size_t end = at + std::strlen(w);
-				if (end == dir.size() || dir[end] == '\\')
-					return true;
-			}
-			return false;
+			return ExcludedFast(dir.data(), dir.size());
 		}
 
 		Answer Lookup(const std::string& dir, const std::string& name)
 		{
 #ifdef _WIN32
-			std::shared_ptr<Listing> listing;
-			AcquireSRWLockShared(&g_lock);
-			auto it = g_folders.find(dir);
-			if (it != g_folders.end())
-				listing = it->second;
-			ReleaseSRWLockShared(&g_lock);
-			const unsigned join = g_join.load();
-			if (listing && listing->join.load() != join)
-			{
-				// From an earlier join: used again only if the folder is as it was.
-				if (StillHolds(dir, *listing))
-				{
-					listing->join = join;
-					++g_reused;
-				}
-				else
-				{
-					listing = nullptr;
-				}
-			}
-			if (!listing)
-			{
-				std::shared_ptr<Listing> fresh = List(dir);
-				if (!fresh)
-					return Answer::Unknown;
-				++g_listed;
-				AcquireSRWLockExclusive(&g_lock);
-				std::shared_ptr<Listing>& slot = g_folders[dir];
-				if (!slot || slot->join.load() != join)
-					slot = fresh;   // another thread may have listed it for this join meanwhile
-				listing = slot;
-				ReleaseSRWLockExclusive(&g_lock);
-			}
-			if (!listing->exists)
-				return Answer::Absent;
-			return listing->names.count(name) ? Answer::Present : Answer::Absent;
+			Parts p;
+			if (dir.size() + 1 + name.size() >= sizeof(p.buf))
+				return Answer::Unknown;
+			std::memcpy(p.buf, dir.data(), dir.size());
+			p.buf[dir.size()] = '\\';
+			std::memcpy(p.buf + dir.size() + 1, name.data(), name.size());
+			p.buf[dir.size() + 1 + name.size()] = '\0';
+			p.dirLen = static_cast<uint32_t>(dir.size());
+			p.nameOff = p.dirLen + 1;
+			p.nameLen = static_cast<uint32_t>(name.size());
+			p.dirHash = Fnv(dir.data(), dir.size());
+			p.nameHash = Fnv(name.data(), name.size());
+			return LookupParts(p);
 #else
 			(void)dir; (void)name;
 			return Answer::Unknown;
@@ -348,9 +673,7 @@ namespace fs_cache
 		void Invalidate(const std::string& dir)
 		{
 #ifdef _WIN32
-			AcquireSRWLockExclusive(&g_lock);
-			g_folders.erase(dir);
-			ReleaseSRWLockExclusive(&g_lock);
+			InvalidateDir(dir.data(), dir.size());
 #else
 			(void)dir;
 #endif
@@ -359,8 +682,10 @@ namespace fs_cache
 		void Clear()
 		{
 #ifdef _WIN32
+			decltype(g_folders) dropped;   // freed after the lock
 			AcquireSRWLockExclusive(&g_lock);
-			g_folders.clear();
+			g_folders.swap(dropped);
+			g_epoch.fetch_add(1, std::memory_order_acq_rel);
 			ReleaseSRWLockExclusive(&g_lock);
 #endif
 		}
@@ -368,19 +693,53 @@ namespace fs_cache
 		void NewJoin()
 		{
 #ifdef _WIN32
-			++g_join;
+			// Drops what no join used lately: folders differ from server to
+			// server, and on 32-bit the address space is worth having back.
+			const unsigned join = ++g_join;
+			std::vector<std::shared_ptr<Listing>> dropped;   // freed after the lock
+			AcquireSRWLockExclusive(&g_lock);
+			for (auto it = g_folders.begin(); it != g_folders.end();)
+			{
+				std::vector<std::shared_ptr<Listing>>& v = it->second;
+				for (size_t i = 0; i < v.size();)
+				{
+					if (v[i]->join.load() + kKeepJoins < join)
+					{
+						dropped.push_back(std::move(v[i]));
+						v[i] = std::move(v.back());
+						v.pop_back();
+					}
+					else
+					{
+						++i;
+					}
+				}
+				it = v.empty() ? g_folders.erase(it) : std::next(it);
+			}
+			ReleaseSRWLockExclusive(&g_lock);
 #endif
 		}
 
 		size_t Folders()
 		{
 #ifdef _WIN32
+			size_t n = 0;
 			AcquireSRWLockShared(&g_lock);
-			const size_t n = g_folders.size();
+			for (const auto& bucket : g_folders)
+				n += bucket.second.size();
 			ReleaseSRWLockShared(&g_lock);
 			return n;
 #else
 			return 0;
+#endif
+		}
+
+		void SetTestHook(void (*hook)(TestPoint))
+		{
+#ifdef _WIN32
+			g_testHook.store(hook, std::memory_order_release);
+#else
+			(void)hook;
 #endif
 		}
 
@@ -504,7 +863,8 @@ namespace fs_cache
 	{
 #ifdef _WIN32
 		// Listings stay between joins; each new join checks a folder's write
-		// time before it trusts the listing from an earlier one.
+		// time before it trusts the listing from an earlier one, and drops the
+		// ones no recent join used.
 		if (on)
 			detail::NewJoin();
 		g_active = on && g_object;
@@ -520,6 +880,7 @@ namespace fs_cache
 			std::to_string(g_absent.load()) + " of " + std::to_string(g_opens.load()) +
 			" opens answered \"not there\" from " + std::to_string(g_listed.load()) + " folder listings (" +
 			std::to_string(g_reused.load()) + " reused from earlier joins), " +
+			std::to_string(g_inferred.load()) + " folders known absent from the folder above, " +
 			std::to_string(g_passed.load()) + " opened as before";
 #else
 		return "unsupported";
