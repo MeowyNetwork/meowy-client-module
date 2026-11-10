@@ -101,7 +101,8 @@ notification rules), `notify_manual` (a real notification on this PC; see `tests
 (the fast Lua lookup gives the game's answers on a fake string table, and finds its patch site in the
 installed `client.dll` of the same bitness) `font_loads_smoke <scratch folder>` (the font pass's
 gdi32 loads, on the test's own imports and a real font file), `fs_cache_smoke <scratch folder>` (which
-paths the missing-file cache answers for, and its answers against real folders), `prewarm_smoke <scratch
+paths the missing-file cache answers for, the same as its old `Split` on random paths, and its answers
+against real folders, writes and joins), `prewarm_smoke <scratch
 folder>` (the join pre-warm's file lists, budget and cancelling) and `lua_find_smoke` (the fast `file.Find`'s
 prefix rules and its patch stubs on a copy of the game's code). `steam_ticket_smoke` checks the server-list
 report's Steam ticket offline; `steam_ticket_smoke --live <GarrysMod folder>` gets a real one from the Steam
