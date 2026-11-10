@@ -110,6 +110,7 @@ are fine).
   `cache\workshop\resource\fonts` are renamed to `fonts.meowy-lazy` while the game starts and put back
   as soon as the pack loads; the game registers them again at the first map load anyway. They're also
   put back when the launcher quits (tray Quit, `--quit`, the installer), and by Install and Uninstall.
+  A second Play while the first one's are still aside keeps them aside for its own start.
 - After a Steam update or Verify it puts the start-up line back, once Steam is done and the game is closed
   (never if you turned "Start with the game" off). A repair that can't add the line (start-up off, the
   pack's files missing) is tried once per change, not again and again.
@@ -126,9 +127,14 @@ are fine).
 - Updates: while the game is closed, the launcher downloads a new pack version from the pack's own signed
   release (the same document and checks the pack uses in the game) and sets it up for the next start; the
   start-up stub switches to it. Only with "Start with the game" on: off, it downloads nothing and its
-  Updates panel says updates need it. Its window shows the version you run and what's ready. It also
-  follows Meowy Network's signed policy (the kill switch), and when it starts it rewrites
-  `state\policy.bin` from the kept policy if that file differs (see *Meowy Network's kill switch*).
+  Updates panel says updates need it. If the game starts while it downloads, it keeps the download but
+  sets nothing up and removes no older version until the game is closed again. Its window shows the
+  version you run and what's ready. It also follows Meowy Network's signed policy (the kill switch),
+  and when it starts it rewrites `state\policy.bin` from the kept policy if that file differs (see
+  *Meowy Network's kill switch*).
+- While the game runs, the launcher runs in Windows' efficiency mode (EcoQoS) and only waits for the game
+  to exit; it doesn't look for processes again after the game's first minute. Its window, tray and
+  game connection don't wait on file reads or the network.
 
 ## Settings
 
