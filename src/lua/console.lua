@@ -15,22 +15,58 @@ if not started then log("console: not capturing: %s", tostring(why)) end
 
 local C, S = UI.C, UI.S
 local PULL = 0.25          -- seconds between reads while the window is open
-local READ_MAX = 5000      -- lines per read
+local READ_MAX = 5000      -- lines per read while it's open (it opens with all of them: ConsoleLogic.MAX_KEEP)
 local HISTORY_MAX, PINS_MAX = 200, 24
 local CATALOG_AGE = 120    -- seconds before the command list is read again
+local INSERTS_MAX = 200    -- the window's own lines (dividers, echoed commands) kept for when it opens again
+local OVERLAY_LINES, OVERLAY_SHOW = 8, 20   -- the overlay's lines, and seconds each shows
 local ERROR = Color(238, 104, 112)
+-- The console's lines are only read into Lua while the window is open: the
+-- capture (console_capture.h) keeps the last 50,000 itself, so the window reads
+-- them all when it opens and lets them go when it closes, and nothing is read
+-- at a join while it's shut.
 local lines, lastId = {}, 0
+local floorId = 0          -- the window shows the lines after this one (a Clear, or a typed `clear`, moves it)
+local inserts, nextInsert = {}, 1   -- the window's own lines by place (ConsoleLogic.placeDue); from nextInsert on, not in `lines` yet
+local hidden = {}          -- { from, to }: ids of cvarlist's output, read into the command list, left out when read again
 local clears = 0           -- times the window was emptied (an open window starts over)
 local holder
 local errorGroups, errorsChanged, lastErrorAt = {}, 0, nil   -- Lua errors (OnLuaError, below)
+-- The overlay (meowy_console_overlay, below): its mode, read a few times a
+-- second, and the newest lines it can show, kept as they're read: [1] warnings
+-- and errors, [2] every line. ringId: the newest line they've seen.
+local overlayMode, ring, ringId = 0, { {}, {} }, 0
 -- The console key opens this window (the hook at the end); typed console
 -- commands for the game's console window act on this one while it does.
 local keySetting = meowy.Setting and meowy.Setting("meowy_console_key", "1",
 	"Meowy Client Pack: the console key opens the Meowy console (0 = Garry's Mod's console)")
 
-local function clearLines()
+-- Emptied (Clear, or a typed `clear` at the line `atId`): opened again, the
+-- window starts after it, without the dividers and echoes it had.
+local function clearLines(atId)
 	for i = #lines, 1, -1 do lines[i] = nil end
 	clears = clears + 1
+	floorId = math.max(floorId, atId or lastId)
+	local left = {}
+	for i = nextInsert, #inserts do left[#left + 1] = inserts[i] end
+	inserts, nextInsert = left, 1
+end
+
+-- A line of the window's own, at its place after line `afterId`.
+local function addInsert(afterId, line)
+	local dropped = ConsoleLogic.addInsert(inserts, { afterId = afterId, line = line }, INSERTS_MAX, nextInsert)
+	nextInsert = math.max(1, nextInsert - dropped)
+end
+
+-- The overlay's lines, kept as they arrive (only while it's on).
+local function ringPush(r, l)
+	r[#r + 1] = l
+	if #r > OVERLAY_LINES then table.remove(r, 1) end
+end
+local function ringAdd(l)
+	ringPush(ring[2], l)
+	local k = ConsoleLogic.kind(l)
+	if k == "error" or k == "warning" then ringPush(ring[1], l) end
 end
 
 -- The game's con_filter settings, as ConsoleLogic.conFilter reads them.
@@ -71,29 +107,46 @@ local clearsAsked = 0
 -- `cvarlist`, run between two markers; its lines are read into the catalog and
 -- left out of the window.
 local BEGIN, FINISH = "__meowy_cvars_begin_" .. NONCE .. "__", "__meowy_cvars_end_" .. NONCE .. "__"
-local catalog, catalogAt, collecting, asked = {}, nil, nil, false
+local catalog, catalogAt, collecting, asked, askedAt, collectFrom = {}, nil, nil, false, 0, 0
 local function askCatalog()
-	if asked or not meowy.ConsoleRun then return end
+	if not meowy.ConsoleRun then return end
+	-- Asked and not read yet (the window was shut before its end came back,
+	-- and that's long gone from the capture): asked again after a while.
+	if asked and SysTime() - askedAt < 30 then return end
 	if catalogAt and SysTime() - catalogAt < CATALOG_AGE then return end
-	asked = true
+	asked, askedAt, collecting = true, SysTime(), nil
 	meowy.ConsoleRun("echo " .. BEGIN)
 	meowy.ConsoleRun("cvarlist")
 	meowy.ConsoleRun("echo " .. FINISH)
 end
 
-local function pull()
-	local got, last = meowy.ConsoleRead(lastId, READ_MAX)
+-- The lines since the last read (at most `max`, READ_MAX unless given) into
+-- the window's list, with its own lines placed among them. Only while the
+-- window is open. Returns how many were added.
+local function pull(max)
+	local got, last = meowy.ConsoleRead(lastId, max or READ_MAX)
 	local added = 0
+	local feedRing = overlayMode >= 1
+	local hi = 1   -- hidden[hi]: the first range not behind this line
 	if istable(got) then
 		for _, l in ipairs(got) do
+			local id = l.id or 0
+			local before = #lines
+			nextInsert = ConsoleLogic.placeDue(inserts, nextInsert, id, lines)
+			added = added + #lines - before
+			while hidden[hi] and hidden[hi].to < id do hi = hi + 1 end
 			local x = string.match(l.x or "", "^%s*(.-)%s*$")   -- echo adds a space at the end
-			if x == CLEAR and clearsAsked > 0 then   -- a typed `clear` (run, below) got here
+			if hidden[hi] and id >= hidden[hi].from then
+				-- cvarlist's output, read into the command list before: left out again
+			elseif x == CLEAR and clearsAsked > 0 then   -- a typed `clear` (run, below) got here
 				clearsAsked = clearsAsked - 1
-				clearLines()
+				clearLines(id)
 				added = 0
 			elseif x == BEGIN and asked and not collecting then
-				collecting = {}
+				collecting, collectFrom = {}, id
 			elseif collecting and x == FINISH then
+				hidden[#hidden + 1] = { from = collectFrom, to = id }
+				if #hidden > 64 then table.remove(hidden, 1) end
 				if #collecting > 0 then
 					-- The pack's own settings are hidden from cvarlist (settings.lua): added here.
 					local have = {}
@@ -112,16 +165,33 @@ local function pull()
 			else
 				lines[#lines + 1] = l
 				added = added + 1
+				if feedRing and id > ringId then ringAdd(l) end
 			end
 		end
 	end
-	if isnumber(last) then lastId = last end
-	ConsoleLogic.trim(lines, ConsoleLogic.MAX_KEEP)
+	if isnumber(last) then
+		local before = #lines
+		nextInsert = ConsoleLogic.placeDue(inserts, nextInsert, last + 1, lines)
+		added = added + #lines - before
+		lastId = last
+		if last > ringId then ringId = last end
+	end
+	ConsoleLogic.trim(lines, ConsoleLogic.MAX_KEEP, ConsoleLogic.TRIM_SLACK)
 	return added
 end
 
+-- Shut: the lines go (the capture still has them for next time). The
+-- dividers and echoes stay in `inserts`, to be put back in place.
+local function dropLines()
+	lines, lastId, nextInsert = {}, floorId, 1
+	collecting = nil   -- a command list half read is read again from its start
+end
+
+-- A typed command, echoed in the window after the lines read so far (at
+-- once: it goes where the next read would put it).
 local function echo(text)
-	lines[#lines + 1] = { id = -1, t = os.time() * 1000, s = 0, c = 0x9A9EA8, x = "] " .. text }
+	addInsert(lastId, { id = -1, t = os.time() * 1000, s = 0, c = 0x9A9EA8, x = "] " .. text })
+	nextInsert = ConsoleLogic.placeDue(inserts, nextInsert, lastId + 1, lines)
 end
 local function run(line)
 	if not isstring(line) or line:match("^%s*$") then return end
@@ -227,7 +297,10 @@ local function open()
 		holder:MoveToFront()
 		return
 	end
-	pull()
+	-- Every line the capture still has (after a Clear), read once now; then
+	-- only the new ones, a few times a second.
+	dropLines()
+	pull(ConsoleLogic.MAX_KEEP)
 	fonts()
 	local M, R, PAD = S(24), S(14), S(20)   -- shadow margin, corner radius, padding
 	local state = { query = "", kinds = {}, counts = {}, find = false, pattern = false, collapse = true, view = {},
@@ -1015,6 +1088,10 @@ local function open()
 	end
 	holder.OnKeyCodePressed = function(self, code) if code == KEY_ESCAPE then self:Remove() end end
 	holder.OnMousePressed = function() closeMenu() end
+	-- Shut: its lines go (read again from the capture when it opens).
+	holder.OnRemove = function(self)
+		if holder == self or not IsValid(holder) then dropLines() end
+	end
 
 	local nextPull = 0
 	holder.Think = function()
@@ -1058,12 +1135,14 @@ local function open()
 end
 
 -- Dividers in the log where a join starts, where you're in game, and where you
--- leave, so a session's lines are easy to find (kept while the window is shut
--- too: the lines are read up to now first, so a divider lands in its place).
+-- leave, so a session's lines are easy to find. Each is kept with the newest
+-- line's id when it was made (one line read, not the join's thousands) and
+-- goes in its place whenever the window reads past it, also if it's opened
+-- much later.
 local wasLoading, wasInGame = false, false
 local function mark(text)
-	pull()
-	lines[#lines + 1] = { id = -2, t = os.time() * 1000, s = 0, c = -1, x = text, marker = true }
+	local _, newest = meowy.ConsoleRead(0, 1)
+	addInsert(isnumber(newest) and newest or lastId, { id = -2, t = os.time() * 1000, s = 0, c = -1, x = text, marker = true })
 end
 local joinSeenAt = -math.huge   -- SysTime() of the last frame a join was running
 hook.Add("Think", "MeowyClientPack.ConsoleMarkers", function()
@@ -1123,54 +1202,84 @@ end
 -- 0 off, 1 warnings and errors, 2 everything).
 local overlaySetting = meowy.Setting and meowy.Setting("meowy_console_overlay", "0",
 	"Meowy Client Pack: show the newest console lines over the game (0 off, 1 warnings and errors, 2 everything)")
-local OVERLAY_LINES, OVERLAY_SHOW = 8, 20
-local overlayPull = 0
+local OVERLAY_READ = OVERLAY_LINES * 16   -- lines per read with the window shut
+local OVERLAY_BOX = Color(10, 10, 12, 150)
+local overlayPull, settingsAt, badge = 0, 0, false
+local drawHud                  -- the cl_drawhud convar, once found
+local badgeFor, badgeLabel     -- the badge's text, and the errorsChanged it was made for
+
+-- The overlay's lines since it last looked: through the window's own read
+-- while that's open, otherwise a small read of the newest lines only.
+local function overlayRead()
+	if IsValid(holder) then pull() return end
+	local got, last = meowy.ConsoleRead(ringId, OVERLAY_READ)
+	if istable(got) then
+		for _, l in ipairs(got) do if (l.id or 0) > ringId then ringAdd(l) end end
+	end
+	if isnumber(last) and last > ringId then ringId = last end
+end
 
 hook.Add("DrawOverlay", "MeowyClientPack.ConsoleOverlay", function()
+	local now = SysTime()
+	-- The two settings, a few times a second (each read asks the engine).
+	if now >= settingsAt then
+		settingsAt = now + PULL
+		badge = badgeOn()
+		overlayMode = overlaySetting and tonumber(overlaySetting:GetString()) or 0
+	end
 	-- The game's notices off while the badge is on (and back when it's off).
 	local hooks = hook.GetTable and hook.GetTable().DrawOverlay
 	if hooks then
-		if badgeOn() and hooks.MenuDrawLuaErrors then
+		if badge and hooks.MenuDrawLuaErrors then
 			stockNotices = hooks.MenuDrawLuaErrors
 			hook.Remove("DrawOverlay", "MenuDrawLuaErrors")
-		elseif not badgeOn() and stockNotices and not hooks.MenuDrawLuaErrors then
+		elseif not badge and stockNotices and not hooks.MenuDrawLuaErrors then
 			hook.Add("DrawOverlay", "MenuDrawLuaErrors", stockNotices)
 		end
 	end
-	local drawHud = GetConVar and GetConVar("cl_drawhud")
+	if not drawHud and GetConVar then drawHud = GetConVar("cl_drawhud") end
 	if drawHud and not drawHud:GetBool() then return end
 	fonts()
 	local y = S(32)
-	if badgeOn() then
-		local now = SysTime()
-		local text = ConsoleLogic.badgeText(errorGroups)
-		if text and lastErrorAt then y = pillAt(S(32), y, text .. "  \194\183  ` shows them", ERROR, now - lastErrorAt) end
-		for _, n in pairs(notices) do y = pillAt(S(32), y, n.text, C.amber, now - n.at) end
+	if badge then
+		-- The text only while its pill shows, and made again only after a new error.
+		if lastErrorAt and now - lastErrorAt < BADGE_SHOW then
+			if badgeFor ~= errorsChanged then
+				badgeFor = errorsChanged
+				local text = ConsoleLogic.badgeText(errorGroups)
+				badgeLabel = text and (text .. "  \194\183  ` shows them") or nil
+			end
+			if badgeLabel then y = pillAt(S(32), y, badgeLabel, ERROR, now - lastErrorAt) end
+		end
+		for _, n in pairs(notices) do
+			if now - n.at < BADGE_SHOW then y = pillAt(S(32), y, n.text, C.amber, now - n.at) end
+		end
 	end
-	local mode = overlaySetting and tonumber(overlaySetting:GetString()) or 0
+	local mode = overlayMode
 	-- Not while the window is on screen (in game it shows only with the game's menu).
 	local windowShown = IsValid(holder) and holder:IsVisible() and gui and gui.IsGameUIVisible and gui.IsGameUIVisible()
 	if mode == 0 or not IsInGame() or windowShown then return end
-	if SysTime() > overlayPull then overlayPull = SysTime() + PULL pull() end
-	local shown, now = {}, os.time() * 1000
-	for i = #lines, 1, -1 do
-		local l = lines[i]
-		if (now - (l.t or 0)) > OVERLAY_SHOW * 1000 or #shown >= OVERLAY_LINES then break end
-		local k = ConsoleLogic.kind(l)
-		if not l.marker and (mode >= 2 or k == "error" or k == "warning") then table.insert(shown, 1, l) end
-	end
-	if #shown == 0 then return end
+	if now > overlayPull then overlayPull = now + PULL overlayRead() end
+	-- The lines kept for this mode, the ones from the last OVERLAY_SHOW seconds.
+	local r, nowMs = ring[mode >= 2 and 2 or 1], os.time() * 1000
+	local first = #r + 1
+	while first > 1 and nowMs - (r[first - 1].t or 0) <= OVERLAY_SHOW * 1000 do first = first - 1 end
+	if first > #r then return end
 	local lh = S(18)
 	local w = S(640)
-	draw.RoundedBox(S(8), S(24), y, w, #shown * lh + S(12), Color(10, 10, 12, 150))
-	for i, l in ipairs(shown) do
-		local age = (now - (l.t or 0)) / 1000
-		local alpha = math.Clamp((OVERLAY_SHOW - age) / 3, 0.15, 1)
-		local r, g, b = ConsoleLogic.color(l)
-		if ConsoleLogic.kind(l) == "error" then r, g, b = ERROR.r, ERROR.g, ERROR.b end
-		local text = l.x or ""
-		if #text > 110 then text = text:sub(1, 109) .. "\226\128\166" end
-		draw.SimpleText(text, "MeowyPack.Mono", S(34), y + S(6) + (i - 1) * lh + lh / 2, Color(r, g, b, 255 * alpha), UI.LEFT, UI.CENTER)
+	draw.RoundedBox(S(8), S(24), y, w, (#r - first + 1) * lh + S(12), OVERLAY_BOX)
+	for i = first, #r do
+		local l = r[i]
+		if not l.oc then   -- its colour and its text cut short, once per line
+			local cr, cg, cb = ConsoleLogic.color(l)
+			if ConsoleLogic.kind(l) == "error" then cr, cg, cb = ERROR.r, ERROR.g, ERROR.b end
+			local text = l.x or ""
+			if #text > 110 then text = text:sub(1, 109) .. "\226\128\166" end
+			l.oc, l.ox = Color(cr, cg, cb), text
+		end
+		local age = (nowMs - (l.t or 0)) / 1000
+		l.oc.a = 255 * math.Clamp((OVERLAY_SHOW - age) / 3, 0.15, 1)
+		draw.SimpleText(l.ox, "MeowyPack.Mono", S(34), y + S(6) + (i - first) * lh + lh / 2, l.oc, UI.LEFT, UI.CENTER)
 	end
 end)
 

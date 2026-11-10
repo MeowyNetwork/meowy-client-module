@@ -121,12 +121,17 @@ local function world(opts)
 		ServerQueryCancel = function() w.sqCancels = (w.sqCancels or 0) + 1 end,
 		-- The console's lines (w.console), read after an id.
 		ConsoleCaptureStart = function() w.consoleStarts = (w.consoleStarts or 0) + 1 return true end,
+		-- As console_capture::Read: the newest `max` after the id, and the newest id.
 		ConsoleRead = function(after, max)
 			w.consoleReads = (w.consoleReads or 0) + 1
+			w.consoleReadMax = w.consoleReadMax or {}
+			w.consoleReadMax[#w.consoleReadMax + 1] = max
 			local out, last = {}, after
 			for _, l in ipairs(w.console or {}) do
-				if l.id > after then out[#out + 1] = l last = l.id end
+				if l.id > after then out[#out + 1] = l end
+				if l.id > last then last = l.id end
 			end
+			while max and #out > max do table.remove(out, 1) end
 			return out, last
 		end,
 		ConsoleState = function() return "spew function; 3 lines kept" end,
@@ -368,14 +373,21 @@ local function world(opts)
 		-- The menu page: w.js is the last menu-entry call, w.homeJS the last Home card call.
 		env.pnlMainMenu = { Call = function(self, js)
 			w.jsCalls = w.jsCalls + 1
-			if js:find("window.MeowyHome(", 1, true) then w.homeJS = js w.homeCalls = (w.homeCalls or 0) + 1
+			if js:find("window.MeowyHome(", 1, true) then
+				w.homeJS, w.homeCalls = js, (w.homeCalls or 0) + 1
+				if js:find("meowy-home-style", 1, true) then w.homeCodeSends = (w.homeCodeSends or 0) + 1 end
 			elseif js:find("window.MeowyEsc(", 1, true) then w.escJS = js
+			elseif js:find("window.MeowyEscLive(", 1, true) then w.escLiveJS = js w.escLiveSends = (w.escLiveSends or 0) + 1
 			elseif js:find("window.MeowyAddons", 1, true) then w.addonsJS = js w.addonsSends = (w.addonsSends or 0) + 1
 			elseif js:find("MeowyBrowse.prep(", 1, true) then w.prepJS = js
 			elseif js:find("window.MeowyBrowse", 1, true) then w.browseJS = js w.browseCalls = w.browseCalls or {} w.browseCalls[#w.browseCalls + 1] = js
 			elseif js:find("window.MeowyShell(", 1, true) then w.shellJS = js w.shellSends = (w.shellSends or 0) + 1
 			elseif js:find("style.zoom", 1, true) then w.zoomCalls = w.zoomCalls or {} w.zoomCalls[#w.zoomCalls + 1] = js
-			else w.js = js end
+			else
+				w.js = js
+				if js:find("OpenOptionsDialog", 1, true) then w.entryCode = js w.entryCodeSends = (w.entryCodeSends or 0) + 1 end
+				if js:find("window.MeowyContinue = ", 1, true) then w.entrySends = (w.entrySends or 0) + 1 end
+			end
 		end }
 		-- The menu's browser (DHTML): its callbacks, the bridge, what it loads.
 		local stockRun = function() w.stockRuns = (w.stockRuns or 0) + 1 end
@@ -401,7 +413,12 @@ local function world(opts)
 		return setmetatable(p, { __index = function(t, k)
 			if k == "SetText" then return function(self, s) self.text = s if self.class == "DButton" then w.buttons[#w.buttons + 1] = self end end end
 			if k == "SetTitle" then return function(self, s) self.title = s end end
-			if k == "Remove" or k == "Close" then return function(self) self.removed = true end end
+			if k == "Remove" or k == "Close" then
+				return function(self)
+					self.removed = true
+					if rawget(self, "OnRemove") then self:OnRemove() end
+				end
+			end
 			if k == "SetValue" then return function(self, v) self.value = v end end
 			if k == "GetText" then return function(self) return self.text end end
 			-- Position and size, as real panels keep them (the layout reads them back).
@@ -1081,7 +1098,15 @@ local function continueJS(w) return (w.js or ""):match("window%.MeowyContinue = 
 w = world({ settings = ON, menu = true })
 w.run(4)
 check("continue: nothing kept, none shown", continueJS(w), "null")
-check("continue: the page code is still sent", (w.js or ""):find("OpenOptionsDialog", 1, true) ~= nil, true)
+check("continue: the page code is still sent", (w.entryCode or ""):find("OpenOptionsDialog", 1, true) ~= nil, true)
+-- The code goes in once a page, the data only when it changes.
+local entrySends = w.entrySends
+w.run(5)
+check("entry: the same data isn't sent again", w.entrySends, entrySends)
+check("entry: the code once a page", w.entryCodeSends, 1)
+w.env.pnlMainMenu.HTML:OnDocumentReady("asset://garrysmod/html/menu.html")
+w.run(1.5)
+check("entry: a page just loaded gets the code again", w.entryCodeSends, 2)
 w.env.meowy.JoiningName = "Meowy Network | DarkRP"
 w.state, w.address, w.loading = "ours", OURS, true
 w.run(3)
@@ -1096,7 +1121,7 @@ w.osTime = w.osTime + 7200
 w.cut()
 w.run(2)
 check("continue: shown in the menu after leaving", continueJS(w), '["Continue","Meowy Network | DarkRP"," \194\183 2 h ago"]')
-check("continue: the entry goes before Start New Game", (w.js or ""):find("#/newgame/", 1, true) ~= nil, true)
+check("continue: the entry goes before Start New Game", (w.entryCode or ""):find("#/newgame/", 1, true) ~= nil, true)
 check("continue: nothing joined on its own", w.connects(), 0)
 w.env.MeowyClientPackContinue()
 check("continue: click joins our server", w.lastConnect(), "connect " .. OURS)
@@ -1199,6 +1224,13 @@ check("home: asked again after a minute", w.queried.favorite, 2)
 local calls = w.homeCalls
 w.run(3)
 check("home: unchanged data not resent every frame", w.homeCalls - calls <= 1, true)
+calls = w.homeCalls
+w.run(12)
+check("home: unchanged data not sent again at all", w.homeCalls, calls)
+check("home: its code once a page", w.homeCodeSends, 1)
+w.env.pnlMainMenu.HTML:OnDocumentReady("asset://garrysmod/html/menu.html")
+w.run(1)
+check("home: a page just loaded gets the code and the data again", w.homeCalls == calls + 1 and w.homeCodeSends == 2, true)
 -- Clicks: a row number in, the address from Lua's own list.
 w.env.MeowyClientPackHomeJoin(1)
 check("home: row 1 joins our server", w.lastConnect(), "connect " .. OURS)
@@ -1270,7 +1302,23 @@ data = escData(w) or ""
 check("escape: shown when opened", data ~= "" and data ~= "null", true)
 check("escape: the server's own name", data:find('"name":"Meowy"', 1, true) ~= nil, true)
 check("escape: map and players from its answer", data:find('"line1":"map \194\183 10/64 players"', 1, true) ~= nil, true)
-check("escape: the engine's ping, loss, time here", data:find('"line2":"ping 46 ms \194\183 loss 1% \194\183 1 h 12 min here"', 1, true) ~= nil, true)
+check("escape: the card without the live numbers", data:find('"line2":""', 1, true) ~= nil, true)
+check("escape: the engine's ping (to 5 ms), loss, time here, on their own", (w.escLiveJS or ""):find('MeowyEscLive("ping 45 ms \194\183 loss 1% \194\183 1 h 12 min here")', 1, true) ~= nil, true)
+-- The numbers change all the time: the card isn't redrawn for them, and their
+-- line goes at most every 2 seconds.
+local escSends, liveSends = w.escJS, w.escLiveSends
+w.latency = 61.2
+w.connected = 4380
+w.run(0.6)
+check("escape: new numbers, the card isn't sent again", w.escJS, escSends)
+w.run(2.5)
+check("escape: new numbers, their line sent", (w.escLiveJS or ""):find("ping 60 ms", 1, true) ~= nil and (w.escLiveJS or ""):find("1 h 13 min", 1, true) ~= nil, true)
+check("escape: not more than every 2 s", w.escLiveSends - liveSends <= 2, true)
+w.latency = 61.9
+liveSends = w.escLiveSends
+w.run(3)
+check("escape: the same line isn't sent again", w.escLiveSends, liveSends)
+data = escData(w) or ""
 check("escape: the address", data:find('"address":"' .. OURS .. '"', 1, true) ~= nil, true)
 check("escape: quick settings with current values", data:find('"label":"Master volume"', 1, true) ~= nil and data:find('"value":0.7', 1, true) ~= nil, true)
 check("escape: the Home card isn't shown in game", (homeData(w) or "null"), "null")
@@ -1341,7 +1389,14 @@ w.run(1)
 check("shell: on, sent with its script", shellState(w) == "true" and w.shellJS:find("/*shell*/", 1, true) ~= nil, true)
 local sends = w.shellSends
 w.run(3)
-check("shell: sent again each second (the page may be rebuilt)", w.shellSends - sends >= 2, true)
+check("shell: called again each second", w.shellSends - sends >= 2, true)
+check("shell: but the script itself only once a page", shellState(w) == "true" and w.shellJS:find("/*shell*/", 1, true) == nil, true)
+check("shell: a page that lost it asks for it", w.shellJS:find("meowy.post('need_shell')", 1, true) ~= nil, true)
+w.post("need_shell")
+w.run(0.1)
+check("shell: asked for, sent again", w.shellJS:find("/*shell*/", 1, true) ~= nil, true)
+w.run(1.5)
+check("shell: and then only the call again", w.shellJS:find("/*shell*/", 1, true) == nil, true)
 -- A page that's just loaded (the game starting, a language change) gets the
 -- script on the next frame, not up to a second later; the stock callback still runs.
 local readyCalls = 0
@@ -1354,6 +1409,7 @@ w.env.pnlMainMenu.HTML:OnDocumentReady("asset://garrysmod/html/menu.html")
 check("shell: the stock page's ready callback still runs", readyCalls, 1)
 w.run(0.1)
 check("shell: a page just loaded gets it on the next frame", w.shellSends - sends, 1)
+check("shell: with its script again", w.shellJS:find("/*shell*/", 1, true) ~= nil, true)
 check("shell: the new panel bridged too", w.env.pnlMainMenu.HTML.Callbacks["meowy.post"] ~= nil, true)
 check("shell: never a reload", w.loads, nil)
 check("shell: lua.Run left alone (it's the stock page's)", w.env.pnlMainMenu.HTML.Callbacks["lua.Run"], w.stockRun)
@@ -1478,9 +1534,17 @@ w.run(1)
 check("zoom: auto at 1440p", zoomJS(w), "1.33")
 local zc = #w.zoomCalls
 w.run(4)
-check("zoom: sent again every few seconds (the page may reload)", #w.zoomCalls > zc, true)
+check("zoom: not sent again while it's the same", #w.zoomCalls, zc)
+w.env.pnlMainMenu.HTML:OnDocumentReady("asset://garrysmod/html/menu.html")
+w.run(0.5)
+check("zoom: sent again when the page reloads (a language change)", #w.zoomCalls, zc + 1)
+zc = #w.zoomCalls
+w.env.ScrH = function() return 2160 end
 w.play(2)
-check("zoom: in game too (the Escape menu)", zoomJS(w), "1.33")
+check("zoom: never sent in game", #w.zoomCalls, zc)
+w.cut()
+w.run(1)
+check("zoom: back at the menu, the new size", zoomJS(w), "2.00")
 w = world({ settings = ON, menu = true, convars = { meowy_menu_scale = "150" } })
 w.run(1)
 check("zoom: a chosen size", zoomJS(w), "1.50")
@@ -2113,8 +2177,6 @@ check("index: Steam's numbers, no hint", all:find('"m":"rp_b"', 1, true) ~= nil 
 check("index: no second Steam stage (the index listed the empty ones)", w.sqStarts, 1)
 check("index: complete", all:find("MeowyBrowse.add(1, [], true", 1, true) ~= nil, true)
 check("index: Steam's pings remembered", w.pingsSaved ~= nil, true)
-w.post("browse_join", 1)
-check("index: a row from it joins by number", w.joinedVia, "45.10.1.7:27015")
 -- A minute later the page asks again: changed rows go as updates, new ones are added.
 w.indexData.s[1][9] = 50
 w.indexData.s[4] = { "45.10.3.7:27015", "New one", "", "gm_x", "sandbox", "", "", "", 5, 10, 0, 20260429, 0, 1, "", -1 }
@@ -2126,6 +2188,80 @@ w.run(0.3)
 all = table.concat(w.browseCalls, "\n")
 check("index: a changed row updated, keeping Steam's ping", all:find("MeowyBrowse.update(1, [", 1, true) ~= nil and all:find('"ms":33', 1, true) ~= nil, true)
 check("index: a new server added", all:find('"n":"New one"', 1, true) ~= nil, true)
+-- Joining from it: by number. The list's work stops with the join: an index
+-- fetched before it isn't taken during the join, and is dropped (not read) at
+-- the menu; the page's next ask does nothing until the list is opened again.
+w.post("browse_refresh")
+local fetches = w.indexFetches
+w.post("browse_join", 1)
+check("index: a row from it joins by number", w.joinedVia, "45.10.1.7:27015")
+w.post("browse_refresh")
+check("index: after a join, the page's ask does nothing", w.indexFetches, fetches)
+w.indexData.s[5] = { "45.10.4.7:27015", "During the join", "", "gm_x", "sandbox", "", "", "", 5, 10, 0, 20260429, 0, 1, "", -1 }
+w.indexResult = { "ok", "INDEX", "52.5,13.4" }
+local parsed = 0
+local rawJSON = w.env.util.JSONToTable
+w.env.util.JSONToTable = function(s) parsed = parsed + 1 return rawJSON(s) end
+w.browseCalls = {}
+w.state, w.address, w.loading = "ours", OURS, true
+w.run(1)
+check("index: not taken while loading", w.indexResult ~= nil and parsed == 0, true)
+w.play(2)
+check("index: not taken in game", w.indexResult ~= nil and parsed == 0, true)
+w.cut()
+w.run(1)
+check("index: taken back at the menu, dropped unread", w.indexResult == nil and parsed == 0, true)
+check("index: nothing from it reached the page", table.concat(w.browseCalls, "\n"):find("During the join", 1, true), nil)
+check("index: dropped, logged", (w.logs or ""):find("from before a join: dropped", 1, true) ~= nil, true)
+-- Opened again: the index read before the join is fresh enough, shown as it is.
+w.browseCalls = {}
+w.post("browse")
+w.run(0.5)
+check("index: opened again, the one read before shown", w.indexFetches == fetches and table.concat(w.browseCalls, "\n"):find('"idx":"shown"', 1, true) ~= nil, true)
+-- Older than a minute: asked again, and this time read.
+w.run(61)
+w.post("browse")
+check("index: opened again later, asked again", w.indexFetches, fetches + 1)
+w.indexResult = { "ok", "INDEX", "52.5,13.4" }
+w.run(0.5)
+check("index: opened again later, read", parsed, 1)
+-- The pings Steam measured are saved back at the menu, not as the join starts.
+w = indexWorld()
+w.post("browse")
+w.sq = { { address = "45.10.9.7:27015", name = "Pinged", map = "m", tags = "", desc = "D", players = 3, max = 8, bots = 0, ping = 44, pass = false } }
+w.run(0.3)
+w.pingsSaved = nil
+w.post("browse_join", 1)
+check("pings: not saved as a join starts", w.pingsSaved, nil)
+w.state, w.address, w.loading = "ours", OURS, true
+w.run(1)
+w.play(1)
+check("pings: not saved during the join", w.pingsSaved, nil)
+w.cut()
+w.run(1)
+check("pings: saved back at the menu", w.pingsSaved ~= nil, true)
+-- A big index is read over several frames, never all in one.
+w = indexWorld()
+local bigRows = {}
+for i = 1, 3000 do
+	bigRows[i] = { "45.11." .. math.floor(i / 250) .. "." .. (i % 250) .. ":27015", "Row " .. i, "", "m", "sandbox", "", "", "", i % 50, 64, 0, 20260429, 0, 1, "", -1 }
+end
+w.indexData.s = bigRows
+local clock = w.now
+w.env.SysTime = function() clock = clock + 0.0001 return clock end   -- 0.1 ms a look: ~80 looks a slice
+w.post("browse")
+w.indexResult = { "ok", "INDEX", "52.5,13.4" }
+local frames = 0
+w.browseCalls = {}
+while frames < 400 and not table.concat(w.browseCalls, "\n"):find('"idx":"shown"', 1, true) do
+	clock = clock + 0.05
+	w.now = clock
+	w.think()
+	frames = frames + 1
+end
+check("index: a big one read and shown", table.concat(w.browseCalls, "\n"):find('"idx":"shown"', 1, true) ~= nil, true)
+check("index: a big one read over several frames", frames > 2, true)
+check("index: a big one, read over frames, logged", (w.logs or ""):find("servers over", 1, true) ~= nil, true)
 -- Unreachable (or switched off): Steam's list alone, both stages, and the page told.
 w = indexWorld()
 w.post("browse")
@@ -2578,6 +2714,96 @@ check("markers: a join", copiedAll:find("Joining a server", 1, true) ~= nil or c
 check("markers: in game", copiedAll:find("In game on " .. OURS, 1, true) ~= nil, true)
 check("markers: leaving", copiedAll:find("Left the server", 1, true) ~= nil, true)
 check("markers: in order", (copiedAll:find("before", 1, true) or 99) < (copiedAll:find("Joining", 1, true) or 0), true)
+-- With the window shut, a join reads no lines (only the newest id, for the
+-- dividers); opened later, it reads them all once, with the dividers between
+-- the right lines; closed, its lines go; opened again, they're all back.
+do
+	local cw = world({ settings = ON, menu = true })
+	local function add(from, to, what)
+		for i = from, to do cw.console[#cw.console + 1] = { id = i, t = i * 1000, s = 0, c = -1, x = what .. " " .. i } end
+	end
+	cw.console = {}
+	add(1, 10, "menu")
+	cw.run(0.2)
+	cw.consoleReadMax = {}
+	cw.loading = true
+	cw.run(0.2)
+	add(11, 20, "join")
+	cw.state, cw.address, cw.loading, cw.inGame = "ours", OURS, false, true
+	cw.run(0.2)
+	add(21, 25, "game")
+	cw.inGame, cw.state = false, "none"
+	cw.run(0.2)
+	local many = 0
+	for _, m in ipairs(cw.consoleReadMax) do if (m or 0) > 1 then many = many + 1 end end
+	check("console shut: a join reads no lines", many .. "/" .. #cw.consoleReadMax, "0/3")
+	cw.run(2.5)
+	local function copyAll()
+		local button
+		for _, p in ipairs(cw.panels or {}) do if p.class == "DButton" and p.text == "Copy" and not p.removed then button = p end end
+		cw.clipboard = nil
+		button.DoClick()
+		return cw.clipboard or ""
+	end
+	local function before(text, a, b)
+		local i, j = text:find(a, 1, true), text:find(b, 1, true)
+		return i ~= nil and j ~= nil and i < j
+	end
+	cw.consoleReadMax = {}
+	cw.concommands.meowy_console()
+	check("console opened: every line read once", cw.consoleReadMax[#cw.consoleReadMax], 50000)
+	local all = copyAll()
+	check("console opened: the join's divider after the menu's lines", before(all, "menu 10", "Joining") and before(all, "Joining", "join 11"), true)
+	check("console opened: in game after the join's lines", before(all, "join 20", "In game on") and before(all, "In game on", "game 21"), true)
+	check("console opened: leaving at the end", before(all, "game 25", "Left the server"), true)
+	local holderPanel
+	for _, p in ipairs(cw.panels or {}) do if rawget(p, "meowyConsole") and not p.removed then holderPanel = p end end
+	holderPanel:Remove()
+	add(26, 27, "later")
+	cw.run(0.5)
+	cw.consoleReadMax = {}
+	cw.run(0.5)
+	check("console closed: nothing read", #cw.consoleReadMax, 0)
+	cw.concommands.meowy_console()
+	all = copyAll()
+	check("console opened again: the history and dividers back", before(all, "menu 1", "Joining") and before(all, "Joining", "join 11")
+		and before(all, "join 20", "In game on") and before(all, "game 25", "Left the server") and before(all, "Left the server", "later 27"), true)
+	local _, joins = all:gsub("Joining", "")
+	check("console opened again: each divider once", joins, 1)
+end
+-- The overlay keeps its own few lines as they're read (small reads with the
+-- window shut), and draws only those: mode 1 warnings and errors, 2 every line.
+do
+	local ow = world({ settings = ON, menu = true, convars = { meowy_console_overlay = "1" } })
+	local drawn = {}
+	ow.env.draw.SimpleText = function(t) drawn[#drawn + 1] = t end
+	local now = os.time() * 1000
+	ow.console = {}
+	for i = 1, 30 do
+		ow.console[i] = { id = i, t = now, s = (i % 10 == 0) and 1 or 0, c = -1, x = ((i % 10 == 0) and "Warning: w" or "plain ") .. i }
+	end
+	ow.inGame, ow.state, ow.address = true, "ours", OURS
+	ow.consoleReadMax = {}
+	local function frame()
+		ow.now = ow.now + 0.3
+		drawn = {}
+		ow.fire("DrawOverlay")
+		ow.fire("DrawOverlay")   -- the setting is read on the first, the lines on the next
+		return table.concat(drawn, "|")
+	end
+	frame()
+	local shown = frame()
+	check("overlay 1: only warnings and errors", shown:find("Warning: w10", 1, true) ~= nil and shown:find("Warning: w30", 1, true) ~= nil
+		and shown:find("plain", 1, true) == nil, true)
+	local big = 0
+	for _, m in ipairs(ow.consoleReadMax) do if (m or 0) > 200 then big = big + 1 end end
+	check("overlay: small reads with the window shut", big, 0)
+	ow.convars.meowy_console_overlay = "2"
+	ow.console[31] = { id = 31, t = now, s = 0, c = -1, x = "plain 31" }
+	frame()
+	shown = frame()
+	check("overlay 2: every line, the newest", shown:find("plain 31", 1, true) ~= nil and shown:find("plain 21", 1, true) == nil, true)
+end
 -- The log panel (the one with keys of its own).
 local logP = panelWith("OnKeyCodePressed")
 for _, p in ipairs(w.panels or {}) do if p.class == "DPanel" and rawget(p, "OnKeyCodePressed") then logP = p end end
