@@ -67,6 +67,15 @@ namespace
 	const uint8_t kNop6[kCallLen] = { 0x66, 0x0F, 0x1F, 0x44, 0x00, 0x00 };
 
 	uint8_t* g_patchedAt = nullptr;
+	// The routine found by the last full scan, and the client.dll it was found
+	// in. RestoreMaterialReload puts the call back after every join, and
+	// scanning client.dll's whole code section again (three times) at the
+	// next one cost tens of ms on the main thread while it loads. client.dll
+	// stays loaded for the whole game, so the routine is where it was: the
+	// next call checks it's still the same module and the same bytes, then
+	// patches straight away.
+	HMODULE g_validatedClient = nullptr;
+	uint8_t* g_validatedFound = nullptr;
 
 	bool Matches(const uint8_t* p)
 	{
@@ -158,6 +167,27 @@ namespace engine_patches
 			return false;
 		}
 
+		// Found and validated before, in this same client.dll, and still the
+		// routine with its call in place: the same write as below.
+		if (client == g_validatedClient && g_validatedFound && g_validatedFound >= text &&
+			kPatternLen <= size && g_validatedFound <= text + (size - kPatternLen) &&
+			Matches(g_validatedFound) && LoadTarget(g_validatedFound + kLoad1) == LoadTarget(g_validatedFound + kLoad2))
+		{
+			uint8_t* at = g_validatedFound + kCallOffset;
+			if (std::memcmp(at, kOriginal, kCallLen) == 0)
+			{
+				if (!WriteCode(at, kNop6, kCallLen))
+				{
+					why = "couldn't write the patch";
+					return false;
+				}
+				g_patchedAt = at;
+				return true;
+			}
+		}
+		g_validatedClient = nullptr;
+		g_validatedFound = nullptr;
+
 		uint8_t* found = nullptr;
 		int count = 0;
 		for (size_t i = 0; i + kPatternLen <= size; ++i)
@@ -204,6 +234,8 @@ namespace engine_patches
 			return false;
 		}
 		g_patchedAt = at;
+		g_validatedClient = client;
+		g_validatedFound = found;
 		return true;
 #else
 		why = "Windows only";
