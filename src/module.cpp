@@ -2547,8 +2547,8 @@ namespace
 		return 1;
 	}
 
-	// PartyFriends() -> { { id, name, ingmod, pack }, ... }: Steam friends, those
-	// playing Garry's Mod first (and whether their pack says so), at most 200.
+	// PartyFriends() -> { { id, name, ingmod, pack }, ... }: Steam friends
+	// playing Garry's Mod (and whether their pack says so), at most 200.
 	int PartyFriends(lua_State* L)
 	{
 		ILuaBase* LUA = L->luabase;
