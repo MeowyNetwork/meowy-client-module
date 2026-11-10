@@ -1351,7 +1351,14 @@ w.run(1)
 check("shell: on, sent with its script", shellState(w) == "true" and w.shellJS:find("/*shell*/", 1, true) ~= nil, true)
 local sends = w.shellSends
 w.run(3)
-check("shell: sent again each second (the page may be rebuilt)", w.shellSends - sends >= 2, true)
+check("shell: called again each second", w.shellSends - sends >= 2, true)
+check("shell: but the script itself only once a page", shellState(w) == "true" and w.shellJS:find("/*shell*/", 1, true) == nil, true)
+check("shell: a page that lost it asks for it", w.shellJS:find("meowy.post('need_shell')", 1, true) ~= nil, true)
+w.post("need_shell")
+w.run(0.1)
+check("shell: asked for, sent again", w.shellJS:find("/*shell*/", 1, true) ~= nil, true)
+w.run(1.5)
+check("shell: and then only the call again", w.shellJS:find("/*shell*/", 1, true) == nil, true)
 -- A page that's just loaded (the game starting, a language change) gets the
 -- script on the next frame, not up to a second later; the stock callback still runs.
 local readyCalls = 0
@@ -1364,6 +1371,7 @@ w.env.pnlMainMenu.HTML:OnDocumentReady("asset://garrysmod/html/menu.html")
 check("shell: the stock page's ready callback still runs", readyCalls, 1)
 w.run(0.1)
 check("shell: a page just loaded gets it on the next frame", w.shellSends - sends, 1)
+check("shell: with its script again", w.shellJS:find("/*shell*/", 1, true) ~= nil, true)
 check("shell: the new panel bridged too", w.env.pnlMainMenu.HTML.Callbacks["meowy.post"] ~= nil, true)
 check("shell: never a reload", w.loads, nil)
 check("shell: lua.Run left alone (it's the stock page's)", w.env.pnlMainMenu.HTML.Callbacks["lua.Run"], w.stockRun)
@@ -1488,9 +1496,17 @@ w.run(1)
 check("zoom: auto at 1440p", zoomJS(w), "1.33")
 local zc = #w.zoomCalls
 w.run(4)
-check("zoom: sent again every few seconds (the page may reload)", #w.zoomCalls > zc, true)
+check("zoom: not sent again while it's the same", #w.zoomCalls, zc)
+w.env.pnlMainMenu.HTML:OnDocumentReady("asset://garrysmod/html/menu.html")
+w.run(0.5)
+check("zoom: sent again when the page reloads (a language change)", #w.zoomCalls, zc + 1)
+zc = #w.zoomCalls
+w.env.ScrH = function() return 2160 end
 w.play(2)
-check("zoom: in game too (the Escape menu)", zoomJS(w), "1.33")
+check("zoom: never sent in game", #w.zoomCalls, zc)
+w.cut()
+w.run(1)
+check("zoom: back at the menu, the new size", zoomJS(w), "2.00")
 w = world({ settings = ON, menu = true, convars = { meowy_menu_scale = "150" } })
 w.run(1)
 check("zoom: a chosen size", zoomJS(w), "1.50")
@@ -2123,8 +2139,6 @@ check("index: Steam's numbers, no hint", all:find('"m":"rp_b"', 1, true) ~= nil 
 check("index: no second Steam stage (the index listed the empty ones)", w.sqStarts, 1)
 check("index: complete", all:find("MeowyBrowse.add(1, [], true", 1, true) ~= nil, true)
 check("index: Steam's pings remembered", w.pingsSaved ~= nil, true)
-w.post("browse_join", 1)
-check("index: a row from it joins by number", w.joinedVia, "45.10.1.7:27015")
 -- A minute later the page asks again: changed rows go as updates, new ones are added.
 w.indexData.s[1][9] = 50
 w.indexData.s[4] = { "45.10.3.7:27015", "New one", "", "gm_x", "sandbox", "", "", "", 5, 10, 0, 20260429, 0, 1, "", -1 }
@@ -2136,6 +2150,80 @@ w.run(0.3)
 all = table.concat(w.browseCalls, "\n")
 check("index: a changed row updated, keeping Steam's ping", all:find("MeowyBrowse.update(1, [", 1, true) ~= nil and all:find('"ms":33', 1, true) ~= nil, true)
 check("index: a new server added", all:find('"n":"New one"', 1, true) ~= nil, true)
+-- Joining from it: by number. The list's work stops with the join: an index
+-- fetched before it isn't taken during the join, and is dropped (not read) at
+-- the menu; the page's next ask does nothing until the list is opened again.
+w.post("browse_refresh")
+local fetches = w.indexFetches
+w.post("browse_join", 1)
+check("index: a row from it joins by number", w.joinedVia, "45.10.1.7:27015")
+w.post("browse_refresh")
+check("index: after a join, the page's ask does nothing", w.indexFetches, fetches)
+w.indexData.s[5] = { "45.10.4.7:27015", "During the join", "", "gm_x", "sandbox", "", "", "", 5, 10, 0, 20260429, 0, 1, "", -1 }
+w.indexResult = { "ok", "INDEX", "52.5,13.4" }
+local parsed = 0
+local rawJSON = w.env.util.JSONToTable
+w.env.util.JSONToTable = function(s) parsed = parsed + 1 return rawJSON(s) end
+w.browseCalls = {}
+w.state, w.address, w.loading = "ours", OURS, true
+w.run(1)
+check("index: not taken while loading", w.indexResult ~= nil and parsed == 0, true)
+w.play(2)
+check("index: not taken in game", w.indexResult ~= nil and parsed == 0, true)
+w.cut()
+w.run(1)
+check("index: taken back at the menu, dropped unread", w.indexResult == nil and parsed == 0, true)
+check("index: nothing from it reached the page", table.concat(w.browseCalls, "\n"):find("During the join", 1, true), nil)
+check("index: dropped, logged", (w.logs or ""):find("from before a join: dropped", 1, true) ~= nil, true)
+-- Opened again: the index read before the join is fresh enough, shown as it is.
+w.browseCalls = {}
+w.post("browse")
+w.run(0.5)
+check("index: opened again, the one read before shown", w.indexFetches == fetches and table.concat(w.browseCalls, "\n"):find('"idx":"shown"', 1, true) ~= nil, true)
+-- Older than a minute: asked again, and this time read.
+w.run(61)
+w.post("browse")
+check("index: opened again later, asked again", w.indexFetches, fetches + 1)
+w.indexResult = { "ok", "INDEX", "52.5,13.4" }
+w.run(0.5)
+check("index: opened again later, read", parsed, 1)
+-- The pings Steam measured are saved back at the menu, not as the join starts.
+w = indexWorld()
+w.post("browse")
+w.sq = { { address = "45.10.9.7:27015", name = "Pinged", map = "m", tags = "", desc = "D", players = 3, max = 8, bots = 0, ping = 44, pass = false } }
+w.run(0.3)
+w.pingsSaved = nil
+w.post("browse_join", 1)
+check("pings: not saved as a join starts", w.pingsSaved, nil)
+w.state, w.address, w.loading = "ours", OURS, true
+w.run(1)
+w.play(1)
+check("pings: not saved during the join", w.pingsSaved, nil)
+w.cut()
+w.run(1)
+check("pings: saved back at the menu", w.pingsSaved ~= nil, true)
+-- A big index is read over several frames, never all in one.
+w = indexWorld()
+local bigRows = {}
+for i = 1, 3000 do
+	bigRows[i] = { "45.11." .. math.floor(i / 250) .. "." .. (i % 250) .. ":27015", "Row " .. i, "", "m", "sandbox", "", "", "", i % 50, 64, 0, 20260429, 0, 1, "", -1 }
+end
+w.indexData.s = bigRows
+local clock = w.now
+w.env.SysTime = function() clock = clock + 0.0001 return clock end   -- 0.1 ms a look: ~80 looks a slice
+w.post("browse")
+w.indexResult = { "ok", "INDEX", "52.5,13.4" }
+local frames = 0
+w.browseCalls = {}
+while frames < 400 and not table.concat(w.browseCalls, "\n"):find('"idx":"shown"', 1, true) do
+	clock = clock + 0.05
+	w.now = clock
+	w.think()
+	frames = frames + 1
+end
+check("index: a big one read and shown", table.concat(w.browseCalls, "\n"):find('"idx":"shown"', 1, true) ~= nil, true)
+check("index: a big one read over several frames", frames > 2, true)
+check("index: a big one, read over frames, logged", (w.logs or ""):find("servers over", 1, true) ~= nil, true)
 -- Unreachable (or switched off): Steam's list alone, both stages, and the page told.
 w = indexWorld()
 w.post("browse")
