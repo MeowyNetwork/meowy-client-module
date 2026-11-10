@@ -55,9 +55,11 @@ end
 local function world(opts)
 	opts = opts or {}
 	local w = { now = 100, inGame = false, loading = false, convars = {}, flags = {}, queue = {}, prints = {}, sets = {},
-		hooks = {}, concommands = {}, settingsText = opts.settings or "", policy = opts.policy, written = nil }
+		hooks = {}, concommands = {}, settingsText = opts.settings or "", policy = opts.policy, written = nil, concats = 0, reads = 0 }
+	-- table.concat counted: how often the settings file's text is made.
+	local countedTable = setmetatable({ concat = function(...) w.concats = w.concats + 1 return table.concat(...) end }, { __index = table })
 	local env = {
-		string = string, table = table, math = math, pairs = pairs, ipairs = ipairs, tostring = tostring, tonumber = tonumber,
+		string = string, table = countedTable, math = math, pairs = pairs, ipairs = ipairs, tostring = tostring, tonumber = tonumber,
 		select = select, type = type, setmetatable = setmetatable, pcall = pcall, error = error,
 		isstring = function(v) return type(v) == "string" end, istable = function(v) return type(v) == "table" end,
 		isfunction = function(v) return type(v) == "function" end,
@@ -73,7 +75,7 @@ local function world(opts)
 		w.convars[name] = tostring(value)
 		w.flags[name] = flags
 		return {
-			GetString = function() return w.convars[name] end,
+			GetString = function() w.reads = w.reads + 1 return w.convars[name] end,
 			GetBool = function() return (tonumber(w.convars[name]) or 0) ~= 0 end,
 			GetDefault = function() return "default" end,
 			GetName = function() return name end,
@@ -348,7 +350,7 @@ w.server("meowy_honest_serverlist", "0")
 w.server("meowy_server_index", "0")
 w.server("meowy_menu", "0")
 w.server("meowy_menu_version", "0")   -- would switch the Meowy home back on at the next start
-w.frame(3)
+w.seconds(0.3)   -- the Think settles them four times a second
 check("protected: honest list, server index and the Meowy home put back",
 	w.env.meowy.SettingOf("meowy_honest_serverlist"):GetString() .. w.env.meowy.SettingOf("meowy_server_index"):GetString()
 		.. w.env.meowy.SettingOf("meowy_menu"):GetString() .. w.convars.meowy_honest_serverlist .. w.convars.meowy_server_index .. w.convars.meowy_menu, "111111")
@@ -365,7 +367,7 @@ check("discord: the player's off read back", discord:GetBool(), false)
 w.inGame = true
 w.frame()
 w.server("meowy_discord", "1")
-w.frame(3)
+w.seconds(0.3)
 check("discord: a server can't turn it back on", discord:GetBool(), false)
 check("discord: put back in the console too", w.convars.meowy_discord, "0")
 check("discord: logged", w.told("meowy_discord"), true)
@@ -377,6 +379,37 @@ w.frame(2)
 check("discord: on again from Meowy settings", discord:GetBool(), true)
 w.seconds(1.1)
 check("discord: saved", w.saved("meowy_discord"), "1")
+
+-- Cheap to read: the readers are made once per setting, not on every
+-- access; other ConVar methods still come through.
+w = world()
+s = settings(w)
+check("readers: the same function each time", s.updates.GetBool == s.updates.GetBool and s.updates.GetString == s.updates.GetString, true)
+check("readers: other methods still there", s.updates:GetName() .. "/" .. s.updates:GetDefault(), "meowy_updates/default")
+-- The Think settles four times a second, not every frame; a read always settles first.
+w.frame()
+w.inGame = true
+w.frame()
+w.seconds(0.3)
+local before = w.reads
+w.frame(5)   -- 0.1 s
+check("settle: not every frame", w.reads - before < 5 * 6, true)
+w.server("meowy_updates", "0")
+w.frame()
+check("settle: a read settles at once", s.updates:GetBool(), true)
+w.frame()
+check("settle: and the console's put back with the next frame", w.convars.meowy_updates, "1")
+w.server("meowy_party", "0")
+w.seconds(0.3)
+check("settle: unread, put back within a quarter of a second", w.convars.meowy_party, "1")
+-- The file's text is only made again when a value changed.
+w.seconds(1.1)
+local concats = w.concats
+w.seconds(3.1)
+check("save: nothing changed, no text made", w.concats, concats)
+w.env.RunConsoleCommand("meowy_loadingscreen", "0")
+w.seconds(1.1)
+check("save: a change, made and written", w.concats > concats and w.saved("meowy_loadingscreen") == "0", true)
 
 print(("%d checks, %d failed"):format(count, failures))
 os.exit(failures == 0 and 0 or 1)
