@@ -404,7 +404,12 @@ namespace
 	// Only crashes on Meowy Network (resilience::OurCrashes): a report from a
 	// crash on another server names that server's Lua files, and a report
 	// can't say where the game was, so one the pack didn't note as ours is
-	// never sent.
+	// never sent. The folder is listed first and filtered to ours by name,
+	// newest first, and only then are reports read, one at a time, until
+	// `want` have a Lua trace: this runs on the main thread, often during a
+	// join, and a long-time player's crashes folder holds hundreds of reports
+	// and dumps. (Filtering after reading also let 20 newer reports from other
+	// servers hide every one of ours.)
 	int CrashReports(lua_State* L)
 	{
 		ILuaBase* LUA = L->luabase;
@@ -421,14 +426,27 @@ namespace
 		std::vector<crashes::Report> reports;
 #ifdef _WIN32
 		{
-			std::vector<crashes::Report> all = crashes::Since(since, 20);
+			const std::wstring root = crashes::Root();
+			std::vector<crashes::Candidate> listed = crashes::Candidates(root, since);
 			std::vector<std::string> names;
-			for (const crashes::Report& r : all)
-				names.push_back(r.name);
+			names.reserve(listed.size());
+			for (const crashes::Candidate& c : listed)
+				names.push_back(c.name);
 			const std::vector<std::string> ours = resilience::OurCrashes(DataDir(), names);
-			for (crashes::Report& r : all)
-				if (reports.size() < want && std::find(ours.begin(), ours.end(), r.name) != ours.end())
+			listed.erase(std::remove_if(listed.begin(), listed.end(), [&ours](const crashes::Candidate& c) {
+				return std::find(ours.begin(), ours.end(), c.name) == ours.end();
+			}), listed.end());
+			std::stable_sort(listed.begin(), listed.end(), [](const crashes::Candidate& a, const crashes::Candidate& b) {
+				return a.time > b.time;
+			});
+			for (const crashes::Candidate& c : listed)
+			{
+				if (reports.size() >= want)
+					break;
+				crashes::Report r;
+				if (crashes::Read(root, c, r))
 					reports.push_back(std::move(r));
+			}
 		}
 #endif
 
