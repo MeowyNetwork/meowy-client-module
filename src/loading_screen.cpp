@@ -366,6 +366,7 @@ namespace
 		HWND hwnd = nullptr;
 		HWND game = nullptr;
 		RECT cancelBtn{}, hideBtn{};
+		bool repaint = false;       // the system asked for the window to be drawn again (WM_PAINT)
 	};
 	View v;
 
@@ -1050,6 +1051,17 @@ namespace
 			}
 			return 0;
 		}
+		case WM_PAINT:
+		{
+			// The system wants the window drawn again (it was shown, or what DWM
+			// held for it was lost): marked done here, and the next frame puts all
+			// of the native drawing on screen, not only its live parts.
+			PAINTSTRUCT ps;
+			BeginPaint(hwnd, &ps);
+			EndPaint(hwnd, &ps);
+			v.repaint = true;
+			return 0;
+		}
 		case WM_ERASEBKGND:
 			return 1;
 		}
@@ -1270,6 +1282,12 @@ namespace
 			{
 				TranslateMessage(&msg);
 				DispatchMessageW(&msg);
+			}
+			if (v.repaint)
+			{
+				// WM_PAINT: all of the window on the next frame, and that frame now.
+				v.repaint = false;
+				fullBlit = frameNow = true;
 			}
 			loading_webview::Poll();
 			DoFileWork();
@@ -1590,6 +1608,28 @@ namespace
 						KeepAboveGame();
 						if (webShown)
 							loading_webview::SetVisible(true);
+						// Shown before the native drawing: drawing into a hidden
+						// window is lost, so the frame it's shown on puts all of it
+						// on screen. Shown see-through (a restore after a minimise
+						// would otherwise show what the window held before it for
+						// a moment); the alpha is set again at the end of the frame.
+						if (!shown)
+						{
+							if (lastAlpha != 0)
+							{
+								SetLayeredWindowAttributes(v.hwnd, 0, 0, LWA_ALPHA);
+								lastAlpha = 0;
+							}
+							ShowWindow(v.hwnd, SW_SHOWNOACTIVATE);
+							shown = true;
+							fullBlit = true;
+							if (!shownAt)
+							{
+								shownAt = now;
+								std::lock_guard<std::mutex> lock(g.m);
+								Log(webShown ? "shown (web page)" : "shown (native)");
+							}
+						}
 
 						int w = rc.right, h = rc.bottom;
 						if (!webShown)
@@ -1629,17 +1669,6 @@ namespace
 							}
 							if (dc)
 								ReleaseDC(v.hwnd, dc);
-						}
-						if (!shown)
-						{
-							ShowWindow(v.hwnd, SW_SHOWNOACTIVATE);
-							shown = true;
-							if (!shownAt)
-							{
-								shownAt = now;
-								std::lock_guard<std::mutex> lock(g.m);
-								Log(webShown ? "shown (web page)" : "shown (native)");
-							}
 						}
 						++frames;
 						if (!shotDir.empty() && now - lastShot >= 4000)
