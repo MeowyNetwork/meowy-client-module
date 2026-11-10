@@ -542,7 +542,8 @@ fn serve_pipe(app: AppHandle) {
         root.is_some_and(|r| pipe::is_game_client(image, &r))
     });
     let b = app.clone();
-    let result = pipe::serve(check, rx, move |msg| {
+    // Runs until the launcher quits; a pipe it can't make is logged and tried again.
+    pipe::serve(check, rx, move |msg| {
         {
             let state = b.state::<AppState>();
             let mut inner = state.0.lock().unwrap();
@@ -563,11 +564,7 @@ fn serve_pipe(app: AppHandle) {
             }
         }
         let _ = b.emit("status", ());
-    });
-    if let Err(e) = result {
-        log::line(&format!("pipe: {e}"));
-        app.state::<AppState>().0.lock().unwrap().pipe_tx = None;
-    }
+    }, win::shutdown());
 }
 
 // --- Commands for the pages -------------------------------------------------------
