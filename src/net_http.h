@@ -16,9 +16,12 @@
 //   - Never a redirect: the answer must come from the host asked.
 //   - Timeouts per request, plus a total deadline over the whole request, so a
 //     server trickling a byte at a time can't hold a worker for ever.
-//   - A body counts as `complete` only when WinHTTP said the response ended.
-//     A connection reset or a timeout in the middle leaves it incomplete, with
-//     `error` saying so, never a cut-off body that looks whole.
+//   - A body counts as `complete` only when WinHTTP said the response ended
+//     and, for a body sent as is, it has its Content-Length (WinHTTP takes a
+//     connection closed early as the end of such a body; a packed or chunked
+//     one cut off it reports itself). A connection reset, a timeout or a close
+//     in the middle leaves it incomplete, with `error` saying so, never a
+//     cut-off body that looks whole.
 //
 // Every call blocks: worker threads only, never the game's thread.
 //

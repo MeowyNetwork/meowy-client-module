@@ -3,6 +3,7 @@
 #ifdef _WIN32
 
 #include <atomic>
+#include <cwchar>
 #include <string>
 
 // Older SDKs: the values are Windows' own (winhttp.h).
@@ -168,20 +169,26 @@ namespace net_http
 		r.etag = Header(request.h, WINHTTP_QUERY_ETAG, WINHTTP_HEADER_NAME_BY_INDEX);
 		if (!req.readHeader.empty())
 			r.header = Header(request.h, WINHTTP_QUERY_CUSTOM, req.readHeader.c_str());
-		if (!unpacks)
+		const std::string encoding = Header(request.h, WINHTTP_QUERY_CONTENT_ENCODING, WINHTTP_HEADER_NAME_BY_INDEX);
+		const bool packed = !encoding.empty() && encoding != "identity";
+		if (packed && !unpacks)
 		{
 			// WinHTTP asks for packed answers only when it can unpack them; a
 			// server sending one anyway isn't read as if it were the real body.
-			const std::string packed = Header(request.h, WINHTTP_QUERY_CONTENT_ENCODING, WINHTTP_HEADER_NAME_BY_INDEX);
-			if (!packed.empty() && packed != "identity")
-			{
-				r.error = packed + " body and no WinHTTP decompression";
-				return r;
-			}
+			r.error = encoding + " body and no WinHTTP decompression";
+			return r;
 		}
+		// The length a body sent as is must have. WinHTTP itself catches a packed
+		// body or a chunked one cut off (the stream or the chunks don't end), but
+		// takes a connection closed early as the end of a body with a length.
+		DWORD length = 0;
+		size = sizeof(length);
+		const bool haveLength = !packed && WinHttpQueryHeaders(request.h, WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER,
+			WINHTTP_HEADER_NAME_BY_INDEX, &length, &size, WINHTTP_NO_HEADER_INDEX) != FALSE;
 
 		// The body, read until WinHTTP says it ended (complete). A failed read
-		// (reset, timeout) is "cut off", never the end of the body. Leaving
+		// (reset, timeout) is "cut off", never the end of the body, and so is a
+		// body sent as is that ends short of its Content-Length. Leaving
 		// early closes the request, and with it the connection; a body read to
 		// its end leaves the connection open for the next request.
 		for (;;)
@@ -199,7 +206,12 @@ namespace net_http
 			}
 			if (avail == 0)
 			{
-				r.complete = true;
+				// A HEAD answer, a 204 or a 304 has a length but no body.
+				const bool bodyless = status == 204 || status == 304 || (status >= 100 && status < 200) || wcscmp(req.verb, L"HEAD") == 0;
+				if (haveLength && !bodyless && r.body.size() != length)
+					r.error = "cut off (" + std::to_string(r.body.size()) + " of " + std::to_string(length) + " bytes)";
+				else
+					r.complete = true;
 				break;
 			}
 			if (r.body.size() + avail > req.maxBody)
