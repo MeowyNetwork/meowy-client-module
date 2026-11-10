@@ -168,7 +168,10 @@ namespace engine_patches
 		}
 
 		// Found and validated before, in this same client.dll, and still the
-		// routine with its call in place: the same write as below.
+		// routine with its call in place: the same write as below. The full
+		// scan's other checks (the pattern found once, one caller, the
+		// caller's shape) aren't run again: they held for this client.dll's
+		// code the first time, and the same module base means the same code.
 		if (client == g_validatedClient && g_validatedFound && g_validatedFound >= text &&
 			kPatternLen <= size && g_validatedFound <= text + (size - kPatternLen) &&
 			Matches(g_validatedFound) && LoadTarget(g_validatedFound + kLoad1) == LoadTarget(g_validatedFound + kLoad2))
