@@ -1152,12 +1152,22 @@ namespace
 
 	// Waits up to `ms` for g_wake or a message for this thread (WebView2's
 	// completions and events come as messages, and so does input).
-	void WaitForWork(DWORD ms)
+	//
+	// Between joins (an endless wait) it also wakes for input already waiting
+	// that something looked at without taking (MWMO_INPUTAVAILABLE), so none is
+	// left there for good. During a join it doesn't: the page's browser window
+	// is a child of this one, which shares the input queue with the browser's
+	// thread, and that flag could wake this thread again and again for input
+	// only the browser can take (the mouse moving over the page). Every message
+	// for this thread is taken before each wait, and a join's waits last a frame
+	// at most, so nothing waits longer than that.
+	void WaitForWork(DWORD ms, bool joining)
 	{
+		const DWORD flags = joining ? 0 : MWMO_INPUTAVAILABLE;
 		if (g_wake)
-			MsgWaitForMultipleObjectsEx(1, &g_wake, ms, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+			MsgWaitForMultipleObjectsEx(1, &g_wake, ms, QS_ALLINPUT, flags);
 		else   // no event (CreateEvent failed): look again now and then
-			MsgWaitForMultipleObjectsEx(0, nullptr, ms == INFINITE ? 50 : ms, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+			MsgWaitForMultipleObjectsEx(0, nullptr, ms == INFINITE ? 50 : ms, QS_ALLINPUT, flags);
 	}
 
 	// A page that failed while hidden between joins is started again after
@@ -1368,7 +1378,7 @@ namespace
 					wait = now >= restartAt ? 0 : static_cast<DWORD>(restartAt - now);
 				if (loading_webview::Pending())
 					wait = std::min<DWORD>(wait, 100);   // a Start waiting for the old browser to go
-				WaitForWork(wait);
+				WaitForWork(wait, false);
 				continue;
 			}
 
@@ -1728,7 +1738,7 @@ namespace
 				countFrom = now;
 			}
 			const double left = period - (QpcMs() - lastFrameMs);
-			WaitForWork(left <= 0 ? 0 : static_cast<DWORD>(std::ceil(left)));
+			WaitForWork(left <= 0 ? 0 : static_cast<DWORD>(std::ceil(left)), true);
 		}
 	}
 }
