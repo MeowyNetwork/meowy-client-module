@@ -21,7 +21,7 @@ use std::any::Any;
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -1086,6 +1086,32 @@ fn keep_protocol() {
     }
 }
 
+/// The async runtime Tauri runs commands on, kept for the process's life.
+static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+
+/// Tauri's default runtime starts a worker per logical CPU (16-24 threads on
+/// a gaming PC) for a handful of short commands. Two workers are plenty (one
+/// stays free while another command runs), and the blocking pool, where the
+/// file and network work goes, is capped at 8 instead of 512. If this one
+/// can't be made, Tauri makes its default.
+fn use_small_runtime() {
+    let built = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .max_blocking_threads(8)
+        .thread_name("launcher-rt")
+        .enable_all()
+        .build();
+    match built {
+        Ok(rt) => {
+            let handle = rt.handle().clone();
+            if RUNTIME.set(rt).is_ok() {
+                tauri::async_runtime::set(handle);
+            }
+        }
+        Err(e) => log::line(&format!("runtime: {e}; using Tauri's default")),
+    }
+}
+
 fn main() {
     let dir = launcher_dir();
     log::init(&dir);
@@ -1096,6 +1122,7 @@ fn main() {
         log::try_line(&format!("panic on {}: {info}", thread.name().unwrap_or("a thread")));
         default_hook(info);
     }));
+    use_small_runtime();
     let settings = Settings::load(&dir);
     let mut state = Inner {
         steam_exe: None,
