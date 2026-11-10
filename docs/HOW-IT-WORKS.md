@@ -190,6 +190,9 @@ on Meowy Network's servers.
   once, and nothing the server asks for reaches Discord until it's back on (then the server's latest
   status shows again). Servers can't turn it back on (see *Settings*). Without "Start with the game" the
   pack reads the saved setting when you join. Discord's own activity setting turns it off too, for every game.
+  Leaving a server (or switching it off) waits at most about a second for that thread, even when the
+  Discord app hangs and stops reading: a write stuck on its pipe is cancelled, and a thread that still
+  doesn't stop is left to finish on its own.
 - Since 1.1 it also reads the game's own crash reports (`GarrysMod/crashes/*.txt`), so the
   server can see which addon crashed your game. Only the "Lua Stack Traces" section is read
   (at most 3 reports per join, 4 KB each, any `C:\...` paths masked). The rest of the report,
@@ -756,11 +759,13 @@ on Meowy Network's servers.
 - **Sound follows the default device.** Plug in headphones mid-game and the game's sound moves to Windows'
   new default device (the pack runs `snd_restart` when Windows says the default changed).
   `meowy_audio_follow 0` turns it off. The PC doctor also has a microphone section (Bluetooth hands-free
-  mode, two microphones).
+  mode, two microphones). Watching starts on a thread of its own without holding up the menu, so a slow
+  Windows audio service at start no longer turns it off for the session.
 - **The mouse stays in the game while you aim.** In windowed or borderless mode, while the game is in front
   and the cursor is hidden, the cursor is kept inside the game window (Windows' `ClipCursor`), so a fast
   flick can't click another window. It's free whenever a cursor shows and on alt-tab.
-  `meowy_mouse_confine 0` turns it off.
+  `meowy_mouse_confine 0` turns it off. It checks 40 times a second only while the game is in front, 4 times
+  a second while another window is, and not at all while it's off.
 - **The loading screen on other servers.** Servers without a loading page of their own get a neutral
   version of the pack's screen: the server's name and map, each stage's time, and an estimate from your
   earlier joins there (kept per server on your PC). Servers with their own loading page keep it.
@@ -811,6 +816,13 @@ on Meowy Network's servers.
   off one feature, one version (or every version below a minimum) or the whole pack, for example while a
   crash is fixed. Your own settings are kept and come back afterwards. `meowy_policy_status` shows the
   policy in effect.
+  - **Without "Start with the game"** the pack is loaded only when you join Meowy Network, and the game
+    frees it again when you leave. Then each join fetches the policy once, with no 30-minute repeat, on a
+    thread that keeps the pack loaded until that fetch is done.
+  - **Each join** also reads the kept policy again (the launcher may have kept a newer one meanwhile), but
+    only when `policy.txt` or `policy.sig` changed since it was last read; otherwise the policy in memory
+    is used without touching the files. If the launcher is busy with them, the join doesn't wait more
+    than 100 ms: it keeps the policy in memory and reads the files at the next join.
   - **Three signing keys.** The release key is in a TPM chip on Meowy Network's PC: it can't be copied off
     it and needs a PIN on every use. It may sign any policy. The ops key (meant for automatic pauses by
     our backend) and the recovery key are password-protected key files, so a copy could still be stolen.
@@ -833,8 +845,9 @@ on Meowy Network's servers.
 **Over the network** (the pack and the launcher):
 - **meowynetwork.com, over HTTPS.** Like any website it sees your IP address. It doesn't log the pack's
   requests with it, and the server index uses it only to guess your rough location for ping estimates.
-  - `/pack/v1/policy.txt` and `.sig` (the kill switch): from the pack at start and every 30 minutes, and
-    from the launcher every 30 minutes while the game is closed.
+  - `/pack/v1/policy.txt` and `.sig` (the kill switch): from the pack at start and every 30 minutes
+    (without "Start with the game": once each time you join Meowy Network), and from the launcher every
+    30 minutes while the game is closed.
   - `/pack/v1/release-stable.txt`, `.sig` and a new version's DLL (updates): a minute after start and every
     6 hours, and from the launcher while the game is closed; never with `meowy_updates 0` or with "Start
     with the game" off.

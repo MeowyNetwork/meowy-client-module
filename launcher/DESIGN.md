@@ -285,7 +285,8 @@ signed policy (after the pack's K1 lands) and the early-entry prototype (§9).
   `{"t":"join","a":"a.b.c.d:port"}`, ours or public, which the menu Lua runs as `connect`. Nothing else is
   taken: no Lua, no commands, no passwords.
 - Each end does all its I/O on one thread (`PeekNamedPipe` before reads), so a read never blocks a write.
-  The pack retries every 5 s while the launcher isn't there.
+  While the launcher isn't there the pack looks again after 5 s, then 10, 20, 40 and every 60 s; once a
+  connection ends it starts again from 5 s.
 - Used for "In the game" in the window, and for joins while the game runs (falling back to
   `steam://connect` when the pack isn't connected).
 
