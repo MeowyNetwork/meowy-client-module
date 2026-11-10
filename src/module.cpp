@@ -1987,7 +1987,7 @@ namespace
 	}
 
 	// In game: keep the list for this server (ours or public, the engine's own
-	// address). -> files kept.
+	// address). -> entries noted this join (the merge with the kept list runs on the prewarm I/O thread).
 	int PrewarmEndJoin(lua_State* L)
 	{
 		std::string address;

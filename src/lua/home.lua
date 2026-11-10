@@ -713,8 +713,8 @@ hook.Add("Think", "MeowyClientPack.Prewarm", function()
 		pw.warmedFor = nil
 		if pw.recording then
 			pw.recording = false
-			local kept = meowy.PrewarmEndJoin()
-			if kept > 0 then log("prewarm: kept %d files for this server", kept) end
+			local noted = meowy.PrewarmEndJoin()
+			if noted > 0 then log("prewarm: noted %d files this join (merged into the server's list in the background)", noted) end
 		end
 	elseif not loading and not IsInGame() then
 		if pw.joining and meowy.PakCache then meowy.PakCache(false) end
