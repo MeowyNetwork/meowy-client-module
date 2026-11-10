@@ -352,7 +352,9 @@ on Meowy Network's servers.
     browser makes when you click a server. A count far above the list, players whose time doesn't
     grow, or the same player joined at the same moment on two servers mark the server
     `[FAKE - N real]`; it then shows and ranks by N. A server that won't give its list shows
-    `[LIST HIDDEN]`, with its count untouched.
+    `[LIST HIDDEN]`, with its count untouched. A list that comes in several packets is put together
+    only from packets of the same reply (Source's split ID), so a late reply to the first ask can't
+    mix with the answer to the second.
   - It also downloads Meowy Network's own verdicts (`meowynetwork.com/api/pack/servers`), from a
     crawler that adds Steam's own count and the count's history, and from an observer that joins
     servers: `[VERIFIED]` means it joined in the last 7 days and saw nothing fake; `[UNVERIFIED]`
@@ -465,7 +467,9 @@ on Meowy Network's servers.
   removed.
   - The index is `https://meowynetwork.com/api/pack/index`: Steam's master list, refreshed each minute,
     with the honest list's verdicts and no player names. The pack fetches it off the game's thread (gzip,
-    no redirects, 4 MB at most), and fetches it again each minute while the list stays open.
+    no redirects, 4 MB at most, 20 seconds at most), and fetches it again each minute while the list stays
+    open. A download cut off midway counts as failed, and its version tag isn't kept, so the next fetch
+    asks for the whole index again instead of being told nothing changed.
   - Pings Steam hasn't measured yet show as `~45`, greyed. That's either your last ping to that server's
     network or an estimate from the distance (IP Geolocation by DB-IP). The pings Steam measures are kept in
     `%LOCALAPPDATA%\MeowyClientPack\pings.json` (per /24 network, 30 days), never in `garrysmod/data`.
@@ -807,6 +811,10 @@ on Meowy Network's servers.
   - The Meowy Launcher does the same checks while the game is closed. Only installs made with 1.7.0's
     installer or later can update. Running the installer always makes its own version the one that loads
     (see *Installing again*).
+  - **Out of the way of the game:** a check due while a join is loading waits until it has loaded
+    (looked at every 30 seconds). The check runs below normal priority, and the download, its write and
+    its SHA-256 at Windows' background disk priority. A download that doesn't arrive whole, or takes
+    more than 10 minutes, is dropped and tried at the next check.
   - `meowy_updates 0` turns updates off everywhere. Every check (the pack's, mid-session too, and the
     launcher's) reads it first, also when the running version is revoked or too old, so after it's set
     nothing contacts the site or downloads. A version already downloaded waits: the stub starts no
@@ -815,7 +823,8 @@ on Meowy Network's servers.
   Network (`meowynetwork.com/pack/v1/policy.txt` and `.sig`), and the launcher does the same. It can switch
   off one feature, one version (or every version below a minimum) or the whole pack, for example while a
   crash is fixed. Your own settings are kept and come back afterwards. `meowy_policy_status` shows the
-  policy in effect.
+  policy in effect. The 30-minute check waits while a join is loading, and the `.txt` and the `.sig`
+  are fetched back to back over one connection.
   - **Without "Start with the game"** the pack is loaded only when you join Meowy Network, and the game
     frees it again when you leave. Then each join fetches the policy once, with no 30-minute repeat, on a
     thread that keeps the pack loaded until that fetch is done.
@@ -845,6 +854,8 @@ on Meowy Network's servers.
 **Over the network** (the pack and the launcher):
 - **meowynetwork.com, over HTTPS.** Like any website it sees your IP address. It doesn't log the pack's
   requests with it, and the server index uses it only to guess your rough location for ping estimates.
+  The pack's requests share one connection where they can (kept open between requests, HTTP/2 where
+  Windows has it), ask for gzip, never follow a redirect, and use only an answer that arrived whole.
   - `/pack/v1/policy.txt` and `.sig` (the kill switch): from the pack at start and every 30 minutes
     (without "Start with the game": once each time you join Meowy Network), and from the launcher every
     30 minutes while the game is closed.
