@@ -121,12 +121,17 @@ local function world(opts)
 		ServerQueryCancel = function() w.sqCancels = (w.sqCancels or 0) + 1 end,
 		-- The console's lines (w.console), read after an id.
 		ConsoleCaptureStart = function() w.consoleStarts = (w.consoleStarts or 0) + 1 return true end,
+		-- As console_capture::Read: the newest `max` after the id, and the newest id.
 		ConsoleRead = function(after, max)
 			w.consoleReads = (w.consoleReads or 0) + 1
+			w.consoleReadMax = w.consoleReadMax or {}
+			w.consoleReadMax[#w.consoleReadMax + 1] = max
 			local out, last = {}, after
 			for _, l in ipairs(w.console or {}) do
-				if l.id > after then out[#out + 1] = l last = l.id end
+				if l.id > after then out[#out + 1] = l end
+				if l.id > last then last = l.id end
 			end
+			while max and #out > max do table.remove(out, 1) end
 			return out, last
 		end,
 		ConsoleState = function() return "spew function; 3 lines kept" end,
@@ -401,7 +406,12 @@ local function world(opts)
 		return setmetatable(p, { __index = function(t, k)
 			if k == "SetText" then return function(self, s) self.text = s if self.class == "DButton" then w.buttons[#w.buttons + 1] = self end end end
 			if k == "SetTitle" then return function(self, s) self.title = s end end
-			if k == "Remove" or k == "Close" then return function(self) self.removed = true end end
+			if k == "Remove" or k == "Close" then
+				return function(self)
+					self.removed = true
+					if rawget(self, "OnRemove") then self:OnRemove() end
+				end
+			end
 			if k == "SetValue" then return function(self, v) self.value = v end end
 			if k == "GetText" then return function(self) return self.text end end
 			-- Position and size, as real panels keep them (the layout reads them back).
@@ -2578,6 +2588,96 @@ check("markers: a join", copiedAll:find("Joining a server", 1, true) ~= nil or c
 check("markers: in game", copiedAll:find("In game on " .. OURS, 1, true) ~= nil, true)
 check("markers: leaving", copiedAll:find("Left the server", 1, true) ~= nil, true)
 check("markers: in order", (copiedAll:find("before", 1, true) or 99) < (copiedAll:find("Joining", 1, true) or 0), true)
+-- With the window shut, a join reads no lines (only the newest id, for the
+-- dividers); opened later, it reads them all once, with the dividers between
+-- the right lines; closed, its lines go; opened again, they're all back.
+do
+	local cw = world({ settings = ON, menu = true })
+	local function add(from, to, what)
+		for i = from, to do cw.console[#cw.console + 1] = { id = i, t = i * 1000, s = 0, c = -1, x = what .. " " .. i } end
+	end
+	cw.console = {}
+	add(1, 10, "menu")
+	cw.run(0.2)
+	cw.consoleReadMax = {}
+	cw.loading = true
+	cw.run(0.2)
+	add(11, 20, "join")
+	cw.state, cw.address, cw.loading, cw.inGame = "ours", OURS, false, true
+	cw.run(0.2)
+	add(21, 25, "game")
+	cw.inGame, cw.state = false, "none"
+	cw.run(0.2)
+	local many = 0
+	for _, m in ipairs(cw.consoleReadMax) do if (m or 0) > 1 then many = many + 1 end end
+	check("console shut: a join reads no lines", many .. "/" .. #cw.consoleReadMax, "0/3")
+	cw.run(2.5)
+	local function copyAll()
+		local button
+		for _, p in ipairs(cw.panels or {}) do if p.class == "DButton" and p.text == "Copy" and not p.removed then button = p end end
+		cw.clipboard = nil
+		button.DoClick()
+		return cw.clipboard or ""
+	end
+	local function before(text, a, b)
+		local i, j = text:find(a, 1, true), text:find(b, 1, true)
+		return i ~= nil and j ~= nil and i < j
+	end
+	cw.consoleReadMax = {}
+	cw.concommands.meowy_console()
+	check("console opened: every line read once", cw.consoleReadMax[#cw.consoleReadMax], 50000)
+	local all = copyAll()
+	check("console opened: the join's divider after the menu's lines", before(all, "menu 10", "Joining") and before(all, "Joining", "join 11"), true)
+	check("console opened: in game after the join's lines", before(all, "join 20", "In game on") and before(all, "In game on", "game 21"), true)
+	check("console opened: leaving at the end", before(all, "game 25", "Left the server"), true)
+	local holderPanel
+	for _, p in ipairs(cw.panels or {}) do if rawget(p, "meowyConsole") and not p.removed then holderPanel = p end end
+	holderPanel:Remove()
+	add(26, 27, "later")
+	cw.run(0.5)
+	cw.consoleReadMax = {}
+	cw.run(0.5)
+	check("console closed: nothing read", #cw.consoleReadMax, 0)
+	cw.concommands.meowy_console()
+	all = copyAll()
+	check("console opened again: the history and dividers back", before(all, "menu 1", "Joining") and before(all, "Joining", "join 11")
+		and before(all, "join 20", "In game on") and before(all, "game 25", "Left the server") and before(all, "Left the server", "later 27"), true)
+	local _, joins = all:gsub("Joining", "")
+	check("console opened again: each divider once", joins, 1)
+end
+-- The overlay keeps its own few lines as they're read (small reads with the
+-- window shut), and draws only those: mode 1 warnings and errors, 2 every line.
+do
+	local ow = world({ settings = ON, menu = true, convars = { meowy_console_overlay = "1" } })
+	local drawn = {}
+	ow.env.draw.SimpleText = function(t) drawn[#drawn + 1] = t end
+	local now = os.time() * 1000
+	ow.console = {}
+	for i = 1, 30 do
+		ow.console[i] = { id = i, t = now, s = (i % 10 == 0) and 1 or 0, c = -1, x = ((i % 10 == 0) and "Warning: w" or "plain ") .. i }
+	end
+	ow.inGame, ow.state, ow.address = true, "ours", OURS
+	ow.consoleReadMax = {}
+	local function frame()
+		ow.now = ow.now + 0.3
+		drawn = {}
+		ow.fire("DrawOverlay")
+		ow.fire("DrawOverlay")   -- the setting is read on the first, the lines on the next
+		return table.concat(drawn, "|")
+	end
+	frame()
+	local shown = frame()
+	check("overlay 1: only warnings and errors", shown:find("Warning: w10", 1, true) ~= nil and shown:find("Warning: w30", 1, true) ~= nil
+		and shown:find("plain", 1, true) == nil, true)
+	local big = 0
+	for _, m in ipairs(ow.consoleReadMax) do if (m or 0) > 200 then big = big + 1 end end
+	check("overlay: small reads with the window shut", big, 0)
+	ow.convars.meowy_console_overlay = "2"
+	ow.console[31] = { id = 31, t = now, s = 0, c = -1, x = "plain 31" }
+	frame()
+	shown = frame()
+	check("overlay 2: every line, the newest", shown:find("plain 31", 1, true) ~= nil and shown:find("plain 21", 1, true) == nil, true)
+end
 -- The log panel (the one with keys of its own).
 local logP = panelWith("OnKeyCodePressed")
 for _, p in ipairs(w.panels or {}) do if p.class == "DPanel" and rawget(p, "OnKeyCodePressed") then logP = p end end

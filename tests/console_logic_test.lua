@@ -98,6 +98,66 @@ M.trim(t, 3)
 check("trim keeps the newest", table.concat(t, ","), "3,4,5")
 M.trim(t, 10)
 check("trim: under the limit, unchanged", table.concat(t, ","), "3,4,5")
+-- With slack: nothing until past max + slack, then back to max in one go.
+t = {}
+for i = 1, 12 do t[i] = i end
+M.trim(t, 8, 4)
+check("trim with slack: within it, unchanged", #t, 12)
+t[13] = 13
+M.trim(t, 8, 4)
+check("trim with slack: past it, back to max", #t, 8)
+check("trim with slack: the newest kept, in order", table.concat(t, ","), "6,7,8,9,10,11,12,13")
+check("trim with slack: nothing left past the end", t[9], nil)
+local big = {}
+for i = 1, M.MAX_KEEP + M.TRIM_SLACK + 1 do big[i] = i end
+M.trim(big, M.MAX_KEEP, M.TRIM_SLACK)
+check("trim: the window's numbers", #big == M.MAX_KEEP and big[1] == M.TRIM_SLACK + 2 and big[#big] == M.MAX_KEEP + M.TRIM_SLACK + 1, true)
+
+-- The window's own lines (dividers, echoes) placed among the console's
+-- lines by id: each just before the first line past its afterId.
+local function merge(reads, inserts, from)
+	local out = {}
+	for _, read in ipairs(reads) do
+		for _, l in ipairs(read.lines) do
+			from = M.placeDue(inserts, from, l.id, out)
+			out[#out + 1] = l
+		end
+		from = M.placeDue(inserts, from, read.last + 1, out)
+	end
+	return out, from
+end
+local function texts(list)
+	local o = {}
+	for _, l in ipairs(list) do o[#o + 1] = l.x end
+	return table.concat(o, ",")
+end
+local ins = {}
+M.addInsert(ins, { afterId = 2, line = { x = "Joining", marker = true } })
+M.addInsert(ins, { afterId = 5, line = { x = "In game", marker = true } })
+local merged, from = merge({ { lines = { L(1, 0, "a"), L(2, 0, "b"), L(3, 0, "c"), L(4, 0, "d"), L(5, 0, "e"), L(6, 0, "f") }, last = 6 } }, ins, 1)
+check("markers land between the right lines", texts(merged), "a,b,Joining,c,d,e,In game,f")
+check("markers: all placed", from, 3)
+-- Read in pieces (the window open through the join): the same places.
+merged, from = merge({ { lines = { L(1, 0, "a"), L(2, 0, "b") }, last = 2 }, { lines = { L(3, 0, "c"), L(4, 0, "d") }, last = 4 },
+	{ lines = {}, last = 5 }, { lines = { L(6, 0, "f") }, last = 6 } }, ins, 1)
+check("markers: read in pieces, the same places", texts(merged), "a,b,Joining,c,d,In game,f")
+-- Made after the newest line: placed at the end of the read that reaches it.
+merged, from = merge({ { lines = { L(3, 0, "c") }, last = 3 } }, ins, 2)
+check("markers: one made at the newest line, at the end", texts(merged), "c")
+check("markers: not placed before its line", from, 2)
+merged, from = merge({ { lines = { L(4, 0, "d"), L(5, 0, "e") }, last = 5 } }, ins, from)
+check("markers: placed once its line is read", texts(merged) .. "|" .. from, "d,e,In game|3")
+-- An echo made at the same id as a divider goes after it; never among those placed.
+ins = {}
+M.addInsert(ins, { afterId = 7, line = { x = "Left" } })
+M.addInsert(ins, { afterId = 4, line = { x = "] status" } })
+check("addInsert: in id order", ins[1].line.x .. "," .. ins[2].line.x, "] status,Left")
+M.addInsert(ins, { afterId = 7, line = { x = "] echo" } })
+check("addInsert: after one made at the same id", ins[3].line.x, "] echo")
+M.addInsert(ins, { afterId = 1, line = { x = "late" } }, nil, 3)
+check("addInsert: never among the placed ones", ins[3].line.x, "late")
+local dropped = M.addInsert(ins, { afterId = 9, line = { x = "z" } }, 3)
+check("addInsert: the oldest go past max", dropped .. " " .. #ins .. " " .. ins[1].line.x, "2 3 late")
 
 -- color
 check("error red", select(1, M.color({ s = 3 })), 255)
