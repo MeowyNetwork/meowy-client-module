@@ -821,14 +821,27 @@ namespace
 	}
 #endif
 
+	// The last body and signature that passed Verify. Our server sends the same
+	// catalogue at every join, usually the one already kept on disk: the same
+	// bytes skip the signature check (ECDSA through freshly opened BCrypt
+	// providers, a few ms on the main thread). Parse and the version check
+	// still run every time.
+	std::string g_verifiedBody, g_verifiedSig;
+
 	// Verifies, parses and installs a catalogue. True when it's in use (a
 	// re-send of the current version included); else false with *why.
 	bool TakeCatalogue(const std::string& body, const std::string& sig, bool persist, std::string* why)
 	{
-		if (!notify_catalogue::Verify(body, sig))
+		const bool known = !g_verifiedSig.empty() && sig == g_verifiedSig && body == g_verifiedBody;
+		if (!known)
 		{
-			*why = "bad signature";
-			return false;
+			if (!notify_catalogue::Verify(body, sig))
+			{
+				*why = "bad signature";
+				return false;
+			}
+			g_verifiedBody = body;
+			g_verifiedSig = sig;
 		}
 		notify_catalogue::Catalogue c;
 		const char* parseWhy = nullptr;
