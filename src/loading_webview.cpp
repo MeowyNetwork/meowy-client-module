@@ -25,16 +25,38 @@ namespace
 		HWND parent = nullptr;
 		ComPtr<ICoreWebView2Environment> env;
 		ComPtr<ICoreWebView2Controller> controller;
+		ComPtr<ICoreWebView2Controller3> controller3;   // for the page's scale, if this WebView2 has it
 		ComPtr<ICoreWebView2> view;
 		EventRegistrationToken browserExitToken = {};
 		bool browserExitHooked = false;
+		bool browserGone = false;   // this browser's process already exited (nothing to wait for at Stop)
+		EventRegistrationToken scaleToken = {};
+		bool scaleHooked = false;
+		double scale = 0;           // the page's RasterizationScale, kept up to date by its event
+		RECT bounds = {};           // what put_Bounds was last given, so an unchanged size isn't sent again
+		bool visible = false;       // what put_IsVisible was last given
 		bool ready = false, failed = false;
-		char action = 0;
+		unsigned actions = 0;       // the page's requests since the last TakeActions (kCancel...)
 		std::wstring origin;   // "https://meowynetwork.com/"; every navigation must start with it
 		// Bumped by every Start and Stop: completions and events of an earlier
 		// browser (a late creation, the exit of one we closed) are ignored.
 		unsigned generation = 0;
+
+		// A stopped browser shuts down on its own, a moment after Stop. Until it
+		// has, a new environment on the same profile folder can fail or attach
+		// to the dying browser, so Start waits for its BrowserProcessExited (at
+		// most kExitWaitMs) before making the next one. `exitingEnv` is kept
+		// only to receive that event.
+		ComPtr<ICoreWebView2Environment> exitingEnv;
+		EventRegistrationToken exitingToken = {};
+		unsigned exitingGeneration = 0;
+		ULONGLONG exitingSince = 0;
+		bool exitingDone = false;
+		// A Start waiting for that: the environment is made by Poll.
+		bool pendingStart = false;
+		std::wstring pendingUrl, pendingDir;
 	};
+	constexpr ULONGLONG kExitWaitMs = 3000;
 
 	Web& W()
 	{
@@ -96,6 +118,24 @@ namespace
 		if (SUCCEEDED(w.controller.As(&controller2)))
 			controller2->put_DefaultBackgroundColor({ 255, 11, 11, 13 });
 
+		// The page's scale, read once here and then kept by its event, instead
+		// of asking the controller every frame.
+		if (SUCCEEDED(w.controller.As(&w.controller3)))
+		{
+			w.controller3->get_RasterizationScale(&w.scale);
+			w.scaleHooked = SUCCEEDED(w.controller3->add_RasterizationScaleChanged(
+				Callback<ICoreWebView2RasterizationScaleChangedEventHandler>(
+					[generation](ICoreWebView2Controller*, IUnknown*) -> HRESULT {
+						Web& web = W();
+						double scale = 0;
+						if (Current(generation) && web.controller3 && SUCCEEDED(web.controller3->get_RasterizationScale(&scale)))
+							web.scale = scale;
+						return S_OK;
+					})
+					.Get(),
+				&w.scaleToken));
+		}
+
 		ComPtr<ICoreWebView2Settings> settings;
 		if (SUCCEEDED(w.view->get_Settings(&settings)))
 		{
@@ -109,10 +149,14 @@ namespace
 				settings3->put_AreBrowserAcceleratorKeysEnabled(FALSE);
 		}
 
+		// The parent's size now (1x1 when made at the menu, before any join);
+		// the screen's next Resize sends the real one.
 		RECT rc;
 		GetClientRect(w.parent, &rc);
 		w.controller->put_Bounds(rc);
+		w.bounds = rc;
 		w.controller->put_IsVisible(FALSE);
+		w.visible = false;
 
 		// The page must never leave our origin or open windows: without these
 		// two guards it isn't loaded at all.
@@ -183,19 +227,25 @@ namespace
 					CoTaskMemFree(source);
 					if (!ours || FAILED(args->get_WebMessageAsJson(&json)) || !json)
 						return S_OK;
+					// Requests count only from a page on screen: a click that
+					// lands as the page is hidden (the last frame of a fade, or
+					// the old document after a Reload) can't reach the next join.
 					if (std::wcsstr(json, L"\"type\":\"ready\""))
 					{
 						if (!web.ready && !web.failed && web.controller)
 							web.ready = true;   // shown by SetVisible when a join is on screen
 					}
-					else if (std::wcsstr(json, L"\"type\":\"cancel\""))
-						web.action = 'c';
-					else if (std::wcsstr(json, L"\"type\":\"hide\""))
-						web.action = 'h';
-					else if (std::wcsstr(json, L"\"type\":\"hold\""))
-						web.action = 'k';
-					else if (std::wcsstr(json, L"\"type\":\"focus\""))
-						web.action = 'f';
+					else if (web.visible)
+					{
+						if (std::wcsstr(json, L"\"type\":\"cancel\""))
+							web.actions |= loading_webview::kCancel;
+						else if (std::wcsstr(json, L"\"type\":\"hide\""))
+							web.actions |= loading_webview::kHide;
+						else if (std::wcsstr(json, L"\"type\":\"hold\""))
+							web.actions |= loading_webview::kHold;
+						else if (std::wcsstr(json, L"\"type\":\"focus\""))
+							web.actions |= loading_webview::kFocus;
+					}
 					CoTaskMemFree(json);
 					return S_OK;
 				})
@@ -220,11 +270,18 @@ namespace
 		w.env = env;
 		// The browser process can also go away without a ProcessFailed (before
 		// the WebView exists, say); either way this browser is finished.
+		// The same event, after Stop, says the browser has finished shutting
+		// down and its profile folder is free for the next one.
 		ComPtr<ICoreWebView2Environment5> env5;
 		if (SUCCEEDED(w.env.As(&env5)) &&
 			SUCCEEDED(env5->add_BrowserProcessExited(
 				Callback<ICoreWebView2BrowserProcessExitedEventHandler>(
 					[generation](ICoreWebView2Environment*, ICoreWebView2BrowserProcessExitedEventArgs*) -> HRESULT {
+						Web& web = W();
+						if (web.exitingEnv && generation == web.exitingGeneration)
+							web.exitingDone = true;   // released by StillExiting, not inside its own event
+						else if (Current(generation))
+							web.browserGone = true;
 						Fail(generation);
 						return S_OK;
 					})
@@ -244,23 +301,33 @@ namespace
 	}
 }
 
-namespace loading_webview
+namespace
 {
-	bool Start(HWND parent, const std::wstring& url, const std::wstring& userDataDir)
+	// True while a stopped browser is still shutting down (see Web::exitingEnv).
+	// Lets go of it once it has, or once kExitWaitMs have passed: a browser that
+	// takes longer is waited for no more.
+	bool StillExiting()
 	{
-		Stop();
+		Web& w = W();
+		if (!w.exitingEnv)
+			return false;
+		if (!w.exitingDone && GetTickCount64() - w.exitingSince < kExitWaitMs)
+			return true;
+		ComPtr<ICoreWebView2Environment5> env5;
+		if (SUCCEEDED(w.exitingEnv.As(&env5)))
+			env5->remove_BrowserProcessExited(w.exitingToken);
+		w.exitingEnv.Reset();
+		w.exitingDone = false;
+		return false;
+	}
+
+	// Starts making the environment for the Start before (its url and folder).
+	bool CreateNow()
+	{
 		Web& w = W();
 		const unsigned generation = w.generation;
-		w.parent = parent;
-		w.origin = OriginOf(url);
-		w.ready = w.failed = false;
-		w.action = 0;
-		if (w.origin.empty())
-		{
-			w.failed = true;
-			return false;
-		}
-		HRESULT hr = CreateCoreWebView2EnvironmentWithOptions(nullptr, userDataDir.c_str(), nullptr,
+		const std::wstring url = w.pendingUrl;
+		HRESULT hr = CreateCoreWebView2EnvironmentWithOptions(nullptr, w.pendingDir.c_str(), nullptr,
 			Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
 				[generation, url](HRESULT result, ICoreWebView2Environment* env) -> HRESULT {
 					return OnEnvironment(generation, result, env, url);
@@ -273,14 +340,61 @@ namespace loading_webview
 		}
 		return true;
 	}
+}
+
+namespace loading_webview
+{
+	bool Start(HWND parent, const std::wstring& url, const std::wstring& userDataDir)
+	{
+		Stop();
+		Web& w = W();
+		w.parent = parent;
+		w.origin = OriginOf(url);
+		w.ready = w.failed = w.browserGone = false;
+		w.actions = 0;
+		if (w.origin.empty())
+		{
+			w.failed = true;
+			return false;
+		}
+		w.pendingUrl = url;
+		w.pendingDir = userDataDir;
+		// The last browser on this profile is still shutting down: Poll makes
+		// this one once it's gone (the native drawing shows meanwhile).
+		if (StillExiting())
+		{
+			w.pendingStart = true;
+			return true;
+		}
+		return CreateNow();
+	}
+
+	void Poll()
+	{
+		Web& w = W();
+		// Asked every turn, Start pending or not, so a browser that has exited
+		// is let go of now, not only at the next Start or Stop.
+		const bool exiting = StillExiting();
+		if (w.pendingStart && !exiting)
+		{
+			w.pendingStart = false;
+			CreateNow();
+		}
+	}
+
+	bool Pending() { return W().pendingStart; }
 
 	bool Ready() { return W().ready; }
 	bool Failed() { return W().failed; }
 
-	void Resize(int w, int h)
+	void Resize(int width, int height)
 	{
-		if (W().controller)
-			W().controller->put_Bounds({ 0, 0, w, h });
+		Web& w = W();
+		const RECT r = { 0, 0, width, height };
+		if (!w.controller || EqualRect(&r, &w.bounds))
+			return;
+		w.controller->put_Bounds(r);
+		w.bounds = r;
 	}
 
 	void Post(const std::wstring& json)
@@ -291,17 +405,16 @@ namespace loading_webview
 
 	double RasterScale()
 	{
-		ComPtr<ICoreWebView2Controller3> c3;
-		double scale = 0;
-		if (W().controller && SUCCEEDED(W().controller.As(&c3)))
-			c3->get_RasterizationScale(&scale);
-		return scale;
+		return W().controller ? W().scale : 0;
 	}
 
 	void SetVisible(bool visible)
 	{
-		if (W().controller)
-			W().controller->put_IsVisible(visible ? TRUE : FALSE);
+		Web& w = W();
+		if (!w.controller || w.visible == visible)
+			return;
+		w.controller->put_IsVisible(visible ? TRUE : FALSE);
+		w.visible = visible;
 	}
 
 	void Reload()
@@ -310,6 +423,7 @@ namespace loading_webview
 		if (!w.view)
 			return;
 		w.ready = false;
+		w.actions = 0;
 		SetVisible(false);
 		if (FAILED(w.view->Reload()))
 			Fail(w.generation);
@@ -333,32 +447,59 @@ namespace loading_webview
 			W().controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
 	}
 
-	char TakeAction()
+	unsigned TakeActions()
 	{
-		char a = W().action;
-		W().action = 0;
+		const unsigned a = W().actions;
+		W().actions = 0;
 		return a;
 	}
 
 	void Stop()
 	{
 		Web& w = W();
+		const unsigned stopped = w.generation;
 		++w.generation;   // whatever the old browser still reports is ignored
-		if (w.browserExitHooked && w.env)
-		{
-			ComPtr<ICoreWebView2Environment5> env5;
-			if (SUCCEEDED(w.env.As(&env5)))
-				env5->remove_BrowserProcessExited(w.browserExitToken);
-		}
-		w.browserExitHooked = false;
+		w.pendingStart = false;
+		if (w.controller3 && w.scaleHooked)
+			w.controller3->remove_RasterizationScaleChanged(w.scaleToken);
+		w.scaleHooked = false;
 		if (w.controller)
 			w.controller->Close();
 		w.view.Reset();
+		w.controller3.Reset();
 		w.controller.Reset();
-		w.env.Reset();
+		if (w.env)
+		{
+			if (w.browserExitHooked && !w.browserGone)
+			{
+				// Kept, with its exit handler, until the browser has shut down
+				// (an older one still waited for is let go).
+				if (w.exitingEnv)
+				{
+					w.exitingDone = true;
+					StillExiting();
+				}
+				w.exitingEnv = w.env;
+				w.exitingToken = w.browserExitToken;
+				w.exitingGeneration = stopped;
+				w.exitingSince = GetTickCount64();
+				w.exitingDone = false;
+			}
+			else if (w.browserExitHooked)
+			{
+				ComPtr<ICoreWebView2Environment5> env5;
+				if (SUCCEEDED(w.env.As(&env5)))
+					env5->remove_BrowserProcessExited(w.browserExitToken);
+			}
+			w.env.Reset();
+		}
+		w.browserExitHooked = false;
 		w.parent = nullptr;
 		w.ready = false;
-		w.action = 0;
+		w.visible = false;
+		w.scale = 0;
+		w.bounds = {};
+		w.actions = 0;
 	}
 }
 #endif
