@@ -1262,14 +1262,55 @@ namespace
 		return 1;
 	}
 
-	// JSON array of finished player-list queries, or nil.
+	// TakePlayers() -> { { address, ok, answered, declared, players = { { name,
+	// score, time }, ... } }, ... } | nil: the player-list queries finished
+	// since the last call, nil when none. Built straight from the results: the
+	// server list's Think asks every frame, and parsing a JSON copy of up to
+	// 255 names a server in Lua cost more than the query itself. `declared`
+	// and `players` only when ok; `time` in whole seconds, as before.
 	int TakePlayers(lua_State* L)
 	{
-		std::string json = server_rep::TakePlayers();
-		if (json.empty())
-			L->luabase->PushNil();
-		else
-			L->luabase->PushString(json.c_str(), (unsigned int)json.size());
+		ILuaBase* LUA = L->luabase;
+		const std::vector<server_rep::PlayerResult> results = server_rep::TakePlayerResults();
+		if (results.empty())
+		{
+			LUA->PushNil();
+			return 1;
+		}
+		LUA->CreateTable();
+		int i = 0;
+		for (const server_rep::PlayerResult& r : results)
+		{
+			LUA->PushNumber(++i);
+			LUA->CreateTable();
+			LUA->PushString(r.address.c_str(), static_cast<unsigned int>(r.address.size()));
+			LUA->SetField(-2, "address");
+			LUA->PushBool(r.ok);
+			LUA->SetField(-2, "ok");
+			LUA->PushBool(r.answered);
+			LUA->SetField(-2, "answered");
+			if (r.ok)
+			{
+				LUA->PushNumber(r.declared);
+				LUA->SetField(-2, "declared");
+				LUA->CreateTable();
+				int k = 0;
+				for (const server_rep::PlayerResult::P& p : r.players)
+				{
+					LUA->PushNumber(++k);
+					LUA->CreateTable();
+					LUA->PushString(p.name.c_str(), static_cast<unsigned int>(p.name.size()));
+					LUA->SetField(-2, "name");
+					LUA->PushNumber(p.score);
+					LUA->SetField(-2, "score");
+					LUA->PushNumber(static_cast<double>(static_cast<int>(p.time)));
+					LUA->SetField(-2, "time");
+					LUA->SetTable(-3);
+				}
+				LUA->SetField(-2, "players");
+			}
+			LUA->SetTable(-3);
+		}
 		return 1;
 	}
 
@@ -2999,57 +3040,114 @@ local function tagOf(address)
 	return tag, v
 end
 
-local MARK_JS = [[
-if (!window.MeowyMark) window.MeowyMark = function (addr, real, tag, penalty) {
+-- The page's helpers, sent once per page (markHelpers). MeowyMarkMany takes a
+-- frame's marks ([address, real, tag, penalty]) and rank moves ([address,
+-- penalty]) together: one map from address to the listed servers, every
+-- change applied through it, one redraw. (One call per server used to walk
+-- every list and redraw the page each time.)
+local MARK_JS = [=[
+if (!window.MeowyMarkMany) {
+window.MeowyMark = function (s, gm, real, tag, penalty) {
+	if (s.meowyTag) return false;
+	s.meowyTag = tag; s.name = tag + s.name;
+	if (real >= 0 && real < s.players) {
+		var d = s.players - real; s.players = real;
+		gm.num_players -= d; if (!s.isAnon) gm.sort_players -= d; gm.order = gm.sort_players;
+		s.recommended = CalculateRank(s);
+	}
+	if (penalty > 0 && !s.meowyRankAdj) { s.meowyRankAdj = true; s.recommended += penalty; }
+	return true;
+};
+window.MeowyRank = function (s, penalty) {
+	if (s.meowyRankAdj) return false;
+	s.meowyRankAdj = true; s.recommended += penalty;
+	return true;
+};
+window.MeowyMarkMany = function (marks, ranks) {
+	var byAddress = {}, changed = false, j, n, at;
 	for (var t in ServerTypes) { var g = ServerTypes[t].gamemodes;
 	for (var k in g) { var gm = g[k];
 	for (var i = 0; i < gm.servers.length; i++) { var s = gm.servers[i];
-		if (s.address != addr || s.meowyTag) continue;
-		s.meowyTag = tag; s.name = tag + s.name;
-		if (real >= 0 && real < s.players) {
-			var d = s.players - real; s.players = real;
-			gm.num_players -= d; if (!s.isAnon) gm.sort_players -= d; gm.order = gm.sort_players;
-			s.recommended = CalculateRank(s);
-		}
-		if (penalty > 0 && !s.meowyRankAdj) { s.meowyRankAdj = true; s.recommended += penalty; }
+		(byAddress[s.address] = byAddress[s.address] || []).push([s, gm]);
 	} } }
-	UpdateDigest(RootScope, 50);
+	for (j = 0; j < marks.length; j++) { at = byAddress[marks[j][0]] || [];
+		for (n = 0; n < at.length; n++) if (MeowyMark(at[n][0], at[n][1], marks[j][1], marks[j][2], marks[j][3])) changed = true; }
+	for (j = 0; j < ranks.length; j++) { at = byAddress[ranks[j][0]] || [];
+		for (n = 0; n < at.length; n++) if (MeowyRank(at[n][0], ranks[j][1])) changed = true; }
+	if (changed) UpdateDigest(RootScope, 50);
 };
-]]
+}
+]=]
 
--- For a server tagged as it arrived: the browser adds it to its list only
--- after the callback returns, so the rank is moved a moment later.
-local RANK_JS = [[
-if (!window.MeowyRank) window.MeowyRank = function (addr, penalty) {
-	var found = false;
-	for (var t in ServerTypes) { var g = ServerTypes[t].gamemodes;
-	for (var k in g) { var gm = g[k];
-	for (var i = 0; i < gm.servers.length; i++) { var s = gm.servers[i];
-		if (s.address != addr || s.meowyRankAdj) continue;
-		s.meowyRankAdj = true; s.recommended += penalty; found = true;
-	} } }
-	if (found) UpdateDigest(RootScope, 50);
-};
-]]
+-- Marks and rank moves wait here and go to the page together, once a frame
+-- (flushMarks, from the ServerList Think).
+local markQueue, rankQueue = {}, {}
+local markHtml, markDefined   -- the page panel last seen; whether its page has the helpers
 
-local function rankLater(address, penalty)
-	if penalty <= 0 then return end
-	local js = RANK_JS .. string.format("MeowyRank('%s', %d);", address:JavascriptSafe(), penalty)
-	-- Twice: a busy browser may not have the server yet; the flag stops a double penalty.
-	for _, delay in ipairs({ 0.5, 3 }) do
-		after(delay, function() if pnlMainMenu then pnlMainMenu:Call(js) end end)
+-- The helpers when the page doesn't have them yet: a new menu panel, or a
+-- page that has loaded anew (the game starting, a language change), which
+-- OnDocumentReady says. Without a panel to watch they go every time (the
+-- page keeps its first copy).
+local function markHelpers()
+	local html = IsValid(pnlMainMenu) and pnlMainMenu.HTML or nil
+	if html ~= markHtml then
+		markHtml, markDefined = html, false
+		if IsValid(html) then
+			local ready = html.OnDocumentReady
+			html.OnDocumentReady = function(self, ...)
+				markDefined = false
+				if ready then return ready(self, ...) end
+			end
+		end
 	end
+	if markDefined then return "" end
+	markDefined = IsValid(html)
+	return MARK_JS
 end
 
--- Shows a verdict that arrived after the server was already listed.
+local function jsonList(list) return #list > 0 and util.TableToJSON(list) or "[]" end
+
+local function flushMarks()
+	if #markQueue == 0 and #rankQueue == 0 then return end
+	local marks, ranks = markQueue, rankQueue
+	markQueue, rankQueue = {}, {}
+	if not pnlMainMenu then return end
+	pnlMainMenu:Call(markHelpers() .. "MeowyMarkMany(" .. jsonList(marks) .. ", " .. jsonList(ranks) .. ");")
+end
+
+-- For servers tagged as they arrived: the browser adds a server to its list
+-- only after the callback returns, so the rank is moved a moment later. Every
+-- server tagged within half a second shares one pass at 0.5 s and one more at
+-- 3 s (a busy browser may not have them yet; the page's flag stops a double
+-- penalty).
+local rankBatch
+local function rankLater(address, penalty)
+	if penalty <= 0 then return end
+	if not rankBatch then
+		local batch = {}
+		rankBatch = batch
+		local function pass()
+			for a, p in pairs(batch) do rankQueue[#rankQueue + 1] = { a, p } end
+		end
+		after(0.5, function()
+			if rankBatch == batch then rankBatch = nil end
+			pass()
+		end)
+		after(3, pass)
+	end
+	rankBatch[address] = penalty
+end
+
+-- Shows a verdict that arrived after the server was already listed (with the
+-- next flush).
 local function mark(address)
 	local s = seen[address]
 	if not s or not pnlMainMenu or tagged[s.type .. address] then return end
 	local tag, v = tagOf(address)
 	if not tag then return end
 	tagged[s.type .. address] = true
-	pnlMainMenu:Call(MARK_JS .. string.format("MeowyMark('%s', %d, '%s', %d);",
-		address:JavascriptSafe(), v and v.verdict == "fake" and (v.real or -1) or -1, tag:JavascriptSafe(), rankPenalty(v)))
+	local real = v and v.verdict == "fake" and tonumber(v.real) or -1
+	markQueue[#markQueue + 1] = { address, math.floor(real), tag, rankPenalty(v) }
 end
 
 local function fetchRep()
@@ -3143,6 +3241,13 @@ end
 -- Check queue: sample A, then B GAP seconds later, then judge.
 local queue, running, pending = {}, 0, {}
 
+-- fn now, or once no join loads and the game isn't running (checked every 5 s):
+-- a second sample due mid-join waits for the menu (judge uses the real gap).
+local function whenFree(fn)
+	if IsInLoading() or IsInGame() then after(5, function() whenFree(fn) end) return end
+	fn()
+end
+
 -- Player lists come from the pack's own query (server_rep.cpp), not
 -- serverlist.PlayerList, which shows nothing for a reply that doesn't add up.
 -- (waiting and declared are declared above judge(), which reads declared.)
@@ -3212,7 +3317,7 @@ hook.Add("Think", "MeowyClientPack.ServerList", function()
 	end
 	local results = meowy.TakePlayers()
 	if results then
-		for _, r in ipairs(util.JSONToTable(results) or {}) do
+		for _, r in ipairs(results) do
 			if istable(r) and isstring(r.address) then
 				if r.ok then declared[r.address] = tonumber(r.declared) end
 				if panelWanted[r.address] and not r.ok then
@@ -3233,7 +3338,10 @@ hook.Add("Think", "MeowyClientPack.ServerList", function()
 	for address, w in pairs(waiting) do
 		if SysTime() > w.deadline then deliver(address, false) end
 	end
-	while running < PARALLEL and #queue > 0 do
+	-- While a join loads or the game runs, no check starts: its queries would
+	-- compete with the join, and the queue is still there at the menu.
+	local busy = IsInLoading() or IsInGame()
+	while not busy and running < PARALLEL and #queue > 0 do
 		local address = table.remove(queue, 1)
 		sample(address, function(listA)
 			local atA = SysTime()
@@ -3248,16 +3356,19 @@ hook.Add("Think", "MeowyClientPack.ServerList", function()
 				return
 			end
 			after(GAP, function()
-				sample(address, function(listB)
-					pending[address] = nil
-					if listB == false then listB = nil end -- no second answer: judge on the first alone
-					mine[address] = judge(address, listA, listB, SysTime() - atA)
-					mine[address].at = SysTime()
-					mark(address)
+				whenFree(function()
+					sample(address, function(listB)
+						pending[address] = nil
+						if listB == false then listB = nil end -- no second answer: judge on the first alone
+						mine[address] = judge(address, listA, listB, SysTime() - atA)
+						mine[address].at = SysTime()
+						mark(address)
+					end)
 				end)
 			end)
 		end)
 	end
+	flushMarks()
 end)
 
 local stockQuery = serverlist.Query
@@ -3281,7 +3392,8 @@ meowy.FetchServerRep = function() if enabled:GetBool() then fetchRep() end end
 -- and the count checks above see no difference.
 local fastList = meowy.Setting("meowy_fast_serverlist", "1",
 	"Meowy Client Pack: Find servers lists only servers with players, straight from Steam (0 = every server, the game's way)")
-local fastRuns = {}   -- [list id] = { data, started, count }
+local fastRuns = {}   -- [list id] = { data, started, count, rows, head, tail, finished, inGame }
+local FAST_ROWS = 50   -- rows handed to the browser a frame at most; the rest wait (Steam sends ~50-80 a second)
 local function tagValue(tags, key) return (" " .. tags .. " "):match(" " .. key .. ":(%S+)") end
 local function fastQuery(data)
 	if not (fastList:GetBool() and meowy.ServerQueryStart and istable(data) and isfunction(data.Callback)) then return false end
@@ -3289,14 +3401,41 @@ local function fastQuery(data)
 	for id in pairs(fastRuns) do meowy.ServerQueryCancel(id) fastRuns[id] = nil end   -- a refresh replaces the last list
 	local id = meowy.ServerQueryStart("internet", "gamedir", "garrysmod", "hasplayers", "1")
 	if not id then return false end
-	fastRuns[id] = { data = data, started = SysTime(), count = 0 }
+	fastRuns[id] = { data = data, started = SysTime(), count = 0, rows = {}, head = 1, tail = 0, inGame = IsInGame() }
 	return true
 end
 hook.Add("Think", "MeowyClientPack.FastServerList", function()
+	if next(fastRuns) == nil then return end
+	-- A join starting (or the game, for a list asked for at the menu) stops the
+	-- list: Steam's pings and the browser's rows would compete with the join
+	-- on the main thread, and rows queued while the game was busy would all
+	-- land in one frame. The browser asks again when it's opened next, so
+	-- Finished isn't called.
+	local loading, inGame = IsInLoading(), IsInGame()
 	for id, run in pairs(fastRuns) do
-		local list, finished = meowy.ServerQueryTake(id)
+		if loading or (inGame and not run.inGame) then
+			meowy.ServerQueryCancel(id)
+			fastRuns[id] = nil
+			print(string.format("[Meowy Client Pack] fast server list: stopped for a join after %d servers (%.1f s)", run.count,
+				SysTime() - run.started))
+		end
+	end
+	local budget = FAST_ROWS
+	for id, run in pairs(fastRuns) do
+		if not run.finished then
+			local list, finished = meowy.ServerQueryTake(id)
+			for _, s in ipairs(list) do run.tail = run.tail + 1 run.rows[run.tail] = s end
+			if finished then
+				run.finished = true
+				meowy.ServerQueryCancel(id)   -- everything is taken; the rest is Lua's
+			end
+		end
 		local stop = false
-		for _, s in ipairs(list) do
+		while budget > 0 and run.head <= run.tail do
+			local s = run.rows[run.head]
+			run.rows[run.head] = nil
+			run.head = run.head + 1
+			budget = budget - 1
 			local tags = s.tags or ""
 			run.count = run.count + 1
 			local ok, more = pcall(run.data.Callback, s.ping, s.name, s.desc, s.map, s.players, s.max, s.bots, s.pass,
@@ -3307,12 +3446,12 @@ hook.Add("Think", "MeowyClientPack.FastServerList", function()
 			if not ok then ErrorNoHalt("[Meowy Client Pack] fast server list: " .. tostring(more) .. "\n") end
 			if not ok or more == false then stop = true break end
 		end
-		if stop or finished then
+		if stop or (run.finished and run.head > run.tail) then
 			fastRuns[id] = nil
-			meowy.ServerQueryCancel(id)
+			if not run.finished then meowy.ServerQueryCancel(id) end
 			print(string.format("[Meowy Client Pack] fast server list: %d servers with players in %.1f s%s", run.count,
 				SysTime() - run.started, stop and " (stopped)" or ""))
-			if finished and not stop and isfunction(run.data.Finished) then run.data.Finished() end
+			if run.finished and not stop and isfunction(run.data.Finished) then run.data.Finished() end
 		end
 	end
 end)
