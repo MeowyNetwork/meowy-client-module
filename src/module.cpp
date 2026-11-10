@@ -3127,7 +3127,10 @@ local function flushMarks()
 	local marks, ranks = markQueue, rankQueue
 	markQueue, rankQueue = {}, {}
 	if not pnlMainMenu then return end
-	pnlMainMenu:Call(markHelpers() .. "MeowyMarkMany(" .. jsonList(marks) .. ", " .. jsonList(ranks) .. ");")
+	-- Guarded: a flush between a page starting to load and its OnDocumentReady
+	-- reaches a page without the helpers. Its lists are empty until the next
+	-- serverlist.Query, which clears tagged[] and marks them again.
+	pnlMainMenu:Call(markHelpers() .. "if (window.MeowyMarkMany) MeowyMarkMany(" .. jsonList(marks) .. ", " .. jsonList(ranks) .. ");")
 end
 
 -- For servers tagged as they arrived: the browser adds a server to its list
@@ -3256,12 +3259,10 @@ end
 -- Check queue: sample A, then B GAP seconds later, then judge.
 local queue, running, pending = {}, 0, {}
 
--- fn now, or once no join loads and the game isn't running (checked every 5 s):
--- a second sample due mid-join waits for the menu (judge uses the real gap).
-local function whenFree(fn)
-	if IsInLoading() or IsInGame() then after(5, function() whenFree(fn) end) return end
-	fn()
-end
+-- The time-growth rule in judge() expects two samples about GAP apart. A
+-- second sample much later than that (a menu that stalled) would make real
+-- players who left and came back look frozen, so it isn't used.
+local MAX_GAP = GAP * 2
 
 -- Player lists come from the pack's own query (server_rep.cpp), not
 -- serverlist.PlayerList, which shows nothing for a reply that doesn't add up.
@@ -3370,16 +3371,20 @@ hook.Add("Think", "MeowyClientPack.ServerList", function()
 				mark(address)
 				return
 			end
+			-- A second sample due while a join loads or the game runs isn't
+			-- asked for (its query would compete with the join): the first is
+			-- judged alone, as when the second gets no answer.
 			after(GAP, function()
-				whenFree(function()
-					sample(address, function(listB)
-						pending[address] = nil
-						if listB == false then listB = nil end -- no second answer: judge on the first alone
-						mine[address] = judge(address, listA, listB, SysTime() - atA)
-						mine[address].at = SysTime()
-						mark(address)
-					end)
-				end)
+				local function finish(listB)
+					pending[address] = nil
+					local gap = SysTime() - atA
+					if listB == false or gap > MAX_GAP then listB = nil end -- no usable second answer: judge on the first alone
+					mine[address] = judge(address, listA, listB, listB and gap or 0)
+					mine[address].at = SysTime()
+					mark(address)
+				end
+				if IsInLoading() or IsInGame() then finish(false) return end
+				sample(address, finish)
 			end)
 		end)
 	end

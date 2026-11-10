@@ -372,7 +372,9 @@ on Meowy Network's servers.
     Servers marked `[UNVERIFIED]` or `[LIST HIDDEN]` sit slightly lower in the list than
     otherwise-equal ones; none are hidden.
   - The tags and rank changes reach the list together, in one call to its page a frame. No check
-    starts while a join loads or while you're in game; the rest wait for the main menu.
+    starts while a join loads or while you're in game; the rest wait for the main menu. A server
+    whose second read falls due then is judged on its first read alone, and a second read that
+    comes in much more than 45 seconds after the first isn't compared with it.
   - **What it sends:** on a server you join that isn't ours, it runs the game's `status` command
     twice, about 90 seconds in and four minutes later. It sends meowynetwork.com the server's
     address, its advertised count, the number of bots `status` lists, and for each other account
