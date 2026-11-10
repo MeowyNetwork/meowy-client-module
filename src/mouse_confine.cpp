@@ -6,7 +6,8 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <cwchar>
-#include <thread>
+
+#include "thread_util.h"
 #endif
 
 namespace mouse_confine
@@ -49,13 +50,27 @@ namespace mouse_confine
 				ClipCursor(nullptr);
 		}
 
+		// Signalled by Set: the thread sleeps on it while the feature is off.
+		HANDLE g_changed = nullptr;
+
 		void Watch()
 		{
+			DWORD wait = 25;
 			for (;;)
 			{
-				Sleep(25);
+				// Off: nothing to watch until Set changes that (no wake-ups at all).
+				// With another window in front, Windows has dropped any clip itself,
+				// so a slower look is enough; with the game in front, every 25 ms.
+				if (!g_on.load())
+				{
+					Release();
+					WaitForSingleObject(g_changed, INFINITE);
+					continue;
+				}
+				Sleep(wait);
 				HWND front = GetForegroundWindow();
 				const bool game = GameWindow(front);
+				wait = game ? 25 : 250;
 				CURSORINFO ci = {};
 				ci.cbSize = sizeof ci;
 				// Hidden: not showing, or showing no cursor at all (the game sets none while you aim).
@@ -99,7 +114,15 @@ namespace mouse_confine
 		if (!on)
 			Release();   // also from here, at once; the thread agrees within 25 ms
 		if (on && !g_started.exchange(true))
-			std::thread(Watch).detach();
+		{
+			// A thread that couldn't start is tried again on the next Set(true).
+			if (!g_changed)
+				g_changed = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+			if (!g_changed || !thread_util::Spawn(L"Meowy mouse", Watch, thread_util::Priority::BelowNormal))
+				g_started = false;
+		}
+		if (g_changed)
+			SetEvent(g_changed);
 	}
 #else
 	void Set(bool on) { g_on = on; }

@@ -9,6 +9,8 @@
 #include <mutex>
 #include <thread>
 
+#include "thread_util.h"
+
 namespace audio_watch
 {
 	namespace
@@ -111,24 +113,45 @@ namespace audio_watch
 				return;
 			}
 			g_state = 2;
-			// The enumerator stays registered for the rest of the process; this
-			// thread only keeps its apartment alive.
+			// The enumerator stays registered (and is never released) for the rest
+			// of the process, and its apartment (the MTA) must stay alive with it.
+			// CoIncrementMTAUsage (Windows 8 and later; looked up, so nothing new is
+			// imported) does that without a thread: this one ends. Without it, this
+			// thread stays in the MTA, parked, as before.
+			using IncrementFn = HRESULT(WINAPI*)(CO_MTA_USAGE_COOKIE*);
+			HMODULE com32 = GetModuleHandleW(L"combase.dll");
+			if (!com32)
+				com32 = GetModuleHandleW(L"ole32.dll");
+			IncrementFn increment = com32
+				? reinterpret_cast<IncrementFn>(reinterpret_cast<void*>(GetProcAddress(com32, "CoIncrementMTAUsage"))) : nullptr;
+			static CO_MTA_USAGE_COOKIE keepMta = nullptr;   // never given back
+			if (increment && SUCCEEDED(increment(&keepMta)))
+			{
+				if (SUCCEEDED(com))
+					CoUninitialize();
+				return;
+			}
 			for (;;)
 				Sleep(INFINITE);
 		}
 	}
 
+	// Starts the watcher and returns at once (game thread): "starting" counts as
+	// watching, and Changes() stays 0 until the watcher counts a change. Only a
+	// watcher that couldn't start (or couldn't register) is false.
 	bool Start()
 	{
 		std::lock_guard<std::mutex> lock(g_startLock);
 		if (g_state == 0)
 		{
 			g_state = 1;
-			std::thread(Watch).detach();
-			for (int i = 0; i < 200 && g_state == 1; ++i)
-				Sleep(5);
+			if (!thread_util::Spawn(L"Meowy audio", Watch, thread_util::Priority::BelowNormal))
+			{
+				g_state = 0;
+				return false;
+			}
 		}
-		return g_state == 2;
+		return g_state != 3;
 	}
 
 	unsigned Changes()
@@ -167,7 +190,8 @@ namespace audio_watch
 	std::string Describe()
 	{
 		const int s = g_state.load();
-		const char* state = s == 2 ? "following Windows' default output" : s == 3 ? "can't watch Windows' sound devices" : "not started";
+		const char* state = s == 2 ? "following Windows' default output" : s == 3 ? "can't watch Windows' sound devices"
+			: s == 1 ? "starting" : "not started";
 		return std::string(state) + "; default output changed " + std::to_string(Changes()) + " times";
 	}
 }

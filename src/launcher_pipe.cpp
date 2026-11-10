@@ -124,7 +124,8 @@ end)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <sddl.h>
-#include <thread>
+
+#include "thread_util.h"
 
 #pragma comment(lib, "advapi32.lib")
 
@@ -269,21 +270,31 @@ namespace launcher_pipe
 			if (sid.empty())
 				return;
 			const std::wstring name = L"\\\\.\\pipe\\meowy-launcher-" + sid;
+			// No launcher running: looked for again after 5 s, then 10, 20, 40
+			// and every 60 s; back to 5 s once one was connected.
+			constexpr DWORD kFirstRetryMs = 5000, kMaxRetryMs = 60000;
+			DWORD retry = kFirstRetryMs;
 			for (;;)
 			{
 				HANDLE pipe = CreateFileW(name.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
 					SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION, nullptr);
+				bool connected = false;
 				if (pipe != INVALID_HANDLE_VALUE)
 				{
 					if (ServerIsLauncher(pipe))
 					{
+						connected = true;
 						g_connected = true;
 						Serve(pipe);
 						g_connected = false;
 					}
 					CloseHandle(pipe);
 				}
-				Sleep(5000);
+				if (connected)
+					retry = kFirstRetryMs;
+				Sleep(retry);
+				if (!connected)
+					retry = retry * 2 < kMaxRetryMs ? retry * 2 : kMaxRetryMs;
 			}
 		}
 	}
@@ -293,7 +304,9 @@ namespace launcher_pipe
 		if (g_started.exchange(true))
 			return;
 		g_version = version ? version : "";
-		std::thread(Run).detach();
+		// A thread that couldn't start is tried again on the next Start.
+		if (!thread_util::Spawn(L"Meowy launcher pipe", Run, thread_util::Priority::BelowNormal))
+			g_started = false;
 	}
 }
 
