@@ -366,6 +366,7 @@ namespace
 		HWND hwnd = nullptr;
 		HWND game = nullptr;
 		RECT cancelBtn{}, hideBtn{};
+		unsigned buttonsJoin = 0;   // the join whose native frame put those buttons on screen
 		bool repaint = false;       // the system asked for the window to be drawn again (WM_PAINT)
 	};
 	View v;
@@ -1038,6 +1039,10 @@ namespace
 		{
 			int x = static_cast<short>(LOWORD(lp)), y = static_cast<short>(HIWORD(lp));
 			std::lock_guard<std::mutex> lock(g.m);
+			// A click on the last join's buttons (still on screen, or queued
+			// before it ended) is for no join: it can't cancel a new one.
+			if (!g.joining || v.buttonsJoin != g.joinSeq)
+				return 0;
 			if (Inside(v.cancelBtn, x, y))
 			{
 				g_cancel = true;
@@ -1660,6 +1665,8 @@ namespace
 								DrawLive(native.frame.dc, s, now, l);
 								BitBlt(dc, r.left, r.top, rw, rh, native.frame.dc, r.left, r.top, SRCCOPY);
 								fullBlit = false;
+								if (full)
+									v.buttonsJoin = seenJoin;   // its Cancel and Game's screen are on screen now
 								const double ms = QpcMs() - t0;
 								paintMs += ms;
 								paintMaxMs = std::max(paintMaxMs, ms);
