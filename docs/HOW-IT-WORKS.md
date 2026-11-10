@@ -165,8 +165,9 @@ console has to be on: **Options → Keyboard → Advanced → Enable developer c
   (`RunConsoleCommand`; Garry's Mod blocks only a fixed list of names). So for `meowy_data_sandbox`,
   `meowy_updates`, `meowy_settings_guard`, `meowy_party`, `meowy_serverlist_reports`, `meowy_discord`,
   `meowy_honest_serverlist`, `meowy_server_index`, `meowy_menu` and `meowy_menu_version`, the pack keeps
-  the value it approved and puts any other change back through the console. Until then the setting
-  reads as its approved value (also on the same frame), and only approved values are saved. The console
+  the value it approved and puts any other change back through the console, within a quarter of a
+  second. Until then the setting reads as its approved value (also on the same frame), and only approved
+  values are saved. The console
   says so once per setting per join. A change is approved when Meowy settings, the Meowy console or one
   of the pack's prompts makes it, or when it's made before you've joined any server in that start (your
   config files, launch options and the game's own console count then). After the first join, a change
@@ -391,7 +392,11 @@ on Meowy Network's servers.
   none ended in the last 2 seconds: any server's Lua can run that command, even right after a
   `disconnect` it queued.
   - **Lines:** the last 50,000 console lines with their time and colour, kept from the moment the game
-    starts. Warnings show in amber and errors in red, and text that isn't valid UTF-8 is cleaned.
+    starts, and no more than 16 MB of text (6 MB in the 32-bit game): a server printing long lines in a loop
+    pushes the oldest out sooner instead of filling memory. Warnings show in amber and errors in red, and
+    text that isn't valid UTF-8 is cleaned. The pack keeps them outside the game's Lua; the window reads them
+    all when it opens and lets them go when it closes, so a join never copies its thousands of lines into
+    Lua while the window is shut.
   - **Finding things:**
     - **Search** as you type (Ctrl+F) shows only the lines with it. With "Mark, don't filter", every line
       stays and the matches are marked; Enter (or F3) goes to the next, Shift+Enter to the previous.
@@ -400,8 +405,9 @@ on Meowy Network's servers.
       show how many there are of each and narrow the log to the ones picked.
     - **Collapse repeats** folds the same line into a count, also when it comes back within a few lines and
       10 seconds, so spam ("x512 in 10 s") doesn't bury the rest.
-  - **Dividers** mark where a join starts, where you're in game and where you leave. While you're scrolled up,
-    a pill says how many lines came in below and takes you back down.
+  - **Dividers** mark where a join starts, where you're in game and where you leave, in their place among
+    the lines even if the window opens much later. While you're scrolled up, a pill says how many lines
+    came in below and takes you back down.
   - **Copying:** drag over lines (Shift+click extends) and Ctrl+C or Copy copies them; Copy with nothing
     selected takes everything shown. Right-click a line to copy it, search for it, show only lines like it,
     or, for a Lua file, ask the game which addon it's from (`whereis`).
@@ -437,7 +443,8 @@ on Meowy Network's servers.
     which addon. Garry's Mod's other two notices (a serious problem; the pause menu blocked) show the same
     way. `meowy_console_badge 0` brings Garry's Mod's notices back.
   - **Overlay:** `meowy_console_overlay 1` shows the newest warnings and errors over the game (2: every line),
-    see-through, click-through and fading; off (0) by default.
+    see-through, click-through and fading; off (0) by default. It keeps only the last 8 lines it can show,
+    read a few times a second.
   - **The console key:** when Garry's Mod's console shows, it's hidden at once and this one opens. Off in Meowy
     settings ("The console key opens the Meowy console", `meowy_console_key 0`) for the game's console.
   - It reads tier0's output through its own listener (the logging system or the spew function, whichever
@@ -462,7 +469,9 @@ on Meowy Network's servers.
   removed.
   - The index is `https://meowynetwork.com/api/pack/index`: Steam's master list, refreshed each minute,
     with the honest list's verdicts and no player names. The pack fetches it off the game's thread (gzip,
-    no redirects, 4 MB at most), and fetches it again each minute while the list stays open.
+    no redirects, 4 MB at most), and fetches it again each minute while the list stays open. Its rows are
+    read and listed a slice a frame, never all in one frame, and only at the main menu: an answer that
+    arrives during a join waits, and one asked for before the join is dropped unread.
   - Pings Steam hasn't measured yet show as `~45`, greyed. That's either your last ping to that server's
     network or an estimate from the distance (IP Geolocation by DB-IP). The pings Steam measures are kept in
     `%LOCALAPPDATA%\MeowyClientPack\pings.json` (per /24 network, 30 days), never in `garrysmod/data`.
@@ -604,7 +613,12 @@ on Meowy Network's servers.
   and tiny at 4K. The pack zooms the whole menu page: Auto is the screen height over 1080, so 100% at
   1080p, 133% at 1440p and 200% at 4K. Or pick 100–200% in Meowy settings (`meowy_menu_scale`, 0 =
   auto). It covers the main and Escape menus and every screen in them (Find servers, New game,
-  Addons and the rest). The pack's own windows already scale with the screen.
+  Addons and the rest). The pack's own windows already scale with the screen. The zoom is set when it
+  changes and when the page reloads (a language change does), out of game.
+- **What the pack sends the menu page.** Its scripts (the home screen, the Home and Escape cards, the menu
+  entries) go into the page once each time it loads, and after that only what changed: the home lists
+  when they change, Continue when it changes, and the Escape card's ping, loss and time on their own at
+  most every 2 seconds (ping to the nearest 5 ms), so the card isn't redrawn for them.
 - **Meowy home screen (on by default).** The pack's home in place of Garry's Mod's main screen ("Meowy home
   screen" in Meowy settings, `meowy_menu`). It has:
   - **Continue**, and your servers, as on the card below;
