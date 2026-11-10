@@ -231,8 +231,13 @@ on Meowy Network's servers.
     entry replaced, in memory; no code bytes change. The copy goes in at the main menu and stays for
     the session, but it answers from its lists only while a join loads; the rest of the time it passes
     every call straight on. Folders other things write to during a join (`data`, `download`, `cache`,
-    `cfg`, Steam's workshop folder) are never listed, a write drops that folder's list, and a list kept
-    from an earlier join is used again only if the folder hasn't changed since.
+    `cfg`, Steam's workshop folder) are never listed, a write drops the lists of that folder and every
+    folder above it, and a list kept from an earlier join is used again only if the folder hasn't
+    changed since. Lists no join used in the last three are dropped.
+  - A folder whose parent was already read this join, and doesn't have it, is answered "not there"
+    without asking Windows at all; any other folder that isn't there costs one call. A folder it
+    can't read is asked about once per join, and a list read while the game was writing a file is
+    not kept. An answer for a folder it already knows costs no memory allocation.
   - Turn it off with `meowy_fast_file_checks 0` (at the main menu it puts the game's own table back;
     `1` puts the copy back in, also in the same session). `meowy_fast_file_checks_status` shows the
     counts.
