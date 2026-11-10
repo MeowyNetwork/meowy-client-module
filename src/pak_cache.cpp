@@ -18,6 +18,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include "pe_image.h"
+#include "thread_util.h"
 #endif
 
 namespace
@@ -30,12 +31,17 @@ namespace
 		size_t destIn, srcIn, srcBytes;   // what it was asked with
 		size_t out, used;                 // what it gave: *destLen and *srcLen after
 		uint8_t head[32];                 // the first compressed bytes, checked on a hit
-		std::vector<uint8_t> data;
+		// Never changed once kept: a hit holds its own reference and copies it out
+		// after letting go of g_mutex, so a Clear meanwhile can't free it under it.
+		std::shared_ptr<const std::vector<uint8_t>> data;
 	};
 
+	using Lru = std::list<Entry>;
+	using ByKey = std::unordered_map<uint64_t, Lru::iterator>;
+
 	std::mutex g_mutex;
-	std::list<Entry> g_lru;                                       // most recent first
-	std::unordered_map<uint64_t, std::list<Entry>::iterator> g_byKey;
+	Lru g_lru;                                                    // most recent first
+	ByKey g_byKey;
 	size_t g_held = 0;
 #ifdef _WIN64
 	size_t g_cap = 256u << 20;
@@ -54,11 +60,76 @@ namespace
 	std::atomic<bool> g_prefillStarted{ false };
 	std::string g_prefillNote;                    // under g_mutex
 
-	void ClearLocked()
+	// What a clear took out of the cache, freed once g_mutex is let go.
+	struct Taken
 	{
-		g_lru.clear();
-		g_byKey.clear();
+		Lru lru;
+		ByKey byKey;
+	};
+
+	// Takes everything out of the cache (g_mutex held): no memory is freed here.
+	void TakeAllLocked(Taken& into)
+	{
+		into.lru.swap(g_lru);
+		into.byKey.swap(g_byKey);
 		g_held = 0;
+	}
+
+	// A cleared cache's memory is freed on a thread of its own when there's much
+	// of it (up to 256 MB when a join ends, on the main thread's first in-game
+	// frame), or here if that thread can't start.
+	constexpr size_t kFreeOnThread = 1u << 20;
+
+	void Free(std::shared_ptr<Taken> taken, size_t bytes)
+	{
+		if (!taken || taken->lru.empty())
+			return;
+#ifdef _WIN32
+		if (bytes >= kFreeOnThread)
+		{
+			// Moved into the thread: if it can't start, the lambda (and the
+			// memory with it) goes when Spawn returns, here.
+			thread_util::Spawn(L"Meowy pak free", [taken = std::move(taken)]() mutable { taken.reset(); },
+				thread_util::Priority::BelowNormal);
+			return;
+		}
+#else
+		(void)bytes;
+#endif
+		taken.reset();
+	}
+
+	// Empties the cache: taken out under g_mutex, freed after it (see Free).
+	// `locked` runs under the same hold, after the cache is emptied.
+	template <class F>
+	void ClearAndFree(F&& locked)
+	{
+		std::shared_ptr<Taken> taken;
+		try
+		{
+			taken = std::make_shared<Taken>();
+		}
+		catch (...)
+		{
+		}
+		size_t bytes = 0;
+		{
+			std::lock_guard<std::mutex> lock(g_mutex);
+			if (taken)
+			{
+				bytes = g_held;
+				TakeAllLocked(*taken);
+			}
+			else
+			{
+				// No memory even for the holder: freed here, under the lock, as before.
+				g_lru.clear();
+				g_byKey.clear();
+				g_held = 0;
+			}
+			locked();
+		}
+		Free(std::move(taken), bytes);
 	}
 
 	uint64_t Mix(uint64_t h)
@@ -198,13 +269,38 @@ namespace pak_cache
 
 		uint64_t Hash(const uint8_t* p, size_t n, uint64_t seed)
 		{
-			uint64_t h = Mix(seed ^ (static_cast<uint64_t>(n) * 0x9E3779B97F4A7C15ull));
+			// Four chains over 32-byte strides, one 8-byte word each, so the CPU
+			// runs them side by side (one chain waits on each multiply: this runs
+			// on the main thread for every LZMA read, hits included). Each starts
+			// from its own value, and they're folded in a fixed order, so the same
+			// words in other lanes hash differently. The cache lives for one join:
+			// no key is kept anywhere that a change here could break.
+			constexpr uint64_t kMul = 0x9E3779B97F4A7C15ull;
+			uint64_t h = Mix(seed ^ (static_cast<uint64_t>(n) * kMul));
 			size_t i = 0;
+			if (n >= 32)
+			{
+				uint64_t lane[4] = { h, h ^ 0x243F6A8885A308D3ull, h ^ 0x13198A2E03707344ull, h ^ 0xA4093822299F31D0ull };
+				for (; i + 32 <= n; i += 32)
+				{
+					uint64_t w[4];
+					std::memcpy(w, p + i, 32);
+					for (int k = 0; k < 4; ++k)
+					{
+						lane[k] = (lane[k] ^ w[k]) * kMul;
+						lane[k] ^= lane[k] >> 29;
+					}
+				}
+				h = Mix(lane[0]);
+				h = Mix(h ^ lane[1]);
+				h = Mix(h ^ lane[2]);
+				h = Mix(h ^ lane[3]);
+			}
 			for (; i + 8 <= n; i += 8)
 			{
 				uint64_t w;
 				std::memcpy(&w, p + i, 8);
-				h = (h ^ w) * 0x9E3779B97F4A7C15ull;
+				h = (h ^ w) * kMul;
 				h ^= h >> 29;
 			}
 			uint64_t tail = 0;
@@ -215,8 +311,16 @@ namespace pak_cache
 
 		// background: a prefill worker's own decompression (kept only while the
 		// join that started it is still loading; nothing waits on it).
+		// owned: the vector `dest` is the start of (a worker's own buffer), moved
+		// into the cache instead of copied when the entry fills it exactly.
+		//
+		// g_mutex is held only to look up, splice and pick what to drop: a hit's
+		// copy into `dest`, a new entry's copy, and freeing dropped entries all
+		// happen with it let go, so the main thread never waits on g_mutex behind
+		// a worker's multi-MB copy or free.
 		static int DecodeImpl(Decoder original, uint8_t* dest, size_t* destLen, const uint8_t* src, size_t* srcLen,
-			const uint8_t* props, size_t propsSize, size_t srcBytes, bool background, unsigned gen)
+			const uint8_t* props, size_t propsSize, size_t srcBytes, bool background, unsigned gen,
+			std::vector<uint8_t>* owned = nullptr)
 		{
 			if (!dest || !destLen || !src || !srcLen || !props || srcBytes == 0)
 				return original(dest, destLen, src, srcLen, props, propsSize);
@@ -224,6 +328,7 @@ namespace pak_cache
 			const uint64_t key = Hash(src, srcBytes, Hash(props, propsSize, (static_cast<uint64_t>(destIn) << 32) ^ srcIn));
 			const size_t headLen = srcBytes < sizeof(Entry::head) ? srcBytes : sizeof(Entry::head);
 			std::unique_lock<std::mutex> lock(g_mutex);
+			const size_t perEntry = g_perEntry;
 			bool mine = false;
 			for (;;)
 			{
@@ -236,12 +341,15 @@ namespace pak_cache
 					{
 						if (background)
 							return 0;   // already kept: nothing to do
-						std::memcpy(dest, e.data.data(), e.out);
-						*destLen = e.out;
-						*srcLen = e.used;
+						const std::shared_ptr<const std::vector<uint8_t>> data = e.data;
+						const size_t out = e.out, used = e.used;
 						g_lru.splice(g_lru.begin(), g_lru, it->second);
 						++g_hits;
-						g_saved += e.out;
+						g_saved += out;
+						lock.unlock();
+						std::memcpy(dest, data->data(), out);
+						*destLen = out;
+						*srcLen = used;
 						return 0;
 					}
 				}
@@ -264,44 +372,64 @@ namespace pak_cache
 				++g_misses;
 			lock.unlock();
 			const int result = original(dest, destLen, src, srcLen, props, propsSize);
+			// The new entry, made before g_mutex is taken again (a waiter for this
+			// key wakes once it's in). No memory for it: the game's own copy stands.
+			const size_t out = *destLen;
+			Lru made;
+			if (result == 0 && out > 0 && out <= destIn && out <= perEntry)
+			{
+				try
+				{
+					Entry e;
+					e.key = key;
+					e.destIn = destIn;
+					e.srcIn = srcIn;
+					e.srcBytes = srcBytes;
+					e.out = out;
+					e.used = *srcLen;
+					std::memset(e.head, 0, sizeof(e.head));
+					std::memcpy(e.head, src, headLen);
+					if (owned && owned->data() == dest && owned->size() == out)
+						e.data = std::make_shared<const std::vector<uint8_t>>(std::move(*owned));
+					else
+						e.data = std::make_shared<const std::vector<uint8_t>>(dest, dest + out);
+					made.push_back(std::move(e));
+				}
+				catch (...)
+				{
+					made.clear();
+				}
+			}
+			Lru dropped;
 			lock.lock();
 			if (mine)
 				g_inflight.erase(key);
 			g_cv.notify_all();
-			if (result != 0 || *destLen > destIn)
-				return result;
-			const size_t out = *destLen;
-			if (out == 0 || out > g_perEntry || g_byKey.count(key))
-				return result;
-			if (background && (!g_active.load() || g_gen.load() != gen || g_held + out > g_cap - g_cap / 8))
-				return result;   // that join is over, or the cap's nearly full: the game's own reads come first
-			Entry e;
-			e.key = key;
-			e.destIn = destIn;
-			e.srcIn = srcIn;
-			e.srcBytes = srcBytes;
-			e.out = out;
-			e.used = *srcLen;
-			std::memset(e.head, 0, sizeof(e.head));
-			std::memcpy(e.head, src, headLen);
-			try
+			const bool keep = !made.empty() && !g_byKey.count(key) &&
+				// A worker's entry only while its join loads, and not into the last
+				// eighth of the cap: the game's own reads come first.
+				!(background && (!g_active.load() || g_gen.load() != gen || g_held + out > g_cap - g_cap / 8));
+			if (keep)
 			{
-				e.data.assign(dest, dest + out);
+				try
+				{
+					g_byKey[key] = made.begin();
+					g_lru.splice(g_lru.begin(), made);
+					g_held += out;
+				}
+				catch (...)
+				{
+					// No memory for the index node: not kept, nothing changed.
+				}
+				while (g_held > g_cap && !g_lru.empty())
+				{
+					g_held -= g_lru.back().out;
+					g_byKey.erase(g_lru.back().key);
+					dropped.splice(dropped.begin(), g_lru, std::prev(g_lru.end()));
+				}
 			}
-			catch (...)
-			{
-				return result;   // no memory for it: the game's own copy stands
-			}
-			g_lru.push_front(std::move(e));
-			g_byKey[key] = g_lru.begin();
-			g_held += out;
-			while (g_held > g_cap && !g_lru.empty())
-			{
-				g_held -= g_lru.back().out;
-				g_byKey.erase(g_lru.back().key);
-				g_lru.pop_back();
-			}
-			return result;
+			lock.unlock();
+			return result;   // `made` (if not kept) and `dropped` are freed here, with g_mutex let go
 		}
 
 		int Decode(Decoder original, uint8_t* dest, size_t* destLen, const uint8_t* src, size_t* srcLen,
@@ -443,9 +571,10 @@ namespace pak_cache
 					// The zip-LZMA header ReadFromPack checks: version 2609h, props size 5.
 					if (src[0] != 0x09 || src[1] != 0x26 || src[2] != 5 || src[3] != 0)
 						return false;
+					// A fresh buffer for an entry the last one was moved into the cache from.
 					dest.resize(e.usize);
 					size_t destLen = e.usize, srcLen = e.csize;
-					DecodeImpl(original, dest.data(), &destLen, src.data() + 9, &srcLen, src.data() + 4, 5, e.csize - 9, true, gen);
+					DecodeImpl(original, dest.data(), &destLen, src.data() + 9, &srcLen, src.data() + 4, 5, e.csize - 9, true, gen, &dest);
 					return true;
 				};
 				for (;;)
@@ -474,11 +603,18 @@ namespace pak_cache
 				}
 				CloseHandle(f);
 			};
+			// The decoders stay at normal priority: the main thread waits up to 3 s
+			// for an entry one of them is on, so a lower one would hold the game up
+			// behind whatever else is running. There are only as many as spare
+			// physical cores (StartPrefill), so they don't share the main thread's.
 			std::vector<std::thread> pool;
 			try
 			{
 				for (unsigned t = 0; t < threads; ++t)
-					pool.emplace_back(work);
+					pool.emplace_back([&work]() {
+						thread_util::NameThisThread(L"Meowy pak decode");
+						work();
+					});
 			}
 			catch (...)
 			{
@@ -493,16 +629,15 @@ namespace pak_cache
 
 		void SetCap(size_t total, size_t perEntry)
 		{
-			std::lock_guard<std::mutex> lock(g_mutex);
-			g_cap = total;
-			g_perEntry = perEntry;
-			ClearLocked();
+			ClearAndFree([&]() {
+				g_cap = total;
+				g_perEntry = perEntry;
+			});
 		}
 
 		void Clear()
 		{
-			std::lock_guard<std::mutex> lock(g_mutex);
-			ClearLocked();
+			ClearAndFree([]() {});
 		}
 
 		void SetActiveForTest(bool on) { g_active = on; }
@@ -600,9 +735,8 @@ namespace pak_cache
 		g_active = on;
 		if (!on)
 		{
-			std::lock_guard<std::mutex> lock(g_mutex);
-			ClearLocked();
-			g_cv.notify_all();
+			// The player is in game: the whole cache goes, freed off this thread.
+			ClearAndFree([]() { g_cv.notify_all(); });
 		}
 		else
 		{
@@ -661,22 +795,64 @@ namespace
 		return dir.substr(0, dir.size() - 4) + L"\\garrysmod\\cache\\map_pack.bsp";
 	}
 
+	// Physical cores (a core with two hardware threads counts once), or 0 if
+	// Windows can't say.
+	unsigned PhysicalCores()
+	{
+		DWORD len = 0;
+		GetLogicalProcessorInformationEx(RelationProcessorCore, nullptr, &len);
+		if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || len == 0)
+			return 0;
+		std::vector<uint8_t> buf;
+		try
+		{
+			buf.resize(len);
+		}
+		catch (...)
+		{
+			return 0;
+		}
+		auto* info = reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(buf.data());
+		if (!GetLogicalProcessorInformationEx(RelationProcessorCore, info, &len))
+			return 0;
+		unsigned cores = 0;
+		for (DWORD at = 0; at < len;)
+		{
+			auto* one = reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(buf.data() + at);
+			if (one->Size == 0)
+				break;
+			if (one->Relationship == RelationProcessorCore)
+				++cores;
+			at += one->Size;
+		}
+		return cores;
+	}
+
 	void StartPrefill(unsigned gen)
 	{
 		const std::wstring path = MapPakPath();
 		if (path.empty())
 			return;
-		unsigned threads = std::thread::hardware_concurrency();
-		threads = threads > 2 ? threads - 2 : 1;
+		// Two physical cores left over, for the main thread (the wall while a
+		// map loads) and the material system's. Counting hardware threads would
+		// put decoders on the main thread's own core (its second hardware
+		// thread), slowing it down by a fifth or so while they run.
+		unsigned cores = PhysicalCores();
+		if (cores == 0)
+		{
+			const unsigned logical = std::thread::hardware_concurrency();
+			cores = logical > 1 ? logical / 2 : 1;
+		}
+		unsigned threads = cores > 2 ? cores - 2 : 1;
 #ifdef _WIN64
 		threads = (std::min)(threads, 6u);
 #else
 		threads = (std::min)(threads, 3u);   // 32-bit: a buffer each, and the address space is tight
 #endif
-		try
 		{
-			std::thread([path, threads, gen]() {
-				SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+			// The coordinator only waits for the decoders, so its own priority
+			// doesn't matter (theirs are set in PrefillFile).
+			const bool started = thread_util::Spawn(L"Meowy pak prefill", [path, threads, gen]() {
 				const auto t0 = std::chrono::steady_clock::now();
 				std::string why;
 				size_t n = 0;
@@ -697,10 +873,15 @@ namespace
 				std::lock_guard<std::mutex> lock(g_mutex);
 				if (g_gen.load() == gen)
 					g_prefillNote = line;
-			}).detach();
-		}
-		catch (...)
-		{
+			});
+			if (!started)
+			{
+				// Not tried again this join (g_prefillStarted stays set): every
+				// LZMA read would try to start a thread that can't start.
+				std::lock_guard<std::mutex> lock(g_mutex);
+				if (g_gen.load() == gen)
+					g_prefillNote = "nothing ahead (couldn't start a thread)";
+			}
 		}
 	}
 }

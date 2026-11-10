@@ -21,7 +21,13 @@
 // Ahead: on a join's first LZMA read, worker threads read the map's pak
 // (garrysmod\cache\map_pack.bsp, which the game writes as the map loads) and
 // decompress its entries into the cache, so the main thread finds them done; it
-// waits for one a worker is on rather than decompress it again.
+// waits for one a worker is on rather than decompress it again. One worker per
+// physical core beyond two (at most 6, 3 on 32-bit), at normal priority.
+//
+// The cache's lock is held only to look up, splice and pick what to drop: a
+// hit is copied out, a new entry copied (a worker's moved) in, and dropped
+// entries freed with it let go. A join's end empties it at once and frees the
+// memory on a thread of its own.
 
 #include <cstddef>
 #include <cstdint>
