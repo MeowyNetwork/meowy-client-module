@@ -3704,11 +3704,43 @@ bool DiscordOffSaved()
 }
 #endif
 
-int ClientOpen(ILuaBase* LUA)
+// A C++ exception out of a realm's open (std::bad_alloc in a 32-bit game, say)
+// must never unwind into the game: the stack goes back to how the game passed
+// it, one line says what happened, and the realm opens without the pack (or
+// with what was set up before it). Lua's own errors aren't std::exceptions and
+// pass through untouched, as in Guarded.
+template <int (*Open)(ILuaBase*)>
+int OpenGuarded(ILuaBase* LUA, const char* realm)
+{
+	const int top = LUA->Top();
+	try
+	{
+		return Open(LUA);
+	}
+	catch (const std::exception& e)
+	{
+		const int pushed = LUA->Top() - top;
+		if (pushed > 0)
+			LUA->Pop(pushed);
+		try
+		{
+			PrintLine(LUA, std::string("[Meowy Client Pack] the ") + realm + " realm couldn't open: " + e.what());
+		}
+		catch (const std::exception&)
+		{
+		}
+	}
+	return 0;
+}
+
+int ClientOpenBody(ILuaBase* LUA)
 {
 #ifdef _WIN32
 	// Switched off by the signed policy (policy.h): only the version, nothing runs.
-	policy::StartFetching(PolicyDir());
+	// The menu realm's fetch already runs when the start-up stub loaded this
+	// DLL (pinned); without it, one fetch on a thread holding its own reference
+	// to the DLL, which the game frees after the realm closes.
+	policy::StartFetching(PolicyDir(), startup_hook::MenuLoaded() ? policy::Fetch::Periodic : policy::Fetch::OnceUnpinned);
 	if (!PolicyAllows())
 	{
 		LUA->PushSpecial(SPECIAL_GLOB);
@@ -3801,6 +3833,11 @@ int ClientOpen(ILuaBase* LUA)
 	return 0;
 }
 
+int ClientOpen(ILuaBase* LUA)
+{
+	return OpenGuarded<ClientOpenBody>(LUA, "client");
+}
+
 int ClientClose(ILuaBase* LUA)
 {
 	(void)LUA;
@@ -3808,7 +3845,12 @@ int ClientClose(ILuaBase* LUA)
 	// kicked or dropped before InitPostEntity put it back, too): the material
 	// reload is never skipped for whatever is joined next. Unpinned (the pack
 	// didn't start with the game), the DLL is freed after this, and with it the
-	// only record of where the patch is.
+	// only record of where the patch is. So no thread may run in an unpinned
+	// copy without its own reference to the DLL (thread_util.h): the policy's
+	// one-shot fetch and a toast worker hold one and keep the DLL mapped until
+	// they end, and nothing here waits for them. Discord's worker is stopped
+	// here with a bounded wait; one that doesn't stop in time holds its own
+	// reference too.
 	engine_patches::RestoreMaterialReload();
 	discord::Shutdown();
 	// No more notifications; the badge and the toasts' click handlers go.
@@ -3831,21 +3873,15 @@ GMOD_MODULE_OPEN()
 }
 
 #ifdef _WIN32
-// Menu-state entry point, called by gmsv_meowy_boot when the game starts
-// (src/boot/boot.cpp). Only the version is exposed there for now; the menu
-// realm is where the join features (our loading screen) will live.
-GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
+namespace
 {
-	// The client realm's require("meowy") gets this same DLL and frees it when
-	// the player leaves a server. Pinned, it stays loaded for the menu realm.
-	HMODULE self = nullptr;
-	GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
-		reinterpret_cast<LPCWSTR>(&meowy_menu_open), &self);
-
+// The menu realm's open (meowy_menu_open, below).
+int MenuOpenBody(ILuaBase* LUA)
+{
 	// The kill switch first (policy.h): the policy kept from last time decides
 	// this start; a newer one is fetched in the background and applies to
 	// settings at once (meowy.Setting) and to the whole pack from the next start.
-	policy::StartFetching(PolicyDir());
+	policy::StartFetching(PolicyDir(), policy::Fetch::Periodic);
 	const bool allowed = PolicyAllows();
 
 	LUA->PushSpecial(SPECIAL_GLOB);
@@ -4042,6 +4078,20 @@ GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
 	}
 	LUA->Pop();
 	return 0;
+}
+}
+
+// Menu-state entry point, called by gmsv_meowy_boot when the game starts
+// (src/boot/boot.cpp). Only the version is exposed there for now; the menu
+// realm is where the join features (our loading screen) will live.
+GMOD_DLL_EXPORT int meowy_menu_open(ILuaBase* LUA)
+{
+	// The client realm's require("meowy") gets this same DLL and frees it when
+	// the player leaves a server. Pinned, it stays loaded for the menu realm.
+	HMODULE self = nullptr;
+	GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+		reinterpret_cast<LPCWSTR>(&meowy_menu_open), &self);
+	return OpenGuarded<MenuOpenBody>(LUA, "menu");
 }
 #endif
 

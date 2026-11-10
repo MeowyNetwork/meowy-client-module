@@ -4,13 +4,14 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <mutex>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <winhttp.h>
-#include <thread>
+#include "thread_util.h"
 #endif
 
 namespace policy
@@ -54,31 +55,44 @@ namespace policy
 		// The kept files (policy.txt/.sig/.bin): read-check-replace (Offer), the
 		// stub file's heal and the start's read are one step each, so neither
 		// can put an older policy back over a newer one. Taken before g_lock.
-		std::mutex g_fileLock;
+		std::timed_mutex g_fileLock;
 		bool g_haveCurrent = false;
+
+		// How long FileGuard waits for a process stuck holding the named mutex.
+		constexpr unsigned long kFileWaitMs = 10000;
 
 		// The same step across processes: the Meowy Launcher keeps and heals the
 		// same files (launcher/core/src/policy.rs FileGuard), under a named mutex
-		// of the same name. This thread's lock first, then the named one; a
-		// process stuck holding it is waited for 10 s, then gone ahead without.
+		// of the same name. This thread's lock first, then the named one.
+		// The full wait (kFileWaitMs, the default): this process's lock however
+		// long it takes, then a process stuck holding the named one is waited
+		// for 10 s and gone ahead without. A shorter wait (the game's thread,
+		// with a policy already in memory) gives up on either lock: then Owned()
+		// is false and the caller leaves the files alone for now.
 		class FileGuard
 		{
 		public:
-			FileGuard() : m_lock(g_fileLock)
+			explicit FileGuard(unsigned long waitMs = kFileWaitMs) : m_lock(g_fileLock, std::defer_lock)
 			{
+				if (waitMs >= kFileWaitMs)
+					m_lock.lock();
+				else if (!m_lock.try_lock_for(std::chrono::milliseconds(waitMs)))
+					return;
 #ifdef _WIN32
 				m_mutex = CreateMutexW(nullptr, FALSE, kFileMutexName);
 				if (m_mutex)
 				{
-					const DWORD r = WaitForSingleObject(m_mutex, 10000);
+					const DWORD r = WaitForSingleObject(m_mutex, waitMs);
 					m_owned = r == WAIT_OBJECT_0 || r == WAIT_ABANDONED;
 				}
+#else
+				m_owned = true;
 #endif
 			}
 			~FileGuard()
 			{
 #ifdef _WIN32
-				if (m_owned)
+				if (m_owned && m_mutex)
 					ReleaseMutex(m_mutex);
 				if (m_mutex)
 					CloseHandle(m_mutex);
@@ -87,16 +101,38 @@ namespace policy
 			FileGuard(const FileGuard&) = delete;
 			FileGuard& operator=(const FileGuard&) = delete;
 
+			// Both locks are held: this process's and the named one.
+			bool Owned() const { return m_lock.owns_lock() && m_owned; }
+
 		private:
-			std::lock_guard<std::mutex> m_lock;
+			std::unique_lock<std::timed_mutex> m_lock;
 #ifdef _WIN32
 			HANDLE m_mutex = nullptr;
-			bool m_owned = false;
 #endif
+			bool m_owned = false;
 		};
 		Policy g_current;
 		Key g_currentKey = Key::None;
 		std::string g_lastFetch = "not fetched yet";
+
+		// policy.txt and policy.sig as StartFetching last read them (size and
+		// last write): unchanged, the policy in memory is still theirs. Under g_lock.
+		struct Stamp
+		{
+			bool have = false;
+			unsigned long long size = 0;
+			unsigned long long written = 0;
+		};
+		bool Same(const Stamp& a, const Stamp& b)
+		{
+			return a.have && b.have && a.size == b.size && a.written == b.written;
+		}
+		Stamp g_keptTxt, g_keptSig;
+
+		// Tests (detail): StartFetching's full reads, fetches done, no network.
+		std::atomic<unsigned> g_keptReads{ 0 };
+		std::atomic<unsigned> g_fetches{ 0 };
+		std::atomic<bool> g_offline{ false };
 
 		bool Digits(const std::string& s, size_t maxLen)
 		{
@@ -469,12 +505,21 @@ namespace policy
 			std::lock_guard<std::mutex> lock(g_lock);
 			g_keys = { release, ops, recovery };
 		}
+
+		unsigned KeptReads() { return g_keptReads.load(); }
+		unsigned Fetches() { return g_fetches.load(); }
+		void SetOffline(bool offline) { g_offline = offline; }
 	}
 
 #ifdef _WIN32
 	namespace
 	{
-		std::atomic<bool> g_fetching{ false };
+		std::atomic<bool> g_fetching{ false };       // the periodic loop runs (the pinned menu realm)
+		std::atomic<bool> g_fetchingOnce{ false };   // a one-shot fetch runs (the unpinned client realm)
+
+		// On the game's thread with a policy in memory: how long the kept files'
+		// locks are waited for before that policy is kept for now.
+		constexpr unsigned long kQuickWaitMs = 100;
 
 		// GET https://meowynetwork.com<path>: the body for a 200 (at most kMaxBody), else "".
 		std::string Get(const wchar_t* path)
@@ -528,17 +573,100 @@ namespace policy
 
 		void FetchOnce(const std::wstring& stateDir)
 		{
-			const std::string body = Get(L"/pack/v1/policy.txt");
-			const std::string sig = body.empty() ? std::string() : Get(L"/pack/v1/policy.sig");
 			std::string result;
-			if (body.empty() || sig.empty())
-				result = "couldn't fetch";
-			else if (body.compare(0, 20, "meowy-pack-policy 1\n") != 0)
-				result = "none published yet";   // the site answers unknown paths with its own page
+			if (g_offline)
+				result = "not fetched (offline)";
 			else
-				Offer(stateDir, body, sig, result);
-			std::lock_guard<std::mutex> lock(g_lock);
-			g_lastFetch = result + " at " + Now();
+			{
+				const std::string body = Get(L"/pack/v1/policy.txt");
+				const std::string sig = body.empty() ? std::string() : Get(L"/pack/v1/policy.sig");
+				if (body.empty() || sig.empty())
+					result = "couldn't fetch";
+				else if (body.compare(0, 20, "meowy-pack-policy 1\n") != 0)
+					result = "none published yet";   // the site answers unknown paths with its own page
+				else
+					Offer(stateDir, body, sig, result);
+			}
+			{
+				std::lock_guard<std::mutex> lock(g_lock);
+				g_lastFetch = result + " at " + Now();
+			}
+			++g_fetches;
+		}
+
+		Stamp StampOf(const std::wstring& path)
+		{
+			Stamp s;
+			WIN32_FILE_ATTRIBUTE_DATA a;
+			if (GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &a))
+			{
+				s.have = true;
+				s.size = (static_cast<unsigned long long>(a.nFileSizeHigh) << 32) | a.nFileSizeLow;
+				s.written = (static_cast<unsigned long long>(a.ftLastWriteTime.dwHighDateTime) << 32) | a.ftLastWriteTime.dwLowDateTime;
+			}
+			return s;
+		}
+
+		// policy.bin written again from `kept` when it differs. The caller holds a FileGuard.
+		bool HealLocked(const std::wstring& stateDir, const Policy& kept)
+		{
+			const std::string want = StubText(kept);
+			const std::string have = file_util::ReadSmall(PathIn(stateDir, L"policy.bin"), kMaxBody + 1024);
+			if (have == want)
+				return false;
+			// Never a lower seq than the stub's copy has: a newer policy is being
+			// kept (by the 1.7.0 launcher, which doesn't take the named mutex).
+			const size_t at = have.find("\nseq ");
+			if (at != std::string::npos)
+			{
+				const size_t end = have.find('\n', at + 5);
+				const std::string seq = have.substr(at + 5, end == std::string::npos ? std::string::npos : end - at - 5);
+				if (Digits(seq, 19) && std::stoull(seq) > kept.seq)
+					return false;
+			}
+			return file_util::WriteAtomic(PathIn(stateDir, L"policy.bin"), want);
+		}
+
+		// The kept policy into memory (and policy.bin healed from it), unless
+		// policy.txt and policy.sig are as the last read here found them and that
+		// policy is still the one in memory: then nothing is read, locked or
+		// verified (every join's client realm calls this on the game's thread).
+		void LoadKept(const std::wstring& stateDir)
+		{
+			const std::wstring txtPath = PathIn(stateDir, L"policy.txt"), sigPath = PathIn(stateDir, L"policy.sig");
+			bool haveCurrent = false;
+			{
+				const Stamp txt = StampOf(txtPath), sig = StampOf(sigPath);
+				std::lock_guard<std::mutex> lock(g_lock);
+				if (g_haveCurrent && Same(txt, g_keptTxt) && Same(sig, g_keptSig))
+					return;
+				haveCurrent = g_haveCurrent;
+			}
+			// Changed, or the first time. The lock even so: the .txt and the .sig are
+			// renamed into place one after the other (Offer, the launcher), and a read
+			// between the two would pair a new body with an old signature, fail to
+			// verify and leave no policy at all (everything on). With a policy in
+			// memory the game's thread doesn't wait long for it: busy (the fetch
+			// thread or the launcher keeping a new one), that policy stays for now
+			// and the files are read at the next call.
+			FileGuard files(haveCurrent ? kQuickWaitMs : kFileWaitMs);
+			if (haveCurrent && !files.Owned())
+				return;
+			const Stamp txt = StampOf(txtPath), sig = StampOf(sigPath);
+			++g_keptReads;
+			Policy kept;
+			Key key = Key::None;
+			if (!ReadKept(stateDir, &kept, &key))
+				return;
+			{
+				std::lock_guard<std::mutex> lock(g_lock);
+				g_current = kept;
+				g_haveCurrent = true;
+				g_currentKey = key;
+				g_keptTxt = txt;
+				g_keptSig = sig;
+			}
+			HealLocked(stateDir, kept);
 		}
 	}
 
@@ -549,52 +677,49 @@ namespace policy
 		Key key = Key::None;
 		if (!ReadKept(stateDir, &kept, &key))
 			return false;
-		const std::string want = StubText(kept);
-		const std::string have = file_util::ReadSmall(PathIn(stateDir, L"policy.bin"), kMaxBody + 1024);
-		if (have == want)
-			return false;
-		// Never a lower seq than the stub's copy has: a newer policy is being
-		// kept (by the 1.7.0 launcher, which doesn't take the named mutex).
-		const size_t at = have.find("\nseq ");
-		if (at != std::string::npos)
-		{
-			const size_t end = have.find('\n', at + 5);
-			const std::string seq = have.substr(at + 5, end == std::string::npos ? std::string::npos : end - at - 5);
-			if (Digits(seq, 19) && std::stoull(seq) > kept.seq)
-				return false;
-		}
-		return file_util::WriteAtomic(PathIn(stateDir, L"policy.bin"), want);
+		return HealLocked(stateDir, kept);
 	}
 
-	void StartFetching(const std::wstring& stateDir)
+	void StartFetching(const std::wstring& stateDir, Fetch mode)
 	{
-		{
-			// The fetch thread a first call started may be taking a newer one.
-			FileGuard files;
-			Policy kept;
-			Key key = Key::None;
-			if (ReadKept(stateDir, &kept, &key))
-			{
-				std::lock_guard<std::mutex> lock(g_lock);
-				g_current = kept;
-				g_haveCurrent = true;
-				g_currentKey = key;
-			}
-		}
-		HealStubFile(stateDir);
-		if (!HaveKeys() || g_fetching.exchange(true))
+		LoadKept(stateDir);
+		if (!HaveKeys())
 			return;
-		std::thread([stateDir]
+		if (mode == Fetch::Periodic)
 		{
-			for (;;)
+			// The pinned menu realm: now, then every 30 minutes, for the rest of
+			// the process. A thread that couldn't start is tried again next call.
+			if (g_fetching.exchange(true))
+				return;
+			if (!thread_util::Spawn(L"Meowy policy", [stateDir]
+				{
+					for (;;)
+					{
+						FetchOnce(stateDir);
+						Sleep(30 * 60 * 1000);
+					}
+				}, thread_util::Priority::Background))
+				g_fetching = false;
+			return;
+		}
+		// The client realm without the start-up stub: this DLL isn't pinned and is
+		// freed after the realm closes, so one fetch and no loop. The thread holds
+		// its own reference to the DLL (thread_util), which stays mapped until the
+		// fetch is done. One at a time; the next join starts the next.
+		if (g_fetching.load() || g_fetchingOnce.exchange(true))
+			return;
+		if (!thread_util::Spawn(L"Meowy policy (once)", [stateDir]
 			{
+				struct Done
+				{
+					~Done() { g_fetchingOnce = false; }
+				} done;
 				FetchOnce(stateDir);
-				Sleep(30 * 60 * 1000);
-			}
-		}).detach();
+			}, thread_util::Priority::Background))
+			g_fetchingOnce = false;
 	}
 #else
 	bool HealStubFile(const std::wstring&) { return false; }
-	void StartFetching(const std::wstring&) {}
+	void StartFetching(const std::wstring&, Fetch) {}
 #endif
 }

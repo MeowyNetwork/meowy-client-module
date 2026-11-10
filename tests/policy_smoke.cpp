@@ -212,6 +212,63 @@ int main(int argc, char** argv)
 		Check("stub file: the same seq is still healed", policy::HealStubFile(dir));
 	}
 
+	// Every realm open (StartFetching, on the game's thread): the kept files are
+	// read and checked once, then only again when they changed; a contended lock
+	// isn't waited for while a policy is in memory; the client realm's one-shot
+	// fetch ends (no network here).
+	{
+		using policy::detail::Fetches;
+		using policy::detail::KeptReads;
+		auto waitFetches = [](unsigned n)
+		{
+			for (int i = 0; i < 500 && Fetches() < n; ++i)
+				Sleep(10);
+			return Fetches() >= n;
+		};
+		policy::detail::SetOffline(true);
+		const unsigned reads = KeptReads(), fetches = Fetches();
+		policy::StartFetching(dir, policy::Fetch::OnceUnpinned);
+		Check("start: the kept files read", KeptReads() == reads + 1 && policy::Effective().seq == 5);
+		policy::StartFetching(dir, policy::Fetch::OnceUnpinned);
+		Check("start again, nothing changed: not read again", KeptReads() == reads + 1 && policy::Effective().seq == 5);
+		Check("one-shot fetch: done", waitFetches(fetches + 1) && policy::Describe().find("not fetched (offline)") != std::string::npos);
+		Sleep(200);   // a second one the call above may have started
+		const unsigned done = Fetches();
+		policy::StartFetching(dir, policy::Fetch::OnceUnpinned);
+		Check("one-shot fetch: the next one starts after it ended", waitFetches(done + 1));
+
+		file_util::WriteAtomic(dir + L"\\policy.txt", P4.body);
+		file_util::WriteAtomic(dir + L"\\policy.sig", std::string(P4.sig) + "\n");
+		policy::StartFetching(dir, policy::Fetch::OnceUnpinned);
+		Check("start: a changed kept policy is read", KeptReads() == reads + 2 && policy::Effective().seq == 4);
+
+		// The launcher holding the named mutex while the files change: the policy
+		// in memory stays, without waiting for it, and the files are read next time.
+		HANDLE other = CreateMutexW(nullptr, FALSE, policy::kFileMutexName);
+		std::atomic<bool> held{ false }, letGo{ false };
+		std::thread holder([&] {
+			WaitForSingleObject(other, INFINITE);
+			held = true;
+			while (!letGo)
+				Sleep(1);
+			ReleaseMutex(other);
+		});
+		while (!held)
+			Sleep(1);
+		file_util::WriteAtomic(dir + L"\\policy.txt", P5.body);
+		file_util::WriteAtomic(dir + L"\\policy.sig", std::string(P5.sig) + "\n");
+		const DWORD start = GetTickCount();
+		policy::StartFetching(dir, policy::Fetch::OnceUnpinned);
+		const DWORD waited = GetTickCount() - start;
+		Check("start, files busy: the policy in memory kept", KeptReads() == reads + 2 && policy::Effective().seq == 4);
+		Check("start, files busy: no long wait", waited < 1000);
+		letGo = true;
+		holder.join();
+		CloseHandle(other);
+		policy::StartFetching(dir, policy::Fetch::OnceUnpinned);
+		Check("start, files free again: read", KeptReads() == reads + 3 && policy::Effective().seq == 5);
+	}
+
 	// Edited on disk: no longer verifies, so it isn't kept.
 	file_util::WriteAtomic(dir + L"\\policy.txt", "meowy-pack-policy 1\nseq 9\npack_enabled 1\n");
 	Check("edited on disk: not used", !policy::Current(dir, &kept));
