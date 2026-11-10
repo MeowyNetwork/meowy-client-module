@@ -1216,6 +1216,7 @@ namespace
 		unsigned webTried = 0, seenAsk = 0;
 		int restarts = 0;
 		ULONGLONG restartAt = 0;
+		bool restartAfterJoin = false;   // it failed during this join: started again a little after it
 
 		// The page's scale from last time, so the fallback matches it from the
 		// first frame (WebView2 only reports it once its controller is up).
@@ -1418,6 +1419,7 @@ namespace
 					pageStale = false;
 				}
 				restartAt = 0;   // this join starts it if it needs it
+				restartAfterJoin = false;
 				// Outside g.m: starting WebView2 loads its DLL and may launch its
 				// browser, and the game thread takes g.m every frame. It may also
 				// pump this thread's messages, and WndProc takes g.m.
@@ -1471,6 +1473,7 @@ namespace
 					webShown = false;
 					pageStale = false;
 					fullBlit = frameNow = true;
+					restartAfterJoin = true;
 					std::lock_guard<std::mutex> lock(g.m);
 					Log(wasShown ? "web failed while shown" : "web failed");
 				}
@@ -1552,6 +1555,14 @@ namespace
 				// this join showed is reloaded at once at the menu, but in game
 				// only at the next join.
 				atMenu = !reachedGame;
+				// A page that failed during this join is started again a little
+				// after it (if it's still wanted then), as for one that fails
+				// while hidden, so the next join doesn't have to cold-start it.
+				if (restartAfterJoin)
+				{
+					restartAfterJoin = false;
+					restartAt = restarts < kMaxRestarts ? now + kRestartWaitMs[restarts] : 0;
+				}
 				ShowWindow(v.hwnd, SW_HIDE);
 				SetLayeredWindowAttributes(v.hwnd, 0, 0, LWA_ALPHA);
 				lastAlpha = 0;

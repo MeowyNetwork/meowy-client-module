@@ -372,7 +372,10 @@ namespace loading_webview
 	void Poll()
 	{
 		Web& w = W();
-		if (w.pendingStart && !StillExiting())
+		// Asked every turn, Start pending or not, so a browser that has exited
+		// is let go of now, not only at the next Start or Stop.
+		const bool exiting = StillExiting();
+		if (w.pendingStart && !exiting)
 		{
 			w.pendingStart = false;
 			CreateNow();
