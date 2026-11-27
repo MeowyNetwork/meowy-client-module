@@ -31,7 +31,7 @@ using Microsoft.Win32;
 
 [assembly: AssemblyTitle("Meowy Client Pack")]
 [assembly: AssemblyProduct("Meowy Client Pack")]
-[assembly: AssemblyVersion("1.8.0.0")]
+[assembly: AssemblyVersion("1.8.1.0")]
 
 namespace MeowyInstaller
 {
