@@ -3133,8 +3133,7 @@ end
 
 -- The tag a listed server gets (verdict first, then the AFK share), or nil.
 local function tagOf(address)
-	if meowy.IsOurServer(address) then return nil end
-	local v = verdictOf(address)
+	local v = verdictOf(address)   -- our own server too: it gets no pass
 	local tag = (v and tagFor(v) or "") .. afkTag(address)
 	if tag == "" then return nil end
 	return tag, v
@@ -3397,7 +3396,7 @@ local function startChecks(type)
 	end
 	local list = {}
 	for address, s in pairs(seen) do
-		if s.type == type and s.players - s.bots >= MIN_PLAYERS and not meowy.IsOurServer(address)
+		if s.type == type and s.players - s.bots >= MIN_PLAYERS
 			and not pending[address] and not (mine[address] and now - mine[address].at < RECHECK) then
 			list[#list + 1] = address
 		end
@@ -3754,8 +3753,11 @@ local panelSince -- SysTime when GMod's loading panel opened, for how long it sh
 
 -- A separate garrysmod/data for each server (data_sandbox.h): a server's Lua
 -- sees only the files it wrote itself, never other servers' or the menu's.
-local sandbox = meowy.Setting("meowy_data_sandbox", "1",
-	"Meowy Client Pack: give every server its own garrysmod/data (0 = one data folder for all)")
+-- Off unless you turn it on (1.8.1): with it, a server doesn't see your PAC3
+-- outfits, dupes or addon settings either. An install that already had it on
+-- keeps it (the saved setting wins over this default).
+local sandbox = meowy.Setting("meowy_data_sandbox", "0",
+	"Meowy Client Pack: give every server its own garrysmod/data (0 = one data folder for all, as the game does)")
 hook.Add("Think", "MeowyClientPack.DataSandbox", function()
 	meowy.DataSandbox(sandbox:GetBool() and (IsInLoading() or IsInGame()))
 end)

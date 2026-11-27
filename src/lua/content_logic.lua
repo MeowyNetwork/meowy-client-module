@@ -84,12 +84,14 @@ function M.newer(remote, installed, slack)
 	return remote ~= nil and remote > installed + (tonumber(slack) or 256)
 end
 
--- May a server's content be downloaded now? t = { ours, known (joined before),
+-- May a server's content be downloaded now? t = { known (joined before),
 -- bytes (what it needs), asked ("Get ready" clicked) }. "go" or "ask".
+-- Meowy Network's own server is no exception: nothing of it is downloaded
+-- until you've joined it once (or clicked "Get ready").
 function M.consent(t)
 	if t.asked then return "go" end
 	if (tonumber(t.bytes) or 0) > M.CAP then return "ask" end
-	if t.ours or t.known then return "go" end
+	if t.known then return "go" end
 	return "ask"
 end
 
