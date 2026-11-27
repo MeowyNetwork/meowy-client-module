@@ -214,7 +214,7 @@
 	// the list has, so its place in gamemodes, the selection and the star stay.
 	function updateServer(s, n) {
 		var keys = ['name', 'desc', 'map', 'players', 'max', 'bots', 'ping', 'hint', 'pass', 'anon', 'ver', 'verC', 'hasmap',
-			'honest', 'penalty', 'rank', 'lname', 'lmap', 'listen', 'flag', 'cat', 'ws'];
+			'honest', 'why', 'penalty', 'rank', 'lname', 'lmap', 'listen', 'flag', 'cat', 'ws'];
 		for (var k = 0; k < keys.length; k++) s[keys[k]] = n[keys[k]];
 		if (n.desc && !s.desc) s.desc = n.desc;
 	}
