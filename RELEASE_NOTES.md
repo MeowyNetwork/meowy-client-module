@@ -4,6 +4,7 @@
   - Meowy settings → **Multicore rendering** turns it off. If you set `mat_queue_mode` to 0 or 1 yourself, the pack leaves it alone.
   - If the game crashes twice in a row with it on, the pack turns it off and tells you at the main menu.
 - **Lighter joins.** The pack's own work during a join moved off the game's main thread: its file checks, the pre-warm list, the server index and its downloads. Updates and policy checks wait until a join has finished.
+  - A game started straight into a server (a Steam or Discord join link, the launcher's **Join**) now gets the faster join too. Until now that first join went without the fast Lua lookup, file checks, `file.Find` and fonts.
 - **Crash and freeze fixes.**
   - A crash when the game unloaded the pack while one of its threads was still running.
   - The fast file checks could keep a stale answer when a file was written during a join.

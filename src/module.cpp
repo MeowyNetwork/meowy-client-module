@@ -3769,6 +3769,19 @@ end)
 local fastLookup = meowy.Setting("meowy_fast_lua_lookup", "1",
 	"Meowy Client Pack: find a server's Lua files through the string table's index (0 = the game's own scan)")
 local fastLookupApplied, wasJoining, wasLoading
+local function applyFastLookup()
+	local want = fastLookup:GetBool()
+	if want == fastLookupApplied then return end
+	fastLookupApplied = want
+	local ok, why = meowy.FastLuaLookup(want)
+	if not ok then print("[Meowy Client Pack] fast Lua lookup: " .. tostring(why)) end
+end
+-- Once now, as the pack starts, and not only from Think: a game started
+-- straight into a server (a Steam or Discord join link, +connect) is already
+-- loading by its first Think, and that join would go without it. The same for
+-- file.Find, the fonts and the file checks below.
+local startsAtMenu = not (IsInLoading() or IsInGame())
+if startsAtMenu then applyFastLookup() end
 hook.Add("Think", "MeowyClientPack.FastLuaLookup", function()
 	local loading = IsInLoading()
 	local joining = loading or IsInGame()
@@ -3777,11 +3790,7 @@ hook.Add("Think", "MeowyClientPack.FastLuaLookup", function()
 	-- included (its new table can sit where the old one was).
 	if (joining and not wasJoining) or (loading and not wasLoading) then meowy.FastLuaLookupNewJoin() end
 	wasJoining, wasLoading = joining, loading
-	local want = fastLookup:GetBool()
-	if want == fastLookupApplied or joining then return end
-	fastLookupApplied = want
-	local ok, why = meowy.FastLuaLookup(want)
-	if not ok then print("[Meowy Client Pack] fast Lua lookup: " .. tostring(why)) end
+	if not joining then applyFastLookup() end
 end)
 concommand.Add("meowy_fast_lua_lookup_status", function()
 	print("[Meowy Client Pack] fast Lua lookup: " .. meowy.FastLuaLookupState())
@@ -3793,13 +3802,17 @@ end)
 local fastFind = meowy.Setting("meowy_fast_lua_find", "1",
 	"Meowy Client Pack: let file.Find on a server's Lua skip the files that can't match (0 = the game's own walk)")
 local fastFindApplied
-hook.Add("Think", "MeowyClientPack.FastLuaFind", function()
-	if IsInLoading() or IsInGame() then return end
+local function applyFastFind()
 	local want = fastFind:GetBool()
 	if want == fastFindApplied then return end
 	fastFindApplied = want
 	local ok, why = meowy.FastLuaFind(want)
 	if not ok then print("[Meowy Client Pack] fast file.Find: " .. tostring(why)) end
+end
+if startsAtMenu then applyFastFind() end
+hook.Add("Think", "MeowyClientPack.FastLuaFind", function()
+	if IsInLoading() or IsInGame() then return end
+	applyFastFind()
 end)
 concommand.Add("meowy_fast_lua_find_status", function()
 	print("[Meowy Client Pack] fast file.Find: " .. meowy.FastLuaFindState())
@@ -3811,13 +3824,17 @@ end)
 local fastFonts = meowy.Setting("meowy_fast_fonts", "1",
 	"Meowy Client Pack: don't load gdi32.dll again for every font file on each join (0 = the game's own way)")
 local fastFontsApplied
-hook.Add("Think", "MeowyClientPack.FastFonts", function()
-	if IsInLoading() or IsInGame() then return end
+local function applyFastFonts()
 	local want = fastFonts:GetBool()
 	if want == fastFontsApplied then return end
 	fastFontsApplied = want
 	local ok, why = meowy.FastFonts(want)
 	if not ok then print("[Meowy Client Pack] fast fonts: " .. tostring(why)) end
+end
+if startsAtMenu then applyFastFonts() end
+hook.Add("Think", "MeowyClientPack.FastFonts", function()
+	if IsInLoading() or IsInGame() then return end
+	applyFastFonts()
 end)
 concommand.Add("meowy_fast_fonts_status", function()
 	print("[Meowy Client Pack] fast fonts: " .. meowy.FastFontsState())
@@ -3847,14 +3864,17 @@ end)
 local fastFiles = meowy.Setting("meowy_fast_file_checks", "1",
 	"Meowy Client Pack: answer missing-file checks from folder listings while a server loads (0 = the game's own way)")
 local fastFilesApplied, fastFilesActive
+local function applyFastFiles()
+	local want = fastFiles:GetBool()
+	if want == fastFilesApplied then return end
+	fastFilesApplied = want
+	local ok, why = meowy.FastFileChecks(want)
+	if not ok then print("[Meowy Client Pack] fast file checks: " .. tostring(why)) end
+end
+if startsAtMenu then applyFastFiles() end
 hook.Add("Think", "MeowyClientPack.FastFileChecks", function()
 	local loading = IsInLoading() and not IsInGame()
-	local want = fastFiles:GetBool()
-	if want ~= fastFilesApplied and not IsInLoading() and not IsInGame() then
-		fastFilesApplied = want
-		local ok, why = meowy.FastFileChecks(want)
-		if not ok then print("[Meowy Client Pack] fast file checks: " .. tostring(why)) end
-	end
+	if not IsInLoading() and not IsInGame() then applyFastFiles() end
 	local active = loading and fastFilesApplied == true
 	if active ~= fastFilesActive then
 		fastFilesActive = active
