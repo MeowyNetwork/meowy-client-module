@@ -624,8 +624,11 @@ on Meowy Network's servers.
     The game saves it to `config.cfg` when it closes normally; if it's lost (a crash, a config file), the
     pack sets 60 again at the next start, unless you've set a value of your own. The pack never rewrites
     `config.cfg` itself.
-  - If you're disconnected from a Meowy Network server anyway, the pack rejoins it: "Reconnecting to Meowy
-    Network... (attempt n)", with **Cancel**. What the server gives back is its own rule: after a real
+  - If you're disconnected anyway, the pack rejoins the server you were on: "Reconnecting to the server..."
+    (or "to Meowy Network"), with **Cancel**. From 1.8.1 that is any server whose address is a public
+    `a.b.c.d:port`, never a LAN, loopback or P2P one. On a server that isn't ours it rejoins by itself at
+    most 3 times an hour; after that the card only offers **Rejoin now**. A restart notice counts only from
+    our own server. On Meowy Network, what the server gives back is its own rule: after a real
     drop (it saw you frozen for 10 seconds or more) while you were alive, and only if you're back within
     3 minutes, at most 3 times an hour and 10 a day. Your job comes back through the normal job limits
     (vote and mayor jobs never do). Your weapons, health and armor come back only if you weren't in a
