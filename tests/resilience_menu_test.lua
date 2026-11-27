@@ -184,11 +184,11 @@ local function world(opts)
 		end,
 		-- The menu Lua's own files (module.cpp's MenuFileRead/Write; opts.menuFiles: what's on disk at start).
 		MenuFileRead = function(kind)
-			if w.menuFiles == nil then w.menuFiles = {} for k, v in pairs(opts.menuFiles or {}) do w.menuFiles[k] = v end end
+			if w.menuFiles == nil then w.menuFiles = { repairs = (not opts.welcome) and "welcome_1\n" or nil } for k, v in pairs(opts.menuFiles or {}) do w.menuFiles[k] = v end end
 			return w.menuFiles[kind] or ""
 		end,
 		MenuFileWrite = function(kind, text)
-			if w.menuFiles == nil then w.menuFiles = {} for k, v in pairs(opts.menuFiles or {}) do w.menuFiles[k] = v end end
+			if w.menuFiles == nil then w.menuFiles = { repairs = (not opts.welcome) and "welcome_1\n" or nil } for k, v in pairs(opts.menuFiles or {}) do w.menuFiles[k] = v end end
 			w.menuFiles[kind] = text ~= "" and text or nil
 			w.menuFileWrites = (w.menuFileWrites or 0) + 1
 			return true
@@ -534,8 +534,43 @@ local function find(pred)
 	for _, p in ipairs(w and w.panels or {}) do if not p.removed and pred(p) then return p end end
 end
 
+-- The first start: a welcome with the two settings that are the player's to
+-- decide, shown once. Then the opt-in, but only on an install that has been on
+-- our server (the question is about it).
+w = world({ welcome = true })
+w.run(4)
+check("welcome: shown at the first start", find(function(p) return p.meowyWelcome end) ~= nil, true)
+check("welcome: the opt-in waits behind it", find(function(p) return type(p.text) == "string" and p.text:find("Back within 3 minutes", 1, true) ~= nil end), nil)
+check("welcome: no choice without the setting in this build", find(function(p) return p.meowyToggle == "welcome_meowy_data_sandbox" end), nil)
+check("welcome: Done closes it", w.click("Done"), true)
+check("welcome: remembered", (w.menuFiles.repairs or ""):find("welcome_1\n", 1, true) ~= nil, true)
+check("welcome: never joined our server: no stay-connected question", w.click("Stay connected"), false)
+w = world({ welcome = true, others = { meowy_serverlist_reports = "1", meowy_data_sandbox = "0" } })
+w.recorded = { [OURS] = true }
+w.run(4)
+local wr = find(function(p) return p.meowyToggle == "welcome_meowy_serverlist_reports" end)
+local ws = find(function(p) return p.meowyToggle == "welcome_meowy_data_sandbox" end)
+check("welcome: reports shown as they are (on)", wr and wr.on, true)
+check("welcome: the data folder shown as it is (off)", ws and ws.on, false)
+if wr then wr:SetOn(false) end
+if ws then ws:SetOn(true) end
+check("welcome: reports turned off through the console", w.convars.meowy_serverlist_reports, "0")
+check("welcome: the data folder turned on through the console", w.convars.meowy_data_sandbox, "1")
+check("welcome: Done", w.click("Done"), true)
+check("welcome: then the opt-in, on an install that has joined our server", w.click("Stay connected"), true)
+w = world({ welcome = true })
+w.run(4)
+check("welcome: All settings opens the Privacy tab", w.click("All settings"), true)
+check("welcome: the settings window is open", find(function(p) return p.tabId == "privacy" end) ~= nil, true)
+check("welcome: and it's remembered", (w.menuFiles.repairs or ""):find("welcome_1\n", 1, true) ~= nil, true)
+w = world({})
+w.run(4)
+check("welcome: not shown again", find(function(p) return p.meowyWelcome end), nil)
+check("never joined our server: the stay-connected question isn't asked", w.click("Stay connected"), false)
+
 -- Opt-in: asked once, Yes sets cl_timeout 60 and remembers the old value
 w = world({})
+w.recorded = { [OURS] = true }
 w.run(4)
 -- It promises only what the server reliably restores (meowy_resilience).
 local promise = find(function(p) return type(p.text) == "string" and p.text:find("Back within 3 minutes", 1, true) ~= nil end)
@@ -553,6 +588,7 @@ check("still 60 at start: nothing run", #w2.commands, 0)
 
 -- No changes nothing
 w = world({})
+w.recorded = { [OURS] = true }
 w.run(4)
 w.click("Not now")
 check("No: cl_timeout untouched", w.cl_timeout, "30")

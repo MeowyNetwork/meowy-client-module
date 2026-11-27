@@ -1074,9 +1074,86 @@ local function keepTimeout()
 	RunConsoleCommand("cl_timeout", Logic.TIMEOUT_CL)
 end
 
--- One prompt at a time: the crash card first, then the opt-in question.
+-- The first start with the pack (and, once, the first on 1.8.1 for an install
+-- that had it before): what it does, and the two settings that are the
+-- player's to decide rather than a default's. Shown once: "welcome_1" in
+-- repairs.txt. Answered or dismissed, it doesn't come back.
+local WELCOME_MARK = "welcome_1\n"
+local function welcomeSeen()
+	if not (meowy.MenuFileRead and meowy.MenuFileWrite) then return true end
+	return string.find(meowy.MenuFileRead("repairs") or "", WELCOME_MARK, 1, true) ~= nil
+end
+local function askWelcome(after)
+	if welcomeSeen() then if after then after() end return end
+	local finished = false
+	local function finish()
+		if finished then return end
+		finished = true
+		local done = meowy.MenuFileRead("repairs") or ""
+		if not string.find(done, WELCOME_MARK, 1, true) then meowy.MenuFileWrite("repairs", done .. WELCOME_MARK) end
+		if after then after() end
+	end
+	local back, card = UI.Modal(600, finish)
+	back.meowyWelcome = true
+	local pad = S(28)
+	local inner = card.w - pad * 2
+	local blocks = { UI.Text(card, "Welcome to the Meowy Client Pack", "MeowyPack.Title", C.text) }
+	local body = UI.Text(card, "It makes Garry's Mod join servers faster, adds this home screen, Find servers and a "
+		.. "searchable console, turns on multicore rendering, and tells you when a server changed your settings. It "
+		.. "works on every server. Two things are yours to decide:", "MeowyPack.Body", C.body)
+	body.gapBefore = S(8)
+	blocks[#blocks + 1] = body
+	local function choice(name, title, text)
+		local o = meowy.SettingOf and meowy.SettingOf(name)
+		if not o then return end
+		local t = UI.Toggle(card, title, text, o:GetBool(), function(on) RunConsoleCommand(name, on and "1" or "0") end)
+		t.meowyToggle = "welcome_" .. name
+		t.gapBefore = S(14)
+		blocks[#blocks + 1] = t
+	end
+	choice("meowy_serverlist_reports", "Help check other servers' player counts",
+		"After a while on another server, the pack tells Meowy Network who was really connected there (the other "
+		.. "players' Steam IDs, pings and times). That is how servers with fake player counts are found. Off: "
+		.. "nothing about the servers you play on is sent.")
+	choice("meowy_data_sandbox", "A separate data folder for every server",
+		"Any server can read everything in garrysmod/data, other servers' files included. On: each server gets a "
+		.. "folder of its own, and your own files (PAC3 outfits, dupes) stay off servers too. Off: one folder, as "
+		.. "the game does.")
+	local note = UI.Text(card, "Every setting, each with what it does and sends, is in Meowy settings in the main menu.",
+		"MeowyPack.Small", C.dim)
+	note.gapBefore = S(14)
+	blocks[#blocks + 1] = note
+	local y = UI.stack(blocks, pad, pad, inner)
+	local function close(fn)
+		back.dismissed = true   -- answered: not a dismissal
+		back:Remove()
+		finish()
+		if fn then fn() end
+	end
+	local buttons = {
+		UI.Button(card, "All settings", "ghost", function() close(function() openSettings("privacy") end) end),
+		UI.Button(card, "Done", "primary", function() close() end),
+	}
+	y = y + S(26)
+	y = y + UI.row(buttons, pad, y, inner) + pad
+	back:Open(y)
+end
+
+-- Whether this install has been on Meowy Network: its Continue entry, or a join
+-- the pre-warm kept. The stay-connected question is about our server, so an
+-- install that never plays there isn't asked it.
+local function joinedOurServer()
+	local ours = meowy.OurServerAddress and meowy.OurServerAddress()
+	if not isstring(ours) or ours == "" then return false end
+	return (meowy.LastServer and meowy.LastServer() == ours)
+		or (meowy.PrewarmRecorded and meowy.PrewarmRecorded(ours) == true) or false
+end
+
+-- One prompt at a time: the crash card first, then the welcome, then the opt-in question.
 local function startup()
-	local function optIn() if not settings.asked then askOptIn() end end
+	local function optIn()
+		askWelcome(function() if not settings.asked and joinedOurServer() then askOptIn() end end)
+	end
 	if crashed and meowy.IsOurServer(crashed) then
 		local address = crashed
 		UI.Prompt({
