@@ -3,6 +3,7 @@
 - **Nothing of Meowy Network is fetched until you've joined it.** Its Workshop content and its loading page were prepared at the main menu on every install. Now that starts after your first join there.
 - **The separate `data` folder per server is opt-in.** New installs get Garry's Mod's own behaviour, so PAC3 outfits, dupes and addon settings follow you onto servers. `meowy_data_sandbox 1` turns the separation on; an install that already had it keeps it.
 - **Meowy Network gets no pass in the server list.** The pack no longer skips its own server when it tags servers or takes part in reports.
+- **"Is it safe?"** A new page, [docs/TRUST.md](https://github.com/MeowyNetwork/meowy-client-module/blob/main/docs/TRUST.md), lists every change the pack makes to the game, what that means for VAC, who can update it, and how to check the files.
 - **Find servers says why a server is marked.** Pick a server marked FAKE, VERIFIED, UNVERIFIED or LIST HIDDEN and its details say what the mark means, who found it and what they saw, with a link to the page on how servers are checked. Until now there was only a one-line tooltip.
 - **A welcome at the first start.** One window says what the pack does and asks the two things that are yours to decide: whether it reports who was really on the servers you play on, and whether each server gets its own data folder. Installs that had the pack before see it once too.
 - **The stay-connected question is only asked once you've played on Meowy Network,** since it is about that server.
