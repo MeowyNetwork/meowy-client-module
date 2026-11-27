@@ -768,6 +768,25 @@ check('settings: filters kept', side2().querySelectorAll('.mb-btn').find(b => b.
 check('settings: only valid regions', side2().querySelectorAll('.mb-flagchip').map(c => c.textContent + ':' + c.className).join(','), 'gb:mb-flagchip off');
 const tags2 = doc.getElementById('meowy-shell').querySelectorAll('.mb-srow').map(r => r.querySelector('.mb-c-name').children.filter(c => c.tagName === '#TEXT')[0].textContent + '=' + r.querySelector('.mb-tag').textContent + ':' + r.querySelector('.mb-tag').className);
 check('honest: tags, unverified ranked lower', tags2.join(' | '), 'Honest=VERIFIED:mb-tag good | Faker=FAKE - 5 real:mb-tag bad | Unknown=UNVERIFIED:mb-tag');
+// Why a server carries its mark: in the picked server's details, as text, with
+// the page on how servers are checked.
+S.win.MeowyBrowse.update(1, [
+	{ i: 1, a: '1.1.1.1:27015', n: 'Faker', d: 'Sandbox', m: 'gm_a', g: 'sandbox', p: 5, x: 32, ms: 40, h: 'FAKE - 5 real', hr: 5,
+		hw: 'Marked fake: about 5 of its players are real. Source: <b>checks</b>. What it saw: 9 back within 2 min of a restart.' },
+]);
+S.win.MeowyBrowse.flush();
+const shell2 = () => doc.getElementById('meowy-shell');
+const pick = name => shell2().querySelectorAll('.mb-srow').find(r => r.textContent.indexOf(name) >= 0).onclick();
+pick('Faker');
+const why2 = () => shell2().querySelector('.mb-why');
+check('why: shown for a marked server', !!why2() && why2().textContent.indexOf('about 5 of its players are real') >= 0, true);
+check('why: as text, no markup', shell2().querySelector('.mb-detail').all().some(e => e.tagName === 'B'), false);
+const howBtn = shell2().querySelector('.mb-detail').querySelectorAll('.mb-btn').find(b => b.textContent === 'How servers are checked');
+check('why: a button to how servers are checked', !!howBtn, true);
+if (howBtn) howBtn.onclick();
+check('why: it asks for the fixed page', JSON.stringify(S.posts[S.posts.length - 1]), '["browse_why",""]');
+pick('Honest');
+check('why: none without an explanation', why2(), null);
 
 // Meowy's server index (MR3): the list at once with ping hints, then Steam's
 // answers update the same rows; a newer index each minute while it's open.

@@ -142,5 +142,25 @@ check("unchanged (no title in the new one)", B.changed(a, b), false)
 b.players = 2
 check("players changed", B.changed(a, b), true)
 
+-- Why a server carries its mark.
+local why = B.why({ verdict = "fake", real = 16, source = "crawl", reasons = { "9 back within 2 min of a restart", "12 with no score change in 3 h" } })
+check("why: fake says the real count", why:find("about 16 of its players are real", 1, true) ~= nil, true)
+check("why: fake names the source", why:find("checks of the server's public answers", 1, true) ~= nil, true)
+check("why: fake gives the evidence", why:find("What it saw: 9 back within 2 min of a restart; 12 with no score change in 3 h.", 1, true) ~= nil, true)
+why = B.why({ verdict = "verified", source = "observer", reasons = { "observer joined 2026-11-22T11:08:08.963Z" } })
+check("why: verified says so", why:find("nothing fake was found", 1, true) ~= nil, true)
+check("why: a timestamp reads as a day", why:find("observer joined on 2026-11-22.", 1, true) ~= nil, true)
+why = B.why({ verdict = "unverified", source = "observer", reasons = { "blocks automated checks" } })
+check("why: unverified isn't an accusation", why:find("This isn't an accusation", 1, true) ~= nil, true)
+check("why: unverified says it ranks lower", why:find("ranks a little lower", 1, true) ~= nil, true)
+why = B.why({ verdict = "unverified", reasons = { "player list hidden" } })
+check("why: a hidden list is explained", why:find("Many big servers hide it", 1, true) ~= nil, true)
+check("why: this PC's own check is named", why:find("this PC's own look", 1, true) ~= nil, true)
+why = B.why({ verdict = "fake", real = 3, source = "players", reasons = { "a\tb\nc" .. string.rep("x", 300) } })
+check("why: control characters dropped", why:find("%c") == nil, true)
+check("why: kept short", #why <= 480, true)
+check("why: no verdict, nothing", B.why({ verdict = "ok" }), nil)
+check("why: junk, nothing", B.why("x"), nil)
+
 print(("%d checks, %d failed"):format(count, failures))
 if failures > 0 then os.exit(1) end

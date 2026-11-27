@@ -79,6 +79,7 @@
 		s.hasmap = typeof haveMap === 'function' ? !!haveMap(s.map) : true;
 		// The honest server list's tag (VERIFIED, FAKE - 12 real, ...); unverified ranks a little lower.
 		s.honest = str(r.h);
+		s.why = str(r.hw);   // why it carries that mark (the details pane)
 		s.penalty = Math.max(0, int(r.hp));
 		s.rank = rank(s) + s.penalty;
 		s.lname = s.name.toLowerCase();
@@ -213,7 +214,7 @@
 	// the list has, so its place in gamemodes, the selection and the star stay.
 	function updateServer(s, n) {
 		var keys = ['name', 'desc', 'map', 'players', 'max', 'bots', 'ping', 'hint', 'pass', 'anon', 'ver', 'verC', 'hasmap',
-			'honest', 'penalty', 'rank', 'lname', 'lmap', 'listen', 'flag', 'cat', 'ws'];
+			'honest', 'why', 'penalty', 'rank', 'lname', 'lmap', 'listen', 'flag', 'cat', 'ws'];
 		for (var k = 0; k < keys.length; k++) s[keys[k]] = n[keys[k]];
 		if (n.desc && !s.desc) s.desc = n.desc;
 	}
@@ -959,6 +960,15 @@
 		if (s.ver) fact(ui.dFacts, 'Version', formatVersion(s.ver) + (s.verC < 0 ? " (older than yours: you can't join)" : s.verC > 0 ? ' (newer than yours)' : ''));
 		if (s.flag) fact(ui.dFacts, 'Region', s.flag === 'europeanunion' ? 'EU' : s.flag.toUpperCase());
 		if (s.lastText) fact(ui.dFacts, 'Last visit', s.lastText);
+		// Why the server carries its mark: what it means, who says so and what
+		// they saw, with the page that says how servers are checked.
+		if (s.honest && s.why) {
+			var why = node('div', 'mb-small mb-why', s.why);
+			ui.dFacts.appendChild(why);
+			var how = button('How servers are checked', '', function () { post('browse_why', ''); });
+			how.title = "Opens Meowy Network's page: what is checked, what counts as fake, and the opt-out for server owners";
+			ui.dFacts.appendChild(how);
+		}
 		clear(ui.dActions);
 		var full = s.players >= s.max, waiting = st.waitFor === s.i;
 		var jb = node('span', 'mb-join' + (full ? ' full' : ''), full ? 'Join anyway' : 'Join');
