@@ -121,6 +121,7 @@
 #include "pak_cache.h"
 #include "policy.h"
 #include "version.h"
+#include "brand.h"
 #include "updater.h"
 #include "mouse_confine.h"
 #include "config_backup.h"
@@ -4204,6 +4205,9 @@ int MenuOpenBody(ILuaBase* LUA)
 	LUA->CreateTable();
 	LUA->PushString(VERSION);
 	LUA->SetField(-2, "VERSION");
+	// The site this build belongs to (brand.h), so no menu Lua spells it out.
+	LUA->PushString(MEOWY_BRAND_SITE);
+	LUA->SetField(-2, "SITE");
 	LUA->PushString("menu");
 	LUA->SetField(-2, "REALM");
 	SetFunction(LUA, "PolicyState", Guarded<PolicyState>);

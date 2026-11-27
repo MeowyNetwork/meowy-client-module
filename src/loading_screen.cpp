@@ -1,5 +1,6 @@
 #define _CRT_SECURE_NO_WARNINGS   // plain fopen/fscanf on our own small files
 #include "loading_screen.h"
+#include "brand.h"
 
 #ifdef _WIN32
 #define NOMINMAX   // std::min / std::max below
@@ -892,7 +893,7 @@ namespace
 
 	// --- The web page (loading_webview.h) ---------------------------------------
 
-	const wchar_t* const kPageUrl = L"https://meowynetwork.com/pack-loading.html";
+	const wchar_t* const kPageUrl = MEOWY_BRAND_SITE_W L"/pack-loading.html";
 
 	// "http://localhost:<port>" or "http://127.0.0.1:<port>", then the end or a
 	// path. The whole host part must be exactly that: a prefix check would let

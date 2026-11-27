@@ -36,6 +36,7 @@ jobs:
           lua5.1 tests/multicore_logic_test.lua
           node tests/home_page_test.js
           node tests/launcher_card_test.js
+          node tests/brand_test.js
 
   launcher:
     runs-on: windows-latest

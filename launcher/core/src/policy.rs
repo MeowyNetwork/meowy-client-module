@@ -18,7 +18,7 @@ mod keys {
 }
 
 pub const MAX_BODY: usize = 8 * 1024;
-pub const HOST: &str = "meowynetwork.com";
+pub const HOST: &str = crate::brand::HOST;
 pub const TXT_PATH: &str = "/pack/v1/policy.txt";
 pub const SIG_PATH: &str = "/pack/v1/policy.sig";
 

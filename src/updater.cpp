@@ -1,4 +1,5 @@
 #include "updater.h"
+#include "brand.h"
 #include "pack_versions.h"
 #include "policy.h"
 #include "file_util.h"
@@ -268,7 +269,7 @@ namespace updater
 		std::string Get(const std::string& path, size_t cap, int totalMs)
 		{
 			net_http::Request req;
-			req.host = L"meowynetwork.com";
+			req.host = MEOWY_BRAND_HOST_W;
 			req.path = Widen(path);
 			req.headers = L"Cache-Control: no-cache\r\n";
 			req.maxBody = cap;

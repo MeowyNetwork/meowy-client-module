@@ -1,4 +1,5 @@
 #include "server_rep.h"
+#include "brand.h"
 #include "steam_ticket.h"
 
 #define WIN32_LEAN_AND_MEAN
@@ -15,7 +16,7 @@
 
 namespace
 {
-	const wchar_t* const kHost = L"meowynetwork.com";
+	const wchar_t* const kHost = MEOWY_BRAND_HOST_W;
 	const wchar_t* const kListPath = L"/api/pack/servers";
 	const wchar_t* const kReportPath = L"/api/pack/servers/report";
 	constexpr size_t kMaxBody = 512 * 1024;

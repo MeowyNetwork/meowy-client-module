@@ -1,4 +1,5 @@
 #include "server_gate.h"
+#include "brand.h"
 
 #include <cstdint>
 #include <cstring>
@@ -15,7 +16,7 @@ namespace
 	// rejoin, show our loading screen for, or restore the start-up line from.
 	struct Server { const char* ip; int port; };
 	const Server kAllowed[] = {
-		{ "138.201.62.52", 27015 },
+		{ MEOWY_BRAND_SERVER_IP, MEOWY_BRAND_SERVER_PORT },
 	};
 
 	// IVEngineClient015 (Source SDK 2013 layout; the version string is the

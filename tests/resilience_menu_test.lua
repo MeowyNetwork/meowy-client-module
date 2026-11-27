@@ -1261,6 +1261,19 @@ local LISTS = {
 		{ address = "8.8.4.4:27015", name = "Pals TTT", players = 9, max = 24 },
 	},
 }
+-- Our own server is a featured row the player can take off: then it isn't
+-- shown and isn't asked for its player count.
+w = world({ settings = ON, menu = true, convars = { meowy_menu_featured = "0" } })
+w.lists = LISTS
+w.run(2)
+check("home: featured off: no Meowy Network row", (homeData(w) or ""):find('"title":"Meowy Network"', 1, true), nil)
+check("home: featured off: the rest still shows", (homeData(w) or ""):find('"Big RP"', 1, true) ~= nil, true)
+check("home: featured off: our server isn't asked", w.pinged, nil)
+w.concommands.meowy_settings()
+local feat = find(function(p) return p.meowyToggle == "menu_featured" end)
+check("home: featured: a switch in settings, off", feat ~= nil and feat.on, false)
+if feat then feat:SetOn(true) end
+check("home: featured: turned on through the console", w.convars.meowy_menu_featured, "1")
 w = world({ settings = ON, menu = true })
 w.lists = LISTS
 w.run(2)

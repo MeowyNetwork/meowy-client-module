@@ -3,7 +3,7 @@
 
 /// Meowy Network's servers (`src/server_gate.cpp` `kAllowed`). Only these
 /// ports: the same host also runs throwaway test servers.
-pub const OURS: [&str; 1] = ["138.201.62.52:27015"];
+pub const OURS: [&str; 1] = crate::brand::SERVERS;
 
 /// The address Join Meowy Network connects to.
 pub const MEOWY: &str = OURS[0];

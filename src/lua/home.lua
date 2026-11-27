@@ -14,7 +14,10 @@ local REFRESH = 60   -- seconds between asks while the card shows (at most one q
 local STUCK = 30     -- a list not finished after this is asked again at the next refresh
 local LIVE_EVERY = 2  -- seconds: the Escape card's ping, loss and time at most this often
 
-local st = { oursAddress = meowy.OurServerAddress and meowy.OurServerAddress() or nil }
+-- Our own server's address. st.oursAddress is the same while it's shown on the
+-- home screen (featuredOn, resilience.lua), nil once the player took it off.
+local OURS = meowy.OurServerAddress and meowy.OurServerAddress() or nil
+local st = { oursAddress = OURS }
 local pending = {}            -- kind -> SysTime it was asked
 local addresses = {}          -- row number -> address, from the model last sent
 local nextLook, nextRefresh, shown = 0, 0, false
@@ -646,7 +649,7 @@ end
 local joinedOursYes
 local function joinedOurs()
 	if joinedOursYes then return true end
-	local ours = st.oursAddress
+	local ours = OURS
 	if not Home.validAddress(ours) then return false end
 	if (meowy.LastServer and meowy.LastServer() == ours)
 		or (meowy.PrewarmRecorded and meowy.PrewarmRecorded(ours) == true) then
@@ -751,7 +754,7 @@ hook.Add("Think", "MeowyClientPack.Prewarm", function()
 			if isstring(address) then warm(address, "your Continue server") end
 			-- Our own server's, only once you've joined it: an install that
 			-- never plays there asks it nothing and downloads nothing of it.
-			local ours = st.oursAddress
+			local ours = OURS
 			if (homeOn() or menuPage.ours) and Home.validAddress(ours) and ours ~= address and joinedOurs() then contentFor(ours) end
 		end
 	else
@@ -822,6 +825,9 @@ local function tick()
 	if visible then
 		if not shown or now >= nextRefresh then
 			nextRefresh = now + REFRESH
+			-- Taken off the home screen: no row for it, and it isn't asked.
+			local featured = featuredOn() and OURS or nil
+			if featured ~= st.oursAddress then st.oursAddress, st.ours = featured, nil end
 			askOurs()
 			ask("friends", now)
 			ask("favorite", now)

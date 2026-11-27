@@ -672,7 +672,7 @@ local handlers = {
 	-- "How servers are checked" under a mark's explanation: Meowy Network's own
 	-- page (what is checked, what counts as fake, the owners' opt-out).
 	browse_why = function()
-		if gui and isfunction(gui.OpenURL) then gui.OpenURL("https://meowynetwork.com/observer") end
+		if gui and isfunction(gui.OpenURL) and isstring(meowy.SITE) then gui.OpenURL(meowy.SITE .. "/observer") end
 	end,
 	-- "Get ready" on the picked server: download its Workshop content now (home.lua).
 	browse_prepare = function(v)
