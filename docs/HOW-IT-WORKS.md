@@ -149,12 +149,14 @@ console (`meowy_console_key`), Menu text size (`meowy_menu_scale`), Continue whe
 always put back), and Multicore rendering (`meowy_multicore`, see *Multicore rendering on by default*).
 Its other tab is the PC doctor.
 
-Everything else is a console setting, named with its feature below: `meowy_party`,
-`meowy_serverlist_reports`, `meowy_honest_serverlist`, `meowy_server_index`, `meowy_data_sandbox`,
-`meowy_updates`, `meowy_loadingscreen`, `meowy_loadingscreen_everywhere`, `meowy_mouse_confine`,
-`meowy_audio_follow`, `meowy_console_badge`, `meowy_console_overlay`, `meowy_idle_savings`,
-`meowy_join_boost`, `meowy_pak_cache`, `meowy_fast_file_checks`, `meowy_fast_lua_lookup`,
-`meowy_fast_lua_find`, `meowy_fast_fonts` and `meowy_skipmatreload_anyserver`. (`meowy_skipmatreload` is
+From 1.8.1 every setting has a switch there. **Privacy** holds what the pack sends and what servers can
+see and do: `meowy_serverlist_reports`, `meowy_server_index`, `meowy_honest_serverlist`, `meowy_updates`,
+`meowy_data_sandbox` and `meowy_party`. **Performance** holds every speed-up, each with what it changes:
+`meowy_fast_file_checks`, `meowy_fast_lua_lookup`, `meowy_fast_lua_find`, `meowy_fast_fonts`,
+`meowy_pak_cache`, `meowy_join_boost`, `meowy_skipmatreload_anyserver` and `meowy_idle_savings`. General
+has the rest: `meowy_loadingscreen`, `meowy_loadingscreen_everywhere`, `meowy_mouse_confine`,
+`meowy_audio_follow`, `meowy_console_badge` and `meowy_console_overlay`. The same names still work in
+the console. (`meowy_skipmatreload` is
 made by Meowy Network's own server Lua, so it exists once you've joined us.) To type one, Garry's Mod's
 console has to be on: **Options → Keyboard → Advanced → Enable developer console**. Then the console key
 (under Esc) opens the Meowy console, or the game's own with `meowy_console_key 0`.
