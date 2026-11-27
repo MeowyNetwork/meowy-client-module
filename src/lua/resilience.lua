@@ -168,7 +168,8 @@ local C, S = UI.C, UI.S
 -- functions that return blocks, given a function that draws the tab again.
 local settingsSections = {}
 
--- The settings window: a left tab list (General, PC doctor) and the tab's
+-- The settings window: a left tab list (General, Privacy, Performance, PC
+-- doctor: every setting the pack has is on one of them) and the tab's
 -- content on the right, scrolled. Escape or the "x" closes it.
 local settingsWindow
 local function openSettings(startTab)
@@ -204,6 +205,7 @@ local function openSettings(startTab)
 	end
 
 	local pages, show = {}, nil
+	local settingToggle, settingChoice, heading
 	pages.general = function()
 		local blocks = { UI.Label(nil, "Connection") }
 		local t = UI.Toggle(nil, "Stay connected through drops",
@@ -349,6 +351,26 @@ local function openSettings(startTab)
 			dt.gapBefore = S(10)
 			blocks[#blocks + 1] = dt
 		end
+		heading(blocks, "Loading screen")
+		settingToggle(blocks, "meowy_loadingscreen", "The pack's loading screen on Meowy Network",
+			"A loading screen that keeps moving while Garry's Mod's own freezes: each stage, when you'll be in, and "
+			.. "Cancel that works. Off: Garry's Mod's.", S(10))
+		settingChoice(blocks, "meowy_loadingscreen_everywhere", "The pack's loading screen on other servers",
+			"On servers that show no loading page of their own, or on every server.",
+			{ { "Servers without their own", "1" }, { "Every server", "2" }, { "Only Meowy Network", "0" } })
+		heading(blocks, "Game")
+		settingToggle(blocks, "meowy_mouse_confine", "Keep the mouse in the game while you aim",
+			"A fast flick can't click your other screen and drop the game to the background. Menus and alt-tab free "
+			.. "the mouse at once.", S(10))
+		settingToggle(blocks, "meowy_audio_follow", "Sound follows your headphones",
+			"When Windows' default sound device changes (headphones plugged in or out), the game's sound restarts so "
+			.. "it follows, instead of staying on the old device until you restart.")
+		heading(blocks, "Console")
+		settingToggle(blocks, "meowy_console_badge", "A small badge for Lua errors",
+			"In place of Garry's Mod's error notices: a count you can click to open the Meowy console's errors.", S(10))
+		settingChoice(blocks, "meowy_console_overlay", "Show new console lines over the game",
+			"The newest lines in a corner while you play.",
+			{ { "Off", "0" }, { "Warnings and errors", "1" }, { "Everything", "2" } })
 		for _, section in ipairs(settingsSections) do
 			local ok, more = pcall(section, function() if show then show("general") end end)
 			if ok then
@@ -359,6 +381,98 @@ local function openSettings(startTab)
 		end
 		return blocks
 	end
+	-- A switch for a setting another chunk owns (module.cpp, console.lua, ...),
+	-- shown only when this build has it. Written through the console, as every
+	-- switch here: that is the pack's own change, so a protected setting takes it
+	-- (settings.lua).
+	function settingToggle(blocks, name, title, text, gap)
+		local o = meowy.SettingOf and meowy.SettingOf(name)
+		if not o then return end
+		local t = UI.Toggle(nil, title, text, o:GetBool(), function(on) RunConsoleCommand(name, on and "1" or "0") end)
+		t.meowyToggle = name
+		if gap then t.gapBefore = gap end
+		blocks[#blocks + 1] = t
+	end
+	function settingChoice(blocks, name, title, text, options, gap)
+		local o = meowy.SettingOf and meowy.SettingOf(name)
+		if not o or not UI.Choice then return end
+		local now, known = tostring(o:GetInt()), false
+		for _, opt in ipairs(options) do if opt[2] == now then known = true end end
+		local c = UI.Choice(nil, title, text, options, known and now or options[1][2],
+			function(v) RunConsoleCommand(name, tostring(v)) end)
+		c.meowyChoice = name
+		if gap then c.gapBefore = gap end
+		blocks[#blocks + 1] = c
+	end
+	function heading(blocks, text, first)
+		local label = UI.Label(nil, text)
+		if not first then label.gapBefore = S(22) end
+		blocks[#blocks + 1] = label
+	end
+
+	-- Privacy: what leaves this PC, what a server gets to see, and who can move
+	-- you. Every one of these had only a console name before 1.8.1.
+	pages.privacy = function()
+		local blocks = {}
+		heading(blocks, "What the pack sends", true)
+		settingToggle(blocks, "meowy_serverlist_reports", "Help check other servers' player counts",
+			"After you've been on another server for a while, the pack tells Meowy Network who was really connected "
+			.. "(the other players' Steam IDs, pings and times, with a Steam ticket so each account counts once). "
+			.. "That is how fake player counts are found. Off: nothing about the servers you play on is sent.", S(10))
+		settingToggle(blocks, "meowy_server_index", "Find servers starts from Meowy Network's index",
+			"Find servers first shows the list Meowy Network keeps (its request shows Meowy Network your IP address, "
+			.. "used for nearby servers, not stored), then asks Steam. Off: Steam alone, which takes longer.")
+		settingToggle(blocks, "meowy_honest_serverlist", "Check player counts in the server list",
+			"Downloads Meowy Network's verdicts and marks servers whose player count doesn't hold up. Off: no marks, "
+			.. "and nothing is downloaded for them.")
+		settingToggle(blocks, "meowy_updates", "Keep the pack up to date",
+			"New versions, signed by Meowy Network, download while you play and start the next time you open the "
+			.. "game. Off: you stay on this version until you run a newer installer.")
+		heading(blocks, "What servers can see and do")
+		settingToggle(blocks, "meowy_data_sandbox", "A separate data folder for every server",
+			"Garry's Mod lets any server read everything in garrysmod/data, other servers' files included. On: each "
+			.. "server gets a folder of its own. Your own files (PAC3 outfits, dupes, addon settings) then stay with "
+			.. "the main menu and singleplayer, and servers don't see them either. Off: one folder for all, as the "
+			.. "game does.", S(10))
+		settingToggle(blocks, "meowy_party", "Parties with Steam friends",
+			"Play together across servers: when the party's leader joins a server, you're offered to follow, with "
+			.. "Stay. Only Steam friends can lead you. Off: no parties, and your server isn't shared with one.")
+		return blocks
+	end
+
+	-- Performance: every speed-up the pack applies to the game, each with what it
+	-- changes, so one that misbehaves after a game update can be turned off.
+	pages.performance = function()
+		local blocks = {}
+		heading(blocks, "Faster joins, on every server", true)
+		settingToggle(blocks, "meowy_fast_file_checks", "Skip checks for files that aren't there",
+			"While a server loads, the game looks for each model and material in every search folder. The pack reads "
+			.. "each folder once and answers \"not there\" from that, instead of trying to open the file.", S(10))
+		settingToggle(blocks, "meowy_fast_lua_lookup", "Find the server's Lua files through an index",
+			"The game scans the whole list of a server's Lua files for every file it loads. The pack uses the list's "
+			.. "own index. Same files, same order.")
+		settingToggle(blocks, "meowy_fast_lua_find", "Faster file.Find on the server's Lua",
+			"Addons that list their own files make the game copy and test every entry each time. The pack walks only "
+			.. "the entries that can match.")
+		settingToggle(blocks, "meowy_fast_fonts", "Don't reload the font library for every font",
+			"At each join the game registers a few hundred font files and loads a Windows library again for each one.")
+		settingToggle(blocks, "meowy_pak_cache", "Decompress a map's files once",
+			"Compressed maps are decompressed again on every read while they load. The pack keeps what it "
+			.. "decompressed until the join is over.")
+		settingToggle(blocks, "meowy_join_boost", "Full speed while a join loads",
+			"Windows slows a game in the background down. While a join loads, the pack asks it not to, so you can "
+			.. "alt-tab away without the join taking longer.")
+		settingToggle(blocks, "meowy_skipmatreload_anyserver", "Skip the second material load on every server",
+			"At the end of a join the game throws every material away and loads them all again (5 to 17 seconds on a "
+			.. "big map). Off by default: a server whose downloads replace a texture that's already loaded would "
+			.. "show the old one until the next map.")
+		heading(blocks, "While you play")
+		settingToggle(blocks, "meowy_idle_savings", "Save memory and CPU in the background",
+			"Unloads the loading screen's browser while you play, and slows the main menu down while the game is in "
+			.. "the background.", S(10))
+		return blocks
+	end
+
 	pages.doctor = function()
 		if not DoctorUI or not tips then
 			return { UI.Text(nil, "The PC doctor couldn't run.", "MeowyPack.Body", C.body) }
@@ -439,6 +553,8 @@ local function openSettings(startTab)
 		return b
 	end
 	tab("general", "General")
+	tab("privacy", "Privacy")
+	tab("performance", "Performance")
 	if DoctorUI then
 		local n = tips and #tips or 0
 		local t = tab("doctor", "PC doctor", tips and Doctor.summary(tips) or "?", n > 0 and "amber" or "green")

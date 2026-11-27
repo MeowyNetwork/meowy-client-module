@@ -184,7 +184,7 @@ GMOD_MODULE_OPEN()
 	// the player turned updates off since (it waits until they're back on).
 	const bool local = LocalBuildRequested();
 	if (local)
-		Print(LUA, "[Meowy Client Pack] -meowy_local: the copy in lua\bin is used, downloaded updates are left alone");
+		Print(LUA, "[Meowy Client Pack] -meowy_local: the copy in lua/bin is used, downloaded updates are left alone");
 	if (!local && !dataDir.empty() && !pack_versions::UpdatesOff(dataDir))
 	{
 		const std::string promoted = pack_versions::Promote(dataDir);

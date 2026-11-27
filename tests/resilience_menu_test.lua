@@ -261,6 +261,18 @@ local function world(opts)
 				SetBool = function() error("calling 'SetBool' on bad self (attempted to modify ConVar not created by Lua)", 2) end,
 			}
 		end,
+		-- Settings other chunks own (module.cpp, console.lua, ...), for the
+		-- settings window's switches: opts.others = { name = value }.
+		SettingOf = function(name)
+			if not opts.others or opts.others[name] == nil then return nil end
+			w.convars = w.convars or {}
+			if w.convars[name] == nil then w.convars[name] = opts.others[name] end
+			return {
+				GetBool = function() return (tonumber(w.convars[name]) or 0) ~= 0 end,
+				GetInt = function() return math.floor(tonumber(w.convars[name]) or 0) end,
+				GetString = function() return w.convars[name] end,
+			}
+		end,
 		DoctorFacts = function() return opts.facts or { arch = "x64", gpu_time_known = false, adapters = {} } end,
 		DoctorOpen = function(id) w.opened = id return true end,
 		ResilienceProbe = opts.native and function(a) w.pinged = a w.probeAsked = true return true end or nil,
@@ -1992,6 +2004,51 @@ check("fast server list: turned off through the console", w.cvars.meowy_fast_ser
 w = world({ settings = ON, menu = true })
 w.concommands.meowy_settings()
 check("fast server list: no toggle without the setting", find(function(p) return p.meowyToggle == "fast_serverlist" end), nil)
+
+-- Every setting has a switch: Privacy and Performance tabs, and the rest on
+-- General. Each is written through the console (the pack's own change).
+local OTHERS = { meowy_serverlist_reports = "1", meowy_server_index = "1", meowy_honest_serverlist = "1", meowy_updates = "1",
+	meowy_data_sandbox = "0", meowy_party = "1", meowy_fast_file_checks = "1", meowy_fast_lua_lookup = "1",
+	meowy_fast_lua_find = "1", meowy_fast_fonts = "1", meowy_pak_cache = "1", meowy_join_boost = "1",
+	meowy_skipmatreload_anyserver = "0", meowy_idle_savings = "1", meowy_loadingscreen = "1",
+	meowy_loadingscreen_everywhere = "1", meowy_mouse_confine = "1", meowy_audio_follow = "1",
+	meowy_console_badge = "1", meowy_console_overlay = "0" }
+local function toggleNamed(name) return find(function(p) return p.meowyToggle == name end) end
+w = world({ settings = ON, menu = true, others = OTHERS })
+w.concommands.meowy_settings()
+check("settings: a Privacy tab", find(function(p) return p.tabId == "privacy" end) ~= nil, true)
+check("settings: a Performance tab", find(function(p) return p.tabId == "performance" end) ~= nil, true)
+for _, name in ipairs({ "meowy_loadingscreen", "meowy_mouse_confine", "meowy_audio_follow", "meowy_console_badge" }) do
+	check("settings: General has " .. name, toggleNamed(name) ~= nil, true)
+end
+check("settings: General has the other-servers loading screen choice",
+	find(function(p) return p.meowyChoice == "meowy_loadingscreen_everywhere" end) ~= nil, true)
+check("settings: open Privacy", w.click("Privacy"), true)
+for _, name in ipairs({ "meowy_serverlist_reports", "meowy_server_index", "meowy_honest_serverlist", "meowy_updates",
+	"meowy_data_sandbox", "meowy_party" }) do
+	check("settings: Privacy has " .. name, toggleNamed(name) ~= nil, true)
+end
+local sb, rp = toggleNamed("meowy_data_sandbox"), toggleNamed("meowy_serverlist_reports")
+check("settings: the data sandbox shows off", sb and sb.on, false)
+if sb then sb:SetOn(true) end
+check("settings: the data sandbox turned on through the console", w.convars.meowy_data_sandbox, "1")
+check("settings: reports show on", rp and rp.on, true)
+if rp then rp:SetOn(false) end
+check("settings: reports turned off through the console", w.convars.meowy_serverlist_reports, "0")
+check("settings: open Performance", w.click("Performance"), true)
+for _, name in ipairs({ "meowy_fast_file_checks", "meowy_fast_lua_lookup", "meowy_fast_lua_find", "meowy_fast_fonts",
+	"meowy_pak_cache", "meowy_join_boost", "meowy_skipmatreload_anyserver", "meowy_idle_savings" }) do
+	check("settings: Performance has " .. name, toggleNamed(name) ~= nil, true)
+end
+local ff = toggleNamed("meowy_fast_fonts")
+if ff then ff:SetOn(false) end
+check("settings: a speed-up turned off through the console", w.convars.meowy_fast_fonts, "0")
+-- A build without one of them shows no dead switch.
+w = world({ settings = ON, menu = true, others = { meowy_updates = "1" } })
+w.concommands.meowy_settings()
+check("settings: open Privacy again", w.click("Privacy"), true)
+check("settings: a setting this build lacks has no switch", toggleNamed("meowy_party"), nil)
+check("settings: one it has does", toggleNamed("meowy_updates") ~= nil, true)
 
 -- Find servers on the home screen: Steam's list in batches, servers with
 -- players then the empty ones; the page asks for a server by its number.

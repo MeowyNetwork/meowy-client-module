@@ -3,6 +3,7 @@
 - **Nothing of Meowy Network is fetched until you've joined it.** Its Workshop content and its loading page were prepared at the main menu on every install. Now that starts after your first join there.
 - **The separate `data` folder per server is opt-in.** New installs get Garry's Mod's own behaviour, so PAC3 outfits, dupes and addon settings follow you onto servers. `meowy_data_sandbox 1` turns the separation on; an install that already had it keeps it.
 - **Meowy Network gets no pass in the server list.** The pack no longer skips its own server when it tags servers or takes part in reports.
+- **Every setting has a switch.** Meowy settings gains **Privacy** (what the pack sends, the data folder per server, parties, updates) and **Performance** (each join speed-up, with what it changes). Until now 19 of them could only be typed into the console.
 
 **New in 1.8.0:** multicore rendering on by default, lighter joins, and crash fixes. **Run the 1.8.0 installer once**, even if the pack already updated itself in the game: the in-game update doesn't replace the Meowy Launcher, which changed too.
 
