@@ -25,7 +25,7 @@ Upload the whole pack/v1 folder to meowynetwork.com: the binaries first, the
 release document and its signature last. Players' packs take it within six
 hours (and at their next start), from the next time they open the game.
 To roll out in steps, sign again with a higher -Seq and a bigger -Rollout (the
-salt stays). The document expires after -Days (30): sign it again before then
+salt stays). The document expires after -Days (90): sign it again before then
 so installs that haven't started the game yet still take it.
 
 .EXAMPLE
@@ -37,7 +37,7 @@ param(
 	[Parameter(Mandatory)][string]$Win64,
 	[Parameter(Mandatory)][string]$Win32,
 	[ValidateRange(0, 100)][int]$Rollout = 100,
-	[ValidateRange(1, 365)][int]$Days = 30,
+	[ValidateRange(1, 365)][int]$Days = 90,
 	[ValidateRange(1, 99)][int]$MinStub = 1,
 	[ValidatePattern('^[0-9a-f]{8,64}$')][string]$Salt,
 	[switch]$NewSalt,
@@ -144,5 +144,6 @@ if ($sig.Length -ne 64 -or -not $signer.VerifyData($bytes, $sig, [System.Securit
 $v1 = Join-Path $OutDir "pack\v1"
 [System.IO.File]::WriteAllBytes((Join-Path $v1 "release-stable.txt"), $bytes)
 [System.IO.File]::WriteAllText((Join-Path $v1 "release-stable.sig"), (-join ($sig | ForEach-Object { "{0:x2}" -f $_ })) + "`n")
-Write-Host "Release $Version (seq $Seq, rollout $Rollout%, expires in $Days days) is ready in $v1."
+Write-Host "Release $Version (seq $Seq, rollout $Rollout%) is ready in $v1."
+Write-Host "It expires $([DateTimeOffset]::UtcNow.AddDays($Days).ToString('yyyy-MM-dd')) UTC ($Days days). Sign it again before then: the release-expiry workflow fails from 14 days before."
 Write-Host "Upload pack/v1/bin/$Version first, then release-stable.txt and release-stable.sig."

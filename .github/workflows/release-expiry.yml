@@ -1,0 +1,32 @@
+name: release expiry
+
+# The published release document (release-stable.txt) expires, and only the
+# release key in the TPM can sign it again (tools/release/make-release.ps1).
+# Once it has expired, installs that don't have its version yet stop updating.
+# This fails, and GitHub mails the repository's owner, from 14 days before.
+
+on:
+  schedule:
+    - cron: "17 7 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Days left on the published release document
+        shell: pwsh
+        run: |
+          $doc = (Invoke-WebRequest -UseBasicParsing -TimeoutSec 30 "https://meowynetwork.com/pack/v1/release-stable.txt").Content
+          if ($doc -is [byte[]]) { $doc = [System.Text.Encoding]::UTF8.GetString($doc) }
+          if (-not $doc.StartsWith("meowy-pack-release 1`n")) { throw "The site didn't answer with a release document." }
+          if ($doc -notmatch '(?m)^expires ([0-9]{1,12})$') { throw "The release document has no expiry line." }
+          $expires = [DateTimeOffset]::FromUnixTimeSeconds([long]$Matches[1])
+          $version = if ($doc -match '(?m)^version (\S+)$') { $Matches[1] } else { "?" }
+          $left = [math]::Floor(($expires - [DateTimeOffset]::UtcNow).TotalDays)
+          Write-Host "Release $version expires $($expires.ToString('yyyy-MM-dd HH:mm')) UTC: $left days left."
+          if ($left -lt 14) {
+            throw "Sign release $version again (make-release.ps1 with the same -Version, -Seq and files), then upload release-stable.txt and .sig. $left days left."
+          }
