@@ -38,7 +38,7 @@ local function address(a)
 	if type(a) ~= "string" or #a > 21 then return nil end
 	local p1, p2, p3, p4, port = a:match("^(%d+)%.(%d+)%.(%d+)%.(%d+):(%d+)$")
 	if not p1 then return nil end
-	for _, p in ipairs({ p1, p2, p3, p4 }) do if tonumber(p) > 255 then return nil end end
+	if tonumber(p1) > 255 or tonumber(p2) > 255 or tonumber(p3) > 255 or tonumber(p4) > 255 then return nil end
 	port = tonumber(port)
 	if port < 1 or port > 65535 then return nil end
 	return a
@@ -49,7 +49,12 @@ M.address = address
 -- reads these), with `quiet` (didn't answer the index's own queries lately),
 -- `lat`/`lon`, and the backend's verdict (`h`, `real`). Bad rows are skipped.
 -- Returns the list and the snapshot's time (unix seconds), or nil and why.
-function M.indexRows(data, maxRows)
+--
+-- In steps, so the menu can spread a big index over several frames:
+-- indexRowsBegin(data, maxRows) -> a job (or nil and why), then
+-- indexRowsStep(job, n) over at most n more servers until it returns true;
+-- job.out and job.at are the answer. indexRows does it all at once.
+function M.indexRowsBegin(data, maxRows)
 	if type(data) ~= "table" or data.v ~= 1 or type(data.cols) ~= "table" or type(data.s) ~= "table" then
 		return nil, "not an index"
 	end
@@ -58,38 +63,61 @@ function M.indexRows(data, maxRows)
 	local col = {}
 	for i, name in ipairs(data.cols) do if type(name) == "string" then col[name] = i end end
 	if not col.a or not col.n or not col.p then return nil, "missing columns" end
-	local out, max = {}, maxRows or 30000
-	for _, r in ipairs(data.s) do
-		if #out >= max then break end
-		local a = type(r) == "table" and address(r[col.a]) or nil
+	return { s = data.s, col = col, i = 1, out = {}, max = maxRows or 30000, at = at }
+end
+
+-- A row's value in a column the index may not have (nil then): plain locals
+-- and no function made per row, so LuaJIT can compile the loop.
+local function cell(r, i) if i then return r[i] end return nil end
+
+function M.indexRowsStep(job, n)
+	local rows, out, max, c = job.s, job.out, job.max, job.col
+	local ca, cn, cd, cm, cg, cw, cc, cl = c.a, c.n, c.d, c.m, c.g, c.w, c.c, c.l
+	local cp, cx, cb, cv, cpw, cq, cla, clo, ch, cr = c.p, c.x, c.b, c.v, c.pw, c.q, c.la, c.lo, c.h, c.r
+	local i, stop = job.i, job.i + n
+	local count = #out
+	while i < stop do
+		local r = rows[i]
+		if r == nil or count >= max then job.i = i return true end   -- (a hole ends it, as ipairs would)
+		i = i + 1
+		local a = type(r) == "table" and address(r[ca]) or nil
 		if a then
-			local function get(name) return col[name] and r[col[name]] or nil end
-			local pw, q = int(get("pw"), -1, 1), int(get("q"), -1, 1)
-			local la, lo = int(get("la"), -900, 900), int(get("lo"), -1800, 1800)
-			local h = get("h")
-			out[#out + 1] = {
+			local pw, q = int(cell(r, cpw), -1, 1), int(cell(r, cq), -1, 1)
+			local la, lo = int(cell(r, cla), -900, 900), int(cell(r, clo), -1800, 1800)
+			local h = cell(r, ch)
+			count = count + 1
+			out[count] = {
 				address = a,
-				name = str(get("n"), 128),
-				desc = str(get("d"), 64),
-				map = str(get("m"), 64),
-				gm = str(get("g"), 64),
-				ws = str(get("w"), 20):match("^%d+$") or "",
-				cat = str(get("c"), 10),
-				loc = str(get("l"), 20),
-				players = int(get("p"), 0, 4096) or 0,
-				max = int(get("x"), 0, 4096) or 0,
-				bots = int(get("b"), 0, 4096) or 0,
-				version = int(get("v"), 0, 999999999) or 0,
+				name = str(cell(r, cn), 128),
+				desc = str(cell(r, cd), 64),
+				map = str(cell(r, cm), 64),
+				gm = str(cell(r, cg), 64),
+				ws = str(cell(r, cw), 20):match("^%d+$") or "",
+				cat = str(cell(r, cc), 10),
+				loc = str(cell(r, cl), 20),
+				players = int(cell(r, cp), 0, 4096) or 0,
+				max = int(cell(r, cx), 0, 4096) or 0,
+				bots = int(cell(r, cb), 0, 4096) or 0,
+				version = int(cell(r, cv), 0, 999999999) or 0,
 				pass = pw == 1,
 				quiet = q == 0,
 				lat = la and lo and la / 10 or nil,
 				lon = la and lo and lo / 10 or nil,
 				h = (h == "fake" or h == "verified" or h == "unverified") and h or nil,
-				real = int(get("r"), 0, 4096),
+				real = int(cell(r, cr), 0, 4096),
 			}
 		end
 	end
-	return out, at
+	job.i = i
+	if rows[i] == nil or count >= max then return true end
+	return false
+end
+
+function M.indexRows(data, maxRows)
+	local job, why = M.indexRowsBegin(data, maxRows)
+	if not job then return nil, why end
+	while not M.indexRowsStep(job, 1000000) do end
+	return job.out, job.at
 end
 
 -- The tag the honest list would show for the backend's verdict alone (used

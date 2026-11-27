@@ -17,8 +17,10 @@
 
 namespace audio_watch
 {
-	// Starts watching (once; later calls do nothing). False if Windows' audio
-	// endpoints can't be watched.
+	// Starts watching (once; later calls do nothing) and returns at once: the
+	// watcher registers on its own thread. False if it couldn't start or
+	// Windows' audio endpoints can't be watched; while it's still starting,
+	// true (Changes() stays 0 until it counts something).
 	bool Start();
 
 	// How many times Windows' default output (console role) changed since Start.

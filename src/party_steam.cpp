@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <unordered_set>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -606,9 +607,18 @@ namespace party_steam
 		return out;
 	}
 
+	// Only friends playing Garry's Mod are named and returned: the menu shows
+	// no one else, and this runs on the main thread every 10 s while a party
+	// lasts, in game too. Steam keeps friends' Rich Presence up to date by
+	// itself (RequestFriendRichPresence is meant for people who aren't
+	// friends), so it's asked for at most once per friend per game, and only
+	// when a friend in Garry's Mod shows no meowy_pack yet: each request is a
+	// call to Steam's servers whose answer comes back through the game's
+	// callbacks.
 	std::vector<Friend> Friends(size_t max)
 	{
-		std::vector<Friend> playing, others;
+		static std::unordered_set<uint64_t> asked;
+		std::vector<Friend> playing;
 		Ifaces i;
 		if (!Get(i))
 			return playing;
@@ -616,35 +626,38 @@ namespace party_steam
 		auto f = [&] { count = g_api.friendCount(i.fr, kFriendFlagImmediate); };
 		if (!Guard(f))
 			return playing;
-		for (int n = 0; n < count && n < 2000; ++n)
+		for (int n = 0; n < count && n < 2000 && playing.size() < max; ++n)
 		{
 			uint64_t id = 0;
-			const char *name = nullptr, *pack = nullptr;
-			FriendGameInfo game{};
-			bool inGame = false;
+			const char* name = nullptr;
+			bool inGmod = false, hasPack = false;
 			auto g = [&] {
 				id = g_api.friendByIndex(i.fr, n, kFriendFlagImmediate);
+				FriendGameInfo game{};
+				inGmod = g_api.friendGame(i.fr, id, &game) && (game.gameId & 0xFFFFFF) == 4000;
+				if (!inGmod)
+					return;
 				name = g_api.friendName(i.fr, id);
-				inGame = g_api.friendGame(i.fr, id, &game);
-				if (inGame && (game.gameId & 0xFFFFFF) == 4000)
-				{
-					g_api.requestPresence(i.fr, id);
-					pack = g_api.friendPresence(i.fr, id, "meowy_pack");
-				}
+				const char* pack = g_api.friendPresence(i.fr, id, "meowy_pack");
+				hasPack = pack && *pack;
 			};
 			if (!Guard(g))
 				break;
+			if (!inGmod)
+				continue;
+			if (!hasPack && asked.insert(id).second)
+			{
+				auto r = [&] { g_api.requestPresence(i.fr, id); };
+				if (!Guard(r))
+					break;
+			}
 			Friend fr;
 			fr.id = id;
 			fr.name = Copy(name, 64);
-			fr.inGmod = inGame && (game.gameId & 0xFFFFFF) == 4000;
-			fr.hasPack = pack && *pack;
-			(fr.inGmod ? playing : others).push_back(std::move(fr));
+			fr.inGmod = true;
+			fr.hasPack = hasPack;
+			playing.push_back(std::move(fr));
 		}
-		for (Friend& f2 : others)
-			playing.push_back(std::move(f2));
-		if (playing.size() > max)
-			playing.resize(max);
 		return playing;
 	}
 

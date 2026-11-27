@@ -6,6 +6,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <bcrypt.h>
+#include <mutex>
 #pragma comment(lib, "bcrypt.lib")
 #endif
 
@@ -228,15 +229,32 @@ namespace notify_catalogue
 			sig[i] = static_cast<uint8_t>((hi << 4) | lo);
 		}
 
-		bool ok = false;
+		// The algorithm providers are opened once and kept for the rest of the
+		// process (never closed: a verify can run on any thread, up to the end).
+		// Opening them is the slow part, and Windows lets threads share them; the
+		// hash and key objects stay per call. One that failed to open is tried
+		// again next call.
+		static std::mutex providerLock;
+		static BCRYPT_ALG_HANDLE sha256Provider = nullptr, ecdsaProvider = nullptr;
 		BCRYPT_ALG_HANDLE hashAlg = nullptr, ecdsa = nullptr;
+		{
+			std::lock_guard<std::mutex> lock(providerLock);
+			if (!sha256Provider && BCryptOpenAlgorithmProvider(&sha256Provider, BCRYPT_SHA256_ALGORITHM, nullptr, 0) != 0)
+				sha256Provider = nullptr;
+			if (!ecdsaProvider && BCryptOpenAlgorithmProvider(&ecdsaProvider, BCRYPT_ECDSA_P256_ALGORITHM, nullptr, 0) != 0)
+				ecdsaProvider = nullptr;
+			hashAlg = sha256Provider;
+			ecdsa = ecdsaProvider;
+		}
+		if (!hashAlg || !ecdsa)
+			return false;
+
+		bool ok = false;
 		BCRYPT_HASH_HANDLE hash = nullptr;
 		BCRYPT_KEY_HANDLE key = nullptr;
 		uint8_t digest[32];
 		do
 		{
-			if (BCryptOpenAlgorithmProvider(&hashAlg, BCRYPT_SHA256_ALGORITHM, nullptr, 0) != 0)
-				break;
 			if (BCryptCreateHash(hashAlg, &hash, nullptr, 0, nullptr, 0, 0) != 0)
 				break;
 			if (BCryptHashData(hash, reinterpret_cast<PUCHAR>(const_cast<char*>(body.data())),
@@ -245,8 +263,6 @@ namespace notify_catalogue
 			if (BCryptFinishHash(hash, digest, sizeof(digest), 0) != 0)
 				break;
 
-			if (BCryptOpenAlgorithmProvider(&ecdsa, BCRYPT_ECDSA_P256_ALGORITHM, nullptr, 0) != 0)
-				break;
 			uint8_t blob[sizeof(BCRYPT_ECCKEY_BLOB) + 64];
 			BCRYPT_ECCKEY_BLOB* header = reinterpret_cast<BCRYPT_ECCKEY_BLOB*>(blob);
 			header->dwMagic = BCRYPT_ECDSA_PUBLIC_P256_MAGIC;
@@ -259,8 +275,6 @@ namespace notify_catalogue
 
 		if (key) BCryptDestroyKey(key);
 		if (hash) BCryptDestroyHash(hash);
-		if (ecdsa) BCryptCloseAlgorithmProvider(ecdsa, 0);
-		if (hashAlg) BCryptCloseAlgorithmProvider(hashAlg, 0);
 		return ok;
 #else
 		(void)body;

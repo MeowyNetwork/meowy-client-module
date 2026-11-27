@@ -317,13 +317,54 @@ function M.passes(filter, x)
 	return true
 end
 
--- Drops the oldest lines past `max`, in place.
-function M.trim(lines, max)
-	local extra = #lines - max
-	if extra <= 0 then return lines end
-	for i = 1, #lines - extra do lines[i] = lines[i + extra] end
-	for i = #lines, #lines - extra + 1, -1 do lines[i] = nil end
+-- Drops the oldest lines past `max`, in place, once there are more than `max`
+-- + `slack` (0 when not given): the window's list is cut back in one go now
+-- and then, not shifted along on every read.
+M.TRIM_SLACK = 5000
+local move = table.move or function(a, f, e, t)   -- Lua 5.1 (the tests), and a LuaJIT without it
+	for i = 0, e - f do a[t + i] = a[f + i] end
+	return a
+end
+function M.trim(lines, max, slack)
+	local n = #lines
+	local extra = n - max
+	if extra <= (slack or 0) then return lines end
+	move(lines, extra + 1, n, 1)
+	for i = n, n - extra + 1, -1 do lines[i] = nil end
 	return lines
+end
+
+-- Lines the window adds itself (the dividers where a join starts, where you're
+-- in game and where you leave, and the echo of a typed command) go between the
+-- console's lines by the newest line's id when each was made: `inserts` is a
+-- list of { afterId, line }, in that order, and the ones from index `from` on
+-- haven't been placed yet. Each goes just before the first line read whose id
+-- is past its afterId (and those left over at the end of a read, once its
+-- newest id is known: `beforeId` = that id + 1). Returns the new `from`.
+function M.placeDue(inserts, from, beforeId, out)
+	local e = inserts[from]
+	while e and e.afterId < beforeId do
+		out[#out + 1] = e.line
+		from = from + 1
+		e = inserts[from]
+	end
+	return from
+end
+
+-- Adds an insert in its place (after every one made at the same id or
+-- before, and never among the ones before `from`, already placed), keeping at
+-- most `max` (the oldest go). Returns how many were dropped from the front,
+-- for the caller's `from`.
+function M.addInsert(inserts, entry, max, from)
+	local at = #inserts + 1
+	while at > (from or 1) and inserts[at - 1].afterId > entry.afterId do at = at - 1 end
+	table.insert(inserts, at, entry)
+	local dropped = 0
+	while #inserts > (max or 50) do
+		table.remove(inserts, 1)
+		dropped = dropped + 1
+	end
+	return dropped
 end
 
 -- A line's colour: errors red, warnings yellow, otherwise its own or white.

@@ -55,6 +55,41 @@ check("no columns", (B.indexRows({ v = 1, at = 1, cols = { "x" }, s = {} })), ni
 check("columns in another order", B.indexRows({ v = 1, at = 1, cols = { "p", "n", "a" }, s = { { 5, "N", "45.1.1.1:27015" } } })[1].players, 5)
 check("row cap", #B.indexRows(idx({ good, good, good }), 2), 2)
 
+-- In steps (the menu spreads a big index over frames): the same rows as at once.
+local function serialize(list)
+	local keys = { "address", "name", "desc", "map", "gm", "ws", "cat", "loc", "players", "max", "bots", "version", "pass", "quiet", "lat", "lon", "h", "real" }
+	local out = {}
+	for _, s in ipairs(list) do
+		for _, k in ipairs(keys) do out[#out + 1] = tostring(s[k]) end
+		out[#out + 1] = "\n"
+	end
+	return table.concat(out, "|")
+end
+local many = {}
+for i = 1, 2500 do
+	local r = {}
+	for k, v in pairs(good) do r[k] = v end
+	r[1] = "45.10." .. math.floor(i / 250) .. "." .. (i % 250) .. ":27015"
+	r[9] = i % 70
+	if i % 7 == 0 then r = bad[(i / 7) % #bad + 1] end
+	many[i] = r
+end
+local whole, wholeAt = B.indexRows(idx(many))
+check("in steps: the test's index has rows", #whole > 2000, true)
+for _, step in ipairs({ 1, 7, 100, 2499, 5000 }) do
+	local job = B.indexRowsBegin(idx(many))
+	local steps = 0
+	repeat steps = steps + 1 until B.indexRowsStep(job, step) or steps > 10000
+	check("in steps of " .. step .. ": the same rows as at once", serialize(job.out) == serialize(whole) and job.at == wholeAt, true)
+end
+local capped = B.indexRowsBegin(idx(many), 10)
+repeat until B.indexRowsStep(capped, 3)
+check("in steps: the row cap", #capped.out, 10)
+check("in steps: not an index", select(2, B.indexRowsBegin({ v = 2 })), "not an index")
+local holes = idx({ good, good })
+holes.s[4] = good   -- after a hole: not read, as ipairs wouldn't
+check("in steps: a hole ends the rows", #B.indexRows(holes), 2)
+
 -- Geo and distance
 local lat, lon = B.parseGeo("52.5,13.4")
 check("geo lat", lat, 52.5)

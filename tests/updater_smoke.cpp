@@ -9,6 +9,7 @@
 #include "../src/pack_versions.h"
 #include "../src/policy.h"
 #include "../src/file_util.h"
+#include "../src/thread_util.h"
 
 #include <cstdio>
 #include <string>
@@ -266,6 +267,18 @@ int main(int argc, char** argv)
 		Check("clean-up: folders nothing names, and partials, removed", !exists(dataDir + L"\\bin\\3.0.0") && !exists(dataDir + L"\\bin\\2.5.0.partial"));
 		const std::wstring floor = pack_versions::SeqFloorPath(dataDir);
 		Check("seq floor: this architecture's own file", floor == dataDir + (x64 ? L"\\state\\release_seq_win64.txt" : L"\\state\\release_seq_win32.txt"));
+	}
+
+	// --- Starting the check -----------------------------------------------------------
+	// A thread that can't start leaves the updater startable: the next Start
+	// starts it. (That thread waits a minute before any contact; this test has
+	// ended by then.)
+	{
+		thread_util::FailNextSpawns(1);
+		updater::Start(dataDir, "1.0.0", 1);
+		Check("start: a failed spawn says so", updater::Describe().find("couldn't start") != std::string::npos);
+		updater::Start(dataDir, "1.0.0", 1);
+		Check("start: the next Start starts it", updater::Describe() == "checking in a minute");
 	}
 
 	std::printf("%d/%d checks passed\n", g_count - g_failures, g_count);

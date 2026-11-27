@@ -38,9 +38,12 @@ namespace
 
 	// All at once (file_util.h): resilience.txt holds the player's answer and the
 	// cl_timeout to put back, which an interrupted write would lose for good.
+	// Relaxed, not flushed: every file here (resilience.txt, on_server.txt,
+	// last_server.txt, meowy_crashes.txt) only has to outlive a game crash,
+	// and several are written on the main thread while a join loads.
 	bool WriteSmallFile(const std::wstring& path, const std::string& text)
 	{
-		return file_util::WriteAtomic(path, text);
+		return file_util::WriteAtomic(path, text, file_util::Durability::Relaxed);
 	}
 #endif
 }

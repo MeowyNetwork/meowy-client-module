@@ -95,9 +95,26 @@ namespace policy
 	// 1.7.0 launcher wrote it without min_version and revoked). Whether it was.
 	bool HealStubFile(const std::wstring& stateDir);
 
+	enum class Fetch
+	{
+		// The pinned menu realm: now, then every 30 minutes, for the rest of the
+		// process. Started once.
+		Periodic,
+		// The client realm when the start-up stub didn't load (the DLL isn't
+		// pinned and is freed when the realm closes): one fetch, on a thread
+		// holding its own reference to the DLL, and no loop. One at a time.
+		// Nothing when the periodic fetch already runs.
+		OnceUnpinned,
+	};
+
 	// Reads the kept policy, heals policy.bin (above), and starts the background
-	// fetch: now, then every 30 minutes. Once.
-	void StartFetching(const std::wstring& stateDir);
+	// fetch (`mode`). Game thread, every realm open, so cheap when nothing
+	// changed: while policy.txt and policy.sig have the size and last-write time
+	// they had when last read here, the policy in memory is used as it is, with
+	// no lock, read or signature check. When they changed, the kept files' locks
+	// are waited for at most 100 ms if a policy is in memory already (busy: that
+	// one for now, the files next call), else as long as Offer waits.
+	void StartFetching(const std::wstring& stateDir, Fetch mode);
 
 	// The policy in effect now (the kept one, or the default: all on), for Lua.
 	Policy Effective();
@@ -107,5 +124,11 @@ namespace policy
 	{
 		// Tests: use these keys (64-byte X||Y each; nullptr = none) instead of the built-in ones.
 		void SetKeys(const uint8_t* release, const uint8_t* ops, const uint8_t* recovery);
+		// Tests: how many times StartFetching read the kept files, how many
+		// fetches finished, and fetching without the network (each fetch only
+		// records "not fetched (offline)").
+		unsigned KeptReads();
+		unsigned Fetches();
+		void SetOffline(bool offline);
 	}
 }

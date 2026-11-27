@@ -2,12 +2,14 @@
 
 #include <atomic>
 #include <cstdio>
+#include <cstring>
 #include <deque>
-#include <mutex>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#else
+#include <mutex>
 #endif
 
 namespace
@@ -16,8 +18,18 @@ namespace
 	// exits, after this DLL's statics are gone.
 	struct State
 	{
-		std::mutex mutex;
+#ifdef _WIN32
+		// A critical section, not std::mutex (a slim reader/writer lock): the
+		// engine logs from several threads, and when one is killed holding the
+		// lock as the process exits, a critical section lets the next taker in
+		// while a slim lock would hang the exit. Never deleted, like State.
+		CRITICAL_SECTION lock;
+		State() { InitializeCriticalSectionAndSpinCount(&lock, 4000); }
+#else
+		std::mutex lock;
+#endif
 		std::deque<console_capture::Line> lines;
+		size_t bytes = 0;                 // text kept in `lines`
 		uint64_t nextId = 1;
 		std::string partial;              // a line still being written
 		int partialSeverity = 0;
@@ -30,6 +42,21 @@ namespace
 		return *s;
 	}
 	std::atomic<bool> g_installed{ false };
+
+	// Holds S()'s lock for its scope.
+	class Locked
+	{
+	public:
+#ifdef _WIN32
+		Locked() { EnterCriticalSection(&S().lock); }
+		~Locked() { LeaveCriticalSection(&S().lock); }
+#else
+		Locked() { S().lock.lock(); }
+		~Locked() { S().lock.unlock(); }
+#endif
+		Locked(const Locked&) = delete;
+		Locked& operator=(const Locked&) = delete;
+	};
 
 	int64_t NowMs()
 	{
@@ -68,24 +95,40 @@ namespace
 		return 0;
 	}
 
-	// Under S().mutex: the partial line becomes a line.
+	bool Ascii(const std::string& s)
+	{
+		for (const char c : s)
+			if (static_cast<unsigned char>(c) >= 0x80)
+				return false;
+		return true;
+	}
+
+	// Under the lock: the partial line becomes a line (its text moved, not
+	// copied; cleaned only when it has a byte that isn't ASCII), and the oldest
+	// go while there are too many lines or too much text.
 	void Commit()
 	{
-		std::string text = S().partial;
-		S().partial.clear();
-		while (!text.empty() && (text.back() == '\r'))
-			text.pop_back();
+		State& s = S();
 		console_capture::Line line;
-		line.id = S().nextId++;
+		line.text = std::move(s.partial);
+		s.partial.clear();   // moved from: empty again, whatever the library left
+		while (!line.text.empty() && line.text.back() == '\r')
+			line.text.pop_back();
+		if (!Ascii(line.text))
+			line.text = console_capture::detail::CleanUtf8(line.text);
+		line.id = s.nextId++;
 		line.timeMs = NowMs();
-		line.severity = S().partialSeverity;
-		line.color = S().partialColor;
-		line.text = console_capture::detail::CleanUtf8(text);
-		S().lines.push_back(std::move(line));
-		while (S().lines.size() > console_capture::kMaxLines)
-			S().lines.pop_front();
-		S().partialSeverity = 0;
-		S().partialColor = 0xFFFFFFFF;
+		line.severity = s.partialSeverity;
+		line.color = s.partialColor;
+		s.bytes += line.text.size();
+		s.lines.push_back(std::move(line));
+		while (!s.lines.empty() && (s.lines.size() > console_capture::kMaxLines || s.bytes > console_capture::kMaxTextBytes))
+		{
+			s.bytes -= s.lines.front().text.size();
+			s.lines.pop_front();
+		}
+		s.partialSeverity = 0;
+		s.partialColor = 0xFFFFFFFF;
 	}
 
 #ifdef _WIN32
@@ -160,29 +203,40 @@ namespace console_capture
 		{
 			if (!text)
 				return;
-			std::lock_guard<std::mutex> lock(S().mutex);
-			for (const char* p = text; *p; ++p)
+			const char* p = text;
+			const char* const end = text + std::strlen(text);
+			Locked lock;
+			State& s = S();
+			// A piece at a time up to each line break: the line takes the colour
+			// of its first piece, and the worst severity of all of them.
+			while (p < end)
 			{
-				if (S().partial.empty())
+				const char* nl = static_cast<const char*>(std::memchr(p, '\n', static_cast<size_t>(end - p)));
+				const char* stop = nl ? nl : end;
+				if (s.partial.empty())
 				{
-					S().partialColor = color;
-					S().partialSeverity = severity;
+					s.partialColor = color;
+					s.partialSeverity = severity;
 				}
-				else if (severity > S().partialSeverity)
+				else if (severity > s.partialSeverity)
 				{
-					S().partialSeverity = severity;   // a line is as bad as its worst piece
+					s.partialSeverity = severity;   // a line is as bad as its worst piece
 				}
-				if (*p == '\n')
-					Commit();
-				else if (S().partial.size() < kMaxLineBytes)
-					S().partial.push_back(*p);
+				const size_t room = kMaxLineBytes - s.partial.size();   // partial never passes kMaxLineBytes
+				const size_t n = static_cast<size_t>(stop - p);
+				s.partial.append(p, n < room ? n : room);
+				if (!nl)
+					break;
+				Commit();
+				p = nl + 1;
 			}
 		}
 
 		void Reset()
 		{
-			std::lock_guard<std::mutex> lock(S().mutex);
+			Locked lock;
 			S().lines.clear();
+			S().bytes = 0;
 			S().partial.clear();
 			S().nextId = 1;
 			S().partialSeverity = 0;
@@ -235,16 +289,28 @@ namespace console_capture
 	std::vector<Line> Read(uint64_t sinceId, size_t max, uint64_t* nextId)
 	{
 		std::vector<Line> out;
-		std::lock_guard<std::mutex> lock(S().mutex);
+		Locked lock;
+		const State& s = S();
 		if (nextId)
-			*nextId = S().nextId;
-		if (max == 0)
+			*nextId = s.nextId;
+		const size_t size = s.lines.size();
+		if (max == 0 || size == 0)
 			return out;
-		size_t start = S().lines.size();
-		while (start > 0 && S().lines[start - 1].id > sinceId && S().lines.size() - start < max)
-			--start;
-		for (size_t i = start; i < S().lines.size(); ++i)
-			out.push_back(S().lines[i]);
+		// Ids follow one another in the ring (a line is only ever added at the
+		// back and dropped at the front), so the first line after `sinceId` is
+		// found by arithmetic, not by walking back.
+		const uint64_t front = s.lines.front().id;
+		size_t start = 0;
+		if (sinceId >= front)
+		{
+			const uint64_t skip = sinceId - front + 1;
+			start = skip >= size ? size : static_cast<size_t>(skip);
+		}
+		if (size - start > max)
+			start = size - max;
+		out.reserve(size - start);
+		for (size_t i = start; i < size; ++i)
+			out.push_back(s.lines[i]);
 		return out;
 	}
 
@@ -306,10 +372,11 @@ namespace console_capture
 
 	std::string Describe()
 	{
-		std::lock_guard<std::mutex> lock(S().mutex);
-		char line[160];
-		std::snprintf(line, sizeof(line), "%s; %zu lines kept (of %zu), %llu seen", g_installed ? S().how.c_str() : "not hooked",
-			S().lines.size(), kMaxLines, static_cast<unsigned long long>(S().nextId - 1));
+		Locked lock;
+		char line[200];
+		std::snprintf(line, sizeof(line), "%s; %zu lines kept (of %zu), %zu KB of text (of %zu), %llu seen",
+			g_installed ? S().how.c_str() : "not hooked", S().lines.size(), kMaxLines, S().bytes / 1024, kMaxTextBytes / 1024,
+			static_cast<unsigned long long>(S().nextId - 1));
 		return line;
 	}
 }

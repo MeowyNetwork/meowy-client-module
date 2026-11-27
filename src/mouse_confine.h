@@ -14,7 +14,8 @@
 // window in front), it's released at once. Measured on Windows 11: a clip
 // outlives the process that set it, but Windows drops it whenever another
 // window comes to the front (a crash dialog included); it's also released
-// when the module unloads.
+// when the module unloads. With another window in front the thread looks only
+// every 250 ms, and switched off it sleeps until it's switched on again.
 #include <string>
 
 namespace mouse_confine

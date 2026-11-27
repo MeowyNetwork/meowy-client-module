@@ -1,5 +1,5 @@
 //! The Windows calls: the current user's registry, opening a URL or folder,
-//! and watching the game's processes.
+//! watching the game's processes, and the events the launcher's threads wait on.
 //!
 //! The watcher opens game processes with `PROCESS_SYNCHRONIZE |
 //! PROCESS_QUERY_LIMITED_INFORMATION` and nothing else: enough to wait for
@@ -10,6 +10,9 @@ use std::ffi::OsString;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 use std::ptr::{null, null_mut};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
@@ -20,8 +23,8 @@ use windows_sys::Win32::System::Registry::{
     RRF_RT_REG_SZ,
 };
 use windows_sys::Win32::System::Threading::{
-    GetExitCodeProcess, GetProcessTimes, OpenProcess, QueryFullProcessImageNameW, WaitForMultipleObjects,
-    PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+    CreateEventW, GetExitCodeProcess, GetProcessTimes, OpenProcess, QueryFullProcessImageNameW, SetEvent, WaitForMultipleObjects,
+    WaitForSingleObject, INFINITE, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
 };
 use windows_sys::Win32::UI::Shell::ShellExecuteW;
 use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
@@ -143,6 +146,157 @@ pub fn delete_protocol_tree() -> bool {
     reg_delete_tree(PROTOCOL_KEY)
 }
 
+// --- Events the launcher's threads wait on -------------------------------------
+
+/// A Win32 event. A manual-reset one also keeps a flag, so `is_set` needs no
+/// wait and works even if Windows couldn't make the event (then a wait is a
+/// plain sleep).
+pub struct Signal {
+    handle: HANDLE,
+    manual: bool,
+    flag: AtomicBool,
+}
+
+// SAFETY: an event handle may be set and waited on from any thread.
+unsafe impl Send for Signal {}
+unsafe impl Sync for Signal {}
+
+fn sleep_ms(ms: u32) {
+    std::thread::sleep(Duration::from_millis(if ms == INFINITE { 1000 } else { ms as u64 }));
+}
+
+impl Signal {
+    fn make(manual: bool) -> Signal {
+        // SAFETY: an unnamed event with default security; closed in Drop.
+        let handle = unsafe { CreateEventW(null(), manual as i32, 0, null()) };
+        Signal { handle, manual, flag: AtomicBool::new(false) }
+    }
+
+    /// Stays set once set: a stop signal.
+    pub fn manual() -> Signal {
+        Signal::make(true)
+    }
+
+    /// Wakes one wait, then resets itself: a nudge.
+    pub fn auto() -> Signal {
+        Signal::make(false)
+    }
+
+    pub fn set(&self) {
+        self.flag.store(true, Ordering::SeqCst);
+        if !self.handle.is_null() {
+            // SAFETY: our own handle.
+            unsafe { SetEvent(self.handle) };
+        }
+    }
+
+    pub fn reset(&self) {
+        self.flag.store(false, Ordering::SeqCst);
+        if !self.handle.is_null() {
+            // SAFETY: our own handle.
+            unsafe { windows_sys::Win32::System::Threading::ResetEvent(self.handle) };
+        }
+    }
+
+    /// Whether a manual-reset event was set (always false for an auto one).
+    pub fn is_set(&self) -> bool {
+        self.manual && self.flag.load(Ordering::SeqCst)
+    }
+
+    /// Waits up to `ms` (INFINITE: no limit) for the event. True if it came.
+    pub fn wait(&self, ms: u32) -> bool {
+        if self.is_set() {
+            return true;
+        }
+        if self.handle.is_null() {
+            sleep_ms(ms);
+            return self.is_set();
+        }
+        // SAFETY: our own handle.
+        let r = unsafe { WaitForSingleObject(self.handle, ms) };
+        r == WAIT_OBJECT_0 || self.is_set()
+    }
+
+    /// The handle, for a wait on several things at once (null if Windows
+    /// couldn't make it; `wait_any` leaves those out).
+    pub fn handle(&self) -> HANDLE {
+        self.handle
+    }
+}
+
+impl Drop for Signal {
+    fn drop(&mut self) {
+        if !self.handle.is_null() {
+            // SAFETY: our own handle.
+            unsafe { CloseHandle(self.handle) };
+        }
+    }
+}
+
+/// Set once when the launcher quits: every background loop waits on it
+/// instead of sleeping, so it stops at once.
+pub fn shutdown() -> &'static Signal {
+    static SHUTDOWN: OnceLock<Signal> = OnceLock::new();
+    SHUTDOWN.get_or_init(Signal::manual)
+}
+
+fn wake_event() -> &'static Signal {
+    static WAKE: OnceLock<Signal> = OnceLock::new();
+    WAKE.get_or_init(Signal::auto)
+}
+
+/// The launcher just started the game: the watcher looks every 500 ms for the
+/// next minute instead of every 5 s.
+pub fn wake_watcher() {
+    wake_event().set();
+}
+
+/// Waits up to `ms` on `handles` (null ones left out, at most 64). Some(i):
+/// the index in `handles` of the one that came; None: the time ran out (or the
+/// wait failed, after a pause so a caller's loop doesn't spin).
+pub fn wait_any(handles: &[HANDLE], ms: u32) -> Option<usize> {
+    let live: Vec<(usize, HANDLE)> = handles.iter().copied().enumerate().filter(|(_, h)| !h.is_null()).take(64).collect();
+    if live.is_empty() {
+        sleep_ms(ms);
+        return None;
+    }
+    let hs: Vec<HANDLE> = live.iter().map(|(_, h)| *h).collect();
+    // SAFETY: up to 64 valid handles the caller owns.
+    let r = unsafe { WaitForMultipleObjects(hs.len() as u32, hs.as_ptr(), 0, ms) };
+    let i = r.wrapping_sub(WAIT_OBJECT_0) as usize;
+    if i < hs.len() {
+        return Some(live[i].0);
+    }
+    if r != WAIT_TIMEOUT {
+        sleep_ms(ms.min(1000)); // WAIT_FAILED: shouldn't happen
+    }
+    None
+}
+
+// --- Priority -------------------------------------------------------------------
+
+/// EcoQoS for the launcher's own process while the game runs, as the pack's
+/// module.cpp sets it for its own threads: Windows runs the launcher slowly
+/// and, on hybrid CPUs, on efficiency cores, so it never competes with the
+/// game. Off: back to Windows' own choice.
+pub fn set_eco_qos(on: bool) -> bool {
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentProcess, ProcessPowerThrottling, SetProcessInformation, PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+        PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_STATE,
+    };
+    let mask = if on { PROCESS_POWER_THROTTLING_EXECUTION_SPEED } else { 0 };
+    let state = PROCESS_POWER_THROTTLING_STATE { Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION, ControlMask: mask, StateMask: mask };
+    // SAFETY: our own process; the struct is the size Windows expects.
+    unsafe {
+        SetProcessInformation(
+            GetCurrentProcess(),
+            ProcessPowerThrottling,
+            (&state as *const PROCESS_POWER_THROTTLING_STATE).cast(),
+            std::mem::size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32,
+        ) != 0
+    }
+}
+
 // --- Folder changes ----------------------------------------------------------
 
 /// A watch for a file being created, deleted or renamed directly in a folder
@@ -164,9 +318,17 @@ impl NameWatch {
 
     /// True if a change came (or had come) within `timeout_ms`.
     pub fn wait(&self, timeout_ms: u32) -> bool {
-        use windows_sys::Win32::System::Threading::WaitForSingleObject;
         // SAFETY: our own handle.
         unsafe { WaitForSingleObject(self.0, timeout_ms) == WAIT_OBJECT_0 }
+    }
+
+    /// As `wait`, but returns None as soon as `stop` is set.
+    pub fn wait_or(&self, stop: &Signal, timeout_ms: u32) -> Option<bool> {
+        let r = wait_any(&[stop.handle(), self.0], timeout_ms);
+        if stop.is_set() {
+            return None;
+        }
+        Some(r == Some(1))
     }
 }
 
@@ -351,14 +513,33 @@ pub enum Event {
 /// isn't followed. Steam's 32-bit root `gmod.exe` starts `bin\win64\gmod.exe`
 /// and exits, so a session ends when the last followed process exits; its
 /// exit code is the session's.
+///
+/// While no game runs it looks every `idle_ms` (5 s in the launcher), or
+/// every 500 ms for a minute after `wake_watcher` (the launcher started the
+/// game). In a session it looks again for new processes only in the first
+/// minute (when Steam's root starts its child); after that it just waits for
+/// one to exit, and rescans then.
 pub struct Watcher {
     roots: Vec<String>,
     procs: Vec<Proc>,
+    /// Same-named processes that aren't the game (other Source games, GMod's
+    /// helpers), while they still exist: a PID Windows reuses is looked at again.
     skipped: Vec<u32>,
     active: bool,
     created: i64,
     last_exit: u32,
+    /// When this session was first seen.
+    since: Option<Instant>,
+    /// Quick idle scans until then (after a wake).
+    quick_until: Option<Instant>,
 }
+
+/// How long after a wake the idle scan is quick, and how often it looks then.
+const QUICK_FOR: Duration = Duration::from_secs(60);
+const QUICK_MS: u32 = 500;
+/// How long into a session new processes are looked for, and how often.
+const EARLY_FOR: Duration = Duration::from_secs(60);
+const EARLY_MS: u32 = 2000;
 
 fn filetime_unix(ft: &FILETIME) -> i64 {
     let t = ((ft.dwHighDateTime as u64) << 32) | ft.dwLowDateTime as u64;
@@ -384,6 +565,14 @@ fn created(handle: HANDLE) -> i64 {
     }
 }
 
+/// An exe name from a process snapshot (UTF-16, NUL-ended) is `want`
+/// (lowercase ASCII), compared without allocating.
+fn exe_is(name: &[u16], want: &str) -> bool {
+    let len = name.iter().position(|&c| c == 0).unwrap_or(name.len());
+    len == want.len()
+        && name[..len].iter().zip(want.bytes()).all(|(&c, w)| c < 128 && (c as u8).to_ascii_lowercase() == w)
+}
+
 /// (pid, parent pid) of every process named gmod.exe or hl2.exe.
 fn candidates() -> Vec<(u32, u32)> {
     let mut out = Vec::new();
@@ -397,9 +586,7 @@ fn candidates() -> Vec<(u32, u32)> {
         e.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
         let mut more = Process32FirstW(snap, &mut e) != 0;
         while more {
-            let len = e.szExeFile.iter().position(|&c| c == 0).unwrap_or(e.szExeFile.len());
-            let name = String::from_utf16_lossy(&e.szExeFile[..len]).to_lowercase();
-            if name == "gmod.exe" || name == "hl2.exe" {
+            if exe_is(&e.szExeFile, "gmod.exe") || exe_is(&e.szExeFile, "hl2.exe") {
                 out.push((e.th32ProcessID, e.th32ParentProcessID));
             }
             more = Process32NextW(snap, &mut e) != 0;
@@ -409,11 +596,36 @@ fn candidates() -> Vec<(u32, u32)> {
     out
 }
 
+/// Whether any gmod.exe/hl2.exe whose image is under `game_root` runs now:
+/// one fresh snapshot, for a check that can't wait for the watcher (the
+/// updater, just before it writes its pointer).
+pub fn game_process_running(game_root: &Path) -> bool {
+    let roots = crate::pipe::folder_forms(game_root);
+    candidates().into_iter().any(|(pid, _)| {
+        // SAFETY: OpenProcess with wait-and-query rights only; closed by Proc's Drop.
+        let handle = unsafe { OpenProcess(GAME_ACCESS, 0, pid) };
+        if handle.is_null() {
+            return false;
+        }
+        let proc = Proc { handle, pid, created: 0 };
+        image_path(proc.handle).is_some_and(|path| roots.iter().any(|r| path.starts_with(r)))
+    })
+}
+
 impl Watcher {
     pub fn new(game_root: &Path) -> Watcher {
         // Both forms of the folder: a game behind a junction reports its real path.
         let roots = crate::pipe::folder_forms(game_root);
-        Watcher { roots, procs: Vec::new(), skipped: Vec::new(), active: false, created: 0, last_exit: 0 }
+        Watcher {
+            roots,
+            procs: Vec::new(),
+            skipped: Vec::new(),
+            active: false,
+            created: 0,
+            last_exit: 0,
+            since: None,
+            quick_until: None,
+        }
     }
 
     pub fn running(&self) -> bool {
@@ -422,8 +634,11 @@ impl Watcher {
 
     fn scan(&mut self) {
         let mut found: Vec<(Proc, u32, String)> = Vec::new();
+        let candidates = candidates();
+        // A skipped PID that's gone may come back as the game: forget it.
+        self.skipped.retain(|pid| candidates.iter().any(|(p, _)| p == pid));
         let known: Vec<u32> = self.procs.iter().map(|p| p.pid).chain(self.skipped.iter().copied()).collect();
-        for (pid, parent) in candidates() {
+        for (pid, parent) in candidates {
             if known.contains(&pid) {
                 continue;
             }
@@ -455,47 +670,69 @@ impl Watcher {
         }
     }
 
-    /// Waits up to `timeout_ms` for something to happen.
-    pub fn step(&mut self, timeout_ms: u32) -> Event {
+    /// Waits for something to happen: with no game, up to `idle_ms` (less
+    /// after a wake); in a session, until a process exits (rescanning every
+    /// 2 s, or `idle_ms` if shorter, during its first minute). Returns Idle at
+    /// once when `shutdown()` is set.
+    pub fn step(&mut self, idle_ms: u32) -> Event {
+        let (wake, stop) = (wake_event(), shutdown());
         if self.procs.is_empty() {
             self.scan();
             if self.procs.is_empty() {
-                std::thread::sleep(std::time::Duration::from_millis(timeout_ms as u64));
+                let quick = self.quick_until.is_some_and(|t| Instant::now() < t);
+                let ms = if quick { idle_ms.min(QUICK_MS) } else { idle_ms };
+                if wait_any(&[wake.handle(), stop.handle()], ms) == Some(0) {
+                    self.quick_until = Some(Instant::now() + QUICK_FOR);
+                }
                 return Event::Idle;
             }
         }
         if !self.active {
             self.active = true;
+            self.since = Some(Instant::now());
+            self.quick_until = None;
             self.created = self.procs.iter().map(|p| p.created).filter(|&c| c > 0).min().unwrap_or(0);
             return Event::Started { created: self.created };
         }
-        let handles: Vec<HANDLE> = self.procs.iter().take(64).map(|p| p.handle).collect();
-        // SAFETY: up to 64 valid handles we own.
-        let r = unsafe { WaitForMultipleObjects(handles.len() as u32, handles.as_ptr(), 0, timeout_ms) };
-        if r == WAIT_TIMEOUT {
-            self.scan();
-            return Event::Idle;
-        }
-        let i = r.wrapping_sub(WAIT_OBJECT_0) as usize;
-        if i < handles.len() {
-            let mut code = 0u32;
-            // SAFETY: a signalled handle we own.
-            unsafe { GetExitCodeProcess(self.procs[i].handle, &mut code) };
-            self.last_exit = code;
-            self.procs.remove(i);
-        } else {
-            // WAIT_FAILED: shouldn't happen; don't spin.
-            std::thread::sleep(std::time::Duration::from_millis(timeout_ms as u64));
+        let early = self.since.map_or(true, |t| t.elapsed() < EARLY_FOR);
+        let timeout = if early { idle_ms.min(EARLY_MS) } else { INFINITE };
+        // The game's processes, then the wake and stop events (64 at most in all).
+        let mut handles: Vec<HANDLE> = self.procs.iter().take(62).map(|p| p.handle).collect();
+        let n = handles.len();
+        handles.push(wake.handle());
+        handles.push(stop.handle());
+        match wait_any(&handles, timeout) {
+            None => {
+                if early {
+                    self.scan();
+                }
+                return Event::Idle;
+            }
+            Some(i) if i >= n => {
+                if !stop.is_set() {
+                    self.scan(); // a wake: look once more
+                }
+                return Event::Idle;
+            }
+            Some(i) => {
+                let mut code = 0u32;
+                // SAFETY: a signalled handle we own.
+                unsafe { GetExitCodeProcess(self.procs[i].handle, &mut code) };
+                self.last_exit = code;
+                self.procs.remove(i);
+            }
         }
         self.scan();
         if self.procs.is_empty() {
             // Steam's root gmod.exe may exit just before its child shows up.
-            std::thread::sleep(std::time::Duration::from_secs(3));
+            if stop.wait(3000) {
+                return Event::Idle; // quitting: no verdict, no card
+            }
             self.scan();
         }
         if self.procs.is_empty() {
             self.active = false;
-            self.skipped.clear();
+            self.since = None;
             return Event::Ended { exit_code: self.last_exit, created: self.created };
         }
         Event::Idle
@@ -528,6 +765,31 @@ mod tests {
         assert!(w.wait(0), "a create+delete before waiting still counts");
         drop(w);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn exe_names() {
+        let name = |s: &str| s.encode_utf16().chain(std::iter::repeat(0).take(4)).collect::<Vec<u16>>();
+        assert!(exe_is(&name("gmod.exe"), "gmod.exe"));
+        assert!(exe_is(&name("GMod.EXE"), "gmod.exe"));
+        assert!(exe_is(&"hl2.exe".encode_utf16().collect::<Vec<_>>(), "hl2.exe"), "no NUL at the end");
+        assert!(!exe_is(&name("gmod.exe2"), "gmod.exe"));
+        assert!(!exe_is(&name("gmod.ex"), "gmod.exe"));
+        assert!(!exe_is(&name("gmod\u{130}exe"), "gmod.exe"));
+    }
+
+    #[test]
+    fn events() {
+        let stop = Signal::manual();
+        assert!(!stop.is_set() && !stop.wait(10));
+        stop.set();
+        assert!(stop.is_set() && stop.wait(INFINITE), "stays set");
+        let nudge = Signal::auto();
+        nudge.set();
+        assert_eq!(wait_any(&[stop.handle(), nudge.handle()], 0), Some(0), "the first that's set");
+        assert_eq!(wait_any(&[null_mut(), nudge.handle()], 0), Some(1), "null left out, index kept");
+        assert_eq!(wait_any(&[nudge.handle()], 0), None, "an auto event resets itself");
+        assert!(!nudge.is_set());
     }
 
     #[test]
@@ -577,7 +839,10 @@ mod tests {
         for _ in 0..10 {
             assert_eq!(other.step(50), Event::Idle);
         }
+        assert!(other.skipped.contains(&child.id()), "skipped while it runs");
         let _ = child.wait();
+        assert_eq!(other.step(10), Event::Idle);
+        assert!(!other.skipped.contains(&child.id()), "forgotten once gone, so a reused PID is looked at again");
         drop(w);
         drop(other);
         let _ = std::fs::remove_dir_all(&dir);

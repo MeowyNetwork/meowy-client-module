@@ -146,7 +146,7 @@ namespace
 	                                    // table can be allocated at an old one's address)...
 	int g_checkedCount = 0;             // ...up to here
 	std::atomic<bool> g_refused{ false };
-	std::string g_refusal;              // why, once refused (under g_mutex)
+	const char* g_refusal = nullptr;    // why, once refused: a literal, so refusing never allocates (under g_mutex)
 
 	std::atomic<long long> g_found{ 0 }, g_none{ 0 }, g_toGame{ 0 };
 
@@ -163,14 +163,36 @@ namespace
 	void Refuse(const char* why)
 	{
 		if (!g_refused.exchange(true))
-			g_refusal = why;   // std::string assignment of a short literal; under g_mutex
+			g_refusal = why;   // under g_mutex
+	}
+
+	// The table pointer is whatever the patched code had in a register: the
+	// first read through it is the one that can fault if a game update moved
+	// things in a way the byte pattern didn't show. Everything read after it is
+	// range-checked against engine.dll first.
+	bool ReadVtable(void* table, void**& vtable) noexcept
+	{
+		__try
+		{
+			vtable = *reinterpret_cast<void***>(table);
+			return true;
+		}
+		__except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH)
+		{
+			return false;
+		}
 	}
 
 	// The table's class, from MSVC RTTI: the complete-object locator just before
 	// the vtable names the most derived class.
 	bool IsStringTable(void* table)
 	{
-		void** vtable = *reinterpret_cast<void***>(table);
+		void** vtable = nullptr;
+		if (!ReadVtable(table, vtable))
+		{
+			Refuse("the lookup's table couldn't be read");
+			return false;
+		}
 		if (vtable == g_goodVtable)
 			return true;
 		if (!InEngine(vtable - 1, sizeof(void*)))
@@ -349,6 +371,9 @@ namespace lua_lookup
 				return kLeaveToGame;
 			}
 			int count = 0;
+			// noexcept, in the middle of the game's own scan: a lock that can't
+			// be taken leaves this lookup to the game instead of ending it.
+			try
 			{
 				std::lock_guard<std::mutex> lock(g_mutex);
 				if (!IsStringTable(table))
@@ -362,6 +387,11 @@ namespace lua_lookup
 					++g_toGame;
 					return kLeaveToGame;
 				}
+			}
+			catch (...)
+			{
+				++g_toGame;
+				return kLeaveToGame;
 			}
 			int index = FindStringIndex(table, name);
 			if (index >= 0 && index < count)
@@ -404,7 +434,7 @@ namespace lua_lookup
 			g_checkedFirst = nullptr;
 			g_checkedCount = 0;
 			g_refused = false;
-			g_refusal.clear();
+			g_refusal = nullptr;
 			g_found = g_none = g_toGame = 0;
 #endif
 		}
@@ -587,7 +617,7 @@ namespace lua_lookup
 		std::lock_guard<std::mutex> lock(g_mutex);
 		std::string out = g_site ? "on" : "off";
 		if (g_refused)
-			out += " (left to the game: " + g_refusal + ")";
+			out += std::string(" (left to the game: ") + (g_refusal ? g_refusal : "") + ")";
 		out += ": " + std::to_string(g_found.load()) + " found, " + std::to_string(g_none.load()) + " not found, " +
 			std::to_string(g_toGame.load()) + " left to the game's own scan";
 		return out;

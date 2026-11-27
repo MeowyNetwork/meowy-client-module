@@ -123,6 +123,7 @@ static void Logic()
 	t.entries = { "paths", "lua/autorun/b.lua", "addons/x/lua/autorun/a.lua", "lua/autorun/a.lua",
 		"lua/autorun/client/c.lua", "lua/Autorun/upper.lua", "lua/autorunner.lua", "gamemodes/darkrp/gamemode/cl_init.lua",
 		"lua/autorun/a.lua.bak", "lua/weapons/m9k_ak47.lua", "lua/autorun", "lua/autoru" };
+	t.entries.reserve(64);   // entries keep their addresses as the table grows, as the engine's do
 
 	std::vector<int> w = Walk(t, "lua/autorun/*");
 	Check("walk: only entries with the literal part", w == std::vector<int>({ 1, 3, 4, 8 }));
@@ -188,24 +189,63 @@ static void Logic()
 	}
 	Check("random: every match visited, in order", randomOk);
 
-	// The table grows (entries arrive while joining): seen at once.
-	t.entries.push_back("lua/autorun/z.lua");
+	// Searches on an unchanged table read no entry again: it's known by its
+	// address, its first entry's pointer and its count.
+	Walk(t, "lua/autorun/*");   // the copy is of r until now
+	long long at = CheckedForTest();
+	for (int k = 0; k < 5; ++k)
+		Walk(t, "lua/autorun/*");
+	Walk(t, "lua/weapons/*");
+	Check("unchanged: no entry read again", CheckedForTest() == at);
+
+	// The table grows (entries arrive while joining): only the new entries are
+	// read, and merged into the copy in order.
+	t.entries.push_back("lua/autorun/z.lua");   // 12
+	t.entries.push_back("lua/autorun/0.lua");   // 13, sorts before every other
 	w = Walk(t, "lua/autorun/*");
-	Check("growth: the new entry is visited", !w.empty() && w.back() == 12);
+	Check("growth: only the new entries read", CheckedForTest() - at == 2);
+	Check("growth: the new entries are visited, in order", w == std::vector<int>({ 1, 3, 4, 8, 12, 13 }));
+	Check("growth: merged in sorted order", Walk(t, "lua/autorun/0*") == std::vector<int>({ 13 }) &&
+		Walk(t, "lua/autorun/a.lua") == std::vector<int>({ 3, 8 }));
+	Check("growth: count in the high bits", Count(Next(&t, "lua/autorun/*", -1)) == 14);
+
+	// A new join, nothing changed: every entry checked once, then nothing again.
+	const long long entries = static_cast<long long>(t.entries.size());
+	at = CheckedForTest();
+	lua_find::NewJoin();
+	w = Walk(t, "lua/autorun/*");
+	Check("new join, same entries: each checked once", CheckedForTest() - at == entries && w == std::vector<int>({ 1, 3, 4, 8, 12, 13 }));
+	Walk(t, "lua/autorun/*");
+	Check("new join, same entries: then not again", CheckedForTest() - at == entries);
 	// A new join with a table at the same address and the same count: indexed again.
 	t.entries[1] = "lua/other/b.lua";
 	lua_find::NewJoin();
 	w = Walk(t, "lua/autorun/*");
 	Check("new join: indexed again", std::find(w.begin(), w.end(), 1) == w.end());
 	// A map change: a new table at the same address, the same count and first
-	// entry, other files, and no new join (the menu never left the server).
+	// entry, other files. The menu calls NewJoin at every loading start, a
+	// changelevel's included.
 	t.entries[1] = "lua/autorun/map_only.lua";
 	t.entries[9] = "lua/autorun/swapped.lua";
+	lua_find::NewJoin();
 	w = Walk(t, "lua/autorun/*");
 	Check("map change: the new entries are visited", std::find(w.begin(), w.end(), 1) != w.end() && std::find(w.begin(), w.end(), 9) != w.end());
 	t.entries[9] = "lua/weapons/m9k_ak47.lua";
+	lua_find::NewJoin();
 	w = Walk(t, "lua/autorun/*");
 	Check("map change: an entry gone is no longer visited", std::find(w.begin(), w.end(), 9) == w.end());
+
+	// A new table at the same address with no join in between: its first
+	// entry is its own string (same text, another pointer), so every entry is
+	// compared again.
+	CNetworkStringTable m;
+	m.entries.reserve(8);
+	m.entries = { "a/first/entry/long/enough/to/live/on/the/heap.lua", "lua/autorun/a.lua", "lua/autorun/b.lua" };
+	Check("own first entry: before", Walk(m, "lua/autorun/*") == std::vector<int>({ 1, 2 }));
+	std::string fresh = m.entries[0];
+	m.entries[2] = "lua/weapons/x.lua";
+	m.entries[0].swap(fresh);
+	Check("own first entry: the new table's entries", Walk(m, "lua/autorun/*") == std::vector<int>({ 1 }));
 
 	Check("null table left to the game", Next(nullptr, "x", -1) == kLeaveToGame);
 	Check("null pattern left to the game", Next(&t, nullptr, -1) == kLeaveToGame);
@@ -216,7 +256,8 @@ static void Logic()
 	Check("another class left to the game", Next(&other, "lua/*", -1) == kLeaveToGame);
 	CNetworkStringTable empty;
 	Check("an empty table left to the game", Next(&empty, "lua/*", -1) == kLeaveToGame);
-	Check("status line", lua_find::Describe().find("table walks") != std::string::npos);
+	Check("status line", lua_find::Describe().find("table walks") != std::string::npos &&
+		lua_find::Describe().find("entries checked") != std::string::npos);
 }
 
 // The .text section of a DLL file, as raw bytes, and its RVA.

@@ -24,10 +24,13 @@
 //   * the test's matcher is the expected one (literal bytes compared one for
 //     one, '*' and '?' as wildcards);
 //   * the table is an engine.dll CNetworkStringTable (its RTTI says so).
-// The sorted copy is rebuilt whenever the table changes: every entry is
-// compared with it at the start of each search (a map change makes a new table,
-// which can land at the old one's address with the same count and first
-// entry), and it's rebuilt at every join. In memory only.
+// The sorted copy follows the table the way lua_lookup does: a table is known
+// by its address, its first entry's pointer and its count, entries added since
+// are read and merged in, and every entry is compared with the copy again only
+// when that identity changes or a join (or changelevel) starts: NewJoin, which
+// the menu calls at every loading start, since a map change makes a new table
+// that can land at the old one's address with the same count. The copy is made
+// again when an entry differs. In memory only.
 
 #include <cstddef>
 #include <cstdint>
@@ -46,7 +49,8 @@ namespace lua_find
 
 	bool Installed();
 
-	// A join is starting: the next table is indexed again before it's used.
+	// A join or changelevel is starting: the next table's entries are all
+	// checked against the copy again before it's used.
 	void NewJoin();
 
 	// One line for the status command: on/off, finds, and table entries skipped.
@@ -68,6 +72,8 @@ namespace lua_find
 		// engine.dll's, and start over (index, stats, refusals).
 		void SetEngineRangeForTest(uintptr_t base, size_t size);
 		void ResetForTest();
+		// Table entries read so far to check or (re)build the copy.
+		long long CheckedForTest();
 
 		// Finds the loop in a code section (as loaded, or as read from the file:
 		// only relative branches are followed). Returns the start's offset (and

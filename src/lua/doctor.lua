@@ -46,7 +46,10 @@ local DoctorUI = {}
 function DoctorUI.diagnose()
 	local ok, facts = pcall(meowy.DoctorFacts)
 	if not ok or type(facts) ~= "table" then facts = {} end
-	local tips, report = Doctor.diagnose(facts, { mcore = cvarString("gmod_mcore_test"), queue = cvarString("mat_queue_mode") })
+	-- What the pack does with multicore (multicore.lua, a later chunk; nil without it).
+	local okStatus, pack = pcall(function() return meowy.MulticoreStatus and meowy.MulticoreStatus() end)
+	local tips, report = Doctor.diagnose(facts, { mcore = cvarString("gmod_mcore_test"), queue = cvarString("mat_queue_mode"),
+		pack = okStatus and pack or nil })
 	if type(facts.audio) == "table" then
 		report[#report + 1] = "Sound device changes: " .. (not followOn() and "not followed (meowy_audio_follow 0)"
 			or audio.next == math.huge and "can't be watched" or "followed")

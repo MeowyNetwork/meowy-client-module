@@ -277,6 +277,16 @@ mod store {
         std::fs::rename(&tmp, path)
     }
 
+    /// Size and write time of the kept policy.txt and policy.sig: when neither
+    /// changed, `current` would say the same again, so the launcher's minute
+    /// check skips the read and the signature check.
+    pub type Stamp = [Option<(u64, std::time::SystemTime)>; 2];
+
+    pub fn kept_stamp(dir: &Path) -> Stamp {
+        let stamp = |name: &str| std::fs::metadata(dir.join(name)).ok().and_then(|m| Some((m.len(), m.modified().ok()?)));
+        [stamp("policy.txt"), stamp("policy.sig")]
+    }
+
     /// The policy kept in `dir`, verified again (`policy::Current`).
     pub fn current(keys: &Keys, dir: &Path) -> Option<(Policy, Key)> {
         let body = std::fs::read(dir.join("policy.txt")).ok().filter(|b| b.len() <= MAX_BODY)?;

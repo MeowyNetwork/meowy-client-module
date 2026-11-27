@@ -23,6 +23,10 @@ use std::path::{Path, PathBuf};
 pub const HOST: &str = "meowynetwork.com";
 pub const DOC_PATH: &str = "/pack/v1/release-stable.txt";
 pub const SIG_PATH: &str = "/pack/v1/release-stable.sig";
+/// How a stage ends when the game started during the download: the version's
+/// folder is kept, but no pointer is written and nothing is cleaned up; the
+/// launcher checks again soon after the game closes.
+pub const WILL_STAGE: &str = "will stage after the game closes";
 /// The Updates panel's line while "Start with the game" is off.
 pub const START_UP_OFF: &str =
     "Updates need \"Start with the game\": it's off, so a new version would never start. Run MeowyClientPack.exe again with it ticked.";
@@ -100,6 +104,9 @@ pub use staging::*;
 mod staging {
     use super::*;
     use crate::win;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    use std::time::SystemTime;
 
     fn write_atomic(path: &Path, data: &[u8]) -> std::io::Result<()> {
         if let Some(dir) = path.parent() {
@@ -118,6 +125,36 @@ mod staging {
     fn file_sha256(path: &Path) -> Option<String> {
         let b = std::fs::read(path).ok().filter(|b| !b.is_empty() && b.len() as u64 <= release::MAX_DLL)?;
         Some(sha256_hex(&b))
+    }
+
+    /// Hashes already worked out, by path, with the size and write time they
+    /// were for. The window's status asks for the running version often (each
+    /// pack message, each button), and that hashes a whole DLL.
+    type Hashes = HashMap<PathBuf, (u64, SystemTime, String)>;
+    static HASHES: Mutex<Option<Hashes>> = Mutex::new(None);
+
+    /// `file_sha256`, read again only when the file's size or write time
+    /// changed. For files the stub and the updater keep (bin\<version>), never
+    /// for a download being checked (that's always hashed fresh).
+    pub(crate) fn known_sha256(path: &Path) -> Option<String> {
+        let stamp = std::fs::metadata(path).ok().and_then(|m| Some((m.len(), m.modified().ok()?)));
+        let mut hashes = HASHES.lock().unwrap_or_else(|p| p.into_inner());
+        let hashes = hashes.get_or_insert_with(HashMap::new);
+        let Some((len, at)) = stamp else {
+            hashes.remove(path);
+            return None;
+        };
+        if let Some((l, t, h)) = hashes.get(path) {
+            if *l == len && *t == at {
+                return Some(h.clone());
+            }
+        }
+        let h = file_sha256(path);
+        match &h {
+            Some(h) => hashes.insert(path.to_path_buf(), (len, at, h.clone())),
+            None => hashes.remove(path),
+        };
+        h
     }
 
     /// state\install_token: 32 hex; made with the system RNG if missing (as the pack).
@@ -152,7 +189,7 @@ mod staging {
             let Some(p) = read_pointer(&state_path(data, which, arch)) else { continue };
             if !bad.contains(&p.version)
                 && release::policy_allows(policy, &p.version)
-                && file_sha256(&version_dll(data, &p.version, arch)).as_deref() == Some(p.sha256.as_str())
+                && known_sha256(&version_dll(data, &p.version, arch)).as_deref() == Some(p.sha256.as_str())
             {
                 return Some(p.version);
             }
@@ -209,11 +246,18 @@ mod staging {
 
     /// Downloads (through `fetch`, which must give exactly `size` bytes or fail),
     /// checks and stages `r` for the next start. Ok(said) or Err(why).
+    ///
+    /// `game_running` is asked again right before the pending pointer is
+    /// written and before old versions are cleaned up: the download takes a
+    /// while, and the start-up stub may be promoting a version meanwhile. If
+    /// the game started, the new version's folder stays, but neither happens
+    /// (Err ending in WILL_STAGE).
     pub fn stage(
         data: &Path,
         r: &Release,
         arch: &str,
         fetch: impl Fn(&str, u64) -> Result<Vec<u8>, String>,
+        game_running: &dyn Fn() -> bool,
     ) -> Result<String, String> {
         let file = release::own_file(r, arch).ok_or_else(|| format!("{} has no file for this game build", r.version))?;
         let bytes = fetch(&file.path, file.size).map_err(|_| format!("couldn't download {}", r.version))?;
@@ -236,10 +280,16 @@ mod staging {
         if placed.is_err() {
             return Err(format!("couldn't put {} in place", r.version));
         }
+        if game_running() {
+            return Err(format!("{} is downloaded and {WILL_STAGE}", r.version));
+        }
         let p = Pointer { version: r.version.clone(), sha256: file.sha256.clone(), ok: 0 };
         write_atomic(&state_path(data, "pending", arch), p.text().as_bytes()).map_err(|_| format!("couldn't record {}", r.version))?;
         let _ = write_atomic(&seq_floor_path(data, arch), format!("{}\n", r.seq).as_bytes());
-        clean_up(data, arch);
+        // Never while the game runs: the stub's pointers may be mid-change.
+        if !game_running() {
+            clean_up(data, arch);
+        }
         Ok(format!("{} is ready: it starts next time you open Garry's Mod", r.version))
     }
 
@@ -290,7 +340,7 @@ mod staging {
             policy_allows: release::policy_allows(policy, &r.version),
             arch: arch.into(),
             staged_copy_gone: release::own_file(&r, arch)
-                .is_some_and(|f| file_sha256(&version_dll(data, &r.version, arch)).as_deref() != Some(f.sha256.as_str())),
+                .is_some_and(|f| known_sha256(&version_dll(data, &r.version, arch)).as_deref() != Some(f.sha256.as_str())),
         };
         if let Err(why) = release::should_take(&r, &facts) {
             return (why, None);
@@ -302,7 +352,10 @@ mod staging {
         if game_running() {
             return ("Garry's Mod is running: the pack checks for updates itself".into(), None);
         }
-        match stage(data, &r, arch, |path, size| fetch(path, size)) {
+        // Asked again after the download, with a fresh look at the processes
+        // too: the watcher's own flag may lag a start by a few seconds.
+        let running_now = || game_running() || garrysmod.parent().is_some_and(win::game_process_running);
+        match stage(data, &r, arch, |path, size| fetch(path, size), &running_now) {
             Ok(said) => (said, Some(r.version)),
             Err(why) => (why, None),
         }
@@ -392,23 +445,37 @@ mod tests {
         let sha = sha256_hex(&dll);
         let body = doc("").replace(crate::release::tests::SHA, &sha).replace(" 1234 ", &format!(" {} ", dll.len()));
         let r = crate::release::parse(body.as_bytes()).unwrap();
+        let closed = || false;
         // A wrong download: nothing staged, no pointer, seq floor unchanged.
-        let wrong = stage(&data, &r, "win64", |_, size| Ok(vec![b'x'; size as usize]));
+        let wrong = stage(&data, &r, "win64", |_, size| Ok(vec![b'x'; size as usize]), &closed);
         assert!(wrong.unwrap_err().contains("didn't match its signed hash"));
         assert!(!state_path(&data, "pending", "win64").exists() && last_seq(&data, "win64") == 0);
         assert!(!data.join("bin\\1.7.0.partial").exists() && !data.join("bin\\1.7.0").exists());
-        let short = stage(&data, &r, "win64", |_, _| Ok(b"short".to_vec()));
+        let short = stage(&data, &r, "win64", |_, _| Ok(b"short".to_vec()), &closed);
         assert!(short.unwrap_err().contains("couldn't download"));
+        // The game started during the download: the folder stays, but no
+        // pointer, no seq floor and no clean-up.
+        std::fs::create_dir_all(data.join("bin\\0.9.0")).unwrap(); // nothing points here: cleaned up later
+        let started = stage(&data, &r, "win64", |_, _| Ok(dll.clone()), &|| true);
+        assert_eq!(started.unwrap_err(), format!("1.7.0 is downloaded and {WILL_STAGE}"));
+        assert_eq!(std::fs::read(version_dll(&data, "1.7.0", "win64")).unwrap(), dll, "the version's folder stays");
+        assert!(!state_path(&data, "pending", "win64").exists() && last_seq(&data, "win64") == 0);
+        assert!(data.join("bin\\0.9.0").exists(), "nothing cleaned up while the game runs");
         // The right one, next to the other architecture's file for the same version.
-        std::fs::create_dir_all(data.join("bin\\0.9.0")).unwrap(); // nothing points here: cleaned up
         std::fs::create_dir_all(data.join("bin\\1.7.0")).unwrap();
         std::fs::write(version_dll(&data, "1.7.0", "win32"), b"the win32 file").unwrap();
         let p32 = Pointer { version: "1.7.0".into(), sha256: sha256_hex(b"the win32 file"), ok: 0 };
         std::fs::write(state_path(&data, "pending", "win32"), p32.text()).unwrap();
-        let ok = stage(&data, &r, "win64", |path, size| {
-            assert_eq!((path, size), ("/pack/v1/1.7.0/gmcl_meowy_win64.dll", dll.len() as u64));
-            Ok(dll.clone())
-        });
+        let ok = stage(
+            &data,
+            &r,
+            "win64",
+            |path, size| {
+                assert_eq!((path, size), ("/pack/v1/1.7.0/gmcl_meowy_win64.dll", dll.len() as u64));
+                Ok(dll.clone())
+            },
+            &closed,
+        );
         assert_eq!(ok.unwrap(), "1.7.0 is ready: it starts next time you open Garry's Mod");
         assert_eq!(std::fs::read(version_dll(&data, "1.7.0", "win64")).unwrap(), dll);
         assert_eq!(read_pointer(&state_path(&data, "pending", "win64")), Some(Pointer { version: "1.7.0".into(), sha256: sha, ok: 0 }));
@@ -418,6 +485,31 @@ mod tests {
         assert_eq!(std::fs::read(version_dll(&data, "1.7.0", "win32")).unwrap(), b"the win32 file", "the other architecture's file stays");
         assert!(!data.join("bin\\0.9.0").exists(), "an unreferenced folder is cleaned up");
         assert!(!state_path(&data, "current", "win64").exists(), "current is the stub's");
+        // The game started between the pointer and the clean-up: staged, nothing removed.
+        std::fs::create_dir_all(data.join("bin\\0.8.0")).unwrap();
+        let calls = std::cell::Cell::new(0);
+        let late = || {
+            calls.set(calls.get() + 1);
+            calls.get() > 1
+        };
+        assert!(stage(&data, &r, "win64", |_, _| Ok(dll.clone()), &late).is_ok());
+        assert!(data.join("bin\\0.8.0").exists(), "no clean-up once the game runs");
+        std::fs::remove_dir_all(data.parent().unwrap()).unwrap();
+    }
+
+    /// A version's hash is worked out once, and again when the file changes.
+    #[test]
+    fn known_hashes_follow_the_file() {
+        let (data, _) = setup("hashes");
+        let f = data.join("bin\\1.0.0").join(dll_name("win64"));
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        std::fs::write(&f, b"one").unwrap();
+        assert_eq!(known_sha256(&f), Some(sha256_hex(b"one")));
+        assert_eq!(known_sha256(&f), Some(sha256_hex(b"one")), "from the cache");
+        std::fs::write(&f, b"three").unwrap();
+        assert_eq!(known_sha256(&f), Some(sha256_hex(b"three")), "a new size: hashed again");
+        std::fs::remove_file(&f).unwrap();
+        assert_eq!(known_sha256(&f), None, "gone");
         std::fs::remove_dir_all(data.parent().unwrap()).unwrap();
     }
 

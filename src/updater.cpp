@@ -11,9 +11,9 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <bcrypt.h>
-#include <winhttp.h>
 #include <ctime>
-#include <thread>
+#include "net_http.h"
+#include "thread_util.h"
 #endif
 
 namespace updater
@@ -261,54 +261,32 @@ namespace updater
 	{
 		std::wstring Widen(const std::string& s) { return std::wstring(s.begin(), s.end()); }   // ASCII paths and versions
 
-		// GET https://meowynetwork.com<path>: the body for a 200 of at most `cap` bytes, else "".
-		std::string Get(const std::string& path, size_t cap)
+		// GET https://meowynetwork.com<path> (net_http's shared session: the
+		// release document and its signature share a connection): the body of a
+		// 200 that arrived whole and is at most `cap` bytes, else "". `totalMs`
+		// bounds the whole download.
+		std::string Get(const std::string& path, size_t cap, int totalMs)
 		{
-			std::string out;
-			HINTERNET session = WinHttpOpen(L"MeowyClientPack", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-			if (!session)
-				return out;
-			WinHttpSetTimeouts(session, 5000, 5000, 15000, 30000);
-			HINTERNET connect = WinHttpConnect(session, L"meowynetwork.com", INTERNET_DEFAULT_HTTPS_PORT, 0);
-			HINTERNET request = connect ? WinHttpOpenRequest(connect, L"GET", Widen(path).c_str(), nullptr, WINHTTP_NO_REFERER,
-				WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE) : nullptr;
-			bool ok = false;
-			if (request)
-			{
-				DWORD never = WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
-				WinHttpSetOption(request, WINHTTP_OPTION_REDIRECT_POLICY, &never, sizeof(never));
-				if (WinHttpSendRequest(request, L"Cache-Control: no-cache\r\n", static_cast<DWORD>(-1L), WINHTTP_NO_REQUEST_DATA, 0, 0, 0)
-					&& WinHttpReceiveResponse(request, nullptr))
-				{
-					DWORD status = 0, size = sizeof(status);
-					WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX,
-						&status, &size, WINHTTP_NO_HEADER_INDEX);
-					ok = status == 200;
-					DWORD avail = 0;
-					while (ok && WinHttpQueryDataAvailable(request, &avail) && avail > 0)
-					{
-						if (out.size() + avail > cap)
-						{
-							ok = false;
-							break;
-						}
-						const size_t was = out.size();
-						out.resize(was + avail);
-						DWORD read = 0;
-						if (!WinHttpReadData(request, &out[was], avail, &read))
-							ok = false;
-						out.resize(was + read);
-						if (read == 0)
-							break;
-					}
-				}
-				WinHttpCloseHandle(request);
-			}
-			if (connect)
-				WinHttpCloseHandle(connect);
-			WinHttpCloseHandle(session);
-			return ok ? out : std::string();
+			net_http::Request req;
+			req.host = L"meowynetwork.com";
+			req.path = Widen(path);
+			req.headers = L"Cache-Control: no-cache\r\n";
+			req.maxBody = cap;
+			req.t.resolve = 5000;
+			req.t.connect = 5000;
+			req.t.send = 15000;
+			req.t.receive = 30000;
+			req.t.totalMs = totalMs;
+			net_http::Response resp = net_http::Session::Shared().Send(req);
+			if (resp.status != 200 || !resp.complete)
+				return std::string();
+			return std::move(resp.body);
 		}
+
+		// Small documents (the release text, its signature): a minute at most.
+		constexpr int kDocumentMs = 60 * 1000;
+		// A version's DLL (several MB): ten minutes at most, a slow line included.
+		constexpr int kDllMs = 10 * 60 * 1000;
 
 		std::string Trim(std::string s)
 		{
@@ -432,11 +410,25 @@ namespace updater
 
 	namespace
 	{
+		// The calling thread's disk and memory priority lowered (Windows'
+		// background mode) for as long as this lives: the download, the write and
+		// the SHA-256 of a new version never compete with the game's own I/O.
+		struct BackgroundMode
+		{
+			const bool on = SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN) != FALSE;
+			~BackgroundMode()
+			{
+				if (on)
+					SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_END);
+			}
+		};
+
 		// Downloads, checks and stages `r` for the next start. False and why on any failure.
 		bool Stage(const std::wstring& dataDir, const Release& r, std::string& why)
 		{
+			BackgroundMode background;
 			const File* file = OwnFile(r);
-			const std::string bytes = Get(file->path, static_cast<size_t>(file->size));
+			const std::string bytes = Get(file->path, static_cast<size_t>(file->size), kDllMs);
 			if (bytes.size() != file->size)
 				return why = "couldn't download " + r.version, false;
 			if (!detail::PutInPlace(dataDir, r.version, bytes, file->sha256, why))
@@ -457,8 +449,8 @@ namespace updater
 			// Turned off (now, or since the updater started): no contact, no download.
 			if (pack_versions::UpdatesOff(dataDir))
 				return SetState("updates are off in the pack's settings (meowy_updates 0)");
-			const std::string body = Get("/pack/v1/release-stable.txt", kMaxBody);
-			const std::string sig = body.empty() ? std::string() : Trim(Get("/pack/v1/release-stable.sig", 256));
+			const std::string body = Get("/pack/v1/release-stable.txt", kMaxBody, kDocumentMs);
+			const std::string sig = body.empty() ? std::string() : Trim(Get("/pack/v1/release-stable.sig", 256, kDocumentMs));
 			if (body.empty() || sig.empty())
 				return SetState("no release published yet (or the site couldn't be reached)");
 			if (body.compare(0, 21, "meowy-pack-release 1\n") != 0)
@@ -506,15 +498,28 @@ namespace updater
 		if (stubVersion < 1)
 			return SetState("the installed start-up stub can't load updates: reinstall the pack once");
 		SetState("checking in a minute");
-		std::thread([dataDir, running, stubVersion]
+		// Below normal and EcoQoS: a check every 6 hours is never urgent.
+		const bool started = thread_util::Spawn(L"Meowy updater", [dataDir, running, stubVersion]
 		{
+			// Ends only with the process (the pinned menu realm), or through an
+			// exception: then the next Start (next menu open) may start it again.
+			thread_util::OnExit done([] { g_started = false; });
 			Sleep(60 * 1000);   // not while the game is starting
 			for (;;)
 			{
+				// Not while a join loads: it has the disk and the line to itself.
+				if (net_http::Joining())
+					SetState("waiting for the join to finish");
+				net_http::WaitWhileJoining();
 				CheckOnce(dataDir, running, stubVersion);
 				Sleep(6 * 60 * 60 * 1000);
 			}
-		}).detach();
+		}, thread_util::Priority::Background);
+		if (!started)
+		{
+			g_started = false;   // tried again at the next Start
+			SetState("couldn't start the update check (tried again next time)");
+		}
 	}
 #else
 	void Start(const std::wstring&, const std::string&, int) {}

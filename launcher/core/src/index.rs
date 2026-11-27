@@ -34,6 +34,13 @@ pub struct Server {
     pub real: i32,
     /// sv_location (country code), or "".
     pub location: String,
+    /// Name, gamemode, map and address in lowercase, made once when parsed,
+    /// so a search allocates nothing per server.
+    #[serde(skip)]
+    pub hay: String,
+    /// One of Meowy's servers (sorted first), also worked out once.
+    #[serde(skip)]
+    pub ours: bool,
 }
 
 impl Server {
@@ -87,11 +94,16 @@ pub fn parse(json: &[u8]) -> Result<Index, String> {
         let get = |i: Option<usize>| i.and_then(|i| row.get(i));
         let Some(address) = row.get(a).and_then(|v| v.as_str()).and_then(crate::address::public) else { continue };
         let count = |i| int(get(i)).clamp(0, 1000) as u32;
+        let (name, gamemode, map) = (text(get(n), 96), text(get(d), 64), text(get(m), 64));
+        let hay = format!("{name} {gamemode} {map} {address}").to_lowercase();
+        let ours = crate::address::is_ours(&address);
         servers.push(Server {
             address,
-            name: text(get(n), 96),
-            gamemode: text(get(d), 64),
-            map: text(get(m), 64),
+            name,
+            gamemode,
+            map,
+            hay,
+            ours,
             players: count(p),
             max_players: count(x),
             bots: count(b),
@@ -115,14 +127,10 @@ pub fn search<'a>(index: &'a Index, query: &str, limit: usize) -> Vec<&'a Server
     let mut hits: Vec<&Server> = index
         .servers
         .iter()
-        .filter(|s| {
-            let hay = format!("{} {} {} {}", s.name, s.gamemode, s.map, s.address).to_lowercase();
-            words.iter().all(|w| hay.contains(w.as_str()))
-        })
+        .filter(|s| words.iter().all(|w| s.hay.contains(w.as_str())))
         .collect();
     hits.sort_by(|a, b| {
-        let ours = |s: &Server| !crate::address::is_ours(&s.address);
-        (ours(a), a.password == 1, std::cmp::Reverse(a.people()), &a.name).cmp(&(ours(b), b.password == 1, std::cmp::Reverse(b.people()), &b.name))
+        (!a.ours, a.password == 1, std::cmp::Reverse(a.people()), &a.name).cmp(&(!b.ours, b.password == 1, std::cmp::Reverse(b.people()), &b.name))
     });
     hits.truncate(limit);
     hits
@@ -152,6 +160,10 @@ mod tests {
         assert_eq!(idx.servers.len(), 4, "private and malformed rows dropped");
         let m = &idx.servers[0];
         assert_eq!((m.players, m.max_players, m.people()), (145, 128, 145));
+        assert!(idx.servers[1].ours && !m.ours, "Meowy's worked out once");
+        assert_eq!(idx.servers[3].hay, "locked sandbox gm_construct 5.6.7.8:27015");
+        let shown = serde_json::to_string(m).unwrap();
+        assert!(!shown.contains("hay") && !shown.contains("ours"), "the search fields stay out of the page: {shown}");
         let fake = &idx.servers[2];
         assert_eq!(fake.name, "Totally Full RP", "control characters dropped");
         assert_eq!((fake.honest.as_str(), fake.people()), ("fake", 3), "a fake shows its real count");

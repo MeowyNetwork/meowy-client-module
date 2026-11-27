@@ -179,6 +179,13 @@ static void Logic()
 	SetEngineRangeForTest(base, size);
 	ResetForTest();
 
+	// A table pointer that can't be read (what a moved register would give):
+	// no fault, refused for good.
+	Check("unreadable table left to the game", Resolve(reinterpret_cast<void*>(static_cast<uintptr_t>(0x10)), "a.lua") == kLeaveToGame);
+	Check("and every table after it", Resolve(&t, "lua/autorun/a.lua") == kLeaveToGame);
+	Check("its refusal described", lua_lookup::Describe().find("couldn't be read") != std::string::npos);
+	ResetForTest();
+
 	// An index that misses an entry: refused for good.
 	CNetworkStringTable bad;
 	bad.entries = { "paths", "a.lua", "b.lua", "c.lua", "d.lua" };

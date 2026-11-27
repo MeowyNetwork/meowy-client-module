@@ -4,7 +4,9 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstddef>
 #include <cstring>
+#include <iterator>
 #include <mutex>
 #include <vector>
 
@@ -292,15 +294,22 @@ namespace
 	};
 	std::vector<Entry> g_sorted;         // the table's entries, by byte order
 	std::vector<size_t> g_where;         // index -> its place in g_sorted
+	// The table the copy was made from, as lua_lookup tells tables apart: its
+	// address, its first entry's own pointer (a new table at an old one's
+	// address has its own strings) and how many entries the copy has.
 	void* g_indexTable = nullptr;
+	const char* g_indexFirst = nullptr;
 	int g_indexCount = -1;
-	std::string g_indexFirst;
-	bool g_dirty = true;
+	bool g_dirty = true;                 // a join or changelevel started: check every entry again
 	std::string g_candFor;               // the pattern the candidates are for
 	std::vector<int> g_cand;             // its candidates, by index
 	bool g_candValid = false;
 
 	std::atomic<long long> g_loops{ 0 }, g_skipped{ 0 }, g_toGame{ 0 };
+	// Entries read to check or (re)build the copy, and what checking every
+	// entry at the start of every search (as it used to) would have read:
+	// loops x count. The difference is the work saved.
+	std::atomic<long long> g_checked{ 0 }, g_perSearch{ 0 };
 
 	uint8_t* g_startSite = nullptr;      // patched, or null
 	uint8_t* g_stepSite = nullptr;
@@ -345,8 +354,9 @@ namespace
 	// Every entry still what the sorted copy has at its index.
 	bool SameEntries(void* table, int count)
 	{
-		if (g_where.size() != static_cast<size_t>(count))
+		if (g_where.size() != static_cast<size_t>(count) || g_sorted.size() != static_cast<size_t>(count))
 			return false;
+		g_checked += count;
 		for (int i = 0; i < count; ++i)
 		{
 			const char* s = GetString(table, i);
@@ -356,20 +366,36 @@ namespace
 		return true;
 	}
 
-	// The sorted copy, made again when the table isn't the one it was made from.
-	// The table's address, count and first entry are checked on every step; at
-	// the start of each search (`whole`), every entry is: a map change makes a
-	// new table, which can land at the old one's address with the same count
-	// and first entry but other files, and a stale copy would skip them.
-	bool Indexed(void* table, int count, bool whole)
+	bool EntryBefore(const Entry& x, const Entry& y)
 	{
-		const char* first = count > 0 ? GetString(table, 0) : nullptr;
-		if (!g_dirty && table == g_indexTable && count == g_indexCount && first && g_indexFirst == first &&
-			(!whole || SameEntries(table, count)))
-			return true;
+		const int c = std::strcmp(x.s.c_str(), y.s.c_str());
+		return c != 0 ? c < 0 : x.index < y.index;
+	}
+
+	void Where(int count)
+	{
+		g_where.assign(static_cast<size_t>(count), 0);
+		for (size_t p = 0; p < g_sorted.size(); ++p)
+			g_where[static_cast<size_t>(g_sorted[p].index)] = p;
+	}
+
+	void Adopt(void* table, const char* first, int count)
+	{
+		g_indexTable = table;
+		g_indexFirst = first;
+		g_indexCount = count;
+		g_dirty = false;
+		g_candValid = false;
+	}
+
+	// The whole sorted copy, made again.
+	bool Rebuild(void* table, int count, const char* first)
+	{
 		g_dirty = true;
 		g_sorted.clear();
+		g_where.clear();
 		g_sorted.reserve(static_cast<size_t>(count));
+		g_checked += count;
 		for (int i = 0; i < count; ++i)
 		{
 			const char* s = GetString(table, i);
@@ -377,19 +403,65 @@ namespace
 				return false;
 			g_sorted.push_back({ s, i });
 		}
-		std::sort(g_sorted.begin(), g_sorted.end(), [](const Entry& x, const Entry& y) {
-			const int c = std::strcmp(x.s.c_str(), y.s.c_str());
-			return c != 0 ? c < 0 : x.index < y.index;
-		});
-		g_where.assign(static_cast<size_t>(count), 0);
-		for (size_t p = 0; p < g_sorted.size(); ++p)
-			g_where[static_cast<size_t>(g_sorted[p].index)] = p;
-		g_indexTable = table;
-		g_indexCount = count;
-		g_indexFirst = first ? first : "";
-		g_dirty = false;
-		g_candValid = false;
+		std::sort(g_sorted.begin(), g_sorted.end(), EntryBefore);
+		Where(count);
+		Adopt(table, first, count);
 		return true;
+	}
+
+	// The same table with entries added since (they arrive while joining):
+	// only the new ones are read, sorted and merged into the copy.
+	bool Grow(void* table, int count, const char* first)
+	{
+		const int from = g_indexCount;
+		g_dirty = true;   // until the copy is whole again
+		std::vector<Entry> added;
+		added.reserve(static_cast<size_t>(count - from));
+		g_checked += count - from;
+		for (int i = from; i < count; ++i)
+		{
+			const char* s = GetString(table, i);
+			if (!s)
+				return false;
+			added.push_back({ s, i });
+		}
+		std::sort(added.begin(), added.end(), EntryBefore);
+		const size_t mid = g_sorted.size();
+		g_sorted.insert(g_sorted.end(), std::make_move_iterator(added.begin()), std::make_move_iterator(added.end()));
+		std::inplace_merge(g_sorted.begin(), g_sorted.begin() + static_cast<std::ptrdiff_t>(mid), g_sorted.end(), EntryBefore);
+		Where(count);
+		Adopt(table, first, count);
+		return true;
+	}
+
+	// The sorted copy for this table. Network string tables only ever grow
+	// within a connection and their names never change, so a table is known
+	// by its address, its first entry's pointer and its count, the way
+	// lua_lookup knows it: the same table costs nothing, and entries added
+	// since are merged in. Every entry is compared with the copy again only
+	// when that identity changes or a join started (NewJoin, at every loading
+	// start, changelevel included: a map change makes a new table, which can
+	// land at the old one's address with the same count but other files).
+	// The copy is kept when every entry still matches, else made again.
+	bool Indexed(void* table, int count)
+	{
+		const char* first = GetString(table, 0);
+		if (!first)
+		{
+			g_dirty = true;
+			return false;
+		}
+		const bool same = table == g_indexTable && first == g_indexFirst;
+		if (!g_dirty && same && count == g_indexCount)
+			return true;
+		if (!g_dirty && same && count > g_indexCount)
+			return Grow(table, count, first);
+		if (count == g_indexCount && SameEntries(table, count))
+		{
+			Adopt(table, first, count);
+			return true;
+		}
+		return Rebuild(table, count, first);
 	}
 
 	// The entries starting with the pattern's literal part, by index.
@@ -675,7 +747,7 @@ namespace lua_find
 					return kLeaveToGame;
 				}
 				const int count = GetNumStrings(table);
-				if (count <= 0 || !Indexed(table, count, after < 0))
+				if (count <= 0 || !Indexed(table, count))
 				{
 					++g_toGame;
 					return kLeaveToGame;
@@ -684,6 +756,7 @@ namespace lua_find
 				if (after < 0)
 				{
 					++g_loops;
+					g_perSearch += count;
 					g_skipped += count - static_cast<long long>(g_cand.size());
 				}
 				auto it = std::upper_bound(g_cand.begin(), g_cand.end(), after);
@@ -692,8 +765,12 @@ namespace lua_find
 			}
 			catch (...)
 			{
-				// Out of memory for the copy: the game's own loop, this time.
+				// Out of memory for the copy: the game's own loop, this time,
+				// and a whole new copy next time.
 				g_dirty = true;
+				g_sorted.clear();
+				g_where.clear();
+				g_indexCount = -1;
 				++g_toGame;
 				return kLeaveToGame;
 			}
@@ -714,6 +791,15 @@ namespace lua_find
 #endif
 		}
 
+		long long CheckedForTest()
+		{
+#ifdef _WIN32
+			return g_checked.load();
+#else
+			return 0;
+#endif
+		}
+
 		void ResetForTest()
 		{
 #ifdef _WIN32
@@ -723,10 +809,11 @@ namespace lua_find
 			g_where.clear();
 			g_indexTable = nullptr;
 			g_indexCount = -1;
-			g_indexFirst.clear();
+			g_indexFirst = nullptr;
 			g_dirty = true;
 			g_candValid = false;
 			g_loops = g_skipped = g_toGame = 0;
+			g_checked = g_perSearch = 0;
 #endif
 		}
 
@@ -908,7 +995,9 @@ namespace lua_find
 		std::lock_guard<std::mutex> lock(g_mutex);
 		std::string out = g_startSite ? "on" : "off";
 		out += ": " + std::to_string(g_loops.load()) + " table walks, " + std::to_string(g_skipped.load()) +
-			" entries skipped, " + std::to_string(g_toGame.load()) + " left to the game's own loop";
+			" entries skipped, " + std::to_string(g_toGame.load()) + " left to the game's own loop, " +
+			std::to_string(g_checked.load()) + " entries checked (every entry at every search: " +
+			std::to_string(g_perSearch.load()) + ")";
 		return out;
 #else
 		return "unsupported";

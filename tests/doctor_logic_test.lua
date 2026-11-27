@@ -97,6 +97,34 @@ do
 end
 check("cvars unknown: reported, no tip", mc, true)
 
+-- The pack's multicore (cvars.pack, multicore.lua): the tip points to Meowy
+-- settings, not the console.
+local function mcoreTip(cvars)
+	for _, t in ipairs((M.diagnose(laptop(1, 0), cvars))) do if t.id == "mcore" then return t end end
+end
+local function hasLine(cvars, line)
+	local _, r = M.diagnose(laptop(1, 0), cvars)
+	for _, l in ipairs(r) do if l == line then return true end end
+	return false
+end
+check("not the pack's: the console command", mcoreTip({ mcore = "0", queue = "-1" }).text:find("gmod_mcore_test 1 in the console", 1, true) ~= nil, true)
+local t = mcoreTip({ mcore = "0", queue = "-1", pack = "setting_off" })
+check("setting off: a tip", t ~= nil, true)
+check("setting off: points to Meowy settings", t.text:find("Meowy settings", 1, true) ~= nil, true)
+check("setting off: no console command", t.text:find("console", 1, true), nil)
+check("setting off: still high", t.severity, "high")
+check("setting off: reported", hasLine({ mcore = "0", queue = "-1", pack = "setting_off" }, "Multicore setting: off in Meowy settings"), true)
+t = mcoreTip({ mcore = "0", queue = "-1", pack = "guard_off" })
+check("guard off: says why", t.text:find("closed unexpectedly twice", 1, true) ~= nil, true)
+check("guard off: points to Meowy settings", t.text:find("Meowy settings", 1, true) ~= nil, true)
+check("guard off: no console command", t.text:find("console", 1, true), nil)
+t = mcoreTip({ mcore = "0", queue = "-1", pack = "managed" })
+check("managed but 0: says the pack turns it on", t.text:find("The pack turns it on", 1, true) ~= nil, true)
+check("managed but 0: no console command", t.text:find("console", 1, true), nil)
+check("managed and on: no tip", ids((M.diagnose(laptop(1, 0), { mcore = "1", queue = "-1", pack = "managed" }))), "")
+check("managed and on: reported", hasLine({ mcore = "1", queue = "-1", pack = "managed" }, "Multicore setting: on (Meowy settings), turned on by the pack"), true)
+check("not the pack's: no setting line", hasLine({ mcore = "1", queue = "-1" }, "Multicore setting: off in Meowy settings"), false)
+
 -- Branch ----------------------------------------------------------------------------
 tips = M.diagnose(laptop(1, 0, { arch = "x86" }), GOOD)
 check("32-bit: branch tip", ids(tips), "branch")

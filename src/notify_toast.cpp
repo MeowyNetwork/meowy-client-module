@@ -60,7 +60,7 @@ namespace
 	constexpr UINT WM_CLICKED = WM_APP + 2;     // a toast was clicked (from a WinRT thread)
 	constexpr UINT_PTR TIMER_TRAY = 1;
 	constexpr UINT kTrayTimeoutMs = 30 * 1000;  // the tray icon goes after this at the latest
-	constexpr DWORD kShutdownWaitMs = 2000;
+	constexpr DWORD kShutdownWaitMs = 150;    // Shutdown, on the game thread; a slower worker is let go (WorkerMain)
 	constexpr size_t kMaxQueued = 32;
 	constexpr size_t kKeepToasts = 16;          // shown toasts whose click handler stays registered
 	constexpr long long kToastLifetime = 30LL * 60 * 10000000; // 30 minutes, in 100 ns units

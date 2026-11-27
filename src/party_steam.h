@@ -85,7 +85,8 @@ namespace party_steam
 		bool inGmod = false;    // playing Garry's Mod right now
 		bool hasPack = false;   // their Rich Presence has meowy_pack
 	};
-	// Steam friends, those playing Garry's Mod first, at most `max`.
+	// Steam friends playing Garry's Mod right now (inGmod is always true), at
+	// most `max`. Friends doing anything else aren't listed.
 	std::vector<Friend> Friends(size_t max);
 
 	// One line for a status command.

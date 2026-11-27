@@ -5,11 +5,13 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
+#include <memory>
 #include <mutex>
-#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -18,6 +20,7 @@
 #include <windows.h>
 #include <winioctl.h>
 #include "pe_image.h"
+#include "thread_util.h"
 #endif
 
 namespace
@@ -44,9 +47,12 @@ namespace
 	std::atomic<bool> g_recording{ false };        // written under g_mutex; read without it first
 
 	// This join's reads: per file (lowercase path), which blocks. Under g_readMutex.
+	// The hook keeps pointers to these (unordered_map nodes don't move); BeginJoin
+	// and EndJoin clear g_reads and g_handles together, so none outlives its entry.
 	struct Reads { std::string path; int64_t size; std::vector<uint8_t> blocks; size_t marked = 0; };
 	std::mutex g_readMutex;
 	std::unordered_map<std::string, Reads> g_reads;
+	uint64_t g_readCalls = 0;                      // reads noted since the join started; under g_readMutex
 
 	// The warming thread: one at a time; a new Start (or Cancel) moves the
 	// generation on and the old thread stops at its next read.
@@ -57,12 +63,94 @@ namespace
 	std::string g_target;                          // under g_mutex
 	std::string g_lastResult;                      // under g_mutex
 
+	// Whether each drive (A: to Z:) has no seek penalty, asked once per session:
+	// 0 not asked yet, 1 it has one, 2 it hasn't (an SSD). Zero-initialised.
+	std::atomic<int> g_noSeekPenalty[26];
+
+	// A server's list, parsed: shared by the menu's questions until the file changes.
+	struct List
+	{
+		uint64_t fileSize = 0;
+		uint64_t written = 0;                      // its last write time (a FILETIME)
+		std::vector<Item> items;
+		std::vector<Range> ranges;
+		std::vector<uint64_t> workshop;
+		uint64_t bytes = 0;                        // the items' sizes and the ranges' blocks
+		bool any = false;                          // any file or range (Parse's answer)
+	};
+	struct CachedList { std::shared_ptr<const List> list; uint64_t used; };
+	constexpr size_t kCachedLists = 8;             // servers hovered lately
+	std::mutex g_listMutex;
+	std::unordered_map<std::wstring, CachedList> g_lists;   // by list file; under g_listMutex
+	uint64_t g_listTick = 0;                       // under g_listMutex
+	std::atomic<uint64_t> g_listParses{ 0 };
+
 	std::string Lower(std::string s)
 	{
 		for (char& c : s)
 			if (c >= 'A' && c <= 'Z')
 				c = static_cast<char>(c - 'A' + 'a');
 		return s;
+	}
+
+	// Whether "workshop" is in `s`, in any case: most files a join opens aren't
+	// Workshop content, and then WorkshopId's copy of the path is skipped.
+	bool MentionsWorkshop(const char* s)
+	{
+		static const char kWord[] = "workshop";
+		for (; *s; ++s)
+		{
+			size_t i = 0;
+			// | 0x20 makes an ASCII capital lowercase and leaves nothing else a letter.
+			while (kWord[i] && (s[i] | 0x20) == kWord[i])
+				++i;
+			if (!kWord[i])
+				return true;
+		}
+		return false;
+	}
+
+	// Forgets a list's parse (it was written or deleted).
+	void ForgetList(const std::wstring& file)
+	{
+		std::lock_guard<std::mutex> lock(g_listMutex);
+		g_lists.erase(file);
+	}
+
+	// This join's entry for a file (g_readMutex held), made on its first read
+	// with `key` its lowercase path; nullptr when it can't be noted (the cap is
+	// reached, or the same file was seen at another size).
+	Reads* ReadsForLocked(std::string&& key, const std::string& path, int64_t size)
+	{
+		if (size <= 0)
+			return nullptr;
+		auto it = g_reads.find(key);
+		if (it == g_reads.end())
+		{
+			if (g_reads.size() >= kMaxRanges)
+				return nullptr;
+			const int64_t blocks = std::min<int64_t>((size + kBlock - 1) / kBlock, kMaxBlocks);
+			it = g_reads.emplace(std::move(key), Reads{ path, size, std::vector<uint8_t>(static_cast<size_t>(blocks), 0) }).first;
+		}
+		return it->second.size == size ? &it->second : nullptr;
+	}
+
+	// `length` bytes read at `offset` of r's file (g_readMutex held).
+	void MarkLocked(Reads& r, uint64_t offset, uint64_t length)
+	{
+		++g_readCalls;
+		if (length == 0 || r.blocks.empty() || offset >= static_cast<uint64_t>(r.size))
+			return;
+		const uint64_t first = offset / kBlock;
+		const uint64_t last = std::min<uint64_t>((offset + length - 1) / kBlock, static_cast<uint64_t>(r.blocks.size() - 1));
+		for (uint64_t i = first; i <= last; ++i)
+		{
+			if (!r.blocks[static_cast<size_t>(i)])
+			{
+				r.blocks[static_cast<size_t>(i)] = 1;
+				++r.marked;
+			}
+		}
 	}
 
 	// Blocks set in a bitmap -> runs [start, end).
@@ -146,7 +234,10 @@ namespace
 			return;
 		std::sort(files.begin(), files.end(), [](const F& a, const F& b) { return CompareFileTime(&a.t, &b.t) > 0; });
 		for (size_t i = kKeepServers; i < files.size(); ++i)
+		{
 			DeleteFileW(files[i].path.c_str());
+			ForgetList(files[i].path);
+		}
 	}
 
 	// --- The read hook ---------------------------------------------------------------
@@ -158,12 +249,31 @@ namespace
 	void** g_closeSlot = nullptr;
 	ReadFileFn g_readFile = nullptr;
 	CloseHandleFn g_closeHandle = nullptr;
-	// A handle's file while a join loads (nullptr: not one to note). Under g_readMutex.
-	struct Known { std::string path; int64_t size; bool note; };
+	// A handle's file while a join loads: its entry in g_reads, or nullptr when
+	// it's not one to note. Under g_readMutex.
+	struct Known { Reads* reads; };
 	std::unordered_map<HANDLE, Known> g_handles;
 
-	// The file behind a handle: a local disk file, its path and size.
-	bool FileOf(HANDLE h, std::string& path, int64_t& size)
+	// Volumes to drive letters, for FileOf. Built on the main thread before a
+	// join records and never changed after: a new table replaces it whole.
+	// Read from the main, material and async loader threads (atomic_load).
+	std::shared_ptr<const prewarm::detail::DeviceMap> g_devices;
+
+	void RefreshDevices()
+	{
+		try
+		{
+			std::atomic_store(&g_devices, std::shared_ptr<const prewarm::detail::DeviceMap>(
+				std::make_shared<prewarm::detail::DeviceMap>(prewarm::detail::DevicePrefixes())));
+		}
+		catch (...)
+		{
+			// No memory: the last table stands (or none, and every file takes the slower name).
+		}
+	}
+
+	// The file behind a handle: a local disk file, its path, that lowercased, and its size.
+	bool FileOf(HANDLE h, std::string& path, std::string& lower, int64_t& size)
 	{
 		if (GetFileType(h) != FILE_TYPE_DISK)
 			return false;
@@ -172,12 +282,28 @@ namespace
 		// queries every folder on the path, once per file the join opens
 		// (measured 2026-11-07: 3.9% of the precache stage). Lists are merged
 		// and compared lower-cased, so the case the game used doesn't matter.
-		const DWORD n = GetFinalPathNameByHandleW(h, buf, 1024, FILE_NAME_OPENED | VOLUME_NAME_DOS);
-		if (n == 0 || n >= 1024)
-			return false;
-		std::wstring w(buf, n);
-		if (w.compare(0, 4, L"\\\\?\\") == 0)
-			w = w.substr(4);
+		// Its NT name ("\Device\HarddiskVolume3\..."), with the drive letter
+		// from g_devices: the "C:\..." name asks Windows' mount manager (an
+		// open and a request to it) for every file the join opens, measured as
+		// almost all of this hook's time on the main thread.
+		std::wstring w;
+		DWORD n = GetFinalPathNameByHandleW(h, buf, 1024, FILE_NAME_OPENED | VOLUME_NAME_NT);
+		if (n != 0 && n < 1024)
+		{
+			const std::shared_ptr<const prewarm::detail::DeviceMap> devices = std::atomic_load(&g_devices);
+			if (devices)
+				w = prewarm::detail::DosPath(std::wstring(buf, n), *devices);
+		}
+		if (w.empty())
+		{
+			// A volume the table doesn't have: the slower way, for this file only.
+			n = GetFinalPathNameByHandleW(h, buf, 1024, FILE_NAME_OPENED | VOLUME_NAME_DOS);
+			if (n == 0 || n >= 1024)
+				return false;
+			w.assign(buf, n);
+			if (w.compare(0, 4, L"\\\\?\\") == 0)
+				w = w.substr(4);
+		}
 		if (w.size() < 3 || w[1] != L':' || w[2] != L'\\')
 			return false;   // a local "X:\..." path only
 		LARGE_INTEGER s;
@@ -185,9 +311,9 @@ namespace
 			return false;
 		path = Narrow(w);
 		size = s.QuadPart;
+		lower = Lower(path);
 		// The game's data folder holds what servers write: not content to warm.
-		const std::string l = Lower(path);
-		return l.find("\\garrysmod\\data\\") == std::string::npos;
+		return lower.find("\\garrysmod\\data\\") == std::string::npos;
 	}
 
 	void NoteHandleRead(HANDLE h, DWORD length, LPOVERLAPPED ov)
@@ -199,38 +325,35 @@ namespace
 		}
 		else
 		{
+			// Asked every time: the game also seeks through imports this hook
+			// doesn't see, so where a read starts can't be worked out from the last.
 			LARGE_INTEGER zero = {}, pos = {};
 			if (!SetFilePointerEx(h, zero, &pos, FILE_CURRENT))
 				return;
 			offset = static_cast<uint64_t>(pos.QuadPart);
 		}
-		std::string path;
-		int64_t size = 0;
+		// Every read after a handle's first: one lock, one look-up, the blocks set.
 		{
 			std::lock_guard<std::mutex> lock(g_readMutex);
 			auto it = g_handles.find(h);
 			if (it != g_handles.end())
 			{
-				if (!it->second.note)
-					return;
-				path = it->second.path;
-				size = it->second.size;
-			}
-		}
-		if (path.empty())
-		{
-			Known k;
-			k.note = FileOf(h, k.path, k.size);
-			{
-				std::lock_guard<std::mutex> lock(g_readMutex);
-				g_handles[h] = k;
-			}
-			if (!k.note)
+				if (it->second.reads)
+					MarkLocked(*it->second.reads, offset, length);
 				return;
-			path = k.path;
-			size = k.size;
+			}
 		}
-		prewarm::detail::NoteRead(path, size, offset, length);
+		// Its first: which file (a system call or two, outside the lock).
+		std::string path, key;
+		int64_t size = 0;
+		const bool note = FileOf(h, path, key, size);
+		std::lock_guard<std::mutex> lock(g_readMutex);
+		if (!g_recording.load())
+			return;   // the join ended meanwhile: its notes are handed off already
+		Reads* r = note ? ReadsForLocked(std::move(key), path, size) : nullptr;
+		g_handles[h] = Known{ r };
+		if (r)
+			MarkLocked(*r, offset, length);
 	}
 
 	BOOL WINAPI HookReadFile(HANDLE h, LPVOID buffer, DWORD length, LPDWORD read, LPOVERLAPPED ov)
@@ -238,7 +361,15 @@ namespace
 		if (g_recording.load(std::memory_order_relaxed) && length > 0)
 		{
 			const DWORD error = GetLastError();
-			NoteHandleRead(h, length, ov);
+			try
+			{
+				NoteHandleRead(h, length, ov);
+			}
+			catch (...)
+			{
+				// No memory for a note: the read itself goes on (nothing may leave
+				// this hook into the game's code).
+			}
 			SetLastError(error);
 		}
 		return g_readFile(h, buffer, length, read, ov);
@@ -298,10 +429,30 @@ namespace
 	}
 
 	// --- Warming ---------------------------------------------------------------------
-	void Warm(unsigned gen, std::vector<Item> items, std::vector<Range> ranges, unsigned long long budget, std::string address)
+	// Background mode also drops the thread's memory priority to the lowest, and
+	// the file data it reads goes on Windows' standby list at that priority: the
+	// first pages Windows reuses, exactly when the join it's for needs memory.
+	// Normal memory priority keeps it like any other cached file data. Windows 8
+	// and later (looked up at run time); without it, as before.
+	void NormalMemoryPriority()
+	{
+		using Fn = BOOL(WINAPI*)(HANDLE, THREAD_INFORMATION_CLASS, LPVOID, DWORD);
+		HMODULE kernel = GetModuleHandleW(L"kernel32.dll");
+		Fn set = kernel ? reinterpret_cast<Fn>(reinterpret_cast<void*>(GetProcAddress(kernel, "SetThreadInformation"))) : nullptr;
+		if (!set)
+			return;
+		MEMORY_PRIORITY_INFORMATION info = {};
+		info.MemoryPriority = MEMORY_PRIORITY_NORMAL;
+		set(GetCurrentThread(), ThreadMemoryPriority, &info, sizeof(info));
+	}
+
+	void Warm(unsigned gen, std::shared_ptr<const List> list, unsigned long long budget, std::string address)
 	{
 		// Very low I/O and CPU priority: the menu, or a join that starts, comes first.
 		SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN);
+		NormalMemoryPriority();
+		const std::vector<Item>& items = list->items;
+		const std::vector<Range>& ranges = list->ranges;
 		const auto t0 = std::chrono::steady_clock::now();
 		std::vector<char> buffer(kChunk);
 		unsigned long long done = 0;
@@ -319,7 +470,10 @@ namespace
 			{
 				done += got;
 				left -= got;
-				g_doneBytes = done;
+				// Only while this is still the warm: a cancelled one finishing its
+				// read mustn't overwrite the next one's progress.
+				if (g_gen.load() == gen)
+					g_doneBytes = done;
 			}
 		};
 		// The ranges first: they're what the map and cache steps wait on, a few
@@ -342,7 +496,8 @@ namespace
 					readAt(f, static_cast<int64_t>(run.first) * kBlock, std::min<int64_t>(static_cast<int64_t>(run.second) * kBlock, r.size));
 				}
 				++files;
-				g_doneFiles = files;
+				if (g_gen.load() == gen)
+					g_doneFiles = files;
 			}
 			CloseHandle(f);
 		}
@@ -350,8 +505,10 @@ namespace
 		{
 			if (!keepGoing())
 				break;
+			// No FILE_FLAG_SEQUENTIAL_SCAN: it lets Windows drop the pages behind
+			// the reader sooner, and keeping them is the whole point.
 			HANDLE f = CreateFileW(Widen(it.path).c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-				nullptr, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+				nullptr, OPEN_EXISTING, 0, nullptr);
 			if (f == INVALID_HANDLE_VALUE)
 				continue;
 			LARGE_INTEGER size;
@@ -363,7 +520,8 @@ namespace
 			readAt(f, 0, it.size);
 			CloseHandle(f);
 			++files;
-			g_doneFiles = files;
+			if (g_gen.load() == gen)
+				g_doneFiles = files;
 		}
 		const bool stopped = g_gen.load() != gen;
 		const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
@@ -377,6 +535,195 @@ namespace
 		SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_END);
 		if (g_gen.load() == gen)
 			g_running = false;
+	}
+
+	// --- The I/O thread --------------------------------------------------------------
+	// One thread, started on first use and never joined, runs the jobs handed to
+	// it one at a time in order (so two joins' writes of one server's list can't
+	// interleave). Its state is never freed: it may be waiting on it when the
+	// process ends.
+	struct IoQueue
+	{
+		std::mutex m;
+		std::condition_variable cv;                // a job was queued
+		std::condition_variable idle;              // the queue emptied
+		std::deque<std::function<void()>> jobs;
+		bool started = false;
+		bool busy = false;                         // running a job
+	};
+
+	IoQueue& Io()
+	{
+		static IoQueue* q = new IoQueue();
+		return *q;
+	}
+
+	void RunJob(std::function<void()>& job)
+	{
+		try
+		{
+			job();
+		}
+		catch (...)
+		{
+			// Out of memory, say: that list isn't written; the next join's is.
+		}
+	}
+
+	void IoThread()
+	{
+		IoQueue& q = Io();
+		std::unique_lock<std::mutex> lock(q.m);
+		for (;;)
+		{
+			q.cv.wait(lock, [&] { return !q.jobs.empty(); });
+			std::function<void()> job = std::move(q.jobs.front());
+			q.jobs.pop_front();
+			q.busy = true;
+			lock.unlock();
+			RunJob(job);
+			job = nullptr;   // what it held goes here, off the lock
+			lock.lock();
+			q.busy = false;
+			if (q.jobs.empty())
+				q.idle.notify_all();
+		}
+	}
+
+	void PostIo(std::function<void()> job)
+	{
+		IoQueue& q = Io();
+		bool start = false;
+		try
+		{
+			std::lock_guard<std::mutex> lock(q.m);
+			q.jobs.push_back(std::move(job));
+			start = !q.started;
+			q.started = true;
+		}
+		catch (...)
+		{
+			RunJob(job);   // no memory to queue it: here, as before
+			return;
+		}
+		if (!start)
+		{
+			q.cv.notify_one();
+			return;
+		}
+		if (thread_util::Spawn(L"Meowy prewarm io", &IoThread, thread_util::Priority::Background))
+			return;
+		// No thread: run what's queued here, as before, and try again next time.
+		std::deque<std::function<void()>> now;
+		{
+			std::lock_guard<std::mutex> lock(q.m);
+			q.started = false;
+			now.swap(q.jobs);
+		}
+		for (std::function<void()>& j : now)
+			RunJob(j);
+		std::lock_guard<std::mutex> lock(q.m);
+		q.idle.notify_all();
+	}
+
+	// --- Lists -----------------------------------------------------------------------
+	// A server's list, parsed once and shared until its file's size or write
+	// time changes (the menu asks Recorded, WorkshopItems and Start for the same
+	// server one after another), or nullptr if there's none.
+	std::shared_ptr<const List> ListFor(const std::wstring& file)
+	{
+		if (file.empty())
+			return nullptr;
+		WIN32_FILE_ATTRIBUTE_DATA a;
+		if (!GetFileAttributesExW(file.c_str(), GetFileExInfoStandard, &a))
+		{
+			ForgetList(file);
+			return nullptr;
+		}
+		const uint64_t size = (static_cast<uint64_t>(a.nFileSizeHigh) << 32) | a.nFileSizeLow;
+		const uint64_t written = (static_cast<uint64_t>(a.ftLastWriteTime.dwHighDateTime) << 32) | a.ftLastWriteTime.dwLowDateTime;
+		{
+			std::lock_guard<std::mutex> lock(g_listMutex);
+			auto it = g_lists.find(file);
+			if (it != g_lists.end() && it->second.list->fileSize == size && it->second.list->written == written)
+			{
+				it->second.used = ++g_listTick;
+				return it->second.list;
+			}
+		}
+		// Size and time first, the contents after: if the file changes in
+		// between, the next question sees the new time and reads it again.
+		auto list = std::make_shared<List>();
+		list->fileSize = size;
+		list->written = written;
+		list->any = prewarm::detail::Parse(file_util::ReadSmall(file, kMaxListBytes), list->items, &list->workshop, &list->ranges);
+		for (const Item& it : list->items)
+			list->bytes += static_cast<uint64_t>(it.size);
+		for (const Range& r : list->ranges)
+			list->bytes += RangeBytes(r);
+		++g_listParses;
+		std::shared_ptr<const List> done = list;
+		std::lock_guard<std::mutex> lock(g_listMutex);
+		g_lists[file] = CachedList{ done, ++g_listTick };
+		while (g_lists.size() > kCachedLists)
+		{
+			auto oldest = g_lists.begin();
+			for (auto it = g_lists.begin(); it != g_lists.end(); ++it)
+				if (it->second.used < oldest->second.used)
+					oldest = it;
+			g_lists.erase(oldest);
+		}
+		return done;
+	}
+
+	// A join's notes, handed from EndJoin to the I/O thread.
+	struct JoinNotes
+	{
+		std::wstring dir, file;
+		std::vector<Item> items;
+		std::vector<uint64_t> workshop;
+		std::unordered_map<std::string, Reads> reads;
+	};
+
+	// On the I/O thread: the join's notes merged with what earlier joins of the
+	// server learned, written, and the oldest lists dropped.
+	void KeepJoin(JoinNotes& j)
+	{
+		std::vector<Range> ranges;
+		for (auto& kv : j.reads)
+		{
+			if (kv.second.marked)
+				ranges.push_back({ std::move(kv.second.path), kv.second.size, Runs(kv.second.blocks) });
+		}
+		std::unordered_map<std::string, Reads>().swap(j.reads);
+		if ((j.items.empty() && ranges.empty()) || j.file.empty())
+			return;
+		// The most blocks first, so a cut list keeps what matters most.
+		std::sort(ranges.begin(), ranges.end(), [](const Range& a, const Range& b) { return RangeBytes(a) > RangeBytes(b); });
+		// Earlier joins' files and ranges stay while they're on disk at their recorded size.
+		std::vector<Item> before;
+		std::vector<uint64_t> workshopBefore;
+		std::vector<Range> rangesBefore;
+		prewarm::detail::Parse(file_util::ReadSmall(j.file, kMaxListBytes), before, &workshopBefore, &rangesBefore);
+		prewarm::detail::Merge(j.items, j.workshop, before, workshopBefore, StillThere);
+		prewarm::detail::MergeRanges(ranges, rangesBefore, j.items, StillThere);
+		const std::wstring joins = j.dir + L"\\joins";
+		CreateDirectoryW(joins.c_str(), nullptr);
+		// A cache, not settings: written without flushing to the disk (it only
+		// has to outlive a game crash). The menu may have the file open to read
+		// it for a moment, which fails the rename: a few tries, then this join's
+		// list is left out.
+		const std::string text = prewarm::detail::Format(j.items, j.workshop, ranges);
+		bool written = false;
+		for (int attempt = 0; attempt < 5 && !written; ++attempt)
+		{
+			if (attempt)
+				Sleep(20);
+			written = file_util::WriteAtomic(j.file, text, file_util::Durability::Relaxed);
+		}
+		ForgetList(j.file);
+		if (written)
+			Prune(joins);
 	}
 #endif
 }
@@ -581,29 +928,10 @@ namespace prewarm
 		{
 			if (size <= 0 || length == 0 || offset >= static_cast<uint64_t>(size) || !g_recording.load(std::memory_order_relaxed))
 				return;
-			const int64_t blocks = std::min<int64_t>((size + kBlock - 1) / kBlock, kMaxBlocks);
-			const uint64_t first = offset / kBlock;
-			const uint64_t last = std::min<uint64_t>((offset + length - 1) / kBlock, static_cast<uint64_t>(blocks - 1));
+			std::string key = Lower(path);
 			std::lock_guard<std::mutex> lock(g_readMutex);
-			const std::string key = Lower(path);
-			auto it = g_reads.find(key);
-			if (it == g_reads.end())
-			{
-				if (g_reads.size() >= kMaxRanges)
-					return;
-				it = g_reads.emplace(key, Reads{ path, size, std::vector<uint8_t>(static_cast<size_t>(blocks), 0) }).first;
-			}
-			Reads& r = it->second;
-			if (r.size != size)
-				return;
-			for (uint64_t i = first; i <= last && i < r.blocks.size(); ++i)
-			{
-				if (!r.blocks[static_cast<size_t>(i)])
-				{
-					r.blocks[static_cast<size_t>(i)] = 1;
-					++r.marked;
-				}
-			}
+			if (Reads* r = ReadsForLocked(std::move(key), path, size))
+				MarkLocked(*r, offset, length);
 		}
 
 		uint64_t WorkshopId(const std::string& path)
@@ -650,6 +978,12 @@ namespace prewarm
 			std::wstring v = volume;
 			if (v.size() < 2 || v[1] != L':')
 				return -1;
+			// A drive doesn't change in a session: asked once per letter (opening
+			// the device can wait on a disk that's spun down).
+			const wchar_t letter = static_cast<wchar_t>(v[0] & ~0x20);
+			std::atomic<int>* known = letter >= L'A' && letter <= L'Z' ? &g_noSeekPenalty[letter - L'A'] : nullptr;
+			if (known && known->load() != 0)
+				return known->load() == 2 ? 1 : 0;
 			const std::wstring device = L"\\\\.\\" + v.substr(0, 2);
 			HANDLE h = CreateFileW(device.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
 			if (h == INVALID_HANDLE_VALUE)
@@ -662,12 +996,81 @@ namespace prewarm
 			const BOOL ok = DeviceIoControl(h, IOCTL_STORAGE_QUERY_PROPERTY, &q, sizeof(q), &d, sizeof(d), &got, nullptr);
 			CloseHandle(h);
 			if (!ok || got < sizeof(d))
-				return -1;
+				return -1;   // not kept: asked again next time
+			if (known)
+				known->store(d.IncursSeekPenalty ? 1 : 2);
 			return d.IncursSeekPenalty ? 0 : 1;
 #else
 			(void)path;
 			return -1;
 #endif
+		}
+
+#ifdef _WIN32
+		DeviceMap DevicePrefixes()
+		{
+			DeviceMap map;
+			wchar_t target[1024];
+			for (wchar_t c = L'A'; c <= L'Z'; ++c)
+			{
+				const wchar_t drive[3] = { c, L':', 0 };
+				if (!QueryDosDeviceW(drive, target, 1024))
+					continue;
+				// The first of the names it gives is the one in use. Only volumes:
+				// a subst drive ("\??\C:\x") is a folder of another, whose files'
+				// NT names are that other volume's anyway.
+				const std::wstring device = target;
+				if (device.compare(0, 8, L"\\Device\\") != 0)
+					continue;
+				bool seen = false;
+				for (const auto& d : map)
+					seen = seen || d.first == device;
+				if (!seen)
+					map.push_back({ device, std::wstring(drive) });
+			}
+			return map;
+		}
+
+		std::wstring DosPath(const std::wstring& ntPath, const DeviceMap& devices)
+		{
+			for (const auto& d : devices)
+			{
+				const size_t n = d.first.size();
+				// "\Device\HarddiskVolume3" isn't "\Device\HarddiskVolume30": the
+				// volume's name ends at a backslash.
+				if (ntPath.size() > n && ntPath[n] == L'\\' && _wcsnicmp(ntPath.c_str(), d.first.c_str(), n) == 0)
+					return d.second + ntPath.substr(n);
+			}
+			return std::wstring();
+		}
+
+		void UseDevices(const DeviceMap& devices)
+		{
+			std::atomic_store(&g_devices, std::shared_ptr<const DeviceMap>(std::make_shared<DeviceMap>(devices)));
+		}
+
+		bool FileOfHandle(void* handle, std::string& path, int64_t& size)
+		{
+			std::string lower;
+			return FileOf(static_cast<HANDLE>(handle), path, lower, size);
+		}
+
+		void RunOnIoThread(std::function<void()> job)
+		{
+			PostIo(std::move(job));
+		}
+
+		bool WaitIoIdle(unsigned ms)
+		{
+			IoQueue& q = Io();
+			std::unique_lock<std::mutex> lock(q.m);
+			return q.idle.wait_for(lock, std::chrono::milliseconds(ms), [&] { return q.jobs.empty() && !q.busy; });
+		}
+#endif
+
+		uint64_t ListParses()
+		{
+			return g_listParses.load();
 		}
 	}
 
@@ -675,8 +1078,14 @@ namespace prewarm
 	{
 		if (!path || !g_recording.load(std::memory_order_relaxed))
 			return;
-		const uint64_t workshop = detail::WorkshopId(path);
-		if (size < kMinSize && !workshop)
+		// The size first, then a scan for "workshop" before WorkshopId (which
+		// copies the path): this runs for every file a join opens.
+		const bool big = size >= kMinSize;
+		const bool mentionsWorkshop = MentionsWorkshop(path);
+		if (!big && !mentionsWorkshop)
+			return;
+		const uint64_t workshop = mentionsWorkshop ? detail::WorkshopId(path) : 0;
+		if (!big && !workshop)
 			return;
 		std::lock_guard<std::mutex> lock(g_mutex);
 		if (!g_recording)
@@ -706,6 +1115,9 @@ namespace prewarm
 			why = std::string("filesystem_stdio doesn't import ") + (!read ? "ReadFile" : "CloseHandle") + " from kernel32 by name";
 			return false;
 		}
+		// The drive letters, before the hook can run (BeginJoin builds it again
+		// for each join, in case a drive came or went).
+		RefreshDevices();
 		g_readFile = reinterpret_cast<ReadFileFn>(*read);
 		g_closeHandle = reinterpret_cast<CloseHandleFn>(*close);
 		// CloseHandle first: it only drops handles ReadFile noted.
@@ -729,9 +1141,14 @@ namespace prewarm
 	void BeginJoin()
 	{
 		Cancel();
+#ifdef _WIN32
+		// Main thread, before recording starts: the hook only ever reads it.
+		RefreshDevices();
+#endif
 		{
 			std::lock_guard<std::mutex> lock(g_readMutex);
 			g_reads.clear();
+			g_readCalls = 0;
 #ifdef _WIN32
 			g_handles.clear();
 #endif
@@ -747,48 +1164,34 @@ namespace prewarm
 	int EndJoin(const std::wstring& dir, const std::string& address)
 	{
 #ifdef _WIN32
-		std::vector<Item> items;
-		std::vector<uint64_t> workshop;
-		std::unordered_map<std::string, Reads> reads;
+		// Here, on the main thread: only taking the join's notes. Everything
+		// with a disk in it is the I/O thread's (KeepJoin).
+		std::shared_ptr<JoinNotes> notes = std::make_shared<JoinNotes>();
 		{
 			std::lock_guard<std::mutex> lock(g_mutex);
 			if (!g_recording)
 				return 0;
 			g_recording = false;
-			items.swap(g_join);
-			workshop.swap(g_joinWorkshop);
+			notes->items.swap(g_join);
+			notes->workshop.swap(g_joinWorkshop);
 			g_seen.clear();
 			g_seenWorkshop.clear();
 		}
 		{
 			std::lock_guard<std::mutex> lock(g_readMutex);
-			reads.swap(g_reads);
+			notes->reads.swap(g_reads);
 			g_handles.clear();
 		}
-		std::vector<Range> ranges;
-		for (auto& kv : reads)
-		{
-			if (kv.second.marked)
-				ranges.push_back({ kv.second.path, kv.second.size, Runs(kv.second.blocks) });
-		}
-		// The most blocks first, so a cut list keeps what matters most.
-		std::sort(ranges.begin(), ranges.end(), [](const Range& a, const Range& b) { return RangeBytes(a) > RangeBytes(b); });
-		const std::wstring file = detail::FileFor(dir, address);
-		if ((items.empty() && ranges.empty()) || file.empty())
-			return 0;
-		// Earlier joins' files and ranges stay while they're on disk at their recorded size.
-		std::vector<Item> before;
-		std::vector<uint64_t> workshopBefore;
-		std::vector<Range> rangesBefore;
-		detail::Parse(file_util::ReadSmall(file, kMaxListBytes), before, &workshopBefore, &rangesBefore);
-		detail::Merge(items, workshop, before, workshopBefore, StillThere);
-		detail::MergeRanges(ranges, rangesBefore, items, StillThere);
-		const std::wstring joins = dir + L"\\joins";
-		CreateDirectoryW(joins.c_str(), nullptr);
-		if (!file_util::WriteAtomic(file, detail::Format(items, workshop, ranges)))
-			return 0;
-		Prune(joins);
-		return static_cast<int>(items.size() + ranges.size());
+		notes->dir = dir;
+		notes->file = detail::FileFor(dir, address);
+		size_t ranges = 0;
+		for (const auto& kv : notes->reads)
+			ranges += kv.second.marked ? 1 : 0;
+		const int noted = (notes->file.empty() || (notes->items.empty() && ranges == 0)) ? 0 :
+			static_cast<int>(notes->items.size() + ranges);
+		// Handed over even with nothing to keep: the notes are freed there too.
+		PostIo([notes]() { KeepJoin(*notes); });
+		return noted;
 #else
 		(void)dir; (void)address;
 		return 0;
@@ -797,42 +1200,35 @@ namespace prewarm
 
 	bool Recorded(const std::wstring& dir, const std::string& address, uint64_t* bytes)
 	{
-		const std::wstring file = detail::FileFor(dir, address);
-		if (file.empty())
-			return false;
-		std::vector<Item> items;
-		std::vector<Range> ranges;
-		if (!detail::Parse(file_util::ReadSmall(file, kMaxListBytes), items, nullptr, &ranges))
+#ifdef _WIN32
+		const std::shared_ptr<const List> list = ListFor(detail::FileFor(dir, address));
+		if (!list || !list->any)
 			return false;
 		if (bytes)
-		{
-			uint64_t total = 0;
-			for (const Item& it : items)
-				total += static_cast<uint64_t>(it.size);
-			for (const Range& r : ranges)
-				total += RangeBytes(r);
-			*bytes = total;
-		}
+			*bytes = list->bytes;
 		return true;
+#else
+		(void)dir; (void)address; (void)bytes;
+		return false;
+#endif
 	}
 
 	std::vector<uint64_t> WorkshopItems(const std::wstring& dir, const std::string& address)
 	{
-		std::vector<Item> items;
-		std::vector<uint64_t> workshop;
-		const std::wstring file = detail::FileFor(dir, address);
-		if (!file.empty())
-			detail::Parse(file_util::ReadSmall(file, kMaxListBytes), items, &workshop);
-		return workshop;
+#ifdef _WIN32
+		const std::shared_ptr<const List> list = ListFor(detail::FileFor(dir, address));
+		return list ? list->workshop : std::vector<uint64_t>();
+#else
+		(void)dir; (void)address;
+		return std::vector<uint64_t>();
+#endif
 	}
 
 	bool Start(const std::wstring& dir, const std::string& address, uint64_t budget, std::string& why)
 	{
 #ifdef _WIN32
-		const std::wstring file = detail::FileFor(dir, address);
-		std::vector<Item> items;
-		std::vector<Range> ranges;
-		if (file.empty() || !detail::Parse(file_util::ReadSmall(file, kMaxListBytes), items, nullptr, &ranges))
+		const std::shared_ptr<const List> list = ListFor(detail::FileFor(dir, address));
+		if (!list || !list->any)
 		{
 			why = "nothing recorded for that server";
 			return false;
@@ -842,16 +1238,11 @@ namespace prewarm
 			if (g_running && g_target == address)
 				return true;   // already warming it
 		}
-		if (detail::NoSeekPenalty(Widen(!ranges.empty() ? ranges.front().path : items.front().path)) != 1)
+		if (detail::NoSeekPenalty(Widen(!list->ranges.empty() ? list->ranges.front().path : list->items.front().path)) != 1)
 		{
 			why = "its files aren't on an SSD";
 			return false;
 		}
-		uint64_t total = 0;
-		for (const Item& it : items)
-			total += static_cast<uint64_t>(it.size);
-		for (const Range& r : ranges)
-			total += RangeBytes(r);
 		const unsigned gen = ++g_gen;
 		{
 			std::lock_guard<std::mutex> lock(g_mutex);
@@ -859,15 +1250,15 @@ namespace prewarm
 		}
 		g_doneBytes = 0;
 		g_doneFiles = 0;
-		g_totalBytes = std::min<uint64_t>(total, budget);
+		g_totalBytes = std::min<uint64_t>(list->bytes, budget);
 		g_running = true;
-		try
+		// The parsed list is shared with the reader, not copied.
+		const unsigned long long cap = static_cast<unsigned long long>(budget);
+		if (!thread_util::Spawn(L"Meowy prewarm", [gen, list, cap, address]() { Warm(gen, list, cap, address); },
+			thread_util::Priority::BelowNormal))
 		{
-			std::thread(Warm, gen, std::move(items), std::move(ranges), static_cast<unsigned long long>(budget), address).detach();
-		}
-		catch (...)
-		{
-			g_running = false;
+			if (g_gen.load() == gen)
+				g_running = false;
 			why = "couldn't start the reader";
 			return false;
 		}
@@ -889,9 +1280,11 @@ namespace prewarm
 	{
 		std::string out;
 		size_t readFiles = 0;
+		uint64_t readCalls = 0;
 		{
 			std::lock_guard<std::mutex> lock(g_readMutex);
 			readFiles = g_reads.size();
+			readCalls = g_readCalls;
 		}
 		std::lock_guard<std::mutex> lock(g_mutex);
 		if (g_running)
@@ -914,6 +1307,9 @@ namespace prewarm
 			out += g_hooked ? "; read hook on" : "; read hook off";
 		}
 #endif
+		// Every read the hook noted since the latest join started (the hook's cost
+		// grows with it).
+		out += "; " + std::to_string(static_cast<unsigned long long>(readCalls)) + " reads noted in the latest join";
 		return out;
 	}
 }

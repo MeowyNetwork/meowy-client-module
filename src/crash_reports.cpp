@@ -8,6 +8,9 @@ namespace crashes
 {
 	std::vector<Report> Since(long long, size_t) { return {}; }
 	std::vector<Report> SinceIn(const std::wstring&, long long, size_t) { return {}; }
+	std::wstring Root() { return std::wstring(); }
+	std::vector<Candidate> Candidates(const std::wstring&, long long) { return {}; }
+	bool Read(const std::wstring&, const Candidate&, Report&) { return false; }
 }
 
 #else
@@ -256,12 +259,16 @@ namespace crashes
 		return SinceIn(GameRoot(), since, max);
 	}
 
-	std::vector<Report> SinceIn(const std::wstring& root, long long since, size_t max)
+	std::wstring Root()
 	{
-		std::vector<Report> out;
-		if (root.empty() || max == 0)
-			return out;
+		return GameRoot();
+	}
 
+	std::vector<Candidate> Candidates(const std::wstring& root, long long since)
+	{
+		std::vector<Candidate> out;
+		if (root.empty())
+			return out;
 		WIN32_FIND_DATAW fd;
 		HANDLE h = FindFirstFileW((root + L"\\crashes\\*.txt").c_str(), &fd);
 		if (h == INVALID_HANDLE_VALUE)
@@ -270,25 +277,53 @@ namespace crashes
 		{
 			if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
 				continue;
-			long long t = FileTimeToUnix(fd.ftLastWriteTime);
+			const long long t = FileTimeToUnix(fd.ftLastWriteTime);
 			if (t <= since)
 				continue;
-			std::wstring txt = root + L"\\crashes\\" + fd.cFileName;
-			std::string trace = LuaSection(txt);
-			if (trace.empty())
-				continue;
-			Report r;
-			r.name = Narrow(fd.cFileName, std::wcslen(fd.cFileName));
-			r.time = t;
-			r.luaTrace = trace;
-			ReadFault(txt.substr(0, txt.size() - 4) + L".dmp", r);
-			out.push_back(r);
+			Candidate c;
+			c.file = fd.cFileName;
+			c.name = Narrow(fd.cFileName, std::wcslen(fd.cFileName));
+			c.time = t;
+			out.push_back(std::move(c));
 		} while (FindNextFileW(h, &fd));
 		FindClose(h);
+		return out;
+	}
 
-		std::sort(out.begin(), out.end(), [](const Report& a, const Report& b) { return a.time > b.time; });
-		if (out.size() > max)
-			out.resize(max);
+	bool Read(const std::wstring& root, const Candidate& c, Report& out)
+	{
+		if (root.empty() || c.file.size() < 4)
+			return false;
+		const std::wstring txt = root + L"\\crashes\\" + c.file;
+		std::string trace = LuaSection(txt);
+		if (trace.empty())
+			return false;
+		out = Report();
+		out.name = c.name;
+		out.time = c.time;
+		out.luaTrace = std::move(trace);
+		ReadFault(txt.substr(0, txt.size() - 4) + L".dmp", out);
+		return true;
+	}
+
+	// Listed, sorted newest first, then read one at a time until `max` have
+	// a Lua trace: the same reports as reading them all and keeping the
+	// newest `max`, without opening the older ones.
+	std::vector<Report> SinceIn(const std::wstring& root, long long since, size_t max)
+	{
+		std::vector<Report> out;
+		if (root.empty() || max == 0)
+			return out;
+		std::vector<Candidate> list = Candidates(root, since);
+		std::stable_sort(list.begin(), list.end(), [](const Candidate& a, const Candidate& b) { return a.time > b.time; });
+		for (const Candidate& c : list)
+		{
+			if (out.size() >= max)
+				break;
+			Report r;
+			if (Read(root, c, r))
+				out.push_back(std::move(r));
+		}
 		return out;
 	}
 }
