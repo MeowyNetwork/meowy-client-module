@@ -36,7 +36,7 @@ end
 -- meowy.ExpectRestart(seconds) -> true, seconds | false, reason   (1.6+; the server restarts within
 --   `seconds`, clamped to 30..600. If the connection ends before then, players who chose to stay
 --   connected are rejoined once the server answers again, within 5 minutes)
--- meowy.MulticoreManaged() -> true | false (false, reason off our servers)   (1.7.2+; the pack turned
+-- meowy.MulticoreManaged() -> true | false (false, reason off our servers)   (1.8.0+; the pack turned
 --   multicore rendering on this start and still has it on: Meowy settings' Multicore rendering on, its
 --   crash guard allowing it, mat_queue_mode not the player's own 0 or 1. Then leave gmod_mcore_test to
 --   the pack. Check it as `meowy.MulticoreManaged and meowy.MulticoreManaged()`, in a pcall)
@@ -60,12 +60,12 @@ where it's run from or asks the player first.
 -- meowy.MenuFileWrite(kind, text) -> ok   ("" removes the file). Kinds, and nothing else:
 --   "settings_guard_session", "settings_guard_always", "repairs", "multicore_guard" (the .txt of that name)
 -- meowy.ConsoleRun(line)   runs a line as typed into the console; counts as the menu's own change
--- meowy.SetMulticoreManaged(on)   (1.7.2+) what the client realm's meowy.MulticoreManaged() answers;
+-- meowy.SetMulticoreManaged(on)   (1.8.0+) what the client realm's meowy.MulticoreManaged() answers;
 --   process-wide, false until the menu says otherwise (multicore.lua)
--- meowy.MulticoreGuardAtExit(text)   (1.7.2+) what the DLL writes to multicore_guard.txt as the process
+-- meowy.MulticoreGuardAtExit(text)   (1.8.0+) what the DLL writes to multicore_guard.txt as the process
 --   ends normally (DllMain, process detach), unless the game wrote a crash report during the run;
 --   anything but a non-empty string disarms it
--- meowy.CrashSince(unix) -> bool   (1.7.2+) whether Garry's Mod's crash handler wrote a report
+-- meowy.CrashSince(unix) -> bool   (1.8.0+) whether Garry's Mod's crash handler wrote a report
 --   (crashes\*.txt) after `unix` and before this process started: multicore_guard.txt's marker left
 --   behind counts as a crash only then
 -- meowy.MulticoreStatus() -> "managed" | "setting_off" | "guard_off" | nil   (Lua, multicore.lua; the
@@ -87,7 +87,7 @@ remembered and return as before, `DiscordState()` says `"stopped"`, and the late
 player turns it back on. The menu sets the switch with `meowy.DiscordAllow(on)`, which the client realm
 doesn't have.
 
-Also new in 1.7.2: the pack turns multicore rendering on at every start (HOW-IT-WORKS, *Multicore
+Also new in 1.8.0: the pack turns multicore rendering on at every start (HOW-IT-WORKS, *Multicore
 rendering on by default*; `multicore_guard.txt` keeps its crash guard). Server Lua that sets
 `gmod_mcore_test` (Meowy Network's FPS Booster) should check `meowy.MulticoreManaged()` first and leave
 multicore alone while it's true; a player's own choice in the server's menu can still apply:
@@ -168,9 +168,11 @@ shows, most of them on both bitnesses.
      can read neither, it stops and asks for `-Salt` or `-NewSalt`. So signing the same version again keeps
      the installs that already had it, and a rollout only grows.
    - **Rollout in steps:** sign again with a higher `-Seq` and a bigger `-Rollout`; the salt stays.
-   - **Expiry:** the document expires after `-Days` (30 by default). Sign it again before then (same
+   - **Expiry:** the document expires after `-Days` (90 by default). Sign it again before then (same
      version and files, same seq or higher), or installs that haven't taken it report that the release
-     document has expired. Put the date in the calendar when you publish (1.7.0's expires 2026-12-08).
+     document has expired. The script prints the date, and the `release expiry` workflow
+     (`.github/workflows/release-expiry.yml`) reads the published document every day and fails, which
+     mails the repository's owner, from 14 days before.
 4. **Tell older packs:** Meowy Network's server says a newer version exists through `LATEST_VERSION` in
    the DarkRP repo's `addons/meowy_native_modules/lua/autorun/client/cl_meowy_client_module.lua`.
 5. **Ask players to run the installer** when the launcher or the installer changed: the pack's in-game

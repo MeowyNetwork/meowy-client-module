@@ -1,3 +1,20 @@
+**New in 1.8.0:** multicore rendering on by default, lighter joins, and crash fixes. **Run the 1.8.0 installer once**, even if the pack already updated itself in the game: the in-game update doesn't replace the Meowy Launcher, which changed too.
+
+- **Multicore rendering on by default.** The pack turns on Garry's Mod's multicore rendering at every start, on every server and at the main menu. On Meowy Network's map a frame took 2.65 ms with it on and 5.30 ms with it off.
+  - Meowy settings → **Multicore rendering** turns it off. If you set `mat_queue_mode` to 0 or 1 yourself, the pack leaves it alone.
+  - If the game crashes twice in a row with it on, the pack turns it off and tells you at the main menu.
+- **Lighter joins.** The pack's own work during a join moved off the game's main thread: its file checks, the pre-warm list, the server index and its downloads. Updates and policy checks wait until a join has finished.
+- **Crash and freeze fixes.**
+  - A crash when the game unloaded the pack while one of its threads was still running.
+  - The fast file checks could keep a stale answer when a file was written during a join.
+  - If the pack runs out of memory during a join (32-bit, mostly), the game now carries on without the fast file checks instead of crashing.
+  - Server answers that arrive in several packets are read correctly in the server list.
+  - Closing the game no longer waits on Discord or on a notification.
+- **Loading screen.** Fixes a loading screen that stayed invisible, and buttons that acted on an earlier join. It no longer redraws while nothing changes.
+- **Launcher.** Disk work is off its window's thread, and it reuses one connection to the game.
+
+Everything in detail: [How it works](https://github.com/MeowyNetwork/meowy-client-module/blob/main/docs/HOW-IT-WORKS.md).
+
 **New in 1.7.2:** a Discord switch, uninstalling from Windows, and fixes. **Run the 1.7.2 installer once** to get the pack listed in Windows' installed apps: the in-game update can't add it.
 
 - **Discord status switch.** Meowy settings → **Discord status on Meowy Network** turns it off. What Discord shows is cleared at once, and servers can't turn it back on.
@@ -6,8 +23,6 @@
 - **Fixes.**
   - On installs that updated themselves, the `config.cfg` backups work again, and **Start with the game** shows the right setting in Meowy settings.
   - Putting back a `config.cfg` backup no longer leaves `meowy_restore.cfg` in the game's `cfg` folder.
-
-Everything in detail: [How it works](https://github.com/MeowyNetwork/meowy-client-module/blob/main/docs/HOW-IT-WORKS.md).
 
 **New in 1.7.1:** fixes from a full review of 1.7.0. **Run the 1.7.1 installer once**, even if the pack already updated itself in the game: the in-game update doesn't replace the Meowy Launcher from 1.7.0.
 

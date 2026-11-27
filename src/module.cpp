@@ -62,7 +62,7 @@
 //                                     then, players who opted in to staying
 //                                     connected are rejoined once it's back.
 //                                     See resilience.h
-//   meowy.MulticoreManaged()          true | false, reason (1.7.2+): the pack
+//   meowy.MulticoreManaged()          true | false, reason (1.8.0+): the pack
 //                                     turned multicore rendering on this start
 //                                     and still has it on (Meowy settings'
 //                                     Multicore rendering on, its crash guard

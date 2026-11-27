@@ -252,6 +252,9 @@ on Meowy Network's servers.
     without asking Windows at all; any other folder that isn't there costs one call. A folder it
     can't read is asked about once per join, and a list read while the game was writing a file is
     not kept. An answer for a folder it already knows costs no memory allocation.
+  - If the pack itself runs out of memory while reading a folder (32-bit, mostly), nothing reaches
+    the game: that file opens as it always did, the checks stop for the rest of that join, and the
+    next join starts them again. `meowy_fast_file_checks_status` says when that happened (1.8.0).
   - Turn it off with `meowy_fast_file_checks 0` (at the main menu it puts the game's own table back;
     `1` puts the copy back in, also in the same session). `meowy_fast_file_checks_status` shows the
     counts.
@@ -755,7 +758,7 @@ on Meowy Network's servers.
     The pack doesn't set the per-app GPU preference itself: that's your Windows setting.
   - **Power:** on battery, battery saver, and Windows' power mode ("Best power efficiency").
   - **Multicore:** `gmod_mcore_test` and `mat_queue_mode`, with the command to type if it's off. Since
-    1.7.2, when it's the pack's (see *Multicore rendering on by default*), the tip points to Meowy
+    1.8.0, when it's the pack's (see *Multicore rendering on by default*), the tip points to Meowy
     settings instead: turned off there, turned off by its crash guard, or turned off since by a server or
     a config file.
   - **32-bit game:** how to switch to the 64-bit branch (Steam, Properties, Betas).
@@ -928,7 +931,7 @@ on Meowy Network's servers.
 
 ## Multicore rendering on by default
 
-Since 1.7.2 the pack turns on Garry's Mod's multicore rendering (`gmod_mcore_test 1`) at every start.
+Since 1.8.0 the pack turns on Garry's Mod's multicore rendering (`gmod_mcore_test 1`) at every start.
 It moves part of the game's drawing work off its main thread, which is what holds most PCs back: on
 Meowy Network's map a frame took 2.65 ms with it on and 5.30 ms with it off. The game doesn't save this
 setting and starts with it off, so without the pack it's off at the main menu, on every other server,
