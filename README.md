@@ -17,6 +17,10 @@ play on Meowy Network.
 
 Then start the game as usual. From then on the pack keeps itself up to date (see [Updates](#updates)).
 
+**Before you install:** the pack changes how Garry's Mod loads files, in the game's memory. Garry's Mod is
+VAC-protected and nobody at Valve or Facepunch has approved the pack, so installing it is your own risk.
+[Is it safe?](docs/TRUST.md) lists every change it makes, who can update it, and how to check the files.
+
 Windows may say "Windows protected your PC", because the installer isn't code-signed yet. Click
 **More info**, then **Run anyway**. To check the file first, see
 [checking the download](docs/HOW-IT-WORKS.md#installing-starting-and-uninstalling).
