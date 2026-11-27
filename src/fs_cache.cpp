@@ -185,7 +185,18 @@ namespace
 	std::atomic<unsigned> g_join{ 1 };
 	std::atomic<uint64_t> g_epoch{ 0 };   // counts up at every drop: a listing made meanwhile isn't kept
 	std::atomic<long long> g_opens{ 0 }, g_absent{ 0 }, g_listed{ 0 }, g_reused{ 0 }, g_passed{ 0 }, g_inferred{ 0 };
+	std::atomic<long long> g_faults{ 0 };
 	std::atomic<void (*)(TestPoint)> g_testHook{ nullptr };
+
+	// Something threw inside the game's own file open (out of memory, mostly on
+	// 32-bit): nothing may unwind into filesystem_stdio. The cache answers
+	// nothing more this join, so the game opens every file as it always did, and
+	// the next join starts it again (checking each kept listing before reuse).
+	void Fault() noexcept
+	{
+		++g_faults;
+		g_active.store(false, std::memory_order_relaxed);
+	}
 
 	constexpr unsigned kKeepJoins = 3;    // a listing not used in this many joins is dropped
 	constexpr size_t kMaxAncestors = 8;   // how far up a folder's answer may come from
@@ -417,7 +428,16 @@ namespace
 				}
 				else
 				{
-					g_folders[hash].push_back(std::move(fresh));
+					// The one allocation under the lock: it must not leave it held.
+					try
+					{
+						g_folders[hash].push_back(std::move(fresh));
+					}
+					catch (...)
+					{
+						ReleaseSRWLockExclusive(&g_lock);
+						throw;
+					}
 				}
 			}
 		}
@@ -549,35 +569,51 @@ namespace
 		if (active)
 		{
 			++g_opens;
-			if (SplitFast(name, parts))
+			// A folder not known yet is listed here, which allocates: see Fault.
+			try
 			{
-				if (ReadsOnly(options))
+				if (SplitFast(name, parts))
 				{
-					if (LookupParts(parts) == Answer::Absent)
+					if (ReadsOnly(options))
 					{
-						++g_absent;
-						SetLastError(ERROR_FILE_NOT_FOUND);
-						return nullptr;   // what FS_fopen returns for a file that isn't there
+						if (LookupParts(parts) == Answer::Absent)
+						{
+							++g_absent;
+							SetLastError(ERROR_FILE_NOT_FOUND);
+							return nullptr;   // what FS_fopen returns for a file that isn't there
+						}
+					}
+					else if (!ExcludedFast(parts.buf, parts.dirLen))
+					{
+						InvalidateDir(parts.buf, parts.dirLen);   // a write: the listings may be stale
+						wrote = true;
 					}
 				}
-				else if (!ExcludedFast(parts.buf, parts.dirLen))
-				{
-					InvalidateDir(parts.buf, parts.dirLen);   // a write: the listings may be stale
-					wrote = true;
-				}
+			}
+			catch (...)
+			{
+				wrote = false;
+				Fault();
 			}
 			++g_passed;
 		}
 		void* file = g_fopen(self, name, options, flags, size);
-		// Again now the file exists: a listing made since the first drop may
-		// have missed it, and the epoch keeps one still under way from being kept.
-		if (wrote)
-			InvalidateDir(parts.buf, parts.dirLen);
-		// The join's big files, for warming them before the next join to this
-		// server, and its Workshop items (prewarm.h). FS_fopen gives back the
-		// file's size; prewarm keeps only what it needs.
-		if (active && file && ReadsOnly(options))
-			prewarm::Opened(name, size ? *size : -1);
+		try
+		{
+			// Again now the file exists: a listing made since the first drop may
+			// have missed it, and the epoch keeps one still under way from being kept.
+			if (wrote)
+				InvalidateDir(parts.buf, parts.dirLen);
+			// The join's big files, for warming them before the next join to this
+			// server, and its Workshop items (prewarm.h). FS_fopen gives back the
+			// file's size; prewarm keeps only what it needs.
+			if (active && file && ReadsOnly(options))
+				prewarm::Opened(name, size ? *size : -1);
+		}
+		catch (...)
+		{
+			Fault();   // the file is open all the same
+		}
 		return file;
 	}
 
@@ -743,6 +779,51 @@ namespace fs_cache
 #endif
 		}
 
+		long long Faults()
+		{
+#ifdef _WIN32
+			return g_faults.load();
+#else
+			return 0;
+#endif
+		}
+
+#ifdef _WIN32
+		namespace
+		{
+			void* (*g_testOpen)(const char*) = nullptr;
+#ifdef _WIN64
+			void* TestOpen(void*, const char* name, const char*, uintptr_t, int64_t*) { return g_testOpen(name); }
+#else
+			void* __fastcall TestOpen(void*, void*, const char* name, const char*, uintptr_t, int64_t*) { return g_testOpen(name); }
+#endif
+		}
+#endif
+
+		void* OpenForTest(const char* path, const char* options, void* (*real)(const char*))
+		{
+#ifdef _WIN32
+			const FopenFn was = g_fopen;
+			g_testOpen = real;
+			g_fopen = reinterpret_cast<FopenFn>(&TestOpen);
+			void* file = Fopen(nullptr, path, options, 0, nullptr);
+			g_fopen = was;
+			return file;
+#else
+			(void)path; (void)options; (void)real;
+			return nullptr;
+#endif
+		}
+
+		void SetActiveForTest(bool on)
+		{
+#ifdef _WIN32
+			g_active = on;
+#else
+			(void)on;
+#endif
+		}
+
 		bool SwapIn(void** slot, void* original, void* ours)
 		{
 #ifdef _WIN32
@@ -881,7 +962,8 @@ namespace fs_cache
 			" opens answered \"not there\" from " + std::to_string(g_listed.load()) + " folder listings (" +
 			std::to_string(g_reused.load()) + " reused from earlier joins), " +
 			std::to_string(g_inferred.load()) + " folders known absent from the folder above, " +
-			std::to_string(g_passed.load()) + " opened as before";
+			std::to_string(g_passed.load()) + " opened as before" +
+			(g_faults.load() ? ", stopped " + std::to_string(g_faults.load()) + " time(s) for the rest of a join (out of memory)" : "");
 #else
 		return "unsupported";
 #endif

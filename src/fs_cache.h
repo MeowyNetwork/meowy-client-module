@@ -106,6 +106,13 @@ namespace fs_cache
 		};
 		void SetTestHook(void (*hook)(TestPoint));
 
+		// The hook itself, with `real` standing in for the game's FS_fopen, and
+		// the join window without an installed hook. How often something thrown
+		// inside the hook was caught (the cache then stops for the rest of the join).
+		void* OpenForTest(const char* path, const char* options, void* (*real)(const char*));
+		void SetActiveForTest(bool on);
+		long long Faults();
+
 		// Install after an Uninstall: the object's vtable pointer (*slot) goes
 		// back to `ours` (the copy kept from the first Install) if it's still
 		// `original`, or is already `ours`. False, and nothing changed, if

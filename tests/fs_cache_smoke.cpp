@@ -215,6 +215,21 @@ static void SetHook(fs_cache::detail::TestPoint at, const std::string& file, con
 	fs_cache::detail::SetTestHook(&Hook);
 }
 
+// Stands in for the game's FS_fopen under the hook: counts, and "opens" anything.
+static int g_realOpens = 0;
+static void* RealOpen(const char*)
+{
+	++g_realOpens;
+	return &g_realOpens;
+}
+
+// Out of memory while a new listing is about to be kept.
+static void Throw(fs_cache::detail::TestPoint at)
+{
+	if (at == fs_cache::detail::TestPoint::BeforeInsert)
+		throw std::bad_alloc();
+}
+
 // A folder's listing denied to everyone (true), or allowed again.
 static bool DenyListing(const std::string& dir, bool deny)
 {
@@ -471,6 +486,28 @@ int main(int argc, char** argv)
 		Inferred() == inferred + 1);
 	SetTestHook(nullptr);
 	Check("a write while answering from the folder above: nothing kept", Folders() == 0);
+
+	// Something thrown inside the hook never reaches the game: the file opens as
+	// before, and the cache stops answering for the rest of that join.
+	Clear();
+	const std::string oom = root + "\\oom";
+	CreateDirectoryA(oom.c_str(), nullptr);
+	Put(oom + "\\a.vmt");
+	const std::string oomA = oom + "\\a.vmt", oomB = oom + "\\b.vmt";
+	SetActiveForTest(true);
+	Check("the hook, a file that's there: opened", OpenForTest(oomA.c_str(), "rb", &RealOpen) == &g_realOpens && g_realOpens == 1);
+	Check("the hook, a file that isn't: not opened", OpenForTest(oomB.c_str(), "rb", &RealOpen) == nullptr && g_realOpens == 1);
+	Clear();
+	const long long faults = Faults();
+	SetTestHook(&Throw);
+	Check("thrown while a folder is listed: the game opens the file itself",
+		OpenForTest(oomB.c_str(), "rb", &RealOpen) == &g_realOpens && g_realOpens == 2);
+	SetTestHook(nullptr);
+	Check("thrown while a folder is listed: counted, nothing kept", Faults() == faults + 1 && Folders() == 0);
+	Check("after it: every open goes to the game", OpenForTest(oomB.c_str(), "rb", &RealOpen) == &g_realOpens && g_realOpens == 3);
+	SetActiveForTest(true);   // the next join
+	Check("next join: answers again", OpenForTest(oomB.c_str(), "rb", &RealOpen) == nullptr && g_realOpens == 3);
+	SetActiveForTest(false);
 
 	// A folder that can't be read: one listing per join, not one per open.
 	Clear();
