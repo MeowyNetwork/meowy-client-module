@@ -6,16 +6,16 @@ on:
     tags: ["v*"]
   pull_request:
 
+# Read-only for every build and test job, pull requests included. Only the
+# release job (tags) may write. Actions are pinned by commit, not by tag.
 permissions:
-  contents: write       # create releases on tags
-  id-token: write       # build provenance attestations
-  attestations: write
+  contents: read
 
 jobs:
   lua:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Install Lua 5.1 (Garry's Mod runs LuaJIT, 5.1 syntax)
         run: sudo apt-get update && sudo apt-get install -y lua5.1
@@ -43,12 +43,12 @@ jobs:
       run:
         working-directory: launcher
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Rust toolchain
         run: rustup toolchain install stable --profile minimal --no-self-update && rustup default stable
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: launcher
 
@@ -63,7 +63,7 @@ jobs:
       - name: Build MeowyLauncher.exe
         run: cargo build -p meowy-launcher --release --locked
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: meowy-launcher
           path: launcher/target/release/MeowyLauncher.exe
@@ -77,9 +77,9 @@ jobs:
       run:
         shell: pwsh -NoProfile -Command "$PSNativeCommandUseErrorActionPreference = $true; $ErrorActionPreference = 'Stop'; . '{0}'"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: meowy-launcher
           path: launcher-bin
@@ -256,6 +256,16 @@ jobs:
             & "./$b/Release/timeline_smoke.exe"
           }
 
+      - name: Connection probe, offline (probe_smoke, both bitnesses)
+        run: |
+          cmake --build buildtest --config Release --target probe_smoke
+          ./buildtest/Release/probe_smoke.exe
+          cmake --build buildtest32 --config Release --target probe_smoke
+          ./buildtest32/Release/probe_smoke.exe
+
+      # Not run here: ipc_smoke (needs the Discord app), audio_watch_smoke (needs
+      # sound devices) and doctor_smoke (needs a GPU). Run them on a PC before a release.
+
       - name: Installer rules (uninstall_smoke)
         shell: pwsh
         run: |
@@ -279,14 +289,37 @@ jobs:
           Get-ChildItem dist -File | ForEach-Object { "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name } | Set-Content dist/SHA256SUMS.txt
           Get-Content dist/SHA256SUMS.txt
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: meowy-client-module
           path: dist/*
 
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: windows
+    runs-on: windows-latest
+    permissions:
+      contents: write       # create the release
+      id-token: write       # build provenance attestations
+      attestations: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: meowy-client-module
+          path: dist
+
+      - name: The files are the ones the build hashed
+        shell: pwsh
+        run: |
+          foreach ($line in Get-Content dist/SHA256SUMS.txt) {
+            $hash, $name = $line -split '  ', 2
+            if ((Get-FileHash (Join-Path dist $name) -Algorithm SHA256).Hash.ToLower() -ne $hash) { throw "$name doesn't match SHA256SUMS.txt" }
+          }
+
       - name: Attest build provenance
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with:
           subject-path: |
             dist/gmcl_meowy_win32.dll
@@ -297,7 +330,6 @@ jobs:
             dist/MeowyClientPack.exe
 
       - name: Release
-        if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
