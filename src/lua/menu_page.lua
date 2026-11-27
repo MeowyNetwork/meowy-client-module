@@ -251,10 +251,13 @@ local function browseRow(s, tab, i, keep)
 	-- Until the pack's own verdicts have arrived (a moment after the list
 	-- opens), the index's: the same backend's, without this PC's checks.
 	if not isstring(tag) and s.h then
-		tag, v = BrowseLogic.indexTag(s), { verdict = s.h, real = s.real }
+		tag, v = BrowseLogic.indexTag(s), { verdict = s.h, real = s.real, source = "index" }
 	end
 	if isstring(tag) then
 		row.h = Home.clean(tag:gsub("[%[%]]", ""))
+		-- Why it carries that mark, for the details pane (browser.js).
+		local why = BrowseLogic.why(v)
+		if why then row.hw = Home.clean(why) end
 		if istable(v) and v.verdict == "fake" and tonumber(v.real) then row.p = math.min(row.p, math.max(0, math.floor(tonumber(v.real)))) row.hr = row.p end
 		if istable(v) and v.verdict == "unverified" then row.hp = 40 end
 	end
@@ -666,6 +669,11 @@ local handlers = {
 		if browse.ws[ws] and gui and isfunction(gui.OpenURL) then gui.OpenURL("https://steamcommunity.com/sharedfiles/filedetails/?id=" .. ws) end
 	end,
 	browse_find = function(v) browseFind(v) end,
+	-- "How servers are checked" under a mark's explanation: Meowy Network's own
+	-- page (what is checked, what counts as fake, the owners' opt-out).
+	browse_why = function()
+		if gui and isfunction(gui.OpenURL) then gui.OpenURL("https://meowynetwork.com/observer") end
+	end,
 	-- "Get ready" on the picked server: download its Workshop content now (home.lua).
 	browse_prepare = function(v)
 		local address = browseAddress(v)

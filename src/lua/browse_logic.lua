@@ -129,6 +129,51 @@ function M.indexTag(s)
 	return nil
 end
 
+-- Why a server carries its mark, in plain words, for the picked server's
+-- details: what the mark means, who says so, and the evidence they gave.
+-- v = { verdict, real, source, reasons } as the honest list keeps it (source:
+-- "observer", "players", "crawl"; "index" for the index's own column; none for
+-- this PC's own check). Evidence text comes from Meowy Network's backend or
+-- from this PC: control characters are dropped and it's cut to a few lines.
+function M.why(v)
+	if type(v) ~= "table" then return nil end
+	local reasons = type(v.reasons) == "table" and v.reasons or {}
+	local first = tostring(reasons[1] or "")
+	local head
+	if v.verdict == "fake" then
+		head = "Marked fake: " .. (tonumber(v.real) and ("about " .. math.floor(tonumber(v.real)) .. " of its players are real")
+			or "its player count doesn't hold up") .. "."
+	elseif v.verdict == "verified" then
+		head = "Verified: the count was checked from inside the server and nothing fake was found."
+	elseif v.verdict == "unverified" then
+		if first:find("hidden", 1, true) then
+			head = "Its player list is hidden, so the count can't be checked. Many big servers hide it against floods: "
+				.. "this isn't an accusation."
+		else
+			head = "Not verified: the server didn't let the check in, so its count couldn't be confirmed. This isn't "
+				.. "an accusation. It ranks a little lower than a server that could be checked."
+		end
+	else
+		return nil
+	end
+	local who = v.source == "observer" and "Meowy Network's observer, a Garry's Mod client that joins for about ten minutes and counts"
+		or v.source == "players" and "reports from players who use the pack, confirmed by Meowy Network's own check"
+		or (v.source == "crawl" or v.source == "index") and "Meowy Network's checks of the server's public answers"
+		or "this PC's own look at the server's player list, just now"
+	local lines = {}
+	for i = 1, math.min(#reasons, 3) do
+		local r = tostring(reasons[i] or ""):gsub("%c", " ")
+		-- "2026-11-22T11:08:08.963Z" reads better as the day alone.
+		r = r:gsub("(%d%d%d%d%-%d%d%-%d%d)T[%d:%.]+Z", "on %1")
+		if #r > 120 then r = r:sub(1, 117) .. "..." end
+		if r ~= "" then lines[#lines + 1] = r end
+	end
+	local text = head .. " Source: " .. who .. "."
+	if #lines > 0 then text = text .. " What it saw: " .. table.concat(lines, "; ") .. "." end
+	if #text > 480 then text = text:sub(1, 477) .. "..." end
+	return text
+end
+
 -- X-Meowy-Geo ("52.5,13.4") as lat, lon, or nil.
 function M.parseGeo(text)
 	if type(text) ~= "string" then return nil end
