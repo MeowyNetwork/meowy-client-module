@@ -149,6 +149,10 @@ console (`meowy_console_key`), Menu text size (`meowy_menu_scale`), Continue whe
 always put back), and Multicore rendering (`meowy_multicore`, see *Multicore rendering on by default*).
 Its other tab is the PC doctor.
 
+At the first start (and once on 1.8.1 for an install that had the pack before) a welcome window says what
+the pack does and shows two switches, as they are: the server-list reports and the data folder per
+server. It is shown once (`welcome_1` in `repairs.txt`), whether you answer it or press Escape.
+
 From 1.8.1 every setting has a switch there. **Privacy** holds what the pack sends and what servers can
 see and do: `meowy_serverlist_reports`, `meowy_server_index`, `meowy_honest_serverlist`, `meowy_updates`,
 `meowy_data_sandbox` and `meowy_party`. **Performance** holds every speed-up, each with what it changes:
