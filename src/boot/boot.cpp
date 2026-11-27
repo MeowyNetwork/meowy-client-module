@@ -143,6 +143,15 @@ namespace
 			return true;
 		return std::wcsstr(GetCommandLineW(), L"-meowy_safe") != nullptr;
 	}
+
+	// -meowy_local: load the DLL that sits next to this stub (luain) and
+	// leave updates the pack downloaded alone, for this start. For trying a
+	// build of your own: without it, an update taken through the pack's updater
+	// is loaded ahead of whatever is in luain.
+	bool LocalBuildRequested()
+	{
+		return std::wcsstr(GetCommandLineW(), L"-meowy_local") != nullptr;
+	}
 }
 
 GMOD_MODULE_OPEN()
@@ -173,7 +182,10 @@ GMOD_MODULE_OPEN()
 
 	// An update downloaded last session (pack_versions.h) is taken now, unless
 	// the player turned updates off since (it waits until they're back on).
-	if (!dataDir.empty() && !pack_versions::UpdatesOff(dataDir))
+	const bool local = LocalBuildRequested();
+	if (local)
+		Print(LUA, "[Meowy Client Pack] -meowy_local: the copy in lua\bin is used, downloaded updates are left alone");
+	if (!local && !dataDir.empty() && !pack_versions::UpdatesOff(dataDir))
 	{
 		const std::string promoted = pack_versions::Promote(dataDir);
 		if (!promoted.empty())
@@ -203,7 +215,7 @@ GMOD_MODULE_OPEN()
 	}
 
 	// The newest copy that verifies and the policy allows, else the installed one.
-	pack_versions::Choice choice = dataDir.empty() ? pack_versions::Choice() : pack_versions::Choose(dataDir);
+	pack_versions::Choice choice = (dataDir.empty() || local) ? pack_versions::Choice() : pack_versions::Choose(dataDir);
 	if (!choice.why.empty())
 		Print(LUA, ("[Meowy Client Pack] " + choice.why).c_str());
 	const std::wstring installed = bin + pack_versions::DllName();
