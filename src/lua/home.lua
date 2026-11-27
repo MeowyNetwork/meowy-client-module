@@ -640,7 +640,22 @@ local function menuCap(on)
 		idle.capped = nil
 	end
 end
+-- Whether you've joined our server with the pack before: its Continue entry,
+-- or a join the pre-warm kept. Until then its loading page isn't loaded ahead
+-- and its content isn't prepared (a first join there starts both itself).
+local joinedOursYes
+local function joinedOurs()
+	if joinedOursYes then return true end
+	local ours = st.oursAddress
+	if not Home.validAddress(ours) then return false end
+	if (meowy.LastServer and meowy.LastServer() == ours)
+		or (meowy.PrewarmRecorded and meowy.PrewarmRecorded(ours) == true) then
+		joinedOursYes = true
+	end
+	return joinedOursYes == true
+end
 local function loadingPage(want)
+	want = want and joinedOurs()
 	if want == idle.web then return end
 	idle.web = want
 	if want and meowy.LoadingPrewarm then meowy.LoadingPrewarm()
@@ -734,8 +749,10 @@ hook.Add("Think", "MeowyClientPack.Prewarm", function()
 			pw.continueDone = true
 			local address = meowy.LastServer and meowy.LastServer()
 			if isstring(address) then warm(address, "your Continue server") end
+			-- Our own server's, only once you've joined it: an install that
+			-- never plays there asks it nothing and downloads nothing of it.
 			local ours = st.oursAddress
-			if (homeOn() or menuPage.ours) and Home.validAddress(ours) and ours ~= address then contentFor(ours) end
+			if (homeOn() or menuPage.ours) and Home.validAddress(ours) and ours ~= address and joinedOurs() then contentFor(ours) end
 		end
 	else
 		pw.menuSince, pw.continueDone = nil, false

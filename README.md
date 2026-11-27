@@ -82,8 +82,10 @@ parties led by your Steam friends.
   the 32-bit game) and explains how to fix them. It only looks; it changes nothing.
 - **Sound follows your headphones** when you plug them in mid-game.
 - **The mouse stays in the game window** while you aim, so a fast flick can't click your other screen.
-- **Each server gets its own `garrysmod/data` folder,** so a server can't read the files other servers
-  saved there. Your own files stay with the main menu, singleplayer and the games you host.
+- **Optional: each server gets its own `garrysmod/data` folder,** so a server can't read the files other
+  servers saved there. Off unless you turn it on (`meowy_data_sandbox 1`): with it, your PAC3 outfits, dupes
+  and addon settings stay with the main menu, singleplayer and the games you host, and servers don't see
+  them either.
 
 ### Extras on Meowy Network
 

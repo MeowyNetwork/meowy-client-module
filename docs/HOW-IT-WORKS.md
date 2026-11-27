@@ -338,8 +338,9 @@ on Meowy Network's servers.
       which Workshop items its join will ask for, in a `meowy_content` rule the game's standard server query
       returns (Meowy Network's servers do). The pack reads it at the same moments, for any server, and adds
       what the last join learned.
-      - Meowy Network's servers (a few seconds after the menu opens) and servers you've joined before are
-        got ready without asking, up to 4 GB each: a first join
+      - Servers you've joined before are got ready without asking, up to 4 GB each (Meowy Network's own
+        a few seconds after the menu opens, once you've joined it; an install that never plays there
+        asks it nothing and downloads nothing of it, from 1.8.1): a first join
         then only checks the items instead of downloading them on the loading screen. Measured on our dev
         server with ~600 MB of Workshop content this PC didn't have: in game after 27.2 s instead of ~51.9 s.
         The content had downloaded at the main menu in 14.6 s, and each prepared item cost the join 0.03 s.
@@ -575,7 +576,10 @@ on Meowy Network's servers.
   module, a server's Lua can still ask whether it's installed.) Before 1.4.1 these files were in
   `garrysmod/data/meowy/`; the pack moves them on first start. Every file it writes, and everything it
   sends over the network, is listed in *Everything it sends and writes* at the end of this page.
-- **A separate `garrysmod/data` for every server.** Any server's Lua can list and read all of
+- **A separate `garrysmod/data` for every server, if you turn it on.** Off by default from 1.8.1
+  (`meowy_data_sandbox 1` turns it on; an install that had it on keeps it): with it, a server doesn't
+  see your own PAC3 outfits, dupes or addon settings either, which most players expect to follow them.
+  Any server's Lua can list and read all of
   `garrysmod/data`: other servers' files (their names alone say where you've played) and anything else
   kept there. With the pack started with the game, `garrysmod/data` is a link (a directory junction) to a
   folder of its own for each server: `%LOCALAPPDATA%\MeowyClientPack\vault\<server>` while you're on that

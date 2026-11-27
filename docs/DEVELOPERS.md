@@ -148,6 +148,12 @@ folder>` and the rest in `tests/`) and
 `uninstall_smoke.cs` (the installer's rules, built with `csc`) run in CI as `.github/workflows/build.yml`
 shows, most of them on both bitnesses.
 
+## Trying a build of your own
+Copy the four DLLs into `garrysmod\lua\bin` and add `-meowy_local` to Garry's Mod's launch options. Without
+it, an install that has taken an update through the pack's updater loads that downloaded copy ahead of
+whatever is in `lua\bin`. With it, the stub loads the copy next to it and leaves downloaded updates alone
+for that start (1.8.1).
+
 ## Releasing
 1. **Version:** `src/version.h` (`MEOWY_VERSION` and its three numbers), `AssemblyVersion` in
    `installer/Installer.cs`, and the example in `src/launcher_pipe.h`'s comment. The launcher takes its

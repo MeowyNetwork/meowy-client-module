@@ -67,10 +67,11 @@ check("newer: unknown", C.newer(nil, 1000), false)
 
 -- Consent
 local GB = 1024 * 1024 * 1024
-check("consent: ours", C.consent({ ours = true, bytes = GB }), "go")
+check("consent: ours, never joined", C.consent({ ours = true, bytes = GB }), "ask")
+check("consent: ours, joined before", C.consent({ ours = true, known = true, bytes = GB }), "go")
 check("consent: joined before", C.consent({ known = true, bytes = GB }), "go")
 check("consent: never joined", C.consent({ bytes = 10 }), "ask")
-check("consent: ours, but over 4 GB", C.consent({ ours = true, bytes = 5 * GB }), "ask")
+check("consent: joined before, but over 4 GB", C.consent({ known = true, bytes = 5 * GB }), "ask")
 check("consent: clicked, over 4 GB", C.consent({ asked = true, bytes = 9 * GB }), "go")
 check("consent: no size known", C.consent({ known = true }), "go")
 

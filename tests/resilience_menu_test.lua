@@ -1706,7 +1706,13 @@ check("join boost: off by the setting", w.boost, nil)
 -- and kept while the menu has focus (or lost it under two minutes ago);
 -- unloaded in game and at a menu left in the background. A menu in the
 -- background held to 15 fps when fps_max_nofocus is 0, put back on focus or a join.
+-- Our server's page is only loaded ahead once you've joined it.
 w = world({ settings = ON, menu = true, engineConVars = true })
+w.cvars.meowy_loadingscreen, w.cvars.fps_max_nofocus, w.cvars.fps_max_menu = "1", "0", "60"
+w.run(6)
+check("idle: never joined our server: its page isn't loaded ahead", w.web, false)
+w = world({ settings = ON, menu = true, engineConVars = true })
+w.recorded = { [OURS] = true }
 w.cvars.meowy_loadingscreen, w.cvars.fps_max_nofocus, w.cvars.fps_max_menu = "1", "0", "60"
 w.run(1)
 check("idle: page not loaded during start-up", w.web, false)
@@ -1751,6 +1757,7 @@ w.run(2)
 check("idle: fps_max_nofocus set, no menu cap", table.concat(w.consoleRuns, "|"):find("fps_max_menu", 1, true), nil)
 -- Off: the page loaded for the whole session, nothing capped.
 w = world({ settings = ON, menu = true, engineConVars = true, convars = { meowy_idle_savings = "0" } })
+w.recorded = { [OURS] = true }
 w.cvars.meowy_loadingscreen, w.cvars.fps_max_nofocus, w.cvars.fps_max_menu = "1", "0", "60"
 w.focus = false
 w.run(1)
@@ -1871,14 +1878,22 @@ check("files off: Workshop items still checked", #w.ugc, 1)
 -- The content platform: a server's advert (its meowy_content rule) says what
 -- its join will ask for, so a server never joined here can be prepared too.
 local MB, GB = 1048576, 1024 * 1048576
-local function contentWorld(sizes)
+local function contentWorld(sizes, neverJoinedOurs)
 	local ww = world({ settings = ON, menu = true, adverts = { ["1.1.1.1:27015"] = "1;ws=301,302,303", [OURS] = "1;ws=401,402" } })
+	if not neverJoinedOurs then ww.recorded = { [OURS] = true } end
 	ww.lists = LISTS
 	ww.wsState = {}
 	for _, id in ipairs({ "301", "302", "401", "402" }) do ww.wsState[id] = { false, false, false, false, 0 } end
 	ww.sizes = sizes or { ["301"] = 300 * MB, ["302"] = 200 * MB, ["401"] = GB, ["402"] = GB / 2 }
 	return ww
 end
+-- Our own server is no exception: never joined, nothing is asked of it and
+-- nothing of it is downloaded.
+w = contentWorld(nil, true)
+w.run(6)
+w.answerInfos()
+check("content: ours, never joined here: its advert isn't asked", w.advertAsked, nil)
+check("content: ours, never joined here: nothing downloaded", #w.ugc, 0)
 w = contentWorld()
 w.run(2)
 check("content: nothing asked at once", w.advertAsked, nil)
@@ -1886,7 +1901,7 @@ w.run(2)
 check("content: our server's advert asked a few seconds into the menu", w.advertAsked and w.advertAsked[1], OURS)
 w.run(0.5)
 w.answerInfos()
-check("content: ours, never joined here, prepared without asking", w.ugc[1] and w.ugc[1].id, "401")
+check("content: ours, joined before, prepared without asking", w.ugc[1] and w.ugc[1].id, "401")
 w.progress = { ["401"] = 512 * MB }
 w.run(1)
 check("content: our row shows how far", (homeData(w) or ""):find('"prep":"Getting ready \194\183 512 MB of 1.5 GB"', 1, true) ~= nil, true)
@@ -1930,6 +1945,7 @@ w.concommands.meowy_content_get_ready(nil, nil, {}, OURS)
 check("content: the console command is a click", w.ugc[1] and w.ugc[1].id, "401")
 -- A bad advert: what the last join learned still counts; nothing else.
 w = world({ settings = ON, menu = true, adverts = { [OURS] = "2;ws=999" } })
+w.recorded = { [OURS] = true }
 w.lists = LISTS
 w.run(4.5)
 check("content: an unusable advert logged", (w.logs or ""):find(OURS .. "'s advert isn't usable (not version 1)", 1, true) ~= nil, true)

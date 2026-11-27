@@ -251,9 +251,9 @@ local function openSettings(startTab)
 			local wt = UI.Toggle(nil, "Update a server's Workshop items before you join",
 				"A server's Workshop items (what it says it uses, and what your last join there used) are checked with "
 				.. "Steam on the main menu, and anything missing or out of date downloads there instead of on the loading "
-				.. "screen. Meowy Network's own content and servers you've joined before (up to 4 GB) download by "
-				.. "themselves, Meowy's a few seconds after the menu opens; any other server shows Get ready with the "
-				.. "size, and nothing downloads until you click it. Pointing at a server asks it what it uses. Off stops "
+				.. "screen. Servers you've joined before (up to 4 GB) download by themselves; any other server shows "
+				.. "Get ready with the size, and nothing downloads until you click it. Pointing at a server asks it "
+				.. "what it uses. Off stops "
 				.. "what's queued.",
 				prewarmWorkshopOn(), function(on) setPrewarmWorkshop(on) end)
 			wt.meowyToggle = "prewarm_workshop"
