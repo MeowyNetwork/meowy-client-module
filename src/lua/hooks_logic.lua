@@ -22,6 +22,12 @@
 --   * The player's own switch (Meowy settings) is their decision: that hook
 --     comes back, and the count starts over.
 -- The guard never changes a setting: its "off" is its own, kept here.
+--
+-- Also here: the hook-health report (meowy_hook_reports, off unless the player
+-- turns it on). What every hook is doing on this build of the game, sent to
+-- Meowy Network at most once a day, and again only when something changed. It
+-- carries the pack's version, the game's build, each hook's state and a
+-- refusal's reason: nothing about the player, the PC or the servers.
 
 local M = {}
 
@@ -75,7 +81,9 @@ end
 -- (unix time). active: the hooks that were on in it. unclean: crashed joins in
 -- a row. off: the hooks the guard has off. reverted: the guard turned them off
 -- and watches whether joins still crash without them. reverts: times it turned
--- them off. pack, game: the versions all of that is about.
+-- them off. pack, game: the versions all of that is about. report_day,
+-- report_sig: the day (days since 1970, UTC) and content of the last
+-- hook-health report sent.
 function M.decode(text)
 	local raw = {}
 	for line in string.gmatch((type(text) == "string" and text or "") .. "\n", "([^\n]*)\n") do
@@ -93,6 +101,8 @@ function M.decode(text)
 		reverts = int(raw.reverts),
 		pack = tag(raw.pack),
 		game = tag(raw.game),
+		reportDay = math.max(0, math.floor(tonumber(raw.report_day) or 0)),
+		reportSig = string.match(raw.report_sig or "", "^%x%x%x%x%x%x%x%x$") or "",
 	}
 end
 
@@ -108,6 +118,8 @@ function M.encode(s)
 		"reverts=" .. int(s.reverts),
 		"pack=" .. tag(s.pack),
 		"game=" .. tag(s.game),
+		"report_day=" .. string.format("%d", math.max(0, math.floor(tonumber(s.reportDay) or 0))),
+		"report_sig=" .. (string.match(tostring(s.reportSig or ""), "^%x%x%x%x%x%x%x%x$") or ""),
 	}, "\n") .. "\n"
 end
 
@@ -271,6 +283,67 @@ local function names(list)
 	local out = {}
 	for _, id in ipairs(list or {}) do if byId[id] then out[#out + 1] = byId[id].name end end
 	return table.concat(out, ", ")
+end
+
+-- --- The hook-health report ------------------------------------------------------
+
+M.REPORT_WHY_MAX = 160
+
+-- A refusal's reason as it's sent: printable ASCII on one line, cut short.
+local function reportWhy(why)
+	local s = string.gsub(tostring(why or ""), "[^\32-\126]", " ")
+	s = string.gsub(string.gsub(s, "%s+", " "), "^ ?(.-) ?$", "%1")
+	return string.sub(s, 1, M.REPORT_WHY_MAX)
+end
+local function jsonString(s)
+	return '"' .. string.gsub(s, '[\\"]', function(c) return "\\" .. c end) .. '"'
+end
+
+-- The report's body (JSON). entries: { id, state, why } per hook, as the glue
+-- lists them. Only known hooks, and a reason only for a refusal.
+function M.report(pack, game, entries)
+	local hooks, whys = {}, {}
+	for _, e in ipairs(entries or {}) do
+		if byId[e.id] and type(e.state) == "string" and string.match(e.state, "^[a-z_]+$") then
+			hooks[#hooks + 1] = jsonString(e.id) .. ":" .. jsonString(e.state)
+			if e.state == "refused" then
+				local why = reportWhy(e.why)
+				if why ~= "" then whys[#whys + 1] = jsonString(e.id) .. ":" .. jsonString(why) end
+			end
+		end
+	end
+	if #hooks == 0 then return nil end
+	return '{"v":1,"pack":' .. jsonString(tag(pack)) .. ',"game":' .. jsonString(tag(game))
+		.. ',"hooks":{' .. table.concat(hooks, ",") .. '},"why":{' .. table.concat(whys, ",") .. "}}"
+end
+
+-- Eight hex digits that change when the report's content does.
+function M.signature(text)
+	local h = 5381
+	for i = 1, #(text or "") do
+		h = (h * 33 + string.byte(text, i)) % 4294967296
+	end
+	return string.format("%08x", h)
+end
+
+-- Days since 1970 (UTC) for a unix time.
+function M.day(now)
+	return math.max(0, math.floor((tonumber(now) or 0) / 86400))
+end
+
+-- Whether to send this report now. optIn: the player's setting. Once a day at
+-- most for the same content; a change (a hook refused after a game update)
+-- goes at once.
+function M.shouldReport(s, optIn, body, now)
+	if optIn ~= true or not body then return false end
+	return (s and s.reportSig or "") ~= M.signature(body) or (s and s.reportDay or 0) ~= M.day(now)
+end
+
+-- The state after a report went out.
+function M.reported(s, body, now)
+	s = copy(s)
+	s.reportDay, s.reportSig = M.day(now), M.signature(body)
+	return s
 end
 
 -- The prompt for a notice from M.start: title, body.

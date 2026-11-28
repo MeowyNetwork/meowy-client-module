@@ -206,6 +206,18 @@ namespace policy
 			return true;
 		}
 
+		// A game build in an off_build line: VERSION/BRANCH/arch or its leading
+		// parts, e.g. "261112/x86-64/x64". No empty part.
+		bool BuildText(const std::string& s)
+		{
+			if (s.empty() || s.size() > 48 || s.front() == '/' || s.back() == '/' || s.find("//") != std::string::npos)
+				return false;
+			for (char c : s)
+				if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '.' || c == '-' || c == '/'))
+					return false;
+			return true;
+		}
+
 		bool Has(const std::vector<std::string>& list, const std::string& v)
 		{
 			return std::find(list.begin(), list.end(), v) != list.end();
@@ -277,6 +289,14 @@ namespace policy
 				if (!NameText(value) || Has(p.off, value) || p.off.size() >= kMaxList)
 					return *why = "off", false;
 				p.off.push_back(value);
+			}
+			else if (kw == "off_build")
+			{
+				const size_t sp = value.find(' ');
+				if (sp == std::string::npos || !BuildText(value.substr(0, sp)) || !NameText(value.substr(sp + 1))
+					|| Has(p.offBuild, value) || p.offBuild.size() >= kMaxList)
+					return *why = "off_build", false;
+				p.offBuild.push_back(value);
 			}
 			else if (kw == "revoked")
 			{
@@ -356,6 +376,13 @@ namespace policy
 		return true;
 	}
 
+	bool BuildMatches(const std::string& pattern, const std::string& build)
+	{
+		if (pattern.empty() || build.compare(0, pattern.size(), pattern) != 0)
+			return false;
+		return build.size() == pattern.size() || build[pattern.size()] == '/';
+	}
+
 	bool MayReplace(const Policy& cur, bool haveCur, const Policy& next, Key key, const char** why)
 	{
 		const char* dummy;
@@ -382,6 +409,10 @@ namespace policy
 		for (const std::string& o : cur.off)
 			if (!Has(next.off, o))
 				return *why = "the ops key can't switch a feature back on", false;
+		// Off on one build stays off there: the same line, or the feature off everywhere.
+		for (const std::string& o : cur.offBuild)
+			if (!Has(next.offBuild, o) && !Has(next.off, o.substr(o.find(' ') + 1)))
+				return *why = "the ops key can't switch a feature back on for a game build", false;
 		for (const std::string& r : cur.revoked)
 			if (!Has(next.revoked, r))
 				return *why = "the ops key can't un-revoke a version", false;
@@ -491,6 +522,8 @@ namespace policy
 				for (const std::string& o : g_current.off)
 					s += " " + o;
 			}
+			for (const std::string& o : g_current.offBuild)
+				s += "; off on " + o;
 			if (!g_current.minVersion.empty())
 				s += "; min_version " + g_current.minVersion;
 			if (!g_current.revoked.empty())

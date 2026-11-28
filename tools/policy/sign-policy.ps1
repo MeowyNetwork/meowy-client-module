@@ -50,13 +50,14 @@ if (-not ($lines -match '^pack_enabled [01]$')) { throw "The policy needs a pack
 
 # A policy's fields (BigInteger: 19 digits can pass a long).
 function Read-Fields([string]$t) {
-	$f = @{ Seq = $null; Notice = ""; Enabled = $true; MinVersion = ""; Off = @(); Revoked = @() }
+	$f = @{ Seq = $null; Notice = ""; Enabled = $true; MinVersion = ""; Off = @(); OffBuild = @(); Revoked = @() }
 	foreach ($l in $t.TrimEnd("`n").Split("`n")) {
 		if ($l -cmatch '^seq ([0-9]{1,19})$') { $f.Seq = [System.Numerics.BigInteger]::Parse($Matches[1]) }
 		elseif ($l.StartsWith("notice ")) { $f.Notice = $l.Substring(7) }
 		elseif ($l -cmatch '^pack_enabled ([01])$') { $f.Enabled = $Matches[1] -eq "1" }
 		elseif ($l.StartsWith("min_version ")) { $f.MinVersion = $l.Substring(12) }
 		elseif ($l.StartsWith("off ")) { $f.Off += $l.Substring(4) }
+		elseif ($l.StartsWith("off_build ")) { $f.OffBuild += $l.Substring(10) }
 		elseif ($l.StartsWith("revoked ")) { $f.Revoked += $l.Substring(8) }
 	}
 	return $f
@@ -106,6 +107,11 @@ if ($Key -ne "release") {
 	# Only stricter (policy::MayReplace, in its order and words).
 	if ($next.Enabled -and -not $keptPolicy.Enabled) { throw "The $Key key can't switch the pack back on (the published policy has it off): only the release key can." }
 	foreach ($o in $keptPolicy.Off) { if ($next.Off -cnotcontains $o) { throw "The $Key key can't switch a feature back on: keep the line 'off $o'." } }
+	foreach ($o in $keptPolicy.OffBuild) {
+		if ($next.OffBuild -cnotcontains $o -and $next.Off -cnotcontains $o.Substring($o.IndexOf(" ") + 1)) {
+			throw "The $Key key can't switch a feature back on for a game build: keep the line 'off_build $o'."
+		}
+	}
 	foreach ($v in $keptPolicy.Revoked) { if ($next.Revoked -cnotcontains $v) { throw "The $Key key can't un-revoke a version: keep the line 'revoked $v'." } }
 	if ($keptPolicy.MinVersion -ne "" -and ($next.MinVersion -eq "" -or (Compare-Versions $next.MinVersion $keptPolicy.MinVersion) -lt 0)) {
 		throw "The $Key key can't lower min_version: keep 'min_version $($keptPolicy.MinVersion)' or raise it."

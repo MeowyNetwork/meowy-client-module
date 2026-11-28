@@ -187,6 +187,8 @@ local function world(opts)
 	env.istable = function(v) return type(v) == "table" end
 	env.isstring = function(v) return type(v) == "string" end
 	env.isfunction = function(v) return type(v) == "function" end
+	w.sys, w.sent, w.reports = 0, {}, opts.reports == true
+	env.SysTime = function() return w.sys end
 	env.IsInLoading = function() return w.loading end
 	env.IsInGame = function() return w.inGame end
 	env.os = setmetatable({ time = function() return w.now end }, { __index = os })
@@ -208,6 +210,13 @@ local function world(opts)
 			return { pack_enabled = true, off = off }
 		end,
 		FastFontsState = function() return "412 loads skipped" end,
+		-- The report's own setting (created by the glue), and the sender.
+		Setting = function(name, default)
+			w.created = w.created or {}
+			w.created[name] = default
+			return { GetBool = function() return w.reports end }
+		end,
+		HookReport = function(body) w.sent[#w.sent + 1] = body return opts.sendFails ~= true end,
 	}
 	local f = assert(loadstring(chunk, "hooks"))
 	if setfenv then setfenv(f, env) else f = assert(load(chunk, "hooks", "t", env)) end
@@ -298,6 +307,93 @@ do
 	-- The same join closed without a crash report isn't counted.
 	local w5 = world({ file = w.file, crashReport = false })
 	check("glue: no crash report, not counted", M.decode(w5.file).unclean, 0)
+end
+
+-- --- The hook-health report ----------------------------------------------------
+do
+	local entries = {
+		{ id = "fonts", state = "refused", why = "gdi32 \"import\"\r\n not\tfound \\ caf\195\169" },
+		{ id = "lua_lookup", state = "on", why = "not sent: it's on" },
+		{ id = "nope", state = "on" },
+		{ id = "pak_cache", state = "Guard Off" },
+	}
+	local body = M.report("1.9.0", GAME, entries)
+	check("report: the whole body",
+		body, '{"v":1,"pack":"1.9.0","game":"250101/unknown/x64","hooks":{"fonts":"refused","lua_lookup":"on"},'
+			.. '"why":{"fonts":"gdi32 \\"import\\" not found \\\\ caf"}}')
+	check("report: nothing to say, nothing sent", M.report("1.9.0", GAME, {}), nil)
+	check("report: a long reason is cut", #M.report("1.9.0", GAME, { { id = "fonts", state = "refused", why = string.rep("x", 900) } }) < 300)
+	check("signature: eight hex digits", M.signature(body):match("^%x%x%x%x%x%x%x%x$") ~= nil)
+	check("signature: changes with the content", M.signature(body) ~= M.signature(body .. " "))
+	check("day: days since 1970", M.day(86400 * 3 + 5), 3)
+
+	local s = M.decode("")
+	local now = 86400 * 20000 + 100
+	check("report: never without the player's yes", M.shouldReport(s, false, body, now), false)
+	check("report: the first time", M.shouldReport(s, true, body, now), true)
+	local sent = M.decode(M.encode(M.reported(s, body, now)))
+	check("report: kept in the file", sent.reportDay, 20000)
+	check("report: the same content the same day isn't sent again", M.shouldReport(sent, true, body, now + 3600), false)
+	check("report: the next day it is", M.shouldReport(sent, true, body, now + 86400), true)
+	check("report: a change goes at once", M.shouldReport(sent, true, M.report("1.9.0", GAME, { entries[2] }), now + 60), true)
+	check("report: the guard's start keeps what was sent", (M.start(sent, false, PACK, GAME)).reportDay, 20000)
+end
+
+do
+	-- Off unless turned on: nothing is sent, whatever happens.
+	local w = world()
+	check("glue: the report's setting is off by default", w.created.meowy_hook_reports, "0")
+	w.meowy.HookResult("fonts", false, "x")
+	w.sys = 500
+	w.think()
+	w.loading = true
+	w.think()
+	w.loading, w.inGame = false, true
+	w.sys = 600
+	w.think()
+	check("glue: off, nothing sent", #w.sent, 0)
+
+	-- On: not before the states are known, then once.
+	w = world({ reports = true })
+	w.now = 86400 * 20000 + 100
+	w.meowy.HookResult("fonts", false, "gdi32 import not found")
+	w.sys = 30
+	w.think()
+	check("glue: on, not in the first two minutes at the menu", #w.sent, 0)
+	w.sys = 130
+	w.think()
+	check("glue: on, sent once the states are known", #w.sent, 1)
+	check("glue: what was sent", w.sent[1]:find('"fonts":"refused"', 1, true) ~= nil and w.sent[1]:find('"game":"250101/unknown/x64"', 1, true) ~= nil)
+	check("glue: no SteamID or address in it", w.sent[1]:find("7656", 1, true) == nil and w.sent[1]:find("steam", 1, true) == nil)
+	w.sys = 200
+	w.think()
+	check("glue: the same content isn't sent again", #w.sent, 1)
+	w.meowy.HookResult("lua_find", false, "pattern not found")
+	w.sys = 260
+	w.think()
+	check("glue: a change is", #w.sent, 2)
+	-- The next start, the same day, the same states: nothing.
+	local w2 = world({ reports = true, file = w.file })
+	w2.now = w.now + 600
+	w2.meowy.HookResult("fonts", false, "gdi32 import not found")
+	w2.meowy.HookResult("lua_find", false, "pattern not found")
+	w2.sys = 130
+	w2.think()
+	check("glue: kept across starts", #w2.sent, 0)
+	-- After a join gets in it doesn't wait for the two minutes.
+	local w3 = world({ reports = true })
+	w3.loading = true
+	w3.think()
+	w3.loading, w3.inGame = false, true
+	w3.sys = 20
+	w3.think()
+	w3.think()
+	check("glue: sent right after a join got in", #w3.sent, 1)
+	-- A send that couldn't start is tried again.
+	local w4 = world({ reports = true, sendFails = true })
+	w4.sys = 130
+	w4.think()
+	check("glue: a failed send isn't marked as sent", M.decode(w4.file).reportSig, "")
 end
 
 print(("%d checks, %d failures"):format(count, failures))

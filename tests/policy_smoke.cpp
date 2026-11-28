@@ -303,6 +303,47 @@ int main(int argc, char** argv)
 	Check("release: anything newer allowed", policy::MayReplace(cur, true, next, Key::Release, &why));
 	Check("unsigned: refused", !policy::MayReplace(cur, true, next, Key::None, &why));
 
+	// off_build: a feature off on one build of the game only (1.9.0+).
+	{
+		policy::Policy b;
+		Check("off_build: parses", policy::Parse("meowy-pack-policy 1\nseq 7\npack_enabled 1\noff meowy_pak_cache\n"
+			"off_build 261112/x86-64/x64 meowy_fast_fonts\noff_build 261112 meowy_fast_lua_find\n", &b, &why));
+		Check("off_build: both kept", b.offBuild.size() == 2 && b.offBuild[0] == "261112/x86-64/x64 meowy_fast_fonts"
+			&& b.offBuild[1] == "261112 meowy_fast_lua_find");
+		Check("off_build: off is still its own list", b.off.size() == 1);
+		const char* bad[] = {
+			"off_build 261112\n", "off_build 261112 \n", "off_build  meowy_fast_fonts\n", "off_build 261112 Meowy\n",
+			"off_build 26 11 meowy_fast_fonts\n", "off_build /261112 meowy_fast_fonts\n", "off_build 261112/ meowy_fast_fonts\n",
+			"off_build 2611//x64 meowy_fast_fonts\n", "off_build 26;12 meowy_fast_fonts\n",
+			"off_build 261112 meowy_fast_fonts\noff_build 261112 meowy_fast_fonts\n",
+		};
+		for (const char* line : bad)
+		{
+			policy::Policy x;
+			const char* w = "";
+			const bool ok = policy::Parse(std::string("meowy-pack-policy 1\nseq 7\npack_enabled 1\n") + line, &x, &w);
+			Check((std::string("off_build: refused: ") + line).c_str(), !ok && std::string(w) == "off_build");
+		}
+		Check("build: the same", policy::BuildMatches("261112/x86-64/x64", "261112/x86-64/x64"));
+		Check("build: leading parts", policy::BuildMatches("261112", "261112/x86-64/x64") && policy::BuildMatches("261112/x86-64", "261112/x86-64/x64"));
+		Check("build: not a prefix of a part", !policy::BuildMatches("26111", "261112/x86-64/x64") && !policy::BuildMatches("261112/x86", "261112/x86-64/x64"));
+		Check("build: another version", !policy::BuildMatches("261113", "261112/x86-64/x64"));
+		Check("build: longer than the build", !policy::BuildMatches("261112/x86-64/x64/y", "261112/x86-64/x64"));
+		Check("build: empty", !policy::BuildMatches("", "261112/x86-64/x64"));
+
+		// The ops key: a build's line stays, or the feature goes off everywhere.
+		policy::Policy same, dropped, everywhere, more;
+		policy::Parse("meowy-pack-policy 1\nseq 8\npack_enabled 1\noff meowy_pak_cache\n"
+			"off_build 261112/x86-64/x64 meowy_fast_fonts\noff_build 261112 meowy_fast_lua_find\noff_build 261113 meowy_fast_fonts\n", &more, &why);
+		policy::Parse("meowy-pack-policy 1\nseq 8\npack_enabled 1\noff meowy_pak_cache\noff_build 261112 meowy_fast_lua_find\n", &dropped, &why);
+		policy::Parse("meowy-pack-policy 1\nseq 8\npack_enabled 1\noff meowy_pak_cache\noff meowy_fast_fonts\n"
+			"off_build 261112 meowy_fast_lua_find\n", &everywhere, &why);
+		Check("ops: adding a build's line allowed", policy::MayReplace(b, true, more, Key::Ops, &why));
+		Check("ops: dropping a build's line refused", !policy::MayReplace(b, true, dropped, Key::Ops, &why));
+		Check("ops: off everywhere instead allowed", policy::MayReplace(b, true, everywhere, Key::Ops, &why));
+		Check("release: dropping a build's line allowed", policy::MayReplace(b, true, dropped, Key::Release, &why));
+	}
+
 	// The seq: the ops and recovery keys stay where the release key can beat them.
 	policy::Parse("meowy-pack-policy 1\nseq 9999999999999999999\npack_enabled 0\n", &next, &why);
 	Check("ops: seq 9999999999999999999 refused", !policy::MayReplace(cur, true, next, Key::Ops, &why));

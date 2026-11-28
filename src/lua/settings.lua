@@ -69,6 +69,8 @@ local PROTECTED = {
 	-- Multicore rendering (multicore.lua): only the player turns it on or off,
 	-- so a change of it is theirs, and resets its crash guard.
 	meowy_multicore = number,
+	-- The hook-health report (hooks.lua): only the player turns it on.
+	meowy_hook_reports = number,
 }
 
 -- Meowy Network's signed policy (policy.h) can turn a setting off ("off
@@ -76,6 +78,17 @@ local PROTECTED = {
 -- whatever the player chose (their own value is kept and comes back when
 -- the policy lets it). Every feature that reads its setting follows.
 local policyOff, policyAt, policySeq = {}, -math.huge, nil
+-- This build of the game, as meowy_hooks_status prints it: VERSION/BRANCH/arch.
+-- A policy's build matches it whole, or as its leading parts ("261112": every
+-- branch of that version), as policy::BuildMatches.
+local function gameBuild()
+	return tostring(VERSION or "?") .. "/" .. tostring(BRANCH or "?") .. "/" .. tostring(jit and jit.arch or "?")
+end
+local function buildMatches(pattern, build)
+	if pattern == "" or string.sub(build, 1, #pattern) ~= pattern then return false end
+	return #build == #pattern or string.sub(build, #pattern + 1, #pattern + 1) == "/"
+end
+meowy.GameBuild = gameBuild
 local function killed(name)
 	local now = SysTime()
 	if now - policyAt > 2 then
@@ -84,6 +97,12 @@ local function killed(name)
 		policyOff = {}
 		if istable(st) then
 			for _, n in ipairs(st.off or {}) do policyOff[n] = true end
+			-- Off on this build of the game only ("off_build <build> <name>").
+			local build = gameBuild()
+			for _, line in ipairs(st.off_build or {}) do
+				local pattern, n = string.match(tostring(line), "^(%S+) ([%w_]+)$")
+				if pattern and buildMatches(pattern, build) then policyOff[n] = true end
+			end
 			policyOff["*"] = st.pack_enabled == false
 			if st.seq ~= policySeq then
 				if policySeq ~= nil and isstring(st.notice) and st.notice ~= "" then
@@ -95,6 +114,8 @@ local function killed(name)
 	end
 	return policyOff[name] == true or policyOff["*"] == true
 end
+-- Whether the policy has this setting off now (for the chunks that say why).
+meowy.PolicyOff = killed
 
 -- --- Approved changes ------------------------------------------------------------
 

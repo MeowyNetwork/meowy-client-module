@@ -8,6 +8,14 @@
 //   pack_enabled <0|1>
 //   min_version <x.y.z>                    optional; older versions don't run
 //   off <setting name>                     0..64, e.g. "off meowy_pak_cache"
+//   off_build <game build> <setting name>  0..64 (1.9.0+): off only on that build of
+//                                          Garry's Mod, e.g. "off_build 261112/x86-64
+//                                          meowy_fast_fonts". The build is the game's
+//                                          VERSION/BRANCH/arch as meowy_hooks_status
+//                                          prints it; fewer parts match every build
+//                                          that starts with them ("261112": every
+//                                          branch of that version). Older packs skip
+//                                          the line.
 //   revoked <x.y.z>                        0..64 versions that don't run
 //   notice <text>                          optional, one line for players
 //
@@ -61,6 +69,7 @@ namespace policy
 		bool packEnabled = true;
 		std::string minVersion;              // "" = none
 		std::vector<std::string> off;        // setting names
+		std::vector<std::string> offBuild;   // "<game build> <setting name>"
 		std::vector<std::string> revoked;    // versions
 		std::string notice;                  // UTF-8, or ""
 	};
@@ -74,6 +83,9 @@ namespace policy
 	// Whether `next`, signed by `key`, may replace `cur` (haveCur: one is kept).
 	bool MayReplace(const Policy& cur, bool haveCur, const Policy& next, Key key, const char** why);
 
+	// Whether an off_build line's build ("261112/x86-64") is `build`
+	// ("261112/x86-64/x64") or its leading parts.
+	bool BuildMatches(const std::string& pattern, const std::string& build);
 	// "1.6.0" vs "1.10": numeric parts, missing ones are 0. <0, 0, >0.
 	int CompareVersions(const std::string& a, const std::string& b);
 

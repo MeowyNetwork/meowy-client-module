@@ -155,6 +155,10 @@ This is what leaves your PC, and where it goes:
   carries a Steam ticket, so Meowy Network can ask Steam which account sent it and count each account
   once; it keeps only a scrambled form of your account, for 6 hours. Reports never mark a server as
   fake by themselves. `meowy_serverlist_reports 0` stops this.
+- **Only if you turn it on** (`meowy_hook_reports`, from 1.9.0, off by default): at most once a day, the
+  pack's version, the build of Garry's Mod and which of the pack's join speed-ups are running, with the
+  technical reason when one isn't. No SteamID, no install id, nothing about your PC or your servers. It
+  tells Meowy Network when a game update broke a speed-up.
 - **To your Steam friends:** your party, and the fact that you have the pack. `meowy_party 0` turns that
   off.
 - **Downloads from meowynetwork.com:** the loading screen, the server list and updates. Like any website,

@@ -1291,6 +1291,17 @@ namespace
 		return 0;
 	}
 
+	// Menu only: meowy.HookReport(json) -> whether it was handed to a worker
+	// (hooks.lua: the hook-health report, sent only when the player turned it on).
+	int HookReport(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		unsigned int len = 0;
+		const char* text = LUA->IsType(1, Type::String) ? LUA->GetString(1, &len) : nullptr;
+		LUA->PushBool(text && server_rep::SendHookReport(std::string(text, len)));
+		return 1;
+	}
+
 	// meowy.QueryPlayers(address) -> true if asked, false if not (too many in
 	// flight, or not a public address): then no answer is coming.
 	int QueryPlayers(lua_State* L)
@@ -2818,7 +2829,8 @@ namespace
 		return 1;
 	}
 
-	// meowy.PolicyState() -> { seq, allowed, pack_enabled, off = { setting names }, notice, describe }.
+	// meowy.PolicyState() -> { seq, allowed, pack_enabled, off = { setting names },
+	// off_build = { "<game build> <setting name>" }, notice, describe }.
 	int PolicyState(lua_State* L)
 	{
 		ILuaBase* LUA = L->luabase;
@@ -2839,6 +2851,15 @@ namespace
 			LUA->SetTable(-3);
 		}
 		LUA->SetField(-2, "off");
+		LUA->CreateTable();
+		i = 0;
+		for (const std::string& line : p.offBuild)
+		{
+			LUA->PushNumber(++i);
+			LUA->PushString(line.c_str());
+			LUA->SetTable(-3);
+		}
+		LUA->SetField(-2, "off_build");
 		LUA->PushString(p.notice.c_str());
 		LUA->SetField(-2, "notice");
 		LUA->PushString(policy::Describe().c_str());
@@ -3717,17 +3738,10 @@ local meowy = meowy
 -- The pack's settings (meowy.Setting) come from settings.lua, run just before this.
 
 -- A setting by name, read the way its own chunk reads it (the policy
--- included): meowy.SettingOf(name) -> the same object meowy.Setting returned,
--- or nil. Another chunk reads a setting it doesn't own through this, never
--- GetConVar's raw value. Asking for one twice gives the same object.
-do
-	local create, byName = meowy.Setting, {}
-	function meowy.Setting(name, default, help)
-		if byName[name] == nil then byName[name] = create(name, default, help) end
-		return byName[name]
-	end
-	function meowy.SettingOf(name) return byName[name] end
-end
+-- included): meowy.SettingOf(name), settings.lua's too. It gives the same
+-- object meowy.Setting returned, or nil, for a setting made by any chunk (the
+-- hook registry's, which runs before this one, included). Another chunk reads
+-- a setting it doesn't own through it, never GetConVar's raw value.
 
 -- Signed updates (updater.h): checked a minute after start and every 6 hours;
 -- a new version is downloaded, checked against Meowy Network's signature, and
@@ -4294,6 +4308,7 @@ int MenuOpenBody(ILuaBase* LUA)
 	SetFunction(LUA, "MenuSettingsRead", Guarded<MenuSettingsRead>);
 	SetFunction(LUA, "MenuSettingsWrite", Guarded<MenuSettingsWrite>);
 	SetFunction(LUA, "MenuFileRead", Guarded<MenuFileRead>);
+	SetFunction(LUA, "HookReport", Guarded<HookReport>);
 	SetFunction(LUA, "MenuFileWrite", Guarded<MenuFileWrite>);
 	SetFunction(LUA, "SetMulticoreManaged", Guarded<SetMulticoreManaged>);
 	SetFunction(LUA, "MulticoreGuardAtExit", Guarded<MulticoreGuardAtExit>);
