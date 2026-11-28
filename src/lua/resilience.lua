@@ -375,6 +375,10 @@ local function openSettings(startTab)
 		settingChoice(blocks, "meowy_loadingscreen_everywhere", "The pack's loading screen on other servers",
 			"On servers that show no loading page of their own, or on every server.",
 			{ { "Servers without their own", "1" }, { "Every server", "2" }, { "Only Meowy Network", "0" } })
+		settingToggle(blocks, "meowy_loading_strip", "A status strip over a server's own loading page",
+			"A server's loading page freezes for most of a join, which looks like a crash. A small strip at the top of "
+			.. "the window keeps moving: the stage, the time so far, and that the game is working. The page itself "
+			.. "stays as the server made it.")
 		heading(blocks, "Game")
 		settingToggle(blocks, "meowy_mouse_confine", "Keep the mouse in the game while you aim",
 			"A fast flick can't click your other screen and drop the game to the background. Menus and alt-tab free "

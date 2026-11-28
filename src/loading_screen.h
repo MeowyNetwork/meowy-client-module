@@ -27,8 +27,14 @@ namespace loading_screen
 	// page), with that server's name and map; the ETA from this PC's earlier
 	// joins there (by address, join_times_servers.txt), none the first time.
 	// It fades out a moment after the game is in (no Done from that server).
+	//
+	// strip: the server shows a loading page of its own, which stays. Only a
+	// small pill at the top of the game's window is drawn, over that page: the
+	// stage, the time so far, and during the Lua start-up that the game is
+	// working (its page and the game's own panel are frozen by then, which reads
+	// as a crash). Clicks go through it to the game.
 	void BeginOther(const std::wstring& dataDir, double panelOpenMs, const std::string& serverName, const std::string& map,
-		const std::string& address);
+		const std::string& address, bool strip = false);
 	// At the menu: load the screen's web page now, hidden, so a join can show
 	// it straight away instead of the native drawing while it loads.
 	void Prewarm(const std::wstring& dataDir);

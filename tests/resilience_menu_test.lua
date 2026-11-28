@@ -2183,14 +2183,14 @@ local OTHERS = { meowy_serverlist_reports = "1", meowy_server_index = "1", meowy
 	meowy_data_sandbox = "0", meowy_party = "1", meowy_fast_file_checks = "1", meowy_fast_lua_lookup = "1",
 	meowy_fast_lua_find = "1", meowy_fast_fonts = "1", meowy_pak_cache = "1", meowy_join_boost = "1",
 	meowy_skipmatreload_anyserver = "0", meowy_idle_savings = "1", meowy_loadingscreen = "1",
-	meowy_loadingscreen_everywhere = "1", meowy_mouse_confine = "1", meowy_audio_follow = "1",
+	meowy_loadingscreen_everywhere = "1", meowy_loading_strip = "1", meowy_mouse_confine = "1", meowy_audio_follow = "1",
 	meowy_console_badge = "1", meowy_console_overlay = "0" }
 local function toggleNamed(name) return find(function(p) return p.meowyToggle == name end) end
 w = world({ settings = ON, menu = true, others = OTHERS })
 w.concommands.meowy_settings()
 check("settings: a Privacy tab", find(function(p) return p.tabId == "privacy" end) ~= nil, true)
 check("settings: a Performance tab", find(function(p) return p.tabId == "performance" end) ~= nil, true)
-for _, name in ipairs({ "meowy_loadingscreen", "meowy_mouse_confine", "meowy_audio_follow", "meowy_console_badge" }) do
+for _, name in ipairs({ "meowy_loadingscreen", "meowy_loading_strip", "meowy_mouse_confine", "meowy_audio_follow", "meowy_console_badge" }) do
 	check("settings: General has " .. name, toggleNamed(name) ~= nil, true)
 end
 check("settings: General has the other-servers loading screen choice",

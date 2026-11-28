@@ -105,6 +105,7 @@ namespace
 		double expected[STAGES] = {};   // kDefaultSecs until the screen's thread has read this PC's own
 		std::wstring server = L"Meowy Network", map, status, steamid;
 		bool other = false;             // another server's join: the neutral native screen, no web page
+		bool strip = false;             // another server with a loading page of its own: only the pill at the top
 		std::wstring address;           // that server's, for its own stage times
 		bool knownTimes = true;         // expected[] is this server's own (else no ETA for another server)
 		std::wstring dataDir;
@@ -479,7 +480,7 @@ namespace
 		double expected[STAGES] = {};
 		ULONGLONG starts[STAGES] = {}, begin = 0;
 		std::wstring server, map, status;
-		bool other = false, known = true;
+		bool other = false, known = true, strip = false;
 	};
 
 	Snap TakeSnap()
@@ -498,6 +499,7 @@ namespace
 		s.status = g.status;
 		s.other = g.other;
 		s.known = g.knownTimes;
+		s.strip = g.strip;
 		return s;
 	}
 
@@ -811,6 +813,83 @@ namespace
 					DT_LEFT | DT_SINGLELINE);
 			}
 		}
+	}
+
+	// ─── The strip: a pill over a server's own loading page ──────────────────────
+	// Where it sits in the game's client area (w x h): centred along the top
+	// edge, where a server's page rarely has anything a player needs and well
+	// away from the game's own Cancel button at the bottom.
+	struct StripBox
+	{
+		int x = 0, y = 0, w = 0, h = 0, radius = 0;
+	};
+
+	StripBox StripBoxFor(int w, int h)
+	{
+		const double k = g_cssScale > 0.5 ? g_cssScale : 1.0;
+		auto S = [k](double px) { return static_cast<int>(px * k + 0.5); };
+		StripBox b;
+		b.h = S(40);
+		b.w = std::min(S(620), std::max(S(280), w - S(32)));
+		b.x = (w - b.w) / 2;
+		b.y = std::min(S(14), std::max(0, h - b.h));
+		b.radius = S(20);
+		return b;
+	}
+
+	// The whole pill, every frame (it's small): a spinner, the stage in words,
+	// and on the right the time so far. During the Lua start-up, when the game
+	// and the server's page are frozen, it says the game is working.
+	void DrawStrip(HDC dc, int w, int h, const Snap& s, ULONGLONG now)
+	{
+		const double k = g_cssScale > 0.5 ? g_cssScale : 1.0;
+		auto S = [k](double px) { return static_cast<int>(px * k + 0.5); };
+		const Palette p = PaletteFor(true);
+		SetBkMode(dc, TRANSPARENT);
+		RECT all = { 0, 0, w, h };
+		Fill(dc, all, RGB(16, 15, 21), 0);
+		// A hairline inside the edge, so it reads as a pill on a dark page too.
+		HGDIOBJ oldPen = SelectObject(dc, PenFor(1, RGB(58, 56, 70)));
+		HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
+		RoundRect(dc, 0, 0, w, h, h, h);
+		const int stage = s.stage;
+		const int sr = S(7), sx = S(20), sy = h / 2;
+		SelectObject(dc, PenFor(S(2), RGB(52, 51, 60)));
+		Ellipse(dc, sx - sr, sy - sr, sx + sr, sy + sr);
+		SelectObject(dc, PenFor(S(2), stage == READY ? p.ready : p.rose2));
+		const double a0 = (now % 900) / 900.0 * 6.2831853;
+		Arc(dc, sx - sr, sy - sr, sx + sr, sy + sr, sx + static_cast<int>(sr * std::cos(a0)), sy - static_cast<int>(sr * std::sin(a0)),
+			sx + static_cast<int>(sr * std::cos(a0 + 1.6)), sy - static_cast<int>(sr * std::sin(a0 + 1.6)));
+		SelectObject(dc, oldPen);
+		SelectObject(dc, oldBrush);
+
+		const double elapsed = s.starts[stage] ? (now - s.starts[stage]) / 1000.0 : (now - s.begin) / 1000.0;
+		std::wstring line = stage == READY ? L"You’re in" : kOtherStageLines[stage];
+		if (stage == SCRIPTS)
+			line += L". The game may say “Not Responding”: it’s working";
+		else if (s.known && elapsed > 3 * s.expected[stage] && elapsed > 60)
+			line += L". Taking longer than usual";
+		const ULONGLONG joining = (now - s.begin) / 1000;
+		wchar_t since[48];
+		// The time so far; with this PC's own times for the server, what's left too.
+		if (s.known && stage != READY)
+		{
+			double remain = std::max(2.0, s.expected[stage] - elapsed);
+			for (int i = stage + 1; i < STAGES; ++i)
+				remain += s.expected[i];
+			swprintf(since, 48, L"%llu:%02llu · about %s left", joining / 60, joining % 60, Clock(static_cast<ULONGLONG>(remain * 1000)).c_str());
+		}
+		else
+			swprintf(since, 48, L"%llu:%02llu", joining / 60, joining % 60);
+		HFONT timeFont = FontFor(S(12), FW_NORMAL);
+		SIZE sz = {};
+		HGDIOBJ oldFont = SelectObject(dc, timeFont);
+		GetTextExtentPoint32W(dc, since, static_cast<int>(std::wcslen(since)), &sz);
+		SelectObject(dc, oldFont);
+		const int right = w - S(18), timeL = right - sz.cx;
+		Text(dc, timeFont, p.dim, since, { timeL, 0, right, h }, DT_RIGHT | DT_SINGLELINE | DT_VCENTER);
+		Text(dc, FontFor(S(13), FW_SEMIBOLD), p.white, line, { sx + sr + S(12), 0, timeL - S(14), h },
+			DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
 	}
 
 	// A bitmap selected into its own memory DC, with the bitmap the DC came
@@ -1265,6 +1344,8 @@ namespace
 		unsigned seenJoin = 0;
 		bool joinOpen = false;    // a join is on screen that hasn't been ended (EndPrevious) yet
 		bool joinOther = false;   // this join is to another server: native drawing only, never the web page
+		bool joinStrip = false;   // ... and only the pill at the top (the server's own page stays)
+		bool regionSet = false;   // the window is cut to the pill's shape
 		Native native;
 		bool fullBlit = true;     // the window needs all of the native frame, not only its live parts
 		double lastFrameMs = 0;
@@ -1422,6 +1503,15 @@ namespace
 					std::lock_guard<std::mutex> lock(g.m);
 					dataDir = g.dataDir;
 					joinOther = g.other;
+					joinStrip = g.other && g.strip;
+				}
+				// The pill never takes a click: they go through to the game (its
+				// own Cancel, a server's page). The full screen takes them.
+				{
+					const LONG_PTR ex = GetWindowLongPtrW(v.hwnd, GWL_EXSTYLE);
+					const LONG_PTR want = joinStrip ? (ex | WS_EX_TRANSPARENT) : (ex & ~static_cast<LONG_PTR>(WS_EX_TRANSPARENT));
+					if (want != ex)
+						SetWindowLongPtrW(v.hwnd, GWL_EXSTYLE, want);
 				}
 				shotDir.clear();
 				if (GetFileAttributesW((dataDir + L"\\screenshot_debug").c_str()) != INVALID_FILE_ATTRIBUTES)
@@ -1617,6 +1707,16 @@ namespace
 					POINT tl = { 0, 0 };
 					ClientToScreen(v.game, &tl);
 					RECT pos = { tl.x, tl.y, tl.x + rc.right, tl.y + rc.bottom };
+					// The window's own size: the game's client area, or the pill's box in it.
+					int winW = rc.right, winH = rc.bottom, winRadius = 0;
+					if (joinStrip)
+					{
+						const StripBox b = StripBoxFor(rc.right, rc.bottom);
+						pos = { tl.x + b.x, tl.y + b.y, tl.x + b.x + b.w, tl.y + b.y + b.h };
+						winW = b.w;
+						winH = b.h;
+						winRadius = b.radius;
+					}
 					iconic = IsIconic(v.game) != 0 || rc.right < 64 || rc.bottom < 64;
 					if (iconic)
 					{
@@ -1632,14 +1732,21 @@ namespace
 					{
 						if (std::memcmp(&pos, &last, sizeof(pos)) != 0)
 						{
-							SetWindowPos(v.hwnd, nullptr, pos.left, pos.top, rc.right, rc.bottom, SWP_NOACTIVATE | SWP_NOZORDER);
+							SetWindowPos(v.hwnd, nullptr, pos.left, pos.top, winW, winH, SWP_NOACTIVATE | SWP_NOZORDER);
+							// Cut to the pill's rounded shape, or whole again for the full
+							// screen (the system owns the region once it's set).
+							if (joinStrip)
+								SetWindowRgn(v.hwnd, CreateRoundRectRgn(0, 0, winW + 1, winH + 1, winRadius * 2, winRadius * 2), TRUE);
+							else if (regionSet)
+								SetWindowRgn(v.hwnd, nullptr, TRUE);
+							regionSet = joinStrip;
 							last = pos;
 							fullBlit = true;
 						}
 						// Only sent to WebView2 when the size changed, or when the
 						// browser is new (it was made at the window's size then,
 						// 1x1 if at the menu).
-						if (webOn)
+						if (webOn && !joinStrip)
 							loading_webview::Resize(rc.right, rc.bottom);
 						// Over the game and nothing else; placed before it's shown.
 						KeepAboveGame();
@@ -1668,8 +1775,29 @@ namespace
 							}
 						}
 
-						int w = rc.right, h = rc.bottom;
-						if (!webShown)
+						int w = winW, h = winH;
+						if (!webShown && joinStrip)
+						{
+							// The pill: all of it, every frame.
+							const double t0 = QpcMs();
+							HDC dc = GetDC(v.hwnd);
+							if (dc && native.Ensure(dc, w, h))
+							{
+								const Snap s = TakeSnap();
+								DrawStrip(native.frame.dc, w, h, s, now);
+								BitBlt(dc, 0, 0, w, h, native.frame.dc, 0, 0, SRCCOPY);
+								native.layerOk = false;   // the full screen's layer isn't what's in there now
+								fullBlit = false;
+								const double ms = QpcMs() - t0;
+								paintMs += ms;
+								paintMaxMs = std::max(paintMaxMs, ms);
+								++painted;
+								++paintedFull;
+							}
+							if (dc)
+								ReleaseDC(v.hwnd, dc);
+						}
+						else if (!webShown)
 						{
 							// Native: the static layer (drawn again only when what it
 							// shows changed), then the live parts over a copy of it.
@@ -1776,7 +1904,7 @@ namespace
 namespace loading_screen
 {
 	void BeginJoin(const std::wstring& dataDir, double panelOpenMs, bool other, const std::wstring& server, const std::wstring& map,
-		const std::wstring& address)
+		const std::wstring& address, bool strip = false)
 	{
 		static bool ghostingOff = false;
 		if (!ghostingOff)
@@ -1798,6 +1926,7 @@ namespace loading_screen
 			g.stageStart[i] = 0;
 		g.stageStart[CONNECT] = now;
 		g.other = other;
+		g.strip = other && strip;
 		g.server = server;
 		g.map = map;
 		g.address = address;
@@ -1819,7 +1948,7 @@ namespace loading_screen
 		open.dir = dataDir;
 		g.files.push_back(std::move(open));
 		g.logging = true;
-		Log(other ? "begin (another server)" : "begin", "GMod's loading panel open " + std::to_string(static_cast<long long>(panelOpenMs)) + " ms");
+		Log(other ? (strip ? "begin (another server, strip over its own page)" : "begin (another server)") : "begin", "GMod's loading panel open " + std::to_string(static_cast<long long>(panelOpenMs)) + " ms");
 		FileOp load;
 		load.kind = FileOp::LoadTimes;
 		load.dir = dataDir;
@@ -1838,13 +1967,13 @@ namespace loading_screen
 	}
 
 	void BeginOther(const std::wstring& dataDir, double panelOpenMs, const std::string& serverName, const std::string& map,
-		const std::string& address)
+		const std::string& address, bool strip)
 	{
 		std::wstring name = Widen(serverName);
 		for (wchar_t& c : name)
 			if (c == L'\r' || c == L'\n' || c == L'\t')
 				c = L' ';
-		BeginJoin(dataDir, panelOpenMs, true, name.empty() ? Widen(address) : name, Widen(map), Widen(address));
+		BeginJoin(dataDir, panelOpenMs, true, name.empty() ? Widen(address) : name, Widen(map), Widen(address), strip);
 	}
 
 	void Prewarm(const std::wstring& dataDir)
@@ -1974,7 +2103,7 @@ namespace loading_screen
 namespace loading_screen
 {
 	void Begin(const std::wstring&, double) {}
-	void BeginOther(const std::wstring&, double, const std::string&, const std::string&, const std::string&) {}
+	void BeginOther(const std::wstring&, double, const std::string&, const std::string&, const std::string&, bool) {}
 	void Prewarm(const std::wstring&) {}
 	void Park() {}
 	void Details(const std::string&, const std::string&, const std::string&) {}
