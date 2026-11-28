@@ -154,7 +154,8 @@ the pack does and shows two switches, as they are: the server-list reports and t
 server. It is shown once (`welcome_1` in `repairs.txt`), whether you answer it or press Escape.
 
 From 1.8.1 every setting has a switch there. **Privacy** holds what the pack sends and what servers can
-see and do: `meowy_serverlist_reports`, `meowy_server_index`, `meowy_honest_serverlist`, `meowy_updates`,
+see and do: `meowy_serverlist_reports`, `meowy_server_index`, `meowy_honest_serverlist`,
+`meowy_hook_reports` (1.9.0), `meowy_updates`,
 `meowy_data_sandbox` and `meowy_party`. **Performance** holds every speed-up, each with what it changes:
 `meowy_fast_file_checks`, `meowy_fast_lua_lookup`, `meowy_fast_lua_find`, `meowy_fast_fonts`,
 `meowy_pak_cache`, `meowy_join_boost`, `meowy_skipmatreload_anyserver` and `meowy_idle_savings`. General
@@ -177,8 +178,8 @@ console has to be on: **Options → Keyboard → Advanced → Enable developer c
 - **Servers can't change the ones that guard you.** A server's Lua can run console commands on your game
   (`RunConsoleCommand`; Garry's Mod blocks only a fixed list of names). So for `meowy_data_sandbox`,
   `meowy_updates`, `meowy_settings_guard`, `meowy_party`, `meowy_serverlist_reports`, `meowy_discord`,
-  `meowy_honest_serverlist`, `meowy_server_index`, `meowy_menu`, `meowy_menu_version` and
-  `meowy_multicore`, the pack keeps
+  `meowy_honest_serverlist`, `meowy_server_index`, `meowy_menu`, `meowy_menu_version`,
+  `meowy_multicore` and `meowy_hook_reports`, the pack keeps
   the value it approved and puts any other change back through the console, within a quarter of a
   second. Until then the setting reads as its approved value (also on the same frame), and only approved
   values are saved. The console
@@ -260,6 +261,15 @@ on Meowy Network's servers.
     switch on in Meowy settings brings that speed-up back. Your settings are never changed by this.
   - Not covered: a crash once you're in the game, and the material reload skip a server of ours asks
     for (only the every-server setting is in the list).
+  - **Telling Meowy Network, if you turn it on** (`meowy_hook_reports`, off by default; the welcome
+    window asks, and Meowy settings, Privacy, has the switch). When a Garry's Mod update makes a
+    speed-up step aside, nobody at Meowy Network knows until someone writes in. With this on, the pack
+    sends `meowynetwork.com/api/pack/hooks` its own version, the game's build (`261112/x86-64/x64`),
+    each speed-up's state and, for one that isn't running, the technical reason it gave. Nothing else
+    is in it: no SteamID, no install id, nothing about your PC or the servers you play on. It goes once
+    the states are known (after a join, or two minutes at the menu), at most once a day for the same
+    content. The backend keeps a count per day, version, build and reason for 180 days, and its web
+    server logs these requests without your IP address. The console says when one was sent.
 - With "Start with the game" on, the first join of a session is much faster, on any server. While
   a server loads, Garry's Mod looks for each model and material in every search folder in turn, and
   most of those looks are for files that aren't there (91% of ~110,000 on our server). The pack reads
@@ -933,7 +943,10 @@ on Meowy Network's servers.
 - **Meowy Network's kill switch.** At start and every 30 minutes the pack fetches a policy signed by Meowy
   Network (`meowynetwork.com/pack/v1/policy.txt` and `.sig`), and the launcher does the same. It can switch
   off one feature, one version (or every version below a minimum) or the whole pack, for example while a
-  crash is fixed. Your own settings are kept and come back afterwards. `meowy_policy_status` shows the
+  crash is fixed. From 1.9.0 it can also switch a feature off on one build of Garry's Mod only
+  (`off_build 261112/x86-64 meowy_fast_fonts`), so a speed-up a game update broke can be parked for the
+  players on that build while everyone else keeps it; older versions of the pack skip that line. Your
+  own settings are kept and come back afterwards. `meowy_policy_status` shows the
   policy in effect. The 30-minute check waits while a join is loading, and the `.txt` and the `.sig`
   are fetched back to back over one connection.
   - **Without "Start with the game"** the pack is loaded only when you join Meowy Network, and the game

@@ -19,6 +19,7 @@ namespace
 	const wchar_t* const kHost = MEOWY_BRAND_HOST_W;
 	const wchar_t* const kListPath = L"/api/pack/servers";
 	const wchar_t* const kReportPath = L"/api/pack/servers/report";
+	const wchar_t* const kHookReportPath = L"/api/pack/hooks";
 	constexpr size_t kMaxBody = 512 * 1024;
 	constexpr size_t kMaxCapture = 64 * 1024;
 	// A2S_PLAYER: the header's count is one byte, so no honest reply lists more
@@ -407,6 +408,17 @@ namespace server_rep
 			steam_ticket::Release(handle);   // just asked for: never used
 			Log("report not sent: no thread for it");
 		}
+	}
+
+	bool SendHookReport(const std::string& json)
+	{
+		if (json.empty() || json.size() > 4000)   // the backend takes 4 KB
+			return false;
+		return thread_util::Spawn(L"Meowy hook report", [json] {
+			DWORD status = 0;
+			Request(L"POST", kHookReportPath, json, &status);
+			Log("hook report sent, " + std::to_string(json.size()) + " bytes, HTTP " + std::to_string(status));
+		}, thread_util::Priority::BelowNormal);
 	}
 
 	void CaptureBegin()

@@ -10,6 +10,7 @@
 --   meowy.HookOfSetting(name)        that entry for a setting's hook, or nil
 --   meowy.HookPlayerChose(name)      the player turned that setting's switch
 --   meowy.HookNotice()               title, body of what the guard did at start, once
+--   meowy_hook_reports               the hook-health report (off unless turned on)
 --   meowy_hooks_status               the list, in the console
 --
 -- The guard's state is hook_guard.txt (meowy.MenuFileRead/Write).
@@ -137,11 +138,35 @@ concommand.Add("meowy_hooks_status", function()
 	end
 end)
 
+-- The hook-health report: what each hook is doing on this build of the game,
+-- to Meowy Network. Off unless the player turns it on (the welcome window asks,
+-- and Meowy settings, Privacy, has the switch). Sent once the states are known
+-- (a join got in, or two minutes at the menu), at most once a day for the same
+-- content. No SteamID, no install id: hooks_logic.lua's M.report is all of it.
+local reports = meowy.Setting and meowy.Setting("meowy_hook_reports", "0",
+	"Meowy Client Pack: tell Meowy Network which join speed-ups run on this version of Garry's Mod (the pack's version, the game's build, each speed-up's state and why one isn't running; nothing about you) (0 = off)")
+local REPORT_AFTER = 120   -- seconds at the menu before the states count as known
+local startedAt, joinedOnce, nextReportCheck = SysTime(), false, 0
+local function maybeReport()
+	if not (reports and reports:GetBool() and meowy.HookReport) then return end
+	local body = Logic.report(meowy.VERSION, gameBuild(), meowy.HookStatus())
+	if not Logic.shouldReport(guard, true, body, os.time()) then return end
+	if meowy.HookReport(body) ~= true then return end
+	guard = Logic.reported(guard, body, os.time())
+	save()
+	log("hooks: told Meowy Network what the join speed-ups are doing on Garry's Mod %s (meowy_hook_reports 0 turns that off)", gameBuild())
+end
+
 -- The join's marker: written as loading starts, with the hooks that are on;
 -- cleared when the join gets in, or ends back at the menu.
 local marked = false
 hook.Add("Think", "MeowyClientPack.HookGuard", function()
 	local loading, inGame = IsInLoading(), IsInGame()
+	local now = SysTime()
+	if now >= nextReportCheck and not loading then
+		nextReportCheck = now + 15
+		if joinedOnce or now - startedAt > REPORT_AFTER then maybeReport() end
+	end
 	if loading and not marked then
 		marked = true
 		local active = {}
@@ -154,5 +179,6 @@ hook.Add("Think", "MeowyClientPack.HookGuard", function()
 		marked = false
 		guard = Logic.joinEnd(guard, inGame)
 		save()
+		if inGame then joinedOnce, nextReportCheck = true, 0 end
 	end
 end)

@@ -69,6 +69,8 @@ local PROTECTED = {
 	-- Multicore rendering (multicore.lua): only the player turns it on or off,
 	-- so a change of it is theirs, and resets its crash guard.
 	meowy_multicore = number,
+	-- The hook-health report (hooks.lua): only the player turns it on.
+	meowy_hook_reports = number,
 }
 
 -- Meowy Network's signed policy (policy.h) can turn a setting off ("off

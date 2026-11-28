@@ -29,6 +29,10 @@ namespace server_rep
 	// Steam ticket added when Steam gives one within 10 s. Game thread (it asks
 	// Steam for the ticket).
 	void SendReport(const std::string& json);
+	// POSTs a hook-health report (JSON built by the menu Lua, hooks_logic.lua)
+	// on a worker thread. No Steam ticket and nothing else added: the body is
+	// all that's sent. False when it's too big or no thread could start.
+	bool SendHookReport(const std::string& json);
 
 	// "a.b.c.d:port" on the public internet (not LAN, loopback, CGNAT or
 	// multicast): the only servers the pack queries or reports on.

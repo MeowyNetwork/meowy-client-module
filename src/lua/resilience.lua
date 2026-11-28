@@ -451,6 +451,11 @@ local function openSettings(startTab)
 		settingToggle(blocks, "meowy_honest_serverlist", "Check player counts in the server list",
 			"Downloads Meowy Network's verdicts and marks servers whose player count doesn't hold up. Off: no marks, "
 			.. "and nothing is downloaded for them.")
+		settingToggle(blocks, "meowy_hook_reports", "Tell Meowy Network when a speed-up stops working",
+			"After a Garry's Mod update, one of the pack's join speed-ups may not recognise the game any more. On: at "
+			.. "most once a day the pack sends its version, the game's build and what each speed-up is doing (and why one "
+			.. "isn't running), so it gets fixed sooner. Nothing about you, your PC or the servers you play on. Off: "
+			.. "nothing is sent.")
 		settingToggle(blocks, "meowy_updates", "Keep the pack up to date",
 			"New versions, signed by Meowy Network, download while you play and start the next time you open the "
 			.. "game. Off: you stay on this version until you run a newer installer.")
@@ -1151,7 +1156,7 @@ local function keepTimeout()
 end
 
 -- The first start with the pack (and, once, the first on 1.8.1 for an install
--- that had it before): what it does, and the two settings that are the
+-- that had it before): what it does, and the settings that are the
 -- player's to decide rather than a default's. Shown once: "welcome_1" in
 -- repairs.txt. Answered or dismissed, it doesn't come back.
 local WELCOME_MARK = "welcome_1\n"
@@ -1176,7 +1181,7 @@ local function askWelcome(after)
 	local blocks = { UI.Text(card, "Welcome to the Meowy Client Pack", "MeowyPack.Title", C.text) }
 	local body = UI.Text(card, "It makes Garry's Mod join servers faster, adds this home screen, Find servers and a "
 		.. "searchable console, turns on multicore rendering, and tells you when a server changed your settings. It "
-		.. "works on every server. Two things are yours to decide:", "MeowyPack.Body", C.body)
+		.. "works on every server. These are yours to decide:", "MeowyPack.Body", C.body)
 	body.gapBefore = S(8)
 	blocks[#blocks + 1] = body
 	local function choice(name, title, text)
@@ -1195,6 +1200,10 @@ local function askWelcome(after)
 		"Any server can read everything in garrysmod/data, other servers' files included. On: each server gets a "
 		.. "folder of its own, and your own files (PAC3 outfits, dupes) stay off servers too. Off: one folder, as "
 		.. "the game does.")
+	choice("meowy_hook_reports", "Tell Meowy Network when a speed-up stops working",
+		"After a Garry's Mod update a speed-up may stop recognising the game. On: at most once a day the pack "
+		.. "sends its version, the game's build and what each speed-up is doing. Nothing about you, your PC or "
+		.. "your servers. Off: nothing is sent.")
 	local note = UI.Text(card, "Every setting, each with what it does and sends, is in Meowy settings in the main menu.",
 		"MeowyPack.Small", C.dim)
 	note.gapBefore = S(14)
