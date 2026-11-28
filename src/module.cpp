@@ -1606,7 +1606,11 @@ namespace
 		case server_gate::Result::NotConnected: LUA->PushString("none"); break;
 		default: LUA->PushString("unknown"); break;
 		}
-		if (r != server_gate::Result::Allowed)
+		// Our own server, or another public one (1.8.1: staying connected works
+		// on any server): its address and the connection's health. Anything else
+		// (a LAN or P2P address, a game hosted here) is only named.
+		if (r != server_gate::Result::Allowed
+			&& !(r == server_gate::Result::OtherServer && server_rep::IsPublicAddress(address)))
 			return 1;
 		LUA->PushString(address.c_str());
 		bool timingOut = false;

@@ -5,16 +5,18 @@
 --   sets it to 60 and turns on automatic rejoin; No changes nothing. Both are kept
 --   in %LOCALAPPDATA%\MeowyClientPack\resilience.txt. meowy_settings opens a
 --   window to change it; turning it off puts the player's cl_timeout back.
--- * Automatic rejoin, only to the Meowy Network server the game was really
---   connected to (the engine's own address, meowy.ResilienceWatch), and only
---   when the engine says the server had gone silent before the connection
---   ended (IsTimingOut and 10+ s since a packet, sampled every frame), or our
---   server had said it was restarting (meowy.ExpectRestart) and then went
---   down (stopped answering within 15 s; one that keeps answering wasn't
---   restarting: the player left, was kicked or joined elsewhere). Never from text.
+-- * Automatic rejoin, only to the server the game was really connected to
+--   (the engine's own address, meowy.ResilienceWatch: ours, or from 1.8.1 any
+--   other public a.b.c.d:port), and only when the engine says the server had
+--   gone silent before the connection ended (IsTimingOut and 10+ s since a
+--   packet, sampled every frame), or our own server had said it was restarting
+--   (meowy.ExpectRestart) and then went down (stopped answering within 15 s;
+--   one that keeps answering wasn't restarting: the player left, was kicked or
+--   joined elsewhere). Never from text: no server can name another to join.
 --   Only after the player had got into the game there. The server is asked
 --   whether it's up (A2S, serverlist.PingServer) before each join. A small
---   window shows each try and has Cancel.
+--   window shows each try and has Cancel. On a server that isn't ours, at most
+--   3 automatic rejoins an hour; after that the card only offers the button.
 -- * After a crash while on our server, the next start offers "Rejoin Meowy
 --   Network?"; after a crash on any other public server, "Rejoin the server?"
 --   with its name (the engine's address; the name only as text). Neither ever
@@ -215,8 +217,9 @@ local function openSettings(startTab)
 	pages.general = function()
 		local blocks = { UI.Label(nil, "Connection") }
 		local t = UI.Toggle(nil, "Stay connected through drops",
-			"Waits through short drops instead of giving up, and rejoins Meowy Network by itself after a timeout "
-			.. "or a server restart. Turning it off puts your own cl_timeout back.",
+			"Waits through short drops instead of giving up, and rejoins the server you were on by itself after a "
+			.. "timeout, on any server (on Meowy Network after a server restart too). Never after a kick or a ban. "
+			.. "Turning it off puts your own cl_timeout back.",
 			settings.enabled, function(on) setEnabled(on) end)
 		t.meowyToggle = "stay_connected"
 		t.gapBefore = S(10)
@@ -757,9 +760,10 @@ local function askOptIn(after)
 		icon = { "signal", "accent" },
 		title = "Stay connected through drops?",
 		body = "If your connection drops for a moment, the game keeps waiting instead of giving up, "
-			.. "and if you're disconnected anyway, the pack brings you back to Meowy Network by itself. "
-			.. "Back within 3 minutes, you usually keep your job, and your weapons, health and armor too unless you "
-			.. "were just in a fight, restrained or downed. Not after a server restart, and at most 3 times an hour.",
+			.. "and if you're disconnected anyway, the pack brings you back to the server you were on by itself, "
+			.. "on any server. Never after a kick or a ban, and you can cancel it. "
+			.. "Back within 3 minutes on Meowy Network, you usually keep your job, and your weapons, health and armor "
+			.. "too unless you were just in a fight, restrained or downed. Not after a server restart, and at most 3 times an hour.",
 		note = "Change it any time in Meowy settings, in the main menu.",
 		buttons = {
 			{ "Not now", "ghost", function() setEnabled(false) if after then after() end end },
@@ -874,6 +878,19 @@ if concommand then
 end
 
 local onOurs, ourAddress = false, nil
+-- The server whose connection is being watched: ours or another public one.
+local onTracked, trackedAddress, trackedKind = false, nil, nil
+-- Automatic rejoins to a server that isn't ours: address -> { SysTime, ... }.
+local OTHER_REJOINS, OTHER_WINDOW = 3, 3600
+local otherRejoins = {}
+local function otherRejoinsLeft(address, now)
+	local kept = {}
+	for _, at in ipairs(otherRejoins[address] or {}) do if now - at < OTHER_WINDOW then kept[#kept + 1] = at end end
+	otherRejoins[address] = kept
+	return #kept < OTHER_REJOINS
+end
+-- "Meowy Network" for our own server, "the server" for any other.
+local function whereOf(e) return e and e.kind == "other" and "the server" or "Meowy Network" end
 local onOther, markedName = false, nil   -- on another (public) server, and the name it was marked with
 local continueMarked                     -- the name this connection was kept for Continue with
 local armed = false      -- got into the game on our server since the last rejoin try
@@ -896,12 +913,14 @@ local function finish(why, show)
 		if e and Logic.offerRejoin(e.s) then
 			-- Gave up (not a kick, ban, password or the player cancelling): the
 			-- card stays, with one click to try once more.
-			local address = e.address
-			showOverlay("Couldn't reconnect to Meowy Network", text, {
+			local address, other = e.address, e.kind == "other"
+			showOverlay("Couldn't reconnect to " .. whereOf(e), text, {
 				{ "Close", "secondary", closeNote },
 				{ "Rejoin now", "primary", function()
 					closeNote()
-					if isstring(address) and meowy.IsOurServer(address) then
+					-- The address is the engine's own, kept from the connection that
+					-- ended (never text); another server's was a public one.
+					if isstring(address) and (other or meowy.IsOurServer(address)) then
 						log("reconnect: Rejoin now -> joining %s", address)
 						join(address)
 					end
@@ -909,7 +928,7 @@ local function finish(why, show)
 			}, false)
 			stoppedUntil = math.huge   -- until Close, or the player is on a server again
 		else
-			showOverlay("Couldn't reconnect to Meowy Network", text, { { "Close", "secondary", closeNote } }, false)
+			showOverlay("Couldn't reconnect to " .. whereOf(e), text, { { "Close", "secondary", closeNote } }, false)
 			stoppedUntil = SysTime() + 10
 		end
 	else
@@ -982,16 +1001,19 @@ local function probe(now)
 	end
 end
 
-local function tickEpisode(now, state)
+local function tickEpisode(now, state, address)
 	local e = episode
 	if not settings.enabled then return cancel() end
+	-- On the server this rejoin is for again (its engine address), or on another.
+	local connected = state == "ours" or state == "other"
+	local same = connected and address == e.address
 	-- Only a real connection ends a rejoin early: the player is on our server
 	-- again, or joined another one. Not IsInGame()/IsInLoading(): for a moment
 	-- after the drop (GMod's disconnect dialog, the teardown) they still say
 	-- "in game", which ended every rejoin the moment it started.
 	if e.phase ~= "joining" then
-		if state == "ours" then return finish("back on our server", false) end
-		if state == "other" then return finish("joined another server", false) end
+		if same then return finish(e.kind == "other" and "back on the server" or "back on our server", false) end
+		if connected then return finish("joined another server", false) end
 	end
 	if e.phase == "waiting" then
 		if e.s.stopped then return finish(e.s.stopped, Logic.announceStop(e.s)) end
@@ -1004,7 +1026,7 @@ local function tickEpisode(now, state)
 			local status = e.s.attempt == 0 and "Starting..."
 				or (e.s.mode == "restart" and "The server is restarting. " or "The server didn't answer. ")
 					.. (wait > 0 and ("Trying again in %d s."):format(wait) or "Checking now...")
-			showOverlay("Reconnecting to Meowy Network", status, { { "Cancel", "secondary", cancel } }, true,
+			showOverlay("Reconnecting to " .. whereOf(e), status, { { "Cancel", "secondary", cancel } }, true,
 				(now - e.s.startedAt) / Logic.capFor(e.s))
 		end
 		if now >= e.s.nextAt then probe(now) end
@@ -1030,8 +1052,8 @@ local function tickEpisode(now, state)
 		if now > e.probeUntil then e.result(false, false) end
 	elseif e.phase == "joining" then
 		hideOverlay()   -- the loading screen shows the join
-		if state == "other" then return finish(nil, false) end
-		if state == "ours" and IsInGame() and not IsInLoading() then return finish("back in the game", false) end
+		if connected and not same then return finish(nil, false) end
+		if same and IsInGame() and not IsInLoading() then return finish("back in the game", false) end
 		if IsInLoading() then e.sawLoading = true end
 		-- A join whose connection came up and then ended is judged where it
 		-- ends (joinEnded). Here: one that never got a connection.
@@ -1153,20 +1175,10 @@ local function askWelcome(after)
 	back:Open(y)
 end
 
--- Whether this install has been on Meowy Network: its Continue entry, or a join
--- the pre-warm kept. The stay-connected question is about our server, so an
--- install that never plays there isn't asked it.
-local function joinedOurServer()
-	local ours = meowy.OurServerAddress and meowy.OurServerAddress()
-	if not isstring(ours) or ours == "" then return false end
-	return (meowy.LastServer and meowy.LastServer() == ours)
-		or (meowy.PrewarmRecorded and meowy.PrewarmRecorded(ours) == true) or false
-end
-
 -- One prompt at a time: the crash card first, then the welcome, then the opt-in question.
 local function startup()
 	local function optIn()
-		askWelcome(function() if not settings.asked and joinedOurServer() then askOptIn() end end)
+		askWelcome(function() if not settings.asked then askOptIn() end end)
 	end
 	if crashed and meowy.IsOurServer(crashed) then
 		local address = crashed
@@ -1214,27 +1226,43 @@ hook.Add("Think", "MeowyClientPack.Resilience", function()
 	-- Every frame: the engine's own view of our connection, and the moment it goes.
 	local state, address, timingOut, quiet = meowy.ResilienceWatch()
 	local ended
-	if state == "ours" then
-		if not onOurs then
-			meowy.ResilienceSession(true, meowy.JoiningName or "")
-			log("connected to our server %s; connection reading: timingOut=%s, silence=%s%s", show(address), show(timingOut),
-				fmtNum(quiet), timingOut == nil and " (couldn't read it: a drop won't be recognised)" or "")
+	-- The connection being watched ended: nothing connected any more, or the
+	-- engine is on a different server now.
+	local connected = state == "ours" or state == "other"
+	local watchable = state == "ours" or (state == "other" and isstring(address) and address ~= "")
+	if onTracked and (state == "none" or (connected and address ~= trackedAddress)) then
+		local wasOurs = trackedKind == "ours"
+		if wasOurs then
+			onOurs = false
+			meowy.ResilienceSession(false)
 		end
-		onOurs, ourAddress = true, address
-		last = { timingOut = timingOut, silence = quiet, at = now }
-		if episode and episode.phase == "joining" then episode.reachedOurs = true end
-		if IsInGame() and not IsInLoading() then armed = true end
-	elseif (state == "none" or state == "other") and onOurs then
-		onOurs = false
-		meowy.ResilienceSession(false)
 		-- Only a sample from just before counts (the menu runs every frame;
 		-- a few "unknown" frames while the engine tears the connection down are fine).
 		local fresh = last and now - last.at < 3 or false
-		ended = { connectionEnded = state == "none", restartExpected = meowy.ResilienceRestartExpected() }
+		-- A restart notice only ever comes from our own server.
+		ended = { connectionEnded = state == "none", restartExpected = wasOurs and meowy.ResilienceRestartExpected() or false }
 		if fresh then ended.timingOut, ended.silence = last.timingOut, last.silence end   -- false stays false
-		meowy.ResilienceClearRestart()   -- used (or not): either way it's spent
+		if wasOurs then meowy.ResilienceClearRestart() end   -- used (or not): either way it's spent
 		ended.fresh, ended.state, ended.sampleAge = fresh, state, last and (now - last.at) or nil
-		last = nil
+		ended.address, ended.kind = trackedAddress, trackedKind
+		onTracked, trackedAddress, trackedKind, last = false, nil, nil, nil
+	end
+	if watchable then
+		if state == "ours" then
+			if not onOurs then
+				meowy.ResilienceSession(true, meowy.JoiningName or "")
+				log("connected to our server %s; connection reading: timingOut=%s, silence=%s%s", show(address), show(timingOut),
+					fmtNum(quiet), timingOut == nil and " (couldn't read it: a drop won't be recognised)" or "")
+			end
+			onOurs, ourAddress = true, address
+		elseif not onTracked then
+			log("connected to %s; connection reading: timingOut=%s, silence=%s%s", show(address), show(timingOut),
+				fmtNum(quiet), timingOut == nil and " (couldn't read it: a drop won't be recognised)" or "")
+		end
+		onTracked, trackedAddress, trackedKind = true, address, state
+		last = { timingOut = timingOut, silence = quiet, at = now }
+		if episode and episode.phase == "joining" and episode.address == address then episode.reachedOurs = true end
+		if IsInGame() and not IsInLoading() then armed = true end
 	end
 
 	-- Any other server: remembered too (the address is the engine's, and only a
@@ -1274,8 +1302,12 @@ hook.Add("Think", "MeowyClientPack.Resilience", function()
 			decision = "no rejoin: staying connected is off"
 		elseif not armed then
 			decision = "no rejoin: not in the game since the last try"
-		elseif not (isstring(ourAddress) and meowy.IsOurServer(ourAddress)) then
+		elseif not (isstring(ended.address) and ended.address ~= "") then
+			decision = "no rejoin: no address"
+		elseif ended.kind == "ours" and not meowy.IsOurServer(ended.address) then
 			decision = "no rejoin: no address of ours"
+		elseif ended.kind == "other" and mode and not otherRejoinsLeft(ended.address, now) then
+			decision = "no rejoin: " .. OTHER_REJOINS .. " automatic rejoins to this server in the last hour"
 		elseif not mode then
 			decision = ended.connectionEnded and (ended.timingOut == nil and "no rejoin: no engine sample" or "no rejoin: packets were still arriving")
 				or "no rejoin: joined another server"
@@ -1290,7 +1322,12 @@ hook.Add("Think", "MeowyClientPack.Resilience", function()
 			if not ok then ErrorNoHalt("[Meowy Client Pack] reconnect: " .. tostring(err) .. "\n") finish(nil, false) end
 		elseif decision:sub(1, 6) == "rejoin" then
 			armed = false   -- the next try needs the player in the game again
-			episode = { s = Logic.start(mode, now, math.random(), needDown), address = ourAddress, phase = "waiting" }
+			episode = { s = Logic.start(mode, now, math.random(), needDown), address = ended.address, kind = ended.kind, phase = "waiting" }
+			if ended.kind == "other" then
+				local list = otherRejoins[ended.address] or {}
+				list[#list + 1] = now
+				otherRejoins[ended.address] = list
+			end
 			log("reconnect: %s, first try in %s s, giving up after %d s%s", mode, fmtNum(episode.s.nextAt - now), Logic.CAP[mode] or 0,
 				episode.s.needDown and (", joining only once the server has gone down (still up after " .. Logic.UP_WAIT .. " s: not a restart)") or "")
 		end
@@ -1320,7 +1357,7 @@ hook.Add("Think", "MeowyClientPack.Resilience", function()
 	end
 
 	if episode then
-		local ok, err = pcall(tickEpisode, now, state)
+		local ok, err = pcall(tickEpisode, now, state, address)
 		if not ok then
 			ErrorNoHalt("[Meowy Client Pack] reconnect: " .. tostring(err) .. "\n")
 			finish(nil, false)

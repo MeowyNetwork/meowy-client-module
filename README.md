@@ -70,9 +70,10 @@ parties led by your Steam friends.
 
 ### Staying connected
 
-- If your connection drops on Meowy Network, the pack can rejoin for you. Back within 3 minutes, you
-  usually keep your job and jail time, and your weapons too unless you were just in a fight. It asks once
-  whether you want this.
+- If your connection drops, the pack can rejoin the server for you, on any server (from 1.8.1). Never
+  after a kick or a ban, and you can cancel it. It asks once whether you want this.
+- On Meowy Network, back within 3 minutes, you usually keep your job and jail time, and your weapons too
+  unless you were just in a fight.
 - After a crash, the next start offers to rejoin the server you were on. It only joins when you click.
 
 ### Handy tools

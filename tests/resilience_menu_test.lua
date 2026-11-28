@@ -70,6 +70,8 @@ local function world(opts)
 	env.meowy = {
 		ResilienceWatch = function()
 			if w.state == "ours" then return "ours", w.address, w.timingOut, w.silence end
+			-- Another public server: its address and health too (w.otherAddress).
+			if w.state == "other" and w.otherAddress then return "other", w.otherAddress, w.timingOut, w.silence end
 			return w.state
 		end,
 		ResilienceRestartExpected = function() return w.restartUntil ~= nil and w.now <= w.restartUntil end,
@@ -544,7 +546,7 @@ check("welcome: the opt-in waits behind it", find(function(p) return type(p.text
 check("welcome: no choice without the setting in this build", find(function(p) return p.meowyToggle == "welcome_meowy_data_sandbox" end), nil)
 check("welcome: Done closes it", w.click("Done"), true)
 check("welcome: remembered", (w.menuFiles.repairs or ""):find("welcome_1\n", 1, true) ~= nil, true)
-check("welcome: never joined our server: no stay-connected question", w.click("Stay connected"), false)
+check("welcome: then the stay-connected question, on any install", w.click("Stay connected"), true)
 w = world({ welcome = true, others = { meowy_serverlist_reports = "1", meowy_data_sandbox = "0" } })
 w.recorded = { [OURS] = true }
 w.run(4)
@@ -557,7 +559,7 @@ if ws then ws:SetOn(true) end
 check("welcome: reports turned off through the console", w.convars.meowy_serverlist_reports, "0")
 check("welcome: the data folder turned on through the console", w.convars.meowy_data_sandbox, "1")
 check("welcome: Done", w.click("Done"), true)
-check("welcome: then the opt-in, on an install that has joined our server", w.click("Stay connected"), true)
+check("welcome: then the opt-in", w.click("Stay connected"), true)
 w = world({ welcome = true })
 w.run(4)
 check("welcome: All settings opens the Privacy tab", w.click("All settings"), true)
@@ -566,7 +568,7 @@ check("welcome: and it's remembered", (w.menuFiles.repairs or ""):find("welcome_
 w = world({})
 w.run(4)
 check("welcome: not shown again", find(function(p) return p.meowyWelcome end), nil)
-check("never joined our server: the stay-connected question isn't asked", w.click("Stay connected"), false)
+check("no welcome: the stay-connected question is asked", w.click("Stay connected"), true)
 
 -- Opt-in: asked once, Yes sets cl_timeout 60 and remembers the old value
 w = world({})
@@ -744,6 +746,69 @@ w.refuse("You are banned from this server")
 w.run(30)
 check("refused (ban): one join only", w.connects(), 1)
 check("refused (ban): no Rejoin now", w.click("Rejoin now"), false)
+
+-- Any server (1.8.1): a drop on another public server is rejoined the same
+-- way, to the address the engine itself was connected to.
+local OTHER = "5.6.7.8:27015"
+local function playOther(ww, seconds)
+	ww.state, ww.otherAddress, ww.timingOut, ww.silence, ww.inGame, ww.loading = "other", OTHER, false, 0.02, true, false
+	ww.run(seconds or 5)
+end
+w = world({ settings = ON })
+playOther(w, 10)
+w.drop(60)
+w.run(5)
+check("other server: a timeout is rejoined, to its own address", w.lastConnect(), "connect " .. OTHER)
+check("other server: logged as a timeout", (w.logs or ""):find("-> rejoin (timeout)", 1, true) ~= nil, true)
+-- Kicked or banned there (packets flowing to the end): never.
+w = world({ settings = ON })
+playOther(w, 10)
+w.cut()
+w.run(20)
+check("other server: a kick isn't rejoined", w.connects(), 0)
+-- A LAN or P2P server (the engine's address isn't a public one: none given): never.
+w = world({ settings = ON })
+w.state, w.timingOut, w.silence, w.inGame, w.loading = "other", false, 0.02, true, false
+w.run(10)
+w.drop(60)
+w.run(5)
+check("other server without a public address: not rejoined", w.connects(), 0)
+-- Staying connected off: nothing, as on ours.
+w = world({ settings = "asked=1\r\nenabled=0\r\n" })
+playOther(w, 10)
+w.drop(60)
+w.run(5)
+check("other server: off is off", w.connects(), 0)
+-- Its restart notice means nothing there: only a real timeout counts.
+w = world({ settings = ON })
+playOther(w, 10)
+w.restartUntil = w.now + 600
+w.cut()
+w.run(30)
+check("other server: no restart rejoin", w.connects(), 0)
+-- At most 3 automatic rejoins an hour to a server that isn't ours.
+w = world({ settings = ON })
+for _ = 1, 4 do
+	playOther(w, 10)
+	w.drop(60)
+	w.run(8)
+end
+check("other server: three automatic rejoins, not a fourth", w.connects(), 3)
+check("other server: the fourth says why", (w.logs or ""):find("no rejoin: 3 automatic rejoins to this server in the last hour", 1, true) ~= nil, true)
+-- Joining a different server during a rejoin ends it.
+w = world({ settings = ON })
+playOther(w, 10)
+w.drop(60)
+w.run(0.5)   -- the rejoin has started
+w.state, w.otherAddress, w.inGame = "other", "9.9.9.9:27015", true
+w.run(2)
+check("other server: on a different server now: stopped", (w.logs or ""):find("reconnect: stopped (joined another server)", 1, true) ~= nil, true)
+-- Going straight from one server to another isn't a drop.
+w = world({ settings = ON })
+playOther(w, 10)
+w.state, w.otherAddress = "other", "9.9.9.9:27015"
+w.run(5)
+check("other server: switching servers isn't a drop", w.connects(), 0)
 
 -- The live test's case: the client times out, the network (and Steam) are down
 -- for a while, then come back within the cap: the pack's own A2S keeps asking,
