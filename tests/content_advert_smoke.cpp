@@ -399,12 +399,23 @@ static void HttpChecks()
 
 	net_http::Request req = stub::Get(L"/whole");
 	req.readHeader = L"X-Meowy-Geo";
-	const int accepts = stub::g_accepts.load();
+	// The very first request of a run can lose to a slow CI runner (the stub's
+	// accept thread and WinHTTP's own start-up; seen once on x86, 2026-11-27):
+	// asked up to three times before anything is measured. Every check below
+	// asks once.
 	net_http::Response r = shared.Send(req);
+	for (int again = 0; again < 2 && !(r.status == 200 && r.complete); ++again)
+	{
+		Sleep(500);
+		r = shared.Send(req);
+	}
+	Check("http: the local stub answers", r.status == 200 && r.complete);
+	const int accepts = stub::g_accepts.load();
+	r = shared.Send(req);
 	Check("http: a whole body is complete", r.status == 200 && r.complete && r.body == std::string(3000, 'w') && r.error.empty());
 	Check("http: its ETag and the asked-for header", r.etag == "\"w1\"" && r.header == "1.5,2.5");
 	r = shared.Send(req);
-	Check("http: the next request keeps the connection", r.complete && stub::g_accepts.load() == accepts + 1);
+	Check("http: the next request keeps the connection", r.complete && stub::g_accepts.load() == accepts);
 
 	req = stub::Get(L"/whole");
 	req.maxBody = 1000;
