@@ -242,6 +242,24 @@ on Meowy Network's servers.
   - With "Start with the game" on, `meowy_skipmatreload_anyserver 1` skips it on every server you
     join (off by default). On our map that's ~14 s of every join. The catch: a server whose
     downloads replace a material that's already loaded shows the old one until the next map.
+- The join speed-ups below each change the game in memory, so they're kept in one list, the hook
+  registry (from 1.9.0). `meowy_hooks_status` shows every one of them with what it's doing: on, turned
+  off by you, switched off by Meowy Network, turned off after crashed joins, or not running because it
+  doesn't recognise this version of Garry's Mod (with the reason it gave). Meowy settings, Performance,
+  shows the same on each switch, and the tab counts the ones that should be running and aren't.
+  - Each speed-up checks the game's code before it changes anything and steps aside when it doesn't
+    match, so after a Garry's Mod update the game does that part its own way until the pack is updated.
+  - As a join starts loading, the pack writes down which speed-ups are on (`hook_guard.txt` in
+    `%LOCALAPPDATA%\MeowyClientPack`) and clears that when the join gets in or ends back at the menu.
+    A note left behind counts as a crashed join only if Garry's Mod's crash handler wrote a report
+    after it; a game closed or killed while loading isn't one.
+  - Two crashed joins in a row, with no join that got in between: the speed-ups that were on in the
+    last one are turned off and you're told. A crash can't say which one it was, so all of them go.
+    If a join then crashes without them too, they weren't the cause and come back; after a second
+    round they stay off. A new version of the pack or of Garry's Mod starts this over, and turning a
+    switch on in Meowy settings brings that speed-up back. Your settings are never changed by this.
+  - Not covered: a crash once you're in the game, and the material reload skip a server of ours asks
+    for (only the every-server setting is in the list).
 - With "Start with the game" on, the first join of a session is much faster, on any server. While
   a server loads, Garry's Mod looks for each model and material in every search folder in turn, and
   most of those looks are for files that aren't there (91% of ~110,000 on our server). The pack reads

@@ -22,4 +22,6 @@
 #define IDR_PARTY_LUA 118             // src/lua/party.lua: parties, menu glue
 #define IDR_SETTINGS_LUA 140            // src/lua/settings.lua: meowy.Setting, menu_settings.txt, what servers may not change (the first menu chunk)
 #define IDR_MULTICORE_LOGIC_LUA 141      // src/lua/multicore_logic.lua: multicore rendering's crash guard, its rules (MulticoreLogic)
+#define IDR_HOOKS_LOGIC_LUA 143          // src/lua/hooks_logic.lua: the hook registry and its crash guard, their rules (HooksLogic)
+#define IDR_HOOKS_LUA 144                // src/lua/hooks.lua: the hook registry, menu glue (the second menu chunk)
 #define IDR_MULTICORE_LUA 142            // src/lua/multicore.lua: multicore rendering on by default, menu glue and its switch

@@ -1,3 +1,9 @@
+**Coming in 1.9.0:** the join speed-ups look after themselves.
+
+- **One list of what the pack changes in the game, and what each is doing.** `meowy_hooks_status` in the console lists every join speed-up: on, turned off by you, switched off by Meowy Network, or not running because it doesn't recognise this version of Garry's Mod, with the reason. Until now each had its own command.
+- **A speed-up that isn't running says so in Meowy settings.** After a Garry's Mod update, a speed-up that no longer recognises the game steps aside and the game does that part its own way. Performance now shows that on the switch and on the tab, instead of one line in the console.
+- **Joins that keep crashing turn the speed-ups off.** If Garry's Mod closes with a crash report twice in a row while joining a server, the speed-ups that were on are turned off and you're told. If a join crashes without them too, they weren't the cause and come back. A new version of the pack or of the game starts this over, and each switch in Meowy settings turns its speed-up back on.
+
 **New in 1.8.1:** the pack treats Meowy Network like any other server.
 
 - **Nothing of Meowy Network is fetched until you've joined it.** Its Workshop content and its loading page were prepared at the main menu on every install. Now that starts after your first join there.
