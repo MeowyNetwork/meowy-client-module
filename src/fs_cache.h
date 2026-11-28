@@ -77,6 +77,24 @@ namespace fs_cache
 
 	std::string Describe();
 
+	// The frame recorder's watch (frames.lua): while it's on, every file the
+	// game opens on the calling thread (the game's main thread) is counted,
+	// with its name and how long the open took, so a hitch can be put next to
+	// the files opened during it. Only that thread's opens: the watch is read
+	// from the same thread, so nothing is locked. Off, the hook does nothing
+	// extra. Needs the hook in place (Install); without it the count stays 0.
+	void Watch(bool on);
+	struct Opened
+	{
+		uint64_t seq = 0;      // 1 for the first open since the process started watching
+		double ms = 0;         // how long the game's own open took
+		char name[160] = {};   // the end of its path
+	};
+	// How many opens the watch has seen; the calling thread must be the watched one.
+	uint64_t WatchCount();
+	// The opens after `afterSeq`, oldest first, the newest `max` at most (32 are kept).
+	size_t WatchRecent(uint64_t afterSeq, Opened* out, size_t max);
+
 	namespace detail
 	{
 		// A full path as FS_fopen gets it -> lowercase folder and name, or false

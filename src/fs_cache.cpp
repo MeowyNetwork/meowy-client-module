@@ -188,6 +188,29 @@ namespace
 	std::atomic<long long> g_faults{ 0 };
 	std::atomic<void (*)(TestPoint)> g_testHook{ nullptr };
 
+	// The frame recorder's watch: the watched thread's id (0: off), and its
+	// last opens. Written and read on that thread only.
+	std::atomic<DWORD> g_watchThread{ 0 };
+	constexpr size_t kWatchKept = 32;
+	fs_cache::Opened g_watched[kWatchKept];
+	uint64_t g_watchSeq = 0;
+	double g_qpcMs = 0;   // milliseconds per performance-counter tick
+
+	// One open on the watched thread: its name's tail and its time. No
+	// allocation, nothing that can throw.
+	void NoteWatched(const char* name, LONGLONG ticks) noexcept
+	{
+		fs_cache::Opened& o = g_watched[g_watchSeq % kWatchKept];
+		o.seq = ++g_watchSeq;
+		o.ms = static_cast<double>(ticks) * g_qpcMs;
+		size_t len = name ? std::strlen(name) : 0;
+		const char* from = len >= sizeof(o.name) ? name + (len - (sizeof(o.name) - 1)) : (name ? name : "");
+		size_t i = 0;
+		for (; from[i] && i + 1 < sizeof(o.name); ++i)
+			o.name[i] = from[i];
+		o.name[i] = 0;
+	}
+
 	// Something threw inside the game's own file open (out of memory, mostly on
 	// 32-bit): nothing may unwind into filesystem_stdio. The cache answers
 	// nothing more this join, so the game opens every file as it always did, and
@@ -597,7 +620,18 @@ namespace
 			}
 			++g_passed;
 		}
+		// The frame recorder's watch: this thread's opens, timed.
+		const DWORD watched = g_watchThread.load(std::memory_order_relaxed);
+		const bool watch = watched != 0 && watched == GetCurrentThreadId();
+		LARGE_INTEGER t0{}, t1{};
+		if (watch)
+			QueryPerformanceCounter(&t0);
 		void* file = g_fopen(self, name, options, flags, size);
+		if (watch)
+		{
+			QueryPerformanceCounter(&t1);
+			NoteWatched(name, t1.QuadPart - t0.QuadPart);
+		}
 		try
 		{
 			// Again now the file exists: a listing made since the first drop may
@@ -952,6 +986,40 @@ namespace fs_cache
 #else
 		(void)on;
 #endif
+	}
+
+	void Watch(bool on)
+	{
+		if (on && g_qpcMs == 0)
+		{
+			LARGE_INTEGER f;
+			QueryPerformanceFrequency(&f);
+			g_qpcMs = f.QuadPart > 0 ? 1000.0 / static_cast<double>(f.QuadPart) : 0;
+		}
+		g_watchThread.store(on ? GetCurrentThreadId() : 0, std::memory_order_relaxed);
+	}
+
+	uint64_t WatchCount()
+	{
+		return g_watchSeq;
+	}
+
+	size_t WatchRecent(uint64_t afterSeq, Opened* out, size_t max)
+	{
+		const uint64_t newest = g_watchSeq;
+		uint64_t first = afterSeq + 1;
+		if (newest >= kWatchKept && first < newest - kWatchKept + 1)
+			first = newest - kWatchKept + 1;
+		if (max < newest - first + 1 && newest >= first)
+			first = newest - max + 1;
+		size_t n = 0;
+		for (uint64_t seq = first; seq <= newest && n < max; ++seq)
+		{
+			const Opened& o = g_watched[(seq - 1) % kWatchKept];
+			if (o.seq == seq)
+				out[n++] = o;
+		}
+		return n;
 	}
 
 	std::string Describe()

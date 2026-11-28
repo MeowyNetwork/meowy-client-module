@@ -270,6 +270,21 @@ on Meowy Network's servers.
     the states are known (after a join, or two minutes at the menu), at most once a day for the same
     content. The backend keeps a count per day, version, build and reason for 180 days, and its web
     server logs these requests without your IP address. The console says when one was sent.
+- **How smoothly the game runs, measured** (`meowy_frame_recorder`, on by default, from 1.9.0). While
+  you play, with the game in front, the pack times every frame from the main menu's side of the game,
+  so it works on every server and nothing runs in a server's Lua. `meowy_frames_status` shows the
+  session: the average frame rate, the 1% and 0.1% lows (the frame rate of the slowest frames, which
+  is what stutter feels like), the median and 99th-percentile frame, and the hitches.
+  - A hitch is a frame of 50 ms or more, or one of 25 ms or more that took four times as long as the
+    frames around it. The last 20 are listed with the files the game opened on its main thread during
+    that frame and how long each open took, slowest first: a file read in the middle of play is the
+    usual cause. That list needs the fast file checks in place (their hook sees the opens).
+  - Not counted: loading screens, the first five seconds after spawning, the game in the background,
+    and a gap of more than two seconds.
+  - When you leave a server after at least 30 seconds of play, the session's totals go to the console
+    and to `frames.txt` in `%LOCALAPPDATA%\MeowyClientPack` (the last 10, with the server's address,
+    the pack's version and whether multicore rendering was on), so two sessions can be compared.
+    Nothing of this is sent anywhere.
 - With "Start with the game" on, the first join of a session is much faster, on any server. While
   a server loads, Garry's Mod looks for each model and material in every search folder in turn, and
   most of those looks are for files that aren't there (91% of ~110,000 on our server). The pack reads

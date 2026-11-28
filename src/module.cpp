@@ -670,6 +670,41 @@ namespace
 		return 1;
 	}
 
+	// Menu only, for the frame recorder (frames.lua; fs_cache.h's watch):
+	// meowy.FileOpenWatch(on), meowy.FileOpenCount() -> opens seen, and
+	// meowy.FileOpenRecent(after) -> { { name, ms }, ... } the opens since.
+	int FileOpenWatch(lua_State* L)
+	{
+		fs_cache::Watch(L->luabase->IsType(1, Type::Bool) && L->luabase->GetBool(1));
+		return 0;
+	}
+
+	int FileOpenCount(lua_State* L)
+	{
+		L->luabase->PushNumber(static_cast<double>(fs_cache::WatchCount()));
+		return 1;
+	}
+
+	int FileOpenRecent(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		const double after = LUA->IsType(1, Type::Number) ? LUA->GetNumber(1) : 0;
+		fs_cache::Opened opens[32];
+		const size_t n = fs_cache::WatchRecent(after > 0 ? static_cast<uint64_t>(after) : 0, opens, 32);
+		LUA->CreateTable();
+		for (size_t i = 0; i < n; ++i)
+		{
+			LUA->PushNumber(static_cast<double>(i + 1));
+			LUA->CreateTable();
+			LUA->PushString(opens[i].name);
+			LUA->SetField(-2, "name");
+			LUA->PushNumber(opens[i].ms);
+			LUA->SetField(-2, "ms");
+			LUA->SetTable(-3);
+		}
+		return 1;
+	}
+
 	int Hardware(lua_State* L)
 	{
 		ILuaBase* LUA = L->luabase;
@@ -1770,6 +1805,7 @@ namespace
 			{ "repairs", L"repairs.txt" },
 			{ "multicore_guard", L"multicore_guard.txt" },
 			{ "hook_guard", L"hook_guard.txt" },
+			{ "frames", L"frames.txt" },
 		};
 		for (const auto& f : kFiles)
 			if (kind && std::strcmp(kind, f.kind) == 0)
@@ -4387,6 +4423,9 @@ int MenuOpenBody(ILuaBase* LUA)
 	SetFunction(LUA, "FastFileChecks", Guarded<FastFileChecks>);
 	SetFunction(LUA, "FastFileChecksActive", Guarded<FastFileChecksActive>);
 	SetFunction(LUA, "FastFileChecksState", Guarded<FastFileChecksState>);
+	SetFunction(LUA, "FileOpenWatch", Guarded<FileOpenWatch>);
+	SetFunction(LUA, "FileOpenCount", Guarded<FileOpenCount>);
+	SetFunction(LUA, "FileOpenRecent", Guarded<FileOpenRecent>);
 	SetFunction(LUA, "SkipMaterialReloadAnyServer", Guarded<SkipMaterialReloadAnyServer>);
 	SetFunction(LUA, "RestoreMaterialReload", Guarded<RestoreMaterialReload>);
 	SetFunction(LUA, "MaterialReloadState", Guarded<MaterialReloadState>);
@@ -4408,8 +4447,14 @@ int MenuOpenBody(ILuaBase* LUA)
 	const std::string hooksGlue = ResourceText(IDR_HOOKS_LUA);
 	const std::string hooksLua = hooksLogic.empty() || hooksGlue.empty() ? std::string()
 		: "local HooksLogic = (function()\n" + hooksLogic + "\nend)()\n" + hooksGlue;
+	// The frame recorder (frames_logic.lua as `FramesLogic`, then frames.lua).
+	const std::string framesLogic = ResourceText(IDR_FRAMES_LOGIC_LUA);
+	const std::string framesGlue = ResourceText(IDR_FRAMES_LUA);
+	const std::string framesLua = framesLogic.empty() || framesGlue.empty() ? std::string()
+		: "local FramesLogic = (function()\n" + framesLogic + "\nend)()\n" + framesGlue;
 	for (const auto& chunk : { std::make_pair(settingsLua.c_str(), "meowy_client_pack/settings"),
 		std::make_pair(hooksLua.c_str(), "meowy_client_pack/hooks"),
+		std::make_pair(framesLua.c_str(), "meowy_client_pack/frames"),
 		std::make_pair(kMenuLua, "meowy_client_pack/menu"),
 		std::make_pair(kServerListLua, "meowy_client_pack/serverlist"),
 		std::make_pair(resilienceLua.c_str(), "meowy_client_pack/resilience"),
