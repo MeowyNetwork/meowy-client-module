@@ -7,6 +7,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <objbase.h>
+#include <shobjidl.h>   // ITaskbarList3: the join's progress on the game's taskbar button
 
 #include "loading_webview.h"
 
@@ -815,6 +816,29 @@ namespace
 		}
 	}
 
+	// How far the join is, in thousandths, for the game's taskbar button: the
+	// stages done plus the live one's share (never quite full until it's over),
+	// from the same expected times as the screen's own estimate. -1 when this PC
+	// has no times for the server yet: then the button just shows activity.
+	int JoinProgress(const Snap& s, ULONGLONG now)
+	{
+		if (!s.known)
+			return -1;
+		double total = 0, done = 0;
+		for (int i = 0; i < STAGES; ++i)
+		{
+			total += s.expected[i];
+			if (i < s.stage)
+				done += s.expected[i];
+		}
+		if (total <= 0)
+			return -1;
+		const double elapsed = s.starts[s.stage] ? (now - s.starts[s.stage]) / 1000.0 : 0;
+		const double frac = s.expected[s.stage] > 0 ? elapsed / s.expected[s.stage] : 1;
+		done += s.expected[s.stage] * 0.95 * (1 - std::exp(-2.2 * frac));
+		return static_cast<int>(Clampd(0, done / total, 0.99) * 1000);
+	}
+
 	// ─── The strip: a pill over a server's own loading page ──────────────────────
 	// Where it sits in the game's client area (w x h): centred along the top
 	// edge, where a server's page rarely has anything a player needs and well
@@ -1365,8 +1389,29 @@ namespace
 		// while it was still up. Keyboard focus goes back to the game, the page
 		// is hidden (and marked to be reloaded if this join showed it), and the
 		// native buffers are freed. The window itself is left to the caller.
+		// The join's progress on the game's own taskbar button, so it can be
+		// followed with the game minimised or behind another window. Windows'
+		// taskbar object, made once on this thread (it has COM). -2: nothing set.
+		ITaskbarList3* taskbar = nullptr;
+		if (SUCCEEDED(com) && SUCCEEDED(CoCreateInstance(CLSID_TaskbarList, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&taskbar))))
+		{
+			if (FAILED(taskbar->HrInit()))
+			{
+				taskbar->Release();
+				taskbar = nullptr;
+			}
+		}
+		int taskbarShown = -2;
+		ULONGLONG taskbarAt = 0;
+		auto TaskbarClear = [&]() {
+			if (taskbar && v.game && taskbarShown != -2)
+				taskbar->SetProgressState(v.game, TBPF_NOPROGRESS);
+			taskbarShown = -2;
+		};
+
 		auto EndPrevious = [&]() {
 			joinOpen = false;
+			TaskbarClear();
 			// Keyboard focus goes back to the game if this screen had it.
 			if (g_focusMode)
 			{
@@ -1709,6 +1754,25 @@ namespace
 				}
 				if (v.game)
 				{
+					// The taskbar button, twice a second, also while the game is
+					// minimised (that is when it's the only thing to look at).
+					if (taskbar && now - taskbarAt >= 500)
+					{
+						taskbarAt = now;
+						const int progress = JoinProgress(TakeSnap(), now);
+						if (progress != taskbarShown)
+						{
+							if (progress < 0)
+								taskbar->SetProgressState(v.game, TBPF_INDETERMINATE);
+							else
+							{
+								if (taskbarShown < 0)
+									taskbar->SetProgressState(v.game, TBPF_NORMAL);
+								taskbar->SetProgressValue(v.game, static_cast<ULONGLONG>(progress), 1000);
+							}
+							taskbarShown = progress;
+						}
+					}
 					RECT rc;
 					GetClientRect(v.game, &rc);
 					POINT tl = { 0, 0 };
