@@ -49,11 +49,13 @@ param(
 	[ValidateRange(30, 900)][int]$JoinTimeout = 300,
 	[switch]$NoWarmUp,
 	[switch]$NoTurn,                                          # stand still instead of turning the view
+	[switch]$ListOnly,                                        # print what each configuration starts the game with, and stop
 	[switch]$KeepSessions,                                    # leave the benchmark's sessions in the recorder's frames.txt
 	[string]$OutDir = (Join-Path (Get-Location) "bench-out"),
 	[string]$ExtraArgs = "-windowed -w 1600 -h 900"
 )
 $ErrorActionPreference = "Stop"
+Set-StrictMode -Version 3.0   # a misspelled or missing variable or property is an error, not an empty value
 
 if ($Server -notmatch '^\d{1,3}(\.\d{1,3}){3}:\d{1,5}$') { throw "Server must look like 1.2.3.4:27015." }
 $exe = if ($Bits -eq 64) { Join-Path $Game "bin\win64\gmod.exe" } else { Join-Path $Game "bin\gmod.exe" }
@@ -63,18 +65,42 @@ $cfg = Join-Path $Game "garrysmod\cfg"
 $data = Join-Path $env:LOCALAPPDATA "MeowyClientPack"
 $settingsFile = Join-Path $data "menu_settings.txt"
 $framesFile = Join-Path $data "frames.txt"
-if (Get-Process gmod -ErrorAction SilentlyContinue) { throw "Garry's Mod is running: close it first." }
 
 # The settings each configuration sets (name = value); anything not named stays the player's own.
 $SPEEDUPS = "meowy_fast_file_checks", "meowy_fast_lua_lookup", "meowy_fast_lua_find", "meowy_fast_fonts", "meowy_pak_cache",
 	"meowy_prewarm", "meowy_prewarm_workshop", "meowy_join_boost"
-$CONFIG = @{
+$Setups = @{
 	"stock" = @{ Args = "-meowy_safe"; Set = @{} }
 	"pack" = @{ Args = ""; Set = @{} }   # nothing set: exactly what the player has
 	"no-speedups" = @{ Args = ""; Set = @{ meowy_frame_recorder = "1" } }
 	"no-multicore" = @{ Args = ""; Set = @{ meowy_frame_recorder = "1"; meowy_multicore = "0" } }
 }
-foreach ($n in $SPEEDUPS) { $CONFIG["no-speedups"].Set[$n] = "0" }
+foreach ($n in $SPEEDUPS) { $Setups["no-speedups"].Set[$n] = "0" }
+
+if ($ListOnly) {
+	foreach ($name in $Configs) {
+		$c = $Setups[$name]
+		"{0,-13} launch option: {1,-12} settings: {2}" -f $name, $(if ($c.Args) { $c.Args } else { "(none)" }),
+			$(if ($c.Set.Count) { ($c.Set.GetEnumerator() | Sort-Object Name | ForEach-Object { "$($_.Name)=$($_.Value)" }) -join " " } else { "(your own)" })
+	}
+	return
+}
+if (Get-Process gmod -ErrorAction SilentlyContinue) { throw "Garry's Mod is running: close it first." }
+
+# What the console must (not) say for a configuration to have been what it claims.
+# Checked after every run: a configuration that didn't apply is a failed run,
+# never a number in the table.
+function Test-Applied([string]$name, [string[]]$lines) {
+	$started = [bool]($lines -match '\[Meowy Client Pack\] \S+ started with the game')
+	if ($name -eq "stock") {
+		if ($started) { return "the pack was loaded" }
+		return $null
+	}
+	if (-not $started) { return "the pack wasn't loaded" }
+	if ($name -eq "no-multicore" -and ($lines -match 'multicore: gmod_mcore_test 1')) { return "multicore rendering was turned on" }
+	if ($name -eq "no-speedups" -and ($lines -match 'prewarm: noted \d+ files')) { return "the join speed-ups were on" }
+	return $null
+}
 
 Add-Type -Namespace Bench -Name Win -MemberDefinition @'
 [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
@@ -129,14 +155,16 @@ function Write-Settings([string]$original, [hashtable]$set) {
 }
 function Get-Median([double[]]$v) {
 	if (-not $v -or $v.Count -eq 0) { return $null }
-	$s = $v | Sort-Object
+	$s = @($v | Sort-Object)
 	$m = [int][math]::Floor($s.Count / 2)
 	if ($s.Count % 2) { return $s[$m] }
 	return ($s[$m - 1] + $s[$m]) / 2
 }
 
-function Invoke-Run([string]$config, [bool]$measure) {
-	$c = $CONFIG[$config]
+function Invoke-Run([string]$name, [bool]$measure) {
+	$config = $name
+	$c = $Setups[$name]
+	if (-not $c) { throw "no configuration named $name" }
 	if ($config -ne "stock") { Write-Settings $script:settingsOriginal $c.Set }
 	$offset = (Get-Item $log).Length
 	$launch = @('-steam', '-game', 'garrysmod', '-condebug', '+con_timestamp', '1') + ($ExtraArgs -split ' ' | Where-Object { $_ }) +
@@ -146,7 +174,7 @@ function Invoke-Run([string]$config, [bool]$measure) {
 	$result = [ordered]@{ config = $config; join = $null; fps = $null; low1 = $null; low01 = $null; median = $null; p99 = $null; hitches = $null; worst = $null; note = "" }
 	try {
 		# The join: from "Connecting to" until the map is drawn.
-		$connectAt = $null; $spawnAt = $null
+		$connectAt = $null; $spawnAt = $null; $front = 0; $asked = 0
 		$deadline = (Get-Date).AddSeconds($JoinTimeout)
 		while ((Get-Date) -lt $deadline -and -not $spawnAt) {
 			Start-Sleep -Milliseconds 500
@@ -165,7 +193,6 @@ function Invoke-Run([string]$config, [bool]$measure) {
 
 		if ($measure -and $config -ne "stock") {
 			Start-Sleep 8   # the recorder's own five seconds, and the server's first messages
-			$front = 0; $asked = 0
 			if (Set-Front) { $front++ }
 			$asked++
 			if (-not $NoTurn) { Send-Game @('+exec', 'meowy_bench_turn_on') ; [void](Set-Front) }
@@ -197,6 +224,12 @@ function Invoke-Run([string]$config, [bool]$measure) {
 	}
 	catch { $result.note = ($result.note + " FAILED: " + $_.Exception.Message).Trim() }
 	finally { Stop-Game }
+	$wrong = Test-Applied $config (Read-Since $offset)
+	if ($wrong) {
+		# Its numbers would be another configuration's: not kept.
+		foreach ($field in "join", "fps", "low1", "low01", "median", "p99", "hitches", "worst") { $result[$field] = $null }
+		$result.note = ($result.note + " FAILED: not the $config configuration ($wrong)").Trim()
+	}
 	return [pscustomobject]$result
 }
 
