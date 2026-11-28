@@ -318,6 +318,21 @@ static server_index::Result WaitIndex()
 	return server_index::Result();
 }
 
+// Starts a fetch once the one before has fully ended. A fetch's result can be
+// taken a moment before its thread marks itself done, and a Fetch in that
+// moment is refused (one at a time): the test then waited 15 s for a result
+// that wasn't coming, and failed, on a slow machine.
+static bool FetchIndex()
+{
+	for (int i = 0; i < 200; ++i)
+	{
+		if (server_index::Fetch())
+			return true;
+		Sleep(10);
+	}
+	return false;
+}
+
 static void SplitChecks()
 {
 	using server_rep::detail::SplitJoin;
@@ -467,11 +482,11 @@ static void HttpChecks()
 		std::lock_guard<std::mutex> lock(stub::g_lock);
 		stub::g_indexMode = "whole";
 	}
-	server_index::Fetch();
+	Check("index: the next fetch starts", FetchIndex());
 	ir = WaitIndex();
 	Check("index: no ETag kept from the cut-off body", stub::LastRequest().find("If-None-Match") == std::string::npos);
 	Check("index: a whole body is ok", ir.status == "ok" && ir.body == "{\"rows\":[]}");
-	server_index::Fetch();
+	Check("index: the next fetch starts", FetchIndex());
 	ir = WaitIndex();
 	Check("index: its ETag is sent next time, and 304 is same", stub::LastRequest().find("If-None-Match: \"v1\"") != std::string::npos
 		&& ir.status == "same");
