@@ -5,42 +5,52 @@ on:
     branches: [main]
     tags: ["v*"]
   pull_request:
+    # A pull request that only changes prose builds nothing. Pushes to main and
+    # tags always run.
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "LICENSE"
 
 # Read-only for every build and test job, pull requests included. Only the
 # release job (tags) may write. Actions are pinned by commit, not by tag.
 permissions:
   contents: read
 
+# A new push to a pull request stops the run of the push before it. Runs on
+# main and on tags are never cancelled.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# How the jobs fit together (wall time is the slowest of the first four, then package):
+#   lua          the menu Lua's and the pages' tests         (Linux, seconds)
+#   launcher     cargo test, MeowyLauncher.exe               (Windows)
+#   build win64  the 64-bit DLLs and every test, run         (Windows, at the same time)
+#   build win32  the 32-bit DLLs and every test, run         (Windows, at the same time)
+#   package      installer, zip, checksums; needs launcher and both builds
+#   release      tags only; needs package and lua
 jobs:
   lua:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Install Lua 5.1 (Garry's Mod runs LuaJIT, 5.1 syntax)
         run: sudo apt-get update && sudo apt-get install -y lua5.1
 
-      - name: Check and test the menu Lua
+      # Every tests/*_test.lua and tests/*_test.js: a new test file is run
+      # without being listed here.
+      - name: Check and test the menu Lua and the pages
         run: |
           luac5.1 -p src/lua/*.lua tests/*.lua
-          lua5.1 tests/resilience_logic_test.lua
-          lua5.1 tests/resilience_menu_test.lua
-          lua5.1 tests/doctor_logic_test.lua
-          lua5.1 tests/home_logic_test.lua
-          lua5.1 tests/console_logic_test.lua
-          lua5.1 tests/settings_guard_logic_test.lua
-          lua5.1 tests/settings_test.lua
-          lua5.1 tests/content_logic_test.lua
-          lua5.1 tests/browse_logic_test.lua
-          lua5.1 tests/party_logic_test.lua
-          lua5.1 tests/multicore_logic_test.lua
-          lua5.1 tests/hooks_logic_test.lua
-          node tests/home_page_test.js
-          node tests/launcher_card_test.js
-          node tests/brand_test.js
+          for t in tests/*_test.lua; do echo "== $t"; lua5.1 "$t"; done
+          for t in tests/*_test.js; do echo "== $t"; node "$t"; done
 
   launcher:
     runs-on: windows-latest
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: launcher
@@ -70,14 +80,51 @@ jobs:
           name: meowy-launcher
           path: launcher/target/release/MeowyLauncher.exe
 
-  windows:
+  # One build tree per architecture gives the DLLs and every test program
+  # (CMakeLists.txt's meowy_smoke list), built in one parallel pass; then
+  # tests/run_smokes.ps1 runs them all and fails if any failed.
+  # Not run: ipc_smoke (needs the Discord app), audio_watch_smoke (sound
+  # devices), doctor_smoke (a GPU) and notify_manual. They are built, so they
+  # can't rot; run them on a PC before a release.
+  build:
+    name: build (${{ matrix.suffix }})
     runs-on: windows-latest
-    needs: launcher
-    # Every test in a step counts: a failing exe stops the step (by default only
-    # the step's last command's exit code did, so x64 failing was hidden by x86 passing).
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            suffix: win64
+          - arch: Win32
+            suffix: win32
     defaults:
       run:
         shell: pwsh -NoProfile -Command "$PSNativeCommandUseErrorActionPreference = $true; $ErrorActionPreference = 'Stop'; . '{0}'"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Configure
+        run: cmake -S . -B build -A ${{ matrix.arch }} -DMEOWY_BUILD_TESTS=ON
+
+      - name: Build the DLLs and the tests
+        run: cmake --build build --config Release --parallel
+
+      - name: Run the tests
+        run: pwsh -NoProfile -File tests/run_smokes.ps1 -Build build
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dll-${{ matrix.suffix }}
+          path: |
+            build/Release/gmcl_meowy_${{ matrix.suffix }}.dll
+            build/Release/gmsv_meowy_boot_${{ matrix.suffix }}.dll
+          if-no-files-found: error
+
+  package:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    needs: [launcher, build]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
@@ -86,187 +133,11 @@ jobs:
           name: meowy-launcher
           path: launcher-bin
 
-      - name: Build gmcl_meowy_win32.dll
-        run: |
-          cmake -S . -B build32 -A Win32
-          cmake --build build32 --config Release
-
-      - name: Build gmcl_meowy_win64.dll
-        run: |
-          cmake -S . -B build64 -A x64
-          cmake --build build64 --config Release
-
-      - name: Start-up line rules (startup_hook_smoke)
-        run: |
-          cmake -S . -B buildtest -A x64 -DMEOWY_BUILD_TESTS=ON
-          cmake --build buildtest --config Release --target startup_hook_smoke
-          ./buildtest/Release/startup_hook_smoke.exe
-
-      - name: Signed notification catalogue (notify_catalogue_smoke, both bitnesses)
-        run: |
-          cmake --build buildtest --config Release --target notify_catalogue_smoke
-          ./buildtest/Release/notify_catalogue_smoke.exe
-          cmake -S . -B buildtest32 -A Win32 -DMEOWY_BUILD_TESTS=ON
-          cmake --build buildtest32 --config Release --target notify_catalogue_smoke
-          ./buildtest32/Release/notify_catalogue_smoke.exe
-
-      - name: Discord status switch (discord_switch_smoke, both bitnesses)
-        run: |
-          cmake --build buildtest --config Release --target discord_switch_smoke
-          ./buildtest/Release/discord_switch_smoke.exe
-          cmake --build buildtest32 --config Release --target discord_switch_smoke
-          ./buildtest32/Release/discord_switch_smoke.exe
-
-      - name: Multicore rendering (multicore_smoke, both bitnesses)
-        run: |
-          cmake --build buildtest --config Release --target multicore_smoke
-          ./buildtest/Release/multicore_smoke.exe "$env:RUNNER_TEMP"
-          cmake --build buildtest32 --config Release --target multicore_smoke
-          ./buildtest32/Release/multicore_smoke.exe "$env:RUNNER_TEMP"
-
-      - name: Signed policy (policy_smoke, both bitnesses)
-        run: |
-          cmake --build buildtest --config Release --target policy_smoke
-          ./buildtest/Release/policy_smoke.exe "$env:RUNNER_TEMP"
-          cmake --build buildtest32 --config Release --target policy_smoke
-          ./buildtest32/Release/policy_smoke.exe "$env:RUNNER_TEMP"
-      - name: Signed updater (updater_smoke, both bitnesses)
-        run: |
-          cmake --build buildtest --config Release --target updater_smoke
-          ./buildtest/Release/updater_smoke.exe "$env:RUNNER_TEMP"
-          cmake --build buildtest32 --config Release --target updater_smoke
-          ./buildtest32/Release/updater_smoke.exe "$env:RUNNER_TEMP"
-      - name: Fast Lua lookup rules (lua_lookup_smoke, both bitnesses)
-        run: |
-          cmake --build buildtest --config Release --target lua_lookup_smoke
-          ./buildtest/Release/lua_lookup_smoke.exe
-          cmake -S . -B buildtest32 -A Win32 -DMEOWY_BUILD_TESTS=ON
-          cmake --build buildtest32 --config Release --target lua_lookup_smoke
-          ./buildtest32/Release/lua_lookup_smoke.exe
-
-      - name: Join pre-warm (prewarm_smoke, both bitnesses)
-        run: |
-          cmake --build buildtest --config Release --target prewarm_smoke
-          ./buildtest/Release/prewarm_smoke.exe "$env:RUNNER_TEMP"
-          cmake --build buildtest32 --config Release --target prewarm_smoke
-          ./buildtest32/Release/prewarm_smoke.exe "$env:RUNNER_TEMP"
-      - name: Mouse confine rules (mouse_confine_smoke, both bitnesses)
-        run: |
-          cmake --build buildtest --config Release --target mouse_confine_smoke
-          ./buildtest/Release/mouse_confine_smoke.exe
-          cmake --build buildtest32 --config Release --target mouse_confine_smoke
-          ./buildtest32/Release/mouse_confine_smoke.exe
-      - name: LZMA pak cache (pak_cache_smoke, both bitnesses)
-        run: |
-          cmake --build buildtest --config Release --target pak_cache_smoke
-          ./buildtest/Release/pak_cache_smoke.exe
-          cmake --build buildtest32 --config Release --target pak_cache_smoke
-          ./buildtest32/Release/pak_cache_smoke.exe
-      - name: Settings backups (config_backup_smoke, both bitnesses)
-        run: |
-          cmake --build buildtest --config Release --target config_backup_smoke
-          ./buildtest/Release/config_backup_smoke.exe "$env:RUNNER_TEMP"
-          cmake --build buildtest32 --config Release --target config_backup_smoke
-          ./buildtest32/Release/config_backup_smoke.exe "$env:RUNNER_TEMP"
-      - name: Installed-apps version (apps_entry_smoke, both bitnesses)
-        run: |
-          cmake --build buildtest --config Release --target apps_entry_smoke
-          ./buildtest/Release/apps_entry_smoke.exe
-          cmake --build buildtest32 --config Release --target apps_entry_smoke
-          ./buildtest32/Release/apps_entry_smoke.exe
-      - name: Parties (party_smoke, both bitnesses)
-        run: |
-          cmake --build buildtest --config Release --target party_smoke
-          ./buildtest/Release/party_smoke.exe
-          cmake --build buildtest32 --config Release --target party_smoke
-          ./buildtest32/Release/party_smoke.exe
-      - name: Fast file.Find rules (lua_find_smoke, both bitnesses)
-        run: |
-          cmake --build buildtest --config Release --target lua_find_smoke
-          ./buildtest/Release/lua_find_smoke.exe
-          cmake --build buildtest32 --config Release --target lua_find_smoke
-          ./buildtest32/Release/lua_find_smoke.exe
-      - name: Console capture (console_capture_smoke, both bitnesses)
-        run: |
-          cmake --build buildtest --config Release --target console_capture_smoke
-          ./buildtest/Release/console_capture_smoke.exe
-          cmake --build buildtest32 --config Release --target console_capture_smoke
-          ./buildtest32/Release/console_capture_smoke.exe
-      - name: Server lists from Steam (server_query_smoke, both bitnesses)
-        run: |
-          cmake --build buildtest --config Release --target server_query_smoke
-          ./buildtest/Release/server_query_smoke.exe
-          cmake --build buildtest32 --config Release --target server_query_smoke
-          ./buildtest32/Release/server_query_smoke.exe
-
-      - name: Content platform adverts (content_advert_smoke, both bitnesses)
-        run: |
-          cmake --build buildtest --config Release --target content_advert_smoke
-          ./buildtest/Release/content_advert_smoke.exe
-          cmake --build buildtest32 --config Release --target content_advert_smoke
-          ./buildtest32/Release/content_advert_smoke.exe
-
-      - name: The server-list report's Steam ticket (steam_ticket_smoke, both bitnesses)
-        run: |
-          cmake --build buildtest --config Release --target steam_ticket_smoke
-          ./buildtest/Release/steam_ticket_smoke.exe
-          cmake --build buildtest32 --config Release --target steam_ticket_smoke
-          ./buildtest32/Release/steam_ticket_smoke.exe
-
-      - name: Launcher pipe, the pack's end (launcher_pipe_smoke, both bitnesses)
-        run: |
-          cmake --build buildtest --config Release --target launcher_pipe_smoke
-          ./buildtest/Release/launcher_pipe_smoke.exe
-          cmake --build buildtest32 --config Release --target launcher_pipe_smoke
-          ./buildtest32/Release/launcher_pipe_smoke.exe
-
-      - name: Font pass gdi32 loads (font_loads_smoke, both bitnesses)
-        run: |
-          cmake --build buildtest --config Release --target font_loads_smoke
-          ./buildtest/Release/font_loads_smoke.exe "$env:RUNNER_TEMP"
-          cmake --build buildtest32 --config Release --target font_loads_smoke
-          ./buildtest32/Release/font_loads_smoke.exe "$env:RUNNER_TEMP"
-
-      - name: Missing-file cache rules (fs_cache_smoke, both bitnesses)
-        run: |
-          cmake --build buildtest --config Release --target fs_cache_smoke
-          ./buildtest/Release/fs_cache_smoke.exe "$env:RUNNER_TEMP"
-          cmake --build buildtest32 --config Release --target fs_cache_smoke
-          ./buildtest32/Release/fs_cache_smoke.exe "$env:RUNNER_TEMP"
-
-      - name: Rejoin-after-crash session file and start-up line (session_smoke, startup_hook_smoke, both bitnesses)
-        run: |
-          # A folder each: the test leaves its files behind for the other bitness otherwise.
-          $s64 = New-Item -ItemType Directory -Force (Join-Path $env:RUNNER_TEMP "session64")
-          $s32 = New-Item -ItemType Directory -Force (Join-Path $env:RUNNER_TEMP "session32")
-          cmake --build buildtest --config Release --target session_smoke
-          ./buildtest/Release/session_smoke.exe $s64.FullName
-          cmake --build buildtest32 --config Release --target session_smoke startup_hook_smoke
-          ./buildtest32/Release/session_smoke.exe $s32.FullName
-          ./buildtest32/Release/startup_hook_smoke.exe
-
-      - name: Crash-report masking, data sandbox, notifications, timeline (info, sandbox, notify, timeline smokes, both bitnesses)
-        run: |
-          foreach ($b in "buildtest", "buildtest32") {
-            cmake --build $b --config Release --target info_smoke sandbox_smoke notify_smoke timeline_smoke
-            & "./$b/Release/info_smoke.exe"
-            $scratch = Join-Path $env:RUNNER_TEMP "$b-offline"
-            foreach ($t in "sandbox", "notify") {
-              New-Item -ItemType Directory -Force (Join-Path $scratch $t) | Out-Null
-              & "./$b/Release/${t}_smoke.exe" (Join-Path $scratch $t)
-            }
-            & "./$b/Release/timeline_smoke.exe"
-          }
-
-      - name: Connection probe, offline (probe_smoke, both bitnesses)
-        run: |
-          cmake --build buildtest --config Release --target probe_smoke
-          ./buildtest/Release/probe_smoke.exe
-          cmake --build buildtest32 --config Release --target probe_smoke
-          ./buildtest32/Release/probe_smoke.exe
-
-      # Not run here: ipc_smoke (needs the Discord app), audio_watch_smoke (needs
-      # sound devices) and doctor_smoke (needs a GPU). Run them on a PC before a release.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: dll-*
+          path: bin
+          merge-multiple: true
 
       - name: Installer rules (uninstall_smoke)
         shell: pwsh
@@ -280,13 +151,13 @@ jobs:
 
       - name: Build installer
         shell: pwsh
-        run: ./installer/build.ps1 -Win32 build32/Release/gmcl_meowy_win32.dll -Win64 build64/Release/gmcl_meowy_win64.dll -Boot32 build32/Release/gmsv_meowy_boot_win32.dll -Boot64 build64/Release/gmsv_meowy_boot_win64.dll -Launcher launcher-bin/MeowyLauncher.exe -Out MeowyClientPack.exe
+        run: ./installer/build.ps1 -Win32 bin/gmcl_meowy_win32.dll -Win64 bin/gmcl_meowy_win64.dll -Boot32 bin/gmsv_meowy_boot_win32.dll -Boot64 bin/gmsv_meowy_boot_win64.dll -Launcher launcher-bin/MeowyLauncher.exe -Out MeowyClientPack.exe
 
       - name: Package
         shell: pwsh
         run: |
           New-Item -ItemType Directory dist | Out-Null
-          Copy-Item build32/Release/gmcl_meowy_win32.dll, build64/Release/gmcl_meowy_win64.dll, build32/Release/gmsv_meowy_boot_win32.dll, build64/Release/gmsv_meowy_boot_win64.dll, launcher-bin/MeowyLauncher.exe, MeowyClientPack.exe dist/
+          Copy-Item bin/gmcl_meowy_win32.dll, bin/gmcl_meowy_win64.dll, bin/gmsv_meowy_boot_win32.dll, bin/gmsv_meowy_boot_win64.dll, launcher-bin/MeowyLauncher.exe, MeowyClientPack.exe dist/
           Compress-Archive -Path dist/gmcl_meowy_win32.dll, dist/gmcl_meowy_win64.dll, dist/gmsv_meowy_boot_win32.dll, dist/gmsv_meowy_boot_win64.dll -DestinationPath dist/meowy-client-module-manual.zip
           Get-ChildItem dist -File | ForEach-Object { "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name } | Set-Content dist/SHA256SUMS.txt
           Get-Content dist/SHA256SUMS.txt
@@ -298,8 +169,9 @@ jobs:
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: windows
+    needs: [package, lua]
     runs-on: windows-latest
+    timeout-minutes: 15
     permissions:
       contents: write       # create the release
       id-token: write       # build provenance attestations
