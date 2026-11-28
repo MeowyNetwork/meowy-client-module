@@ -117,6 +117,21 @@ cargo build -p meowy-launcher --release
 `node tests/launcher_card_test.js` checks its crash card's text; `launcher/tools/measure_startup.ps1` times
 click to pack start-up with and without it.
 
+To build everything and run every test the way CI does, per architecture:
+
+```powershell
+cmake -S . -B buildtest -A x64 -DMEOWY_BUILD_TESTS=ON
+cmake --build buildtest --config Release --parallel
+pwsh tests/run_smokes.ps1 -Build buildtest      # -Only policy_smoke, fs_cache_smoke for some
+```
+
+That one tree holds both DLLs and every test program. A new test is one `meowy_smoke(...)` line in
+`CMakeLists.txt` (with `SCRATCH` if it takes an empty folder, `MANUAL` if it can't run unattended); CI
+and `run_smokes.ps1` pick it up from there, and nothing needs adding to the workflow. The pack's sources
+the tests use are compiled once, into a library the tests link; the DLLs are built from their own
+sources, as before. The same goes for `tests/*_test.lua` and `tests/*_test.js`: CI runs every file
+with that name.
+
 `-DMEOWY_BUILD_TESTS=ON` adds `ipc_smoke`, which checks the Discord connection without the game:
 `ipc_smoke <discord application id> [seconds]`. It also adds `notify_smoke <scratch folder>` (the
 notification rules), `notify_manual` (a real notification on this PC; see `tests/NOTIFY_MANUAL.md`),
