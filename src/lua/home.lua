@@ -823,11 +823,12 @@ local function tick()
 	local visible = (homeOn() or menuPage.ours) and menuVisible() and not IsInGame() and not IsInLoading()
 		and IsValid(pnlMainMenu) and pnlMainMenu.Call ~= nil
 	if visible then
+		-- Taken off the home screen: no row for it, and it isn't asked. Looked at
+		-- every time, so the switch in Meowy settings shows at once.
+		local featured = featuredOn() and OURS or nil
+		if featured ~= st.oursAddress then st.oursAddress, st.ours, nextRefresh = featured, nil, 0 end
 		if not shown or now >= nextRefresh then
 			nextRefresh = now + REFRESH
-			-- Taken off the home screen: no row for it, and it isn't asked.
-			local featured = featuredOn() and OURS or nil
-			if featured ~= st.oursAddress then st.oursAddress, st.ours = featured, nil end
 			askOurs()
 			ask("friends", now)
 			ask("favorite", now)
