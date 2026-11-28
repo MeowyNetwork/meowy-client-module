@@ -1274,8 +1274,10 @@ namespace
 		net_http::SetJoining(true);
 #ifdef _WIN32
 		ILuaBase* LUA = L->luabase;
+		// A fourth argument of true: only the strip (the server shows a loading page of its own).
 		loading_screen::BeginOther(DataDir(), LUA->IsType(1, Type::Number) ? LUA->GetNumber(1) : -1,
-			LUA->IsType(2, Type::String) ? LUA->GetString(2) : "", LUA->IsType(3, Type::String) ? LUA->GetString(3) : "", address);
+			LUA->IsType(2, Type::String) ? LUA->GetString(2) : "", LUA->IsType(3, Type::String) ? LUA->GetString(3) : "", address,
+			LUA->IsType(4, Type::Bool) && LUA->GetBool(4));
 #endif
 		TimelineLoading(true);
 		return 0;
@@ -3893,6 +3895,12 @@ local enabled = meowy.Setting("meowy_loadingscreen", "1",
 -- unless they show a loading page of their own: theirs stays.
 local everywhere = meowy.Setting("meowy_loadingscreen_everywhere", "1",
 	"Meowy Client Pack: the pack's loading screen on other servers too: 1 = on servers without a loading page of their own, 2 = on every server, 0 = only on Meowy Network")
+-- A server with a loading page of its own keeps it (unless the setting above
+-- is 2). Its page and the game's own panel freeze for most of the join, which
+-- reads as a crash, so a small strip at the top of the window says what stage
+-- the join is at and that the game is working (loading_screen.h).
+local strip = meowy.Setting("meowy_loading_strip", "1",
+	"Meowy Client Pack: on servers with a loading page of their own, a small live status strip at the top while the join loads (0 = nothing over their page)")
 local active, sure, lastStatus, details = false, false, nil, nil
 
 -- The screen's page is loaded ahead (hidden, so a join shows it at once) and
@@ -4103,9 +4111,14 @@ hook.Add("Think", "MeowyClientPack.Loading", function()
 		if not confirmed and not meowy.LoadingHeadsUp() then
 			-- Another server: once the connection says so and its details are in.
 			local mode = everywhere:GetInt()
-			if mode > 0 and details and (mode == 2 or not details[4]) and meowy.LoadingTargetState() == "other" then
-				active, sure, lastStatus = true, true, GetLoadStatus()
-				meowy.LoadingBeginOther((SysTime() - panelSince) * 1000, details[1], details[2])
+			if details and meowy.LoadingTargetState() == "other" then
+				local full = mode > 0 and (mode == 2 or not details[4])
+				-- Its own page stays: only the strip, if that's on.
+				local onlyStrip = not full and details[4] and strip:GetBool()
+				if full or onlyStrip then
+					active, sure, lastStatus = true, true, GetLoadStatus()
+					meowy.LoadingBeginOther((SysTime() - panelSince) * 1000, details[1], details[2], onlyStrip and true or false)
+				end
 			end
 			return
 		end

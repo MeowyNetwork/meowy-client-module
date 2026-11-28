@@ -270,6 +270,18 @@ on Meowy Network's servers.
     the states are known (after a join, or two minutes at the menu), at most once a day for the same
     content. The backend keeps a count per day, version, build and reason for 180 days, and its web
     server logs these requests without your IP address. The console says when one was sent.
+- **A status strip over a server's own loading page** (`meowy_loading_strip`, on by default, from
+  1.9.1). A server that shows a loading page of its own keeps it: the pack's loading screen only takes
+  over where there is none. But that page, and the game's own panel, freeze for most of the join, and
+  during the Lua start-up Windows calls the game "Not Responding", which looks like a crash. So on those
+  servers a small pill at the top of the window keeps moving: the stage in words, the time so far, the
+  time left once this PC has joined that server before, and during the Lua start-up that the game is
+  working.
+  - It is drawn by the same separate thread as the pack's loading screen, so it moves while the game
+    doesn't. Clicks go through it to the game: the server's page and the game's own Cancel work as
+    before. It sits at the top because the game's Cancel is at the bottom.
+  - Only in a window (borderless or windowed), like the pack's loading screen, and never on a server
+    whose page the pack replaces (the loading screen setting on "Every server").
 - **What a crash was, in plain words** (from 1.9.1). Garry's Mod writes a report when it crashes, and
   it says little to anyone who hasn't read many. The pack reads the last one on this PC (where the game
   stopped, Windows' error code, and what Lua was running) and says what kind of stop it was, what most
