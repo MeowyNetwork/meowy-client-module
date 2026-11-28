@@ -20,6 +20,7 @@ local function log(fmt, ...) print("[Meowy Client Pack] " .. string.format(fmt, 
 
 -- This build of the game: its version, branch and architecture.
 local function gameBuild()
+	if meowy.GameBuild then return meowy.GameBuild() end
 	return tostring(VERSION or "?") .. "/" .. tostring(BRANCH or "?") .. "/" .. tostring(jit and jit.arch or "?")
 end
 
@@ -73,6 +74,8 @@ local DESCRIBE = {
 }
 
 local function policyOff(name)
+	-- settings.lua's own answer: the per-build lines for this game included.
+	if meowy.PolicyOff then return meowy.PolicyOff(name) end
 	local st = meowy.PolicyState and meowy.PolicyState()
 	if not istable(st) then return false end
 	if st.pack_enabled == false then return true end

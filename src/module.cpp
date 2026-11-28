@@ -2818,7 +2818,8 @@ namespace
 		return 1;
 	}
 
-	// meowy.PolicyState() -> { seq, allowed, pack_enabled, off = { setting names }, notice, describe }.
+	// meowy.PolicyState() -> { seq, allowed, pack_enabled, off = { setting names },
+	// off_build = { "<game build> <setting name>" }, notice, describe }.
 	int PolicyState(lua_State* L)
 	{
 		ILuaBase* LUA = L->luabase;
@@ -2839,6 +2840,15 @@ namespace
 			LUA->SetTable(-3);
 		}
 		LUA->SetField(-2, "off");
+		LUA->CreateTable();
+		i = 0;
+		for (const std::string& line : p.offBuild)
+		{
+			LUA->PushNumber(++i);
+			LUA->PushString(line.c_str());
+			LUA->SetTable(-3);
+		}
+		LUA->SetField(-2, "off_build");
 		LUA->PushString(p.notice.c_str());
 		LUA->SetField(-2, "notice");
 		LUA->PushString(policy::Describe().c_str());

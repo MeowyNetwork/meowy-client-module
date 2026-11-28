@@ -256,6 +256,28 @@ check("value: a list with a command in it isn't kept", s.always:GetString(), "9.
 local q2 = table.concat(w.queue, "|")
 check("value: what's put back is the kept value", q2 == "" or q2:find("bind", 1, true) == nil, true)
 
+-- A feature off on one build of the game only (off_build, 1.9.0+): this
+-- build's lines count, whole or as its leading parts; another build's don't.
+do
+	local build, first = "261112/x86-64/x64", "261112"
+	-- A world on that build of the game, with these off_build lines.
+	local function on(lines)
+		w = world({ settings = "meowy_party=1\nmeowy_updates=1", policy = { seq = 1, off = {}, off_build = lines } })
+		w.env.VERSION, w.env.BRANCH, w.env.jit = 261112, "x86-64", { arch = "x64" }
+		s = settings(w)
+		w.frame()
+	end
+	on({ build .. " meowy_party", "000000 meowy_updates", "nonsense" })
+	check("policy: off on this build reads off", s.party:GetBool(), false)
+	check("policy: another build's line doesn't count", w.env.meowy.PolicyOff("meowy_updates"), false)
+	check("policy: this build's does", w.env.meowy.PolicyOff("meowy_party"), true)
+	check("policy: the pack says which build this is", w.env.meowy.GameBuild(), build)
+	on({ first .. " meowy_party" })
+	check("policy: the version alone matches every branch of it", s.party:GetBool(), false)
+	on({ "26111 meowy_party", "261112/x86 meowy_party" })
+	check("policy: part of a version or branch doesn't", s.party:GetBool(), true)
+end
+
 -- The policy kill switch still reads as off, and the player's own value is kept.
 w = world({ settings = "meowy_party=1", policy = { off = { "meowy_party" }, seq = 1 } })
 s = settings(w)

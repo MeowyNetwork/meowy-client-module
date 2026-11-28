@@ -28,6 +28,8 @@ pub struct Policy {
     pub pack_enabled: bool,
     pub min_version: String,
     pub off: Vec<String>,
+    /// "<game build> <setting name>" (off_build, 1.9.0+).
+    pub off_build: Vec<String>,
     pub revoked: Vec<String>,
     pub notice: String,
 }
@@ -51,6 +53,16 @@ fn version_text(s: &str) -> bool {
 
 fn name_text(s: &str) -> bool {
     !s.is_empty() && s.len() <= 48 && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+}
+
+/// A game build in an off_build line (policy.cpp's BuildText).
+fn build_text(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 48
+        && !s.starts_with('/')
+        && !s.ends_with('/')
+        && !s.contains("//")
+        && s.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-' | b'/'))
 }
 
 /// A strict parse, as `policy::Parse`. Err names what's wrong.
@@ -108,6 +120,14 @@ pub fn parse(body: &[u8]) -> Result<Policy, &'static str> {
                     return Err("off");
                 }
                 p.off.push(v.into());
+            }
+            b"off_build" => {
+                let v = text.ok_or("off_build")?;
+                let ok = v.split_once(' ').is_some_and(|(b, n)| build_text(b) && name_text(n));
+                if !ok || p.off_build.iter().any(|o| o == v) || p.off_build.len() >= 64 {
+                    return Err("off_build");
+                }
+                p.off_build.push(v.into());
             }
             b"revoked" => {
                 let v = text.ok_or("revoked")?;
@@ -182,6 +202,10 @@ pub fn may_replace(cur: Option<&Policy>, next: &Policy, key: Key) -> Result<(), 
     }
     if cur.off.iter().any(|o| !next.off.contains(o)) {
         return Err("the ops key can't switch a feature back on");
+    }
+    let everywhere = |o: &String| o.split_once(' ').is_some_and(|(_, n)| next.off.iter().any(|x| x == n));
+    if cur.off_build.iter().any(|o| !next.off_build.contains(o) && !everywhere(o)) {
+        return Err("the ops key can't switch a feature back on for a game build");
     }
     if cur.revoked.iter().any(|r| !next.revoked.contains(r)) {
         return Err("the ops key can't un-revoke a version");
@@ -443,6 +467,37 @@ mod tests {
         assert_eq!(may_replace(Some(&p2), &p3, Key::Release), Ok(()), "release may");
         assert_eq!(may_replace(Some(&p3), &p4, Key::Recovery), Ok(()), "recovery: off");
         assert!(may_replace(Some(&p4), &p1, Key::Release).is_err(), "never an older seq");
+    }
+
+    /// off_build (1.9.0+), as `policy_smoke`: parsed strictly, and the ops key
+    /// keeps a build's line or turns the feature off everywhere.
+    #[test]
+    fn off_build_like_the_pack() {
+        let head = "meowy-pack-policy 1\nseq 7\npack_enabled 1\noff meowy_pak_cache\n";
+        let p = |rest: &str| parse(format!("{head}{rest}").as_bytes());
+        let b = p("off_build 261112/x86-64/x64 meowy_fast_fonts\noff_build 261112 meowy_fast_lua_find\n").unwrap();
+        assert_eq!(b.off_build, vec!["261112/x86-64/x64 meowy_fast_fonts", "261112 meowy_fast_lua_find"]);
+        assert_eq!(b.off, vec!["meowy_pak_cache"]);
+        for bad in [
+            "off_build 261112\n", "off_build 261112 \n", "off_build  meowy_fast_fonts\n", "off_build 261112 Meowy\n",
+            "off_build 26 11 meowy_fast_fonts\n", "off_build /261112 meowy_fast_fonts\n", "off_build 261112/ meowy_fast_fonts\n",
+            "off_build 2611//x64 meowy_fast_fonts\n", "off_build 26;12 meowy_fast_fonts\n",
+            "off_build 261112 meowy_fast_fonts\noff_build 261112 meowy_fast_fonts\n",
+        ] {
+            assert_eq!(p(bad).err(), Some("off_build"), "{bad:?}");
+        }
+        let next = |rest: &str| {
+            let mut n = p(rest).unwrap();
+            n.seq = 8;
+            n
+        };
+        let more = next("off_build 261112/x86-64/x64 meowy_fast_fonts\noff_build 261112 meowy_fast_lua_find\noff_build 261113 meowy_fast_fonts\n");
+        let dropped = next("off_build 261112 meowy_fast_lua_find\n");
+        let everywhere = next("off meowy_fast_fonts\noff_build 261112 meowy_fast_lua_find\n");
+        assert_eq!(may_replace(Some(&b), &more, Key::Ops), Ok(()), "ops: one more line");
+        assert!(may_replace(Some(&b), &dropped, Key::Ops).is_err(), "ops can't drop a build's line");
+        assert_eq!(may_replace(Some(&b), &everywhere, Key::Ops), Ok(()), "ops: off everywhere instead");
+        assert_eq!(may_replace(Some(&b), &dropped, Key::Release), Ok(()), "release may");
     }
 
     /// A stolen ops or recovery key can't sign a seq the release key can't beat,

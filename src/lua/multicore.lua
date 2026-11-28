@@ -38,6 +38,8 @@ local function settingOn() return setting == nil or setting:GetBool() end
 -- Whether the kill switch (or the whole pack's) has it off: then a change of
 -- the setting's value isn't the player's.
 local function policyOff()
+	-- settings.lua's own answer: the per-build lines for this game included.
+	if meowy.PolicyOff then return meowy.PolicyOff("meowy_multicore") end
 	local st = meowy.PolicyState and meowy.PolicyState()
 	if not istable(st) then return false end
 	if st.pack_enabled == false then return true end
