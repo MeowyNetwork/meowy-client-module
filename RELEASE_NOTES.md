@@ -1,4 +1,4 @@
-**Coming in 1.8.1:** the pack treats Meowy Network like any other server.
+**New in 1.8.1:** the pack treats Meowy Network like any other server.
 
 - **Nothing of Meowy Network is fetched until you've joined it.** Its Workshop content and its loading page were prepared at the main menu on every install. Now that starts after your first join there.
 - **The separate `data` folder per server is opt-in.** New installs get Garry's Mod's own behaviour, so PAC3 outfits, dupes and addon settings follow you onto servers. `meowy_data_sandbox 1` turns the separation on; an install that already had it keeps it.
