@@ -824,16 +824,19 @@ namespace
 		int x = 0, y = 0, w = 0, h = 0, radius = 0;
 	};
 
-	StripBox StripBoxFor(int w, int h)
+	// Small: the page under it is the server's. Wide only for the stage whose
+	// line is long (the Lua start-up's "it's working"), and with the time left.
+	StripBox StripBoxFor(int w, int h, int stage, bool known)
 	{
 		const double k = g_cssScale > 0.5 ? g_cssScale : 1.0;
 		auto S = [k](double px) { return static_cast<int>(px * k + 0.5); };
 		StripBox b;
-		b.h = S(40);
-		b.w = std::min(S(620), std::max(S(280), w - S(32)));
+		b.h = S(30);
+		const int want = S(stage == SCRIPTS ? 520 : 290) + (known ? S(110) : 0);
+		b.w = std::min(want, std::max(S(200), w - S(32)));
 		b.x = (w - b.w) / 2;
-		b.y = std::min(S(14), std::max(0, h - b.h));
-		b.radius = S(20);
+		b.y = std::min(S(12), std::max(0, h - b.h));
+		b.radius = S(15);
 		return b;
 	}
 
@@ -853,7 +856,7 @@ namespace
 		HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
 		RoundRect(dc, 0, 0, w, h, h, h);
 		const int stage = s.stage;
-		const int sr = S(7), sx = S(20), sy = h / 2;
+		const int sr = S(5), sx = S(16), sy = h / 2;
 		SelectObject(dc, PenFor(S(2), RGB(52, 51, 60)));
 		Ellipse(dc, sx - sr, sy - sr, sx + sr, sy + sr);
 		SelectObject(dc, PenFor(S(2), stage == READY ? p.ready : p.rose2));
@@ -881,14 +884,14 @@ namespace
 		}
 		else
 			swprintf(since, 48, L"%llu:%02llu", joining / 60, joining % 60);
-		HFONT timeFont = FontFor(S(12), FW_NORMAL);
+		HFONT timeFont = FontFor(S(11), FW_NORMAL);
 		SIZE sz = {};
 		HGDIOBJ oldFont = SelectObject(dc, timeFont);
 		GetTextExtentPoint32W(dc, since, static_cast<int>(std::wcslen(since)), &sz);
 		SelectObject(dc, oldFont);
-		const int right = w - S(18), timeL = right - sz.cx;
+		const int right = w - S(14), timeL = right - sz.cx;
 		Text(dc, timeFont, p.dim, since, { timeL, 0, right, h }, DT_RIGHT | DT_SINGLELINE | DT_VCENTER);
-		Text(dc, FontFor(S(13), FW_SEMIBOLD), p.white, line, { sx + sr + S(12), 0, timeL - S(14), h },
+		Text(dc, FontFor(S(12), FW_SEMIBOLD), p.white, line, { sx + sr + S(9), 0, timeL - S(10), h },
 			DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
 	}
 
@@ -1711,7 +1714,14 @@ namespace
 					int winW = rc.right, winH = rc.bottom, winRadius = 0;
 					if (joinStrip)
 					{
-						const StripBox b = StripBoxFor(rc.right, rc.bottom);
+						int stage = CONNECT;
+						bool known = false;
+						{
+							std::lock_guard<std::mutex> lock(g.m);
+							stage = g.stage;
+							known = g.knownTimes;
+						}
+						const StripBox b = StripBoxFor(rc.right, rc.bottom, stage, known);
 						pos = { tl.x + b.x, tl.y + b.y, tl.x + b.x + b.w, tl.y + b.y + b.h };
 						winW = b.w;
 						winH = b.h;
