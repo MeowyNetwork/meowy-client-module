@@ -832,7 +832,7 @@ namespace
 		auto S = [k](double px) { return static_cast<int>(px * k + 0.5); };
 		StripBox b;
 		b.h = S(30);
-		const int want = S(stage == SCRIPTS ? 520 : 290) + (known ? S(110) : 0);
+		const int want = S(stage == SCRIPTS ? 460 : 290) + (known ? S(120) : 0);
 		b.w = std::min(want, std::max(S(200), w - S(32)));
 		b.x = (w - b.w) / 2;
 		b.y = std::min(S(12), std::max(0, h - b.h));
@@ -869,7 +869,7 @@ namespace
 		const double elapsed = s.starts[stage] ? (now - s.starts[stage]) / 1000.0 : (now - s.begin) / 1000.0;
 		std::wstring line = stage == READY ? L"You’re in" : kOtherStageLines[stage];
 		if (stage == SCRIPTS)
-			line += L". The game may say “Not Responding”: it’s working";
+			line += L". “Not Responding” is normal here";
 		else if (s.known && elapsed > 3 * s.expected[stage] && elapsed > 60)
 			line += L". Taking longer than usual";
 		const ULONGLONG joining = (now - s.begin) / 1000;
@@ -880,7 +880,11 @@ namespace
 			double remain = std::max(2.0, s.expected[stage] - elapsed);
 			for (int i = stage + 1; i < STAGES; ++i)
 				remain += s.expected[i];
-			swprintf(since, 48, L"%llu:%02llu · about %s left", joining / 60, joining % 60, Clock(static_cast<ULONGLONG>(remain * 1000)).c_str());
+			{
+				// How long is left, as a length of time (Clock gives the time of day).
+				const ULONGLONG left = static_cast<ULONGLONG>(remain + 0.5);
+				swprintf(since, 48, L"%llu:%02llu · about %llu:%02llu left", joining / 60, joining % 60, left / 60, left % 60);
+			}
 		}
 		else
 			swprintf(since, 48, L"%llu:%02llu", joining / 60, joining % 60);
