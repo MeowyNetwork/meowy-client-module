@@ -253,12 +253,15 @@ $md += "- Server: $Server. Game: $Bits-bit. Pack in lua\bin: $packVersion (a dow
 $md += "- $cpu; $gpu."
 $md += "- $Runs counted run(s) per configuration, $Seconds s measured each$(if ($NoTurn) { ', standing still' } else { ', turning the view' }); the table is the median."
 $md += ""
-$md += "| Configuration | Join | Average | 1% low | 0.1% low | Median frame | 99% under | Hitches | Worst |"
-$md += "|---|---|---|---|---|---|---|---|---|"
+$md += "| Configuration | Join | Join, fastest to slowest | Average | 1% low | 0.1% low | Median frame | 99% under | Hitches | Worst |"
+$md += "|---|---|---|---|---|---|---|---|---|---|"
 foreach ($config in $Configs) {
 	$mine = $results | Where-Object { $_.config -eq $config }
 	$med = { param($field) $v = @($mine | Where-Object { $null -ne $_.$field } | ForEach-Object { [double]$_.$field }); if ($v.Count) { [math]::Round((Get-Median $v), 1) } }
-	$md += "| $config | $(& $fmt (& $med 'join') ' s') | $(& $fmt (& $med 'fps') ' fps') | $(& $fmt (& $med 'low1') ' fps') | $(& $fmt (& $med 'low01') ' fps') | $(& $fmt (& $med 'median') ' ms') | $(& $fmt (& $med 'p99') ' ms') | $(& $fmt (& $med 'hitches') '') | $(& $fmt (& $med 'worst') ' ms') |"
+	# The spread says how much of a difference between two rows is just run-to-run noise.
+	$joins = @($mine | Where-Object { $null -ne $_.join } | ForEach-Object { [double]$_.join } | Sort-Object)
+	$spread = if ($joins.Count -gt 1) { "$($joins[0]) to $($joins[-1]) s" } else { "" }
+	$md += "| $config | $(& $fmt (& $med 'join') ' s') | $spread | $(& $fmt (& $med 'fps') ' fps') | $(& $fmt (& $med 'low1') ' fps') | $(& $fmt (& $med 'low01') ' fps') | $(& $fmt (& $med 'median') ' ms') | $(& $fmt (& $med 'p99') ' ms') | $(& $fmt (& $med 'hitches') '') | $(& $fmt (& $med 'worst') ' ms') |"
 }
 $md += ""
 $md += "Every run:"
