@@ -69,10 +69,12 @@ mod tests {
 
     #[test]
     fn ours_matches_server_gate() {
-        let cpp = include_str!("../../../src/server_gate.cpp");
+        // The pack's side of the same fact (src/brand.h, which server_gate.cpp reads).
+        let brand = include_str!("../../../src/brand.h");
         for a in OURS {
             let (ip, port) = a.split_once(':').unwrap();
-            assert!(cpp.contains(&format!("{{ \"{ip}\", {port} }}")), "{a} is in server_gate.cpp kAllowed");
+            assert!(brand.contains(&format!("#define MEOWY_BRAND_SERVER_IP \"{ip}\"")), "{a}'s address is brand.h's");
+            assert!(brand.contains(&format!("#define MEOWY_BRAND_SERVER_PORT {port}")), "{a}'s port is brand.h's");
         }
         assert!(is_ours("138.201.62.52:27015"));
         assert!(!is_ours("138.201.62.52:27016"), "same host, test server port");
