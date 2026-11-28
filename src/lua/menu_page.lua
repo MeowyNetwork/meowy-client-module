@@ -257,7 +257,9 @@ local function browseRow(s, tab, i, keep)
 		row.h = Home.clean(tag:gsub("[%[%]]", ""))
 		-- Why it carries that mark, for the details pane (browser.js).
 		local why = BrowseLogic.why(v)
-		if why then row.hw = Home.clean(why) end
+		-- Not Home.clean: that caps at a server name's length, and this is a paragraph
+		-- (BrowseLogic.why caps it itself).
+		if why then row.hw = (string.gsub(why, "%c", " ")) end
 		if istable(v) and v.verdict == "fake" and tonumber(v.real) then row.p = math.min(row.p, math.max(0, math.floor(tonumber(v.real)))) row.hr = row.p end
 		if istable(v) and v.verdict == "unverified" then row.hp = 40 end
 	end
