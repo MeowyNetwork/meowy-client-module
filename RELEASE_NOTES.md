@@ -7,6 +7,7 @@
 - **Find servers says why a server is marked.** Pick a server marked FAKE, VERIFIED, UNVERIFIED or LIST HIDDEN and its details say what the mark means, who found it and what they saw, with a link to the page on how servers are checked. Until now there was only a one-line tooltip.
 - **A welcome at the first start.** One window says what the pack does and asks the two things that are yours to decide: whether it reports who was really on the servers you play on, and whether each server gets its own data folder. Installs that had the pack before see it once too.
 - **The stay-connected question is only asked once you've played on Meowy Network,** since it is about that server.
+- **Meowy Network's row on the home screen can be taken off.** Meowy settings, General: **Meowy Network on the home screen**. Off, it isn't shown and isn't asked for its player count.
 - **Every setting has a switch.** Meowy settings gains **Privacy** (what the pack sends, the data folder per server, parties, updates) and **Performance** (each join speed-up, with what it changes). Until now 19 of them could only be typed into the console.
 
 **New in 1.8.0:** multicore rendering on by default, lighter joins, and crash fixes. **Run the 1.8.0 installer once**, even if the pack already updated itself in the game: the in-game update doesn't replace the Meowy Launcher, which changed too.

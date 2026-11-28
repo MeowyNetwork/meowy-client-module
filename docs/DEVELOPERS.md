@@ -148,6 +148,13 @@ folder>` and the rest in `tests/`) and
 `uninstall_smoke.cs` (the installer's rules, built with `csc`) run in CI as `.github/workflows/build.yml`
 shows, most of them on both bitnesses.
 
+## Who a build belongs to
+The site the pack talks to and the one game server it treats as its own are named once per language:
+`src/brand.h` (the pack), `launcher/core/src/brand.rs` (the launcher) and `Installer.ServerAddress` in
+`installer/Installer.cs`. `tests/brand_test.js` checks the three agree and that no other source file spells
+the host or the address out. The menu Lua reads the site from `meowy.SITE`. The signing keys in
+`src/policy.cpp` are the other thing a different operator would replace.
+
 ## Trying a build of your own
 Copy the four DLLs into `garrysmod\lua\bin` and add `-meowy_local` to Garry's Mod's launch options. Without
 it, an install that has taken an update through the pack's updater loads that downloaded copy ahead of

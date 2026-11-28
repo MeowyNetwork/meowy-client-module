@@ -9,7 +9,7 @@
 
 use serde::Serialize;
 
-pub const HOST: &str = "meowynetwork.com";
+pub const HOST: &str = crate::brand::HOST;
 pub const PATH: &str = "/api/pack/index";
 /// Larger than any real index (~0.9 MB for ~6,000 servers today).
 pub const MAX_BYTES: usize = 16 * 1024 * 1024;

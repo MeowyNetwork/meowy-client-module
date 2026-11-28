@@ -69,6 +69,12 @@ local function setHome(on)
 	-- Through the console: Garry's Mod refuses ConVar:SetBool on these menu convars.
 	RunConsoleCommand("meowy_menu_home", on and "1" or "0")
 end
+-- Meowy Network's own row at the top of the home screen's servers (home.lua):
+-- a featured server, and one you can take off. Off: no row, and the home screen
+-- asks our server nothing.
+local featuredSetting = meowy.Setting and meowy.Setting("meowy_menu_featured", "1",
+	"Meowy Client Pack: show Meowy Network's server at the top of the home screen's servers (0 = not)")
+local function featuredOn() return featuredSetting == nil or featuredSetting:GetBool() end
 
 -- Our own home screen (menu_page.lua), on by default since it left preview.
 local menuSetting = meowy.Setting and meowy.Setting("meowy_menu", "1",
@@ -317,6 +323,14 @@ local function openSettings(startTab)
 			ht.meowyToggle = "menu_home"
 			ht.gapBefore = S(10)
 			blocks[#blocks + 1] = ht
+		end
+		if meowy.OurServerAddress and featuredSetting then
+			local ft2 = UI.Toggle(nil, "Meowy Network on the home screen",
+				"Meowy Network makes this pack, so its server is shown first among your servers. Off: it isn't "
+				.. "shown, and the home screen doesn't ask it for its player count.",
+				featuredOn(), function(on) RunConsoleCommand("meowy_menu_featured", on and "1" or "0") end)
+			ft2.meowyToggle = "menu_featured"
+			blocks[#blocks + 1] = ft2
 		end
 		if meowy.ServerNow then
 			local et = UI.Toggle(nil, "Server card in the Escape menu",

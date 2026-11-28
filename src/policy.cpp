@@ -1,4 +1,5 @@
 #include "policy.h"
+#include "brand.h"
 #include "file_util.h"
 #include "notify_catalogue.h"   // VerifyWithKey: ECDSA P-256 / SHA-256 through BCrypt
 
@@ -526,7 +527,7 @@ namespace policy
 		std::string Get(net_http::Session& session, const wchar_t* path)
 		{
 			net_http::Request req;
-			req.host = L"meowynetwork.com";
+			req.host = MEOWY_BRAND_HOST_W;
 			req.path = path;
 			req.headers = L"Cache-Control: no-cache\r\n";
 			req.maxBody = kMaxBody;

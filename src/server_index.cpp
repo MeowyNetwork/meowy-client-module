@@ -1,4 +1,5 @@
 #include "server_index.h"
+#include "brand.h"
 #include "net_http.h"
 #include "thread_util.h"
 
@@ -22,7 +23,7 @@ namespace
 
 	// Where the index is (tests point it at a local stub). Read on the worker,
 	// set before any fetch.
-	std::wstring g_host = L"meowynetwork.com";
+	std::wstring g_host = MEOWY_BRAND_HOST_W;
 	INTERNET_PORT g_port = INTERNET_DEFAULT_HTTPS_PORT;
 	bool g_secure = true;
 	const wchar_t* const kPath = L"/api/pack/index";

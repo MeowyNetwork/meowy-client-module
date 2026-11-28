@@ -20,7 +20,7 @@
 use crate::release::{self, Facts, Pointer, Release};
 use std::path::{Path, PathBuf};
 
-pub const HOST: &str = "meowynetwork.com";
+pub const HOST: &str = crate::brand::HOST;
 pub const DOC_PATH: &str = "/pack/v1/release-stable.txt";
 pub const SIG_PATH: &str = "/pack/v1/release-stable.sig";
 /// How a stage ends when the game started during the download: the version's

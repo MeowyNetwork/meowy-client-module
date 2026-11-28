@@ -158,7 +158,7 @@ see and do: `meowy_serverlist_reports`, `meowy_server_index`, `meowy_honest_serv
 `meowy_data_sandbox` and `meowy_party`. **Performance** holds every speed-up, each with what it changes:
 `meowy_fast_file_checks`, `meowy_fast_lua_lookup`, `meowy_fast_lua_find`, `meowy_fast_fonts`,
 `meowy_pak_cache`, `meowy_join_boost`, `meowy_skipmatreload_anyserver` and `meowy_idle_savings`. General
-has the rest: `meowy_loadingscreen`, `meowy_loadingscreen_everywhere`, `meowy_mouse_confine`,
+has the rest: `meowy_menu_featured` (Meowy Network's own row on the home screen), `meowy_loadingscreen`, `meowy_loadingscreen_everywhere`, `meowy_mouse_confine`,
 `meowy_audio_follow`, `meowy_console_badge` and `meowy_console_overlay`. The same names still work in
 the console. (`meowy_skipmatreload` is
 made by Meowy Network's own server Lua, so it exists once you've joined us.) To type one, Garry's Mod's
