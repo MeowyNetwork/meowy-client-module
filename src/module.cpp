@@ -1748,8 +1748,8 @@ namespace
 	// (only these): the settings guard's session (settings_guard.lua: a game
 	// that closed on a server is asked about at the next start) and its list of
 	// servers always put back (kept here, not in a convar any server's Lua can
-	// read), one-time repairs done (home.lua), and multicore rendering's crash
-	// guard (multicore.lua).
+	// read), one-time repairs done (home.lua), multicore rendering's crash
+	// guard (multicore.lua), and the join hooks' (hooks.lua).
 	constexpr size_t kMaxMenuFile = 16384;
 	const wchar_t* MenuFileName(const char* kind)
 	{
@@ -1758,6 +1758,7 @@ namespace
 			{ "settings_guard_always", L"settings_guard_always.txt" },
 			{ "repairs", L"repairs.txt" },
 			{ "multicore_guard", L"multicore_guard.txt" },
+			{ "hook_guard", L"hook_guard.txt" },
 		};
 		for (const auto& f : kFiles)
 			if (kind && std::strcmp(kind, f.kind) == 0)
@@ -1896,17 +1897,22 @@ namespace
 	// A join is loading: start recording its big files and the blocks it reads
 	// (and stop any warming). The read hook goes in on the first join; if it
 	// can't, meowy_prewarm_status says "read hook off".
-	int PrewarmBeginJoin(lua_State*)
+	// -> true | false, reason: whether the read hook is in (for the hook registry).
+	int PrewarmBeginJoin(lua_State* L)
 	{
-		static bool hookTried = false;
+		static bool hookTried = false, hookOk = false;
+		static std::string hookWhy;
 		if (!hookTried)
 		{
 			hookTried = true;
-			std::string why;
-			prewarm::InstallReadHook(why);
+			hookOk = prewarm::InstallReadHook(hookWhy);
 		}
 		prewarm::BeginJoin();
-		return 0;
+		L->luabase->PushBool(hookOk);
+		if (hookOk)
+			return 1;
+		L->luabase->PushString(hookWhy.c_str());
+		return 2;
 	}
 
 	// --- Convars the pack changes for a while -----------------------------------------
@@ -3776,11 +3782,19 @@ end)
 local fastLookup = meowy.Setting("meowy_fast_lua_lookup", "1",
 	"Meowy Client Pack: find a server's Lua files through the string table's index (0 = the game's own scan)")
 local fastLookupApplied, wasJoining, wasLoading
+-- The hook registry (hooks.lua, an earlier chunk): its guard is asked before a
+-- hook goes in, and told how that went (nothing once it's taken out again).
+local function hookAllowed(id) return not meowy.HookAllowed or meowy.HookAllowed(id) end
+local function hookResult(id, want, ok, why)
+	if not meowy.HookResult then return end
+	if want then meowy.HookResult(id, ok and true or false, why) else meowy.HookResult(id, nil) end
+end
 local function applyFastLookup()
-	local want = fastLookup:GetBool()
+	local want = fastLookup:GetBool() and hookAllowed("lua_lookup")
 	if want == fastLookupApplied then return end
 	fastLookupApplied = want
 	local ok, why = meowy.FastLuaLookup(want)
+	hookResult("lua_lookup", want, ok, why)
 	if not ok then print("[Meowy Client Pack] fast Lua lookup: " .. tostring(why)) end
 end
 -- Once now, as the pack starts, and not only from Think: a game started
@@ -3810,10 +3824,11 @@ local fastFind = meowy.Setting("meowy_fast_lua_find", "1",
 	"Meowy Client Pack: let file.Find on a server's Lua skip the files that can't match (0 = the game's own walk)")
 local fastFindApplied
 local function applyFastFind()
-	local want = fastFind:GetBool()
+	local want = fastFind:GetBool() and hookAllowed("lua_find")
 	if want == fastFindApplied then return end
 	fastFindApplied = want
 	local ok, why = meowy.FastLuaFind(want)
+	hookResult("lua_find", want, ok, why)
 	if not ok then print("[Meowy Client Pack] fast file.Find: " .. tostring(why)) end
 end
 if startsAtMenu then applyFastFind() end
@@ -3832,10 +3847,11 @@ local fastFonts = meowy.Setting("meowy_fast_fonts", "1",
 	"Meowy Client Pack: don't load gdi32.dll again for every font file on each join (0 = the game's own way)")
 local fastFontsApplied
 local function applyFastFonts()
-	local want = fastFonts:GetBool()
+	local want = fastFonts:GetBool() and hookAllowed("fonts")
 	if want == fastFontsApplied then return end
 	fastFontsApplied = want
 	local ok, why = meowy.FastFonts(want)
+	hookResult("fonts", want, ok, why)
 	if not ok then print("[Meowy Client Pack] fast fonts: " .. tostring(why)) end
 end
 if startsAtMenu then applyFastFonts() end
@@ -3872,10 +3888,11 @@ local fastFiles = meowy.Setting("meowy_fast_file_checks", "1",
 	"Meowy Client Pack: answer missing-file checks from folder listings while a server loads (0 = the game's own way)")
 local fastFilesApplied, fastFilesActive
 local function applyFastFiles()
-	local want = fastFiles:GetBool()
+	local want = fastFiles:GetBool() and hookAllowed("file_checks")
 	if want == fastFilesApplied then return end
 	fastFilesApplied = want
 	local ok, why = meowy.FastFileChecks(want)
+	hookResult("file_checks", want, ok, why)
 	if not ok then print("[Meowy Client Pack] fast file checks: " .. tostring(why)) end
 end
 if startsAtMenu then applyFastFiles() end
@@ -3902,9 +3919,10 @@ local matAnyServer = meowy.Setting("meowy_skipmatreload_anyserver", "0",
 local matPatchedHere
 hook.Add("Think", "MeowyClientPack.MaterialReloadAnyServer", function()
 	if IsInLoading() and not IsInGame() then
-		if matPatchedHere == nil and matAnyServer:GetBool() then
+		if matPatchedHere == nil and matAnyServer:GetBool() and hookAllowed("mat_reload") then
 			local ok, why = meowy.SkipMaterialReloadAnyServer()
 			matPatchedHere = ok and true or false
+			hookResult("mat_reload", true, ok, why)
 			if not ok then print("[Meowy Client Pack] material reload not skipped: " .. tostring(why)) end
 		end
 	elseif matPatchedHere ~= nil then
@@ -4369,7 +4387,14 @@ int MenuOpenBody(ILuaBase* LUA)
 	const std::string resilienceLua = ResilienceChunk();
 	// meowy.Setting first (settings.lua): every other chunk creates its settings with it.
 	const std::string settingsLua = ResourceText(IDR_SETTINGS_LUA);
+	// The hook registry next (hooks_logic.lua as `HooksLogic`, then hooks.lua):
+	// the chunks after it ask it before they install a hook.
+	const std::string hooksLogic = ResourceText(IDR_HOOKS_LOGIC_LUA);
+	const std::string hooksGlue = ResourceText(IDR_HOOKS_LUA);
+	const std::string hooksLua = hooksLogic.empty() || hooksGlue.empty() ? std::string()
+		: "local HooksLogic = (function()\n" + hooksLogic + "\nend)()\n" + hooksGlue;
 	for (const auto& chunk : { std::make_pair(settingsLua.c_str(), "meowy_client_pack/settings"),
+		std::make_pair(hooksLua.c_str(), "meowy_client_pack/hooks"),
 		std::make_pair(kMenuLua, "meowy_client_pack/menu"),
 		std::make_pair(kServerListLua, "meowy_client_pack/serverlist"),
 		std::make_pair(resilienceLua.c_str(), "meowy_client_pack/resilience"),

@@ -10,6 +10,8 @@
 -- string and is only set as textContent; a click sends back a row number, and
 -- the address comes from this side.
 local query = meowy.StockServerQuery or (serverlist and serverlist.Query)
+-- The hook registry's crash guard (hooks.lua), asked before a join hook goes in.
+local function hookAllowed(id) return not meowy.HookAllowed or meowy.HookAllowed(id) end
 local REFRESH = 60   -- seconds between asks while the card shows (at most one query per server per minute)
 local STUCK = 30     -- a list not finished after this is asked again at the next refresh
 local LIVE_EVERY = 2  -- seconds: the Escape card's ping, loss and time at most this often
@@ -710,16 +712,18 @@ hook.Add("Think", "MeowyClientPack.Prewarm", function()
 		pw.joining = true
 		boostOn()
 		stopAll()
-		if pakCacheOn() and meowy.PakCache then
+		if pakCacheOn() and meowy.PakCache and hookAllowed("pak_cache") then
 			local ok, why = meowy.PakCache(true)
+			if meowy.HookResult then meowy.HookResult("pak_cache", ok and true or false, why) end
 			if not ok and not pw.pakWhyLogged then pw.pakWhyLogged = true log("pak cache: off (%s)", tostring(why)) end
 		end
 		-- The join's files are noted (and the read hook goes in) only for pre-warm:
 		-- with both its switches off, or Meowy Network's policy turning them off,
 		-- nothing is hooked and no list is kept.
-		if prewarmOn() or prewarmWorkshopOn() then
+		if (prewarmOn() or prewarmWorkshopOn()) and hookAllowed("prewarm") then
 			pw.recording = true
-			meowy.PrewarmBeginJoin()   -- also stops any warming: the join's reads come first
+			local ok, why = meowy.PrewarmBeginJoin()   -- also stops any warming: the join's reads come first
+			if meowy.HookResult and ok ~= nil then meowy.HookResult("prewarm", ok and true or false, why) end
 		end
 	elseif pw.joining and IsInGame() and not loading then
 		pw.joining = false

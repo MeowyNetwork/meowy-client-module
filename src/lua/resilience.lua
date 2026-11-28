@@ -405,8 +405,17 @@ local function openSettings(startTab)
 	function settingToggle(blocks, name, title, text, gap)
 		local o = meowy.SettingOf and meowy.SettingOf(name)
 		if not o then return end
-		local t = UI.Toggle(nil, title, text, o:GetBool(), function(on) RunConsoleCommand(name, on and "1" or "0") end)
+		-- A setting that turns one of the hooks on (hooks.lua): when the hook
+		-- isn't running though its switch is on, the switch says why. Turned off
+		-- by the crash guard, it shows off, and turning it on is trying again.
+		local hk = meowy.HookOfSetting and meowy.HookOfSetting(name)
+		if hk and hk.note then text = text .. " " .. hk.note end
+		local t = UI.Toggle(nil, title, text, o:GetBool() and not (hk and hk.state == "guard_off"), function(on)
+			RunConsoleCommand(name, on and "1" or "0")
+			if on and meowy.HookPlayerChose then meowy.HookPlayerChose(name) end
+		end)
 		t.meowyToggle = name
+		t.meowyHookState = hk and hk.state or nil
 		if gap then t.gapBefore = gap end
 		blocks[#blocks + 1] = t
 	end
@@ -571,7 +580,18 @@ local function openSettings(startTab)
 	end
 	tab("general", "General")
 	tab("privacy", "Privacy")
-	tab("performance", "Performance")
+	-- Performance: how many speed-ups should be running and aren't (a game update
+	-- one doesn't recognise, or the crash guard), instead of a line in the console.
+	local hooksOff = 0
+	for _, e in ipairs(meowy.HookStatus and meowy.HookStatus() or {}) do
+		if e.attention then hooksOff = hooksOff + 1 end
+	end
+	if hooksOff > 0 then
+		local t = tab("performance", "Performance", hooksOff == 1 and "1 speed-up isn't running" or (hooksOff .. " speed-ups aren't running"), "amber")
+		t.chipText = tostring(hooksOff)
+	else
+		tab("performance", "Performance")
+	end
 	if DoctorUI then
 		local n = tips and #tips or 0
 		local t = tab("doctor", "PC doctor", tips and Doctor.summary(tips) or "?", n > 0 and "amber" or "green")
@@ -852,6 +872,26 @@ local function log(fmt, ...)
 	MsgN("[Meowy Client Pack] " .. string.format(fmt, ...))
 end
 local function show(v) if v == nil then return "nil" end return tostring(v) end
+
+-- What the hook guard did at this start (hooks.lua: join speed-ups turned off
+-- after crashed joins, or back on), said once, over nothing else of the pack's.
+if meowy.HookNotice then
+	local started = SysTime()
+	hook.Add("Think", "MeowyClientPack.HookNotice", function()
+		if SysTime() - started < 4 or not menuVisible() or IsInGame() or IsInLoading()
+			or IsValid(overlay) or IsValid(UI.current) then return end
+		hook.Remove("Think", "MeowyClientPack.HookNotice")
+		local title, body = meowy.HookNotice()
+		if not title then return end
+		UI.Prompt({
+			icon = { "alert", "amber" },
+			title = title,
+			body = body,
+			closable = true,
+			buttons = { { "OK", "primary" } },
+		})
+	end)
+end
 local function fmtNum(v) return isnumber(v) and string.format("%.1f", v) or "nil" end
 
 -- Joins a server the way the menu's own server browser does (the engine's

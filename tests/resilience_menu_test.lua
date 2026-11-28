@@ -2157,6 +2157,38 @@ end
 local ff = toggleNamed("meowy_fast_fonts")
 if ff then ff:SetOn(false) end
 check("settings: a speed-up turned off through the console", w.convars.meowy_fast_fonts, "0")
+check("settings: with every speed-up running, the tab has no badge",
+	(find(function(p) return p.tabId == "performance" end) or {}).badge, nil)
+-- The hook registry (hooks.lua): a speed-up that should be running and isn't
+-- says so on its switch and on the tab, instead of a line in the console.
+w = world({ settings = ON, menu = true, others = OTHERS })
+local hookStates = {
+	meowy_fast_fonts = { id = "fonts", state = "refused", attention = true, note = "Not running right now: NOTE-REFUSED" },
+	meowy_pak_cache = { id = "pak_cache", state = "guard_off", attention = true, note = "Off right now: NOTE-GUARD" },
+	meowy_fast_lua_find = { id = "lua_find", state = "on", attention = false },
+}
+w.env.meowy.HookOfSetting = function(name) return hookStates[name] end
+w.env.meowy.HookStatus = function()
+	local out = {}
+	for _, e in pairs(hookStates) do out[#out + 1] = e end
+	return out
+end
+local chose = {}
+w.env.meowy.HookPlayerChose = function(name) chose[#chose + 1] = name end
+w.concommands.meowy_settings()
+local perfTab = find(function(p) return p.tabId == "performance" end)
+check("settings: the tab counts the speed-ups that aren't running", perfTab and perfTab.badge, "2 speed-ups aren't running")
+check("settings: open Performance, hooks", w.click("Performance"), true)
+local refused, guarded, fine = toggleNamed("meowy_fast_fonts"), toggleNamed("meowy_pak_cache"), toggleNamed("meowy_fast_lua_find")
+check("settings: a refused speed-up keeps its switch on", refused and refused.on, true)
+check("settings: and says why", refused and refused.meowyHookState, "refused")
+check("settings: one the crash guard turned off shows off", guarded and guarded.on, false)
+check("settings: one that runs is unchanged", fine and fine.on, true)
+if guarded then guarded:SetOn(true) end
+check("settings: turning it on is the player's choice", chose[1], "meowy_pak_cache")
+check("settings: its setting stays on", w.convars.meowy_pak_cache, "1")
+if fine then fine:SetOn(false) end
+check("settings: turning one off isn't trying again", #chose, 1)
 -- A build without one of them shows no dead switch.
 w = world({ settings = ON, menu = true, others = { meowy_updates = "1" } })
 w.concommands.meowy_settings()

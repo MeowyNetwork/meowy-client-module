@@ -134,7 +134,7 @@ is, as the backend does (so it says whether a key can check Garry's Mod tickets;
 
 The menu Lua's rules and glue have offline tests, run by CI with Lua 5.1 (each `tests/*_test.lua`,
 including `settings_test.lua`, `settings_guard_logic_test.lua`, `console_logic_test.lua`,
-`content_logic_test.lua`, `party_logic_test.lua` and `multicore_logic_test.lua`), and the pages have Node tests:
+`content_logic_test.lua`, `party_logic_test.lua`, `multicore_logic_test.lua` and `hooks_logic_test.lua`), and the pages have Node tests:
 ```
 for f in tests/*_test.lua; do lua "$f"; done
 node tests/home_page_test.js
