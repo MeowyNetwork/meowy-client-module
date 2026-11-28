@@ -270,6 +270,21 @@ on Meowy Network's servers.
     the states are known (after a join, or two minutes at the menu), at most once a day for the same
     content. The backend keeps a count per day, version, build and reason for 180 days, and its web
     server logs these requests without your IP address. The console says when one was sent.
+- **What a crash was, in plain words** (from 1.9.1). Garry's Mod writes a report when it crashes, and
+  it says little to anyone who hasn't read many. The pack reads the last one on this PC (where the game
+  stopped, Windows' error code, and what Lua was running) and says what kind of stop it was, what most
+  likely caused it, and what to try, cheapest first: a graphics driver, an overlay, the game's built-in
+  browser, a binary module, the 32-bit game running out of memory, or the pack itself, which it names
+  plainly. It is a reading of the evidence, worded as "most likely" and "while": where a program stops
+  is often not where the mistake was made.
+  - **Copy report** gives a short text for whoever is helping: the module and offset, the code, the
+    game's build, the pack's version, and the Lua frames. File paths are left out.
+  - It's on the rejoin card after a crash (**What happened?**), shown once after a crash with no server
+    to rejoin, in the PC doctor for a week, and under `meowy_crash_status` in the console.
+  - Nothing is sent anywhere. (Separately, on Meowy Network only, crash reports go to its server as
+    before; see *What the pack sends*.)
+  - The PC doctor also says when the `-dxlevel` or `-autoconfig` launch option is still set: each one
+    puts your video settings back at every start.
 - **How smoothly the game runs, measured** (`meowy_frame_recorder`, on by default, from 1.9.0). While
   you play, with the game in front, the pack times every frame from the main menu's side of the game,
   so it works on every server and nothing runs in a server's Lua. `meowy_frames_status` shows the

@@ -1,3 +1,8 @@
+**Coming in 1.9.1:** crashes explained.
+
+- **What happened?** After Garry's Mod closes unexpectedly, the pack reads the game's own crash report on your PC and says in plain words what kind of crash it was, what most likely caused it (a graphics driver, an overlay, the game's browser, a binary module, running out of memory on the 32-bit game, or the pack itself) and what to try first. **Copy report** gives a short text to paste when you ask for help, with no file paths. It's on the rejoin card, in the PC doctor, and under `meowy_crash_status`. Nothing is sent.
+- **PC doctor: launch options that undo your settings.** It now says when `-dxlevel` or `-autoconfig` is still set; each one resets your video settings at every start.
+
 **New in 1.9.0:** the join speed-ups look after themselves.
 
 - **One list of what the pack changes in the game, and what each is doing.** `meowy_hooks_status` in the console lists every join speed-up: on, turned off by you, switched off by Meowy Network, or not running because it doesn't recognise this version of Garry's Mod, with the reason. Until now each had its own command.
