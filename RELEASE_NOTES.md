@@ -1,4 +1,4 @@
-**Coming in 1.9.0:** the join speed-ups look after themselves.
+**New in 1.9.0:** the join speed-ups look after themselves.
 
 - **One list of what the pack changes in the game, and what each is doing.** `meowy_hooks_status` in the console lists every join speed-up: on, turned off by you, switched off by Meowy Network, or not running because it doesn't recognise this version of Garry's Mod, with the reason. Until now each had its own command.
 - **A speed-up that isn't running says so in Meowy settings.** After a Garry's Mod update, a speed-up that no longer recognises the game steps aside and the game does that part its own way. Performance now shows that on the switch and on the tab, instead of one line in the console.

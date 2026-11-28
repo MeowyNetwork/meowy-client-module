@@ -5,6 +5,6 @@
 // file itself (GetFileVersionInfo) and a file can't disagree with the code.
 // Plain #defines: the resource compiler reads this too.
 #define MEOWY_VERSION_MAJOR 1
-#define MEOWY_VERSION_MINOR 8
-#define MEOWY_VERSION_PATCH 1
-#define MEOWY_VERSION "1.8.1"
+#define MEOWY_VERSION_MINOR 9
+#define MEOWY_VERSION_PATCH 0
+#define MEOWY_VERSION "1.9.0"
