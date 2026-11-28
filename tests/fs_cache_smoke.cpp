@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <thread>
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -577,6 +578,46 @@ int main(int argc, char** argv)
 	Check("reinstall: already ours, nothing to do", SwapIn(&slot, &original, &ours) && slot == &ours);
 	slot = &foreign;
 	Check("reinstall: someone else's vtable is left alone", !SwapIn(&slot, &original, &ours) && slot == &foreign);
+
+	// The frame recorder's watch: this thread's opens, counted with their names.
+	{
+		fs_cache::Opened got[40];
+		const uint64_t before = fs_cache::WatchCount();
+		OpenForTest("C:\\game\\models\\unwatched.mdl", "rb", &RealOpen);
+		Check("watch off: nothing counted", fs_cache::WatchCount() == before);
+		fs_cache::Watch(true);
+		OpenForTest("C:\\game\\models\\crate.mdl", "rb", &RealOpen);
+		OpenForTest("C:\\game\\materials\\crate.vmt", "rb", &RealOpen);
+		Check("watch on: two opens counted", fs_cache::WatchCount() == before + 2);
+		size_t n = fs_cache::WatchRecent(before, got, 40);
+		Check("watch: both come back, oldest first", n == 2 && std::string(got[0].name) == "C:\\game\\models\\crate.mdl"
+			&& std::string(got[1].name) == "C:\\game\\materials\\crate.vmt" && got[1].seq == got[0].seq + 1);
+		Check("watch: a time for each", got[0].ms >= 0 && got[0].ms < 1000);
+		Check("watch: only what's after", fs_cache::WatchRecent(before + 1, got, 40) == 1 && std::string(got[0].name) == "C:\\game\\materials\\crate.vmt");
+		Check("watch: nothing new, nothing back", fs_cache::WatchRecent(before + 2, got, 40) == 0);
+		// Another thread's opens aren't this thread's frames.
+		std::thread other([] { OpenForTest("C:\\game\\sound\\other.wav", "rb", &RealOpen); });
+		other.join();
+		Check("watch: another thread's open isn't counted", fs_cache::WatchCount() == before + 2);
+		// A long path keeps its end; more opens than are kept give the newest.
+		const std::string longPath = "C:\\" + std::string(300, 'd') + "\\tail_of_the_name.vtf";
+		OpenForTest(longPath.c_str(), "rb", &RealOpen);
+		n = fs_cache::WatchRecent(before + 2, got, 40);
+		const std::string kept = n == 1 ? got[0].name : "";
+		Check("watch: a long path keeps its end", kept.size() == sizeof(got[0].name) - 1
+			&& kept.compare(kept.size() - 21, 21, "\\tail_of_the_name.vtf") == 0);
+		for (int i = 0; i < 100; ++i)
+			OpenForTest(("C:\\game\\f" + std::to_string(i)).c_str(), "rb", &RealOpen);
+		n = fs_cache::WatchRecent(before, got, 40);
+		Check("watch: the newest 32 are kept", n == 32 && std::string(got[31].name) == "C:\\game\\f99" && std::string(got[0].name) == "C:\\game\\f68");
+		n = fs_cache::WatchRecent(before, got, 4);
+		Check("watch: fewer asked for, the newest of them", n == 4 && std::string(got[3].name) == "C:\\game\\f99" && std::string(got[0].name) == "C:\\game\\f96");
+		Check("watch: a null name is survived", OpenForTest(nullptr, "rb", &RealOpen) != nullptr);
+		fs_cache::Watch(false);
+		const uint64_t after = fs_cache::WatchCount();
+		OpenForTest("C:\\game\\late.mdl", "rb", &RealOpen);
+		Check("watch off again: nothing counted", fs_cache::WatchCount() == after);
+	}
 
 	DeleteFileA((root + "\\materials\\Here.VMT").c_str());
 	DeleteFileA((root + "\\materials\\gone.vmt").c_str());

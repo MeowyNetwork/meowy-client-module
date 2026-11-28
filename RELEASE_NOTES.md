@@ -5,6 +5,7 @@
 - **Joins that keep crashing turn the speed-ups off.** If Garry's Mod closes with a crash report twice in a row while joining a server, the speed-ups that were on are turned off and you're told. If a join crashes without them too, they weren't the cause and come back. A new version of the pack or of the game starts this over, and each switch in Meowy settings turns its speed-up back on.
 - **You can tell Meowy Network when a speed-up stops working. Off unless you turn it on.** The welcome window asks new installs, and Meowy settings, Privacy, has the switch (`meowy_hook_reports`). On, the pack sends at most once a day its version, the build of Garry's Mod and what each speed-up is doing, with the reason when one isn't running. No SteamID, no install id, nothing about your PC or your servers.
 - **A broken speed-up can be parked for one game version only.** Meowy Network's signed kill switch could turn a feature off for everyone. Now it can turn one off just for the build of Garry's Mod it breaks on (`off_build`), and everyone else keeps it.
+- **The pack measures how smoothly the game runs.** While you play, it times every frame, on any server. `meowy_frames_status` in the console shows the average frame rate, the 1% low, and each hitch with the files the game opened during it. Your last 10 sessions are kept on this PC so you can compare, for example with multicore rendering on and off. Nothing is sent. Meowy settings, Performance, turns it off.
 
 **New in 1.8.1:** the pack treats Meowy Network like any other server.
 

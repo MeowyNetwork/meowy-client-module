@@ -498,9 +498,12 @@ local function openSettings(startTab)
 			.. "big map). Off by default: a server whose downloads replace a texture that's already loaded would "
 			.. "show the old one until the next map.")
 		heading(blocks, "While you play")
+		settingToggle(blocks, "meowy_frame_recorder", "Measure how smoothly the game runs",
+			"Counts frame times while you play: the average, the 1% low, and each hitch with the files the game opened "
+			.. "during it. Kept on this PC only; meowy_frames_status in the console shows it.", S(10))
 		settingToggle(blocks, "meowy_idle_savings", "Save memory and CPU in the background",
 			"Unloads the loading screen's browser while you play, and slows the main menu down while the game is in "
-			.. "the background.", S(10))
+			.. "the background.")
 		return blocks
 	end
 
