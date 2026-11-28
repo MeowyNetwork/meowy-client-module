@@ -179,7 +179,27 @@ function M.diagnose(facts, cvars)
 		end
 	end
 
-	for _, t in ipairs(tips) do t.severity = M.SEVERITY[t.id] or "medium" end
+	-- Launch options that undo the player's settings at every start
+	-- (cvars.launch: the game's "-" options, lower case, without values).
+	if type(cvars.launch) == "table" then
+		local has = {}
+		for _, name in ipairs(cvars.launch) do has[tostring(name)] = true end
+		if has["-dxlevel"] then
+			tips[#tips + 1] = { id = "launch_dxlevel", title = "The -dxlevel launch option is still set.",
+				text = "It is meant to be used once: left in, it puts your video settings back to that level's defaults at "
+					.. "every start. Remove it: in Steam, right-click Garry's Mod, Properties, Launch options." }
+		end
+		if has["-autoconfig"] then
+			tips[#tips + 1] = { id = "launch_autoconfig", title = "The -autoconfig launch option is still set.",
+				text = "It resets your video and performance settings to the defaults at every start. Remove it: in Steam, "
+					.. "right-click Garry's Mod, Properties, Launch options." }
+		end
+		local shown = {}
+		for _, name in ipairs(cvars.launch) do shown[#shown + 1] = tostring(name) end
+		report[#report + 1] = "Launch options: " .. (#shown > 0 and table.concat(shown, " ") or "none")
+	end
+
+	for _, t in ipairs(tips) do t.severity = t.severity or M.SEVERITY[t.id] or "medium" end
 	return tips, report
 end
 

@@ -163,6 +163,20 @@ check("sound: console text points at Steam", M.consoleText((M.diagnose(withAudio
 check("sound: no audio facts, no sound lines", has(select(2, M.diagnose(laptop(1, 0), GOOD)), "Microphone: none found"), false)
 
 -- Garbage in: no crash, no tips
+-- Launch options that undo settings at every start.
+do
+	local t, r = M.diagnose({}, { launch = { "-windowed", "-dxlevel", "-autoconfig" } })
+	check("launch: -dxlevel and -autoconfig are tips", ids(t), "launch_dxlevel,launch_autoconfig")
+	check("launch: the tip says where to remove it", t[1].text:find("Launch options", 1, true) ~= nil, true)
+	check("launch: all of them in the report", table.concat(r, "|"):find("Launch options: -windowed -dxlevel -autoconfig", 1, true) ~= nil, true)
+	t, r = M.diagnose({}, { launch = { "-windowed", "-w" } })
+	check("launch: harmless ones are no tip", ids(t), "")
+	t, r = M.diagnose({}, { launch = {} })
+	check("launch: none", table.concat(r, "|"):find("Launch options: none", 1, true) ~= nil, true)
+	t, r = M.diagnose({}, {})
+	check("launch: unknown, nothing said", table.concat(r, "|"):find("Launch options", 1, true), nil)
+end
+
 check("nil facts", ids((M.diagnose(nil, nil))), "")
 check("junk adapters", ids((M.diagnose({ gpu_time_known = true, adapters = { 1, "x", { share = "1" } } }, nil))), "")
 

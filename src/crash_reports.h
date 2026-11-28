@@ -19,6 +19,7 @@ namespace crashes
 		std::string faultModule;              // file name only; "" when no module holds the address
 		unsigned long long faultOffset = 0;   // offset into faultModule (raw address if none)
 		unsigned long faultCode = 0;          // exception code, e.g. 0xC0000005
+		int bits = 0;                         // 64 or 32: the game that wrote it (its Executable line); 0 unknown
 	};
 
 	// Reports written after `since` (unix time), newest first, at most `max`.

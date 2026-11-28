@@ -151,6 +151,7 @@
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <shellapi.h>   // CommandLineToArgvW (meowy.LaunchOptions)
 #endif
 
 using namespace GarrysMod::Lua;
@@ -494,6 +495,86 @@ namespace
 			LUA->SetField(-2, "fault_code");
 			LUA->SetTable(-3);
 		}
+		return 1;
+	}
+
+	// Menu only: meowy.LastCrash(maxAgeSeconds) -> { time, lua, fault_module,
+	// fault_offset, fault_code, bits } | nil: the newest crash report Garry's
+	// Mod wrote in that time, on any server or none, for the crash explainer
+	// (crash.lua). It stays on this PC: shown to the player, never sent. The
+	// Lua section has had its paths masked, and only the module's file name is
+	// read from the dump.
+	int LastCrash(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+#ifdef _WIN32
+		const double age = LUA->IsType(1, Type::Number) ? LUA->GetNumber(1) : 7 * 86400.0;
+		const long long since = static_cast<long long>(std::time(nullptr)) - static_cast<long long>(age < 60 ? 60 : age);
+		const std::wstring root = crashes::Root();
+		std::vector<crashes::Candidate> listed = crashes::Candidates(root, since);
+		std::stable_sort(listed.begin(), listed.end(), [](const crashes::Candidate& a, const crashes::Candidate& b) {
+			return a.time > b.time;
+		});
+		for (const crashes::Candidate& c : listed)
+		{
+			crashes::Report r;
+			if (!crashes::Read(root, c, r))
+				continue;
+			LUA->CreateTable();
+			LUA->PushNumber(static_cast<double>(r.time));
+			LUA->SetField(-2, "time");
+			LUA->PushString(r.luaTrace.c_str(), static_cast<unsigned int>(r.luaTrace.size()));
+			LUA->SetField(-2, "lua");
+			LUA->PushString(r.faultModule.c_str(), static_cast<unsigned int>(r.faultModule.size()));
+			LUA->SetField(-2, "fault_module");
+			LUA->PushNumber(static_cast<double>(r.faultOffset));
+			LUA->SetField(-2, "fault_offset");
+			LUA->PushNumber(static_cast<double>(r.faultCode));
+			LUA->SetField(-2, "fault_code");
+			LUA->PushNumber(r.bits);
+			LUA->SetField(-2, "bits");
+			return 1;
+		}
+#endif
+		LUA->PushNil();
+		return 1;
+	}
+
+	// Menu only: meowy.LaunchOptions() -> { "-dxlevel", "-windowed", ... }: the
+	// names of the game's "-" launch options, lower case, without their values,
+	// for the PC doctor (some undo the player's settings at every start).
+	int LaunchOptions(lua_State* L)
+	{
+		ILuaBase* LUA = L->luabase;
+		LUA->CreateTable();
+#ifdef _WIN32
+		int argc = 0;
+		LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+		double n = 0;
+		for (int i = 1; argv && i < argc && n < 64; ++i)
+		{
+			const std::wstring a = argv[i];
+			if (a.size() < 2 || a.size() > 40 || a[0] != L'-' || !((a[1] >= L'a' && a[1] <= L'z') || (a[1] >= L'A' && a[1] <= L'Z')))
+				continue;
+			std::string name;
+			for (wchar_t c : a)
+			{
+				if (!((c >= L'a' && c <= L'z') || (c >= L'A' && c <= L'Z') || (c >= L'0' && c <= L'9') || c == L'-' || c == L'_'))
+				{
+					name.clear();
+					break;
+				}
+				name += static_cast<char>(c >= L'A' && c <= L'Z' ? c + 32 : c);
+			}
+			if (name.empty())
+				continue;
+			LUA->PushNumber(++n);
+			LUA->PushString(name.c_str());
+			LUA->SetTable(-3);
+		}
+		if (argv)
+			LocalFree(argv);
+#endif
 		return 1;
 	}
 
@@ -1806,6 +1887,7 @@ namespace
 			{ "multicore_guard", L"multicore_guard.txt" },
 			{ "hook_guard", L"hook_guard.txt" },
 			{ "frames", L"frames.txt" },
+			{ "crash_seen", L"crash_seen.txt" },
 		};
 		for (const auto& f : kFiles)
 			if (kind && std::strcmp(kind, f.kind) == 0)
@@ -3090,6 +3172,11 @@ namespace
 		std::string multicoreGlue = ResourceText(IDR_MULTICORE_LUA);
 		if (!multicoreLogic.empty() && !multicoreGlue.empty())
 			home += ";(function()\nlocal MulticoreLogic = (function()\n" + multicoreLogic + "\nend)()\n" + multicoreGlue + "\nend)()\n";
+		// The crash explainer (crash_logic.lua as `CrashLogic`, then crash.lua), likewise.
+		std::string crashLogic = ResourceText(IDR_CRASH_LOGIC_LUA);
+		std::string crashGlue = ResourceText(IDR_CRASH_LUA);
+		if (!crashLogic.empty() && !crashGlue.empty())
+			home += ";(function()\nlocal CrashLogic = (function()\n" + crashLogic + "\nend)()\n" + crashGlue + "\nend)()\n";
 		return "local UI = (function()\n" + ui + "\nend)()\n"
 			"local Logic = (function()\n" + logic + "\nend)()\n" + doctor + glue + home;
 	}
@@ -4349,6 +4436,8 @@ int MenuOpenBody(ILuaBase* LUA)
 	SetFunction(LUA, "SetMulticoreManaged", Guarded<SetMulticoreManaged>);
 	SetFunction(LUA, "MulticoreGuardAtExit", Guarded<MulticoreGuardAtExit>);
 	SetFunction(LUA, "CrashSince", Guarded<CrashSince>);
+	SetFunction(LUA, "LastCrash", Guarded<LastCrash>);
+	SetFunction(LUA, "LaunchOptions", Guarded<LaunchOptions>);
 	SetFunction(LUA, "ResilienceSession", Guarded<ResilienceSession>);
 	SetFunction(LUA, "ResilienceCrashedSession", Guarded<ResilienceCrashedSession>);
 	SetFunction(LUA, "PrewarmBeginJoin", Guarded<PrewarmBeginJoin>);

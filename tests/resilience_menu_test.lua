@@ -29,6 +29,9 @@ local chunkText = "local UI = (function()\n" .. readFile(here .. "/../src/lua/ui
 	-- Multicore rendering, likewise.
 	.. ";(function()\nlocal MulticoreLogic = (function()\n" .. readFile(here .. "/../src/lua/multicore_logic.lua") .. "\nend)()\n"
 	.. readFile(here .. "/../src/lua/multicore.lua") .. "\nend)()\n"
+	-- The crash explainer, likewise.
+	.. ";(function()\nlocal CrashLogic = (function()\n" .. readFile(here .. "/../src/lua/crash_logic.lua") .. "\nend)()\n"
+	.. readFile(here .. "/../src/lua/crash.lua") .. "\nend)()\n"
 local loadstring = loadstring or load
 
 local failures, count = 0, 0
@@ -1202,6 +1205,61 @@ w = world({ settings = ON, crashed = "1.2.3.4:27015", joinServer = true })
 w.run(10)
 w.click("Rejoin")
 check("other server's crash: joins through JoinServer", (w.joinedVia or "") .. " " .. w.connects(), "1.2.3.4:27015 0")
+
+-- The crash explainer (crash.lua): with a crash report to read, the card has
+-- "What happened?", which opens the reading with Copy and Rejoin.
+local function crashReport(w, age, module, code)
+	w.env.meowy.LastCrash = function(maxAge)
+		w.lastCrashAsked = maxAge
+		return { time = w.env.os.time() - age, lua = "-Lua Stack Traces-\n  Client\n    1. Draw - addons/cool_hud/lua/cl_draw.lua:42\n",
+			fault_module = module or "nvd3dumx.dll", fault_offset = 0x1A2B3C, fault_code = code or 0xC0000005, bits = 64 }
+	end
+end
+w = world({ settings = ON, crashed = "1.2.3.4:27015" })
+w.crashedName = "Foo RP"
+crashReport(w, 120)
+w.run(10)
+check("crash explainer: the card offers it", w.click("What happened?"), true)
+check("crash explainer: its window paints", w.paintAll(), "")
+check("crash explainer: the window is up", find(function(p) return p.meowyCrash end) ~= nil, true)
+local causeText = find(function(p) return p.meowyCrashCause end)
+check("crash explainer: the reading names the driver", causeText ~= nil and tostring(causeText.text or ""):find("graphics driver", 1, true) ~= nil, true)
+check("crash explainer: no join yet", w.connects(), 0)
+check("crash explainer: copy", w.click("Copy report"), true)
+check("crash explainer: the text is on the clipboard", (w.clipboard or ""):find("Stopped in: nvd3dumx.dll+0x1A2B3C (0xC0000005)", 1, true) ~= nil, true)
+check("crash explainer: with the server", (w.clipboard or ""):find("Server: Foo RP | 1.2.3.4:27015", 1, true) ~= nil, true)
+check("crash explainer: no path in it", (w.clipboard or ""):find("%a:[\\/]"), nil)
+check("crash explainer: rejoin from the window", w.click("Rejoin"), true)
+check("crash explainer: joins that server", w.lastConnect(), "connect 1.2.3.4:27015")
+check("crash explainer: remembered as shown", tonumber(w.menuFiles.crash_seen) ~= nil, true)
+-- No report to read: the card is as before.
+w = world({ settings = ON, crashed = "1.2.3.4:27015" })
+w.run(10)
+check("crash explainer: no report, no button", w.click("What happened?"), false)
+check("crash explainer: the card still rejoins", w.click("Rejoin"), true)
+-- A crash with no server to rejoin (the main menu, singleplayer): offered once.
+w = world({ settings = ON })
+crashReport(w, 300, "client.dll")
+w.run(10)
+check("crash explainer: a crash without a server is offered", find(function(p) return p.meowyCrash end) ~= nil, true)
+check("crash explainer: closed", w.click("Close"), true)
+local seenFiles = w.menuFiles
+w = world({ settings = ON, menuFiles = seenFiles })
+crashReport(w, 900, "client.dll")
+w.run(10)
+check("crash explainer: not offered again for the same crash", find(function(p) return p.meowyCrash end), nil)
+-- An old crash isn't news at start, but the console still explains it.
+w = world({ settings = ON })
+crashReport(w, 3 * 86400, "gmcl_meowy_win64.dll")
+w.run(10)
+check("crash explainer: a crash from days ago isn't offered at start", find(function(p) return p.meowyCrash end), nil)
+do
+	local said, realPrint = {}, w.env.print
+	w.env.print = function(s) said[#said + 1] = tostring(s) end
+	w.concommands.meowy_crash_status()
+	w.env.print = realPrint
+	check("crash explainer: the console command says it", table.concat(said, "\n"):find("inside the Meowy Client Pack itself", 1, true) ~= nil, true)
+end
 
 -- On another server: marked (with the name once it's known), cleared on leaving.
 w = world({ settings = ON })

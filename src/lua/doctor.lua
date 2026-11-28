@@ -49,7 +49,18 @@ function DoctorUI.diagnose()
 	-- What the pack does with multicore (multicore.lua, a later chunk; nil without it).
 	local okStatus, pack = pcall(function() return meowy.MulticoreStatus and meowy.MulticoreStatus() end)
 	local tips, report = Doctor.diagnose(facts, { mcore = cvarString("gmod_mcore_test"), queue = cvarString("mat_queue_mode"),
-		pack = okStatus and pack or nil })
+		pack = okStatus and pack or nil,
+		launch = (function()
+			local ok2, list = pcall(function() return meowy.LaunchOptions and meowy.LaunchOptions() end)
+			return ok2 and list or nil
+		end)() })
+	-- The last crash (crash.lua, a later chunk): its reading, with the window a click away.
+	local okCrash, crash = pcall(function() return meowy.CrashLast and meowy.CrashLast() end)
+	if okCrash and type(crash) == "table" and os.time() - (crash.time or 0) < 7 * 86400 then
+		table.insert(tips, 1, { id = "crash", severity = "medium", title = "Garry's Mod closed unexpectedly not long ago.",
+			text = crash.cause, run = function() meowy.CrashExplain() end, action_label = "What happened?" })
+		report[#report + 1] = "Last crash: " .. tostring(crash.what)
+	end
 	if type(facts.audio) == "table" then
 		report[#report + 1] = "Sound device changes: " .. (not followOn() and "not followed (meowy_audio_follow 0)"
 			or audio.next == math.huge and "can't be watched" or "followed")
@@ -92,7 +103,11 @@ function DoctorUI.build(tips, report)
 		card.meowyTip = tip.id
 		card:Add(UI.Text(card, tip.title, "MeowyPack.Heading", C.text))
 		card:Add(UI.Text(card, tip.text, "MeowyPack.Small", C.body), S(4))
-		if tip.action then
+		if tip.run then
+			-- A tip the pack answers itself (the crash explainer).
+			local run = tip.run
+			card:Add(UI.Button(card, tip.action_label or "Open", "primary", function() run() end), S(14))
+		elseif tip.action then
 			local action = tip.action
 			card:Add(UI.Button(card, tip.action_label or "Open", "primary", function() meowy.DoctorOpen(action) end), S(14))
 		end

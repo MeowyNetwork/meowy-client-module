@@ -36,12 +36,15 @@ static int MaskChecks()
 }
 
 // A crash report the game would write, in root\crashes, dated `when` (unix).
-static void CrashFile(const std::wstring& root, const wchar_t* name, long long when, bool lua)
+static void CrashFile(const std::wstring& root, const wchar_t* name, long long when, bool lua, const char* exe = nullptr)
 {
 	const std::wstring path = root + L"\\crashes\\" + name;
 	{
 		std::ofstream f(path, std::ios::binary | std::ios::trunc);
-		f << "Crash\r\n";
+		if (exe)
+			f << "Executable: " << exe << "\r\n\r\n";   // as the game writes it
+		else
+			f << "Crash\r\n";
 		if (lua)
 			f << "-Lua Stack Traces-\r\n==================\r\n  Client\r\n    0. x - addons/foo/lua/x.lua:1\r\n";
 	}
@@ -100,6 +103,26 @@ static int CandidateChecks()
 	check("read one: trace, no dump", readA);
 	check("read one without a trace: false", !readB);
 	check("no folder: nothing", crashes::Candidates(L"", 0).empty() && crashes::SinceIn(root + L"\\none", 0, 5).empty());
+
+	// Which game wrote the report, from its Executable line (for the crash
+	// explainer); the path itself is never kept.
+	CrashFile(root, L"a.txt", 4000000, true, "C:\\Program Files (x86)\\Steam\\steamapps\\common\\GarrysMod\\bin\\win64\\gmod.exe");
+	CrashFile(root, L"c.txt", 5000000, true, "D:\\Games\\GarrysMod\\bin\\gmod.exe");
+	const std::vector<crashes::Report> bits = crashes::SinceIn(root, 600000, 5);
+	bool b64 = false, b32 = false, none = false, noPath = true;
+	for (const crashes::Report& r : bits)
+	{
+		if (r.name == "a.txt") b64 = r.bits == 64;
+		if (r.name == "c.txt") b32 = r.bits == 32;
+		noPath = noPath && r.luaTrace.find("Program Files") == std::string::npos && r.luaTrace.find("Games") == std::string::npos;
+	}
+	CrashFile(root, L"a.txt", 4000000, true);
+	for (const crashes::Report& r : crashes::SinceIn(root, 600000, 5))
+		if (r.name == "a.txt") none = r.bits == 0;
+	check("bits: the 64-bit game", b64);
+	check("bits: the 32-bit game", b32);
+	check("bits: no Executable line, unknown", none);
+	check("bits: the executable's path isn't kept", noPath);
 
 	for (const wchar_t* f : files)
 		DeleteFileW((root + L"\\crashes\\" + f).c_str());
