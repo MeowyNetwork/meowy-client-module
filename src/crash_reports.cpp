@@ -231,7 +231,10 @@ namespace
 {
 	using crashes::MaskPaths;
 
-	std::string LuaSection(const std::wstring& path)
+	// bits: 64 or 32 from the report's "Executable:" line (the 64-bit game is
+	// ...\bin\win64\gmod.exe), 0 when it has none. Only that is taken from the
+	// line: the path itself can hold the Windows user name.
+	std::string LuaSection(const std::wstring& path, int* bits = nullptr)
 	{
 		std::ifstream f(path, std::ios::binary);
 		if (!f)
@@ -239,6 +242,19 @@ namespace
 		std::string text(MAX_FILE_BYTES, '\0');
 		f.read(&text[0], static_cast<std::streamsize>(text.size()));
 		text.resize(static_cast<size_t>(f.gcount()));
+
+		if (bits)
+		{
+			*bits = 0;
+			const size_t exe = text.find("Executable:");
+			if (exe != std::string::npos)
+			{
+				std::string line = text.substr(exe, text.find('\n', exe) - exe);
+				for (char& c : line)
+					c = static_cast<char>(c >= 'A' && c <= 'Z' ? c + 32 : c);
+				*bits = line.find("\\win64\\") != std::string::npos || line.find("/win64/") != std::string::npos ? 64 : 32;
+			}
+		}
 
 		size_t start = text.find("-Lua Stack Traces-");
 		if (start == std::string::npos)
@@ -295,12 +311,14 @@ namespace crashes
 		if (root.empty() || c.file.size() < 4)
 			return false;
 		const std::wstring txt = root + L"\\crashes\\" + c.file;
-		std::string trace = LuaSection(txt);
+		int bits = 0;
+		std::string trace = LuaSection(txt, &bits);
 		if (trace.empty())
 			return false;
 		out = Report();
 		out.name = c.name;
 		out.time = c.time;
+		out.bits = bits;
 		out.luaTrace = std::move(trace);
 		ReadFault(txt.substr(0, txt.size() - 4) + L".dmp", out);
 		return true;

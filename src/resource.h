@@ -25,5 +25,7 @@
 #define IDR_HOOKS_LOGIC_LUA 143          // src/lua/hooks_logic.lua: the hook registry and its crash guard, their rules (HooksLogic)
 #define IDR_FRAMES_LOGIC_LUA 145         // src/lua/frames_logic.lua: the frame recorder's rules (FramesLogic)
 #define IDR_FRAMES_LUA 146               // src/lua/frames.lua: the frame recorder, menu glue
+#define IDR_CRASH_LOGIC_LUA 147          // src/lua/crash_logic.lua: what a crash was, in plain words (CrashLogic)
+#define IDR_CRASH_LUA 148                // src/lua/crash.lua: the crash explainer, menu glue
 #define IDR_HOOKS_LUA 144                // src/lua/hooks.lua: the hook registry, menu glue (the second menu chunk)
 #define IDR_MULTICORE_LUA 142            // src/lua/multicore.lua: multicore rendering on by default, menu glue and its switch

@@ -1232,19 +1232,28 @@ local function startup()
 	local function optIn()
 		askWelcome(function() if not settings.asked then askOptIn() end end)
 	end
+	-- The crash explainer (crash.lua, a later chunk): what the crash was, in
+	-- plain words. The rejoin cards get a button for it; a crash with no server
+	-- to rejoin (the main menu, singleplayer) is offered on its own, once.
+	local function whatHappened(rejoin)
+		if not (meowy.CrashLast and meowy.CrashExplain and meowy.CrashLast()) then return nil end
+		if meowy.CrashMarkSeen then meowy.CrashMarkSeen() end   -- offered here: not again at the next start
+		return { "What happened?", "ghost", function() meowy.CrashExplain({ rejoin = rejoin, after = optIn }) end }
+	end
 	if crashed and meowy.IsOurServer(crashed) then
 		local address = crashed
+		local rejoin = function()
+			if meowy.IsOurServer(address) then join(address) end
+		end
+		local buttons = { { "Not now", "ghost", optIn }, { "Rejoin", "primary", rejoin } }
+		local details = whatHappened(rejoin)
+		if details then table.insert(buttons, 1, details) end
 		UI.Prompt({
 			icon = { "signal", "accent" },
 			title = "Rejoin Meowy Network?",
 			body = "Garry's Mod closed unexpectedly while you were playing. Jump back in?",
 			closable = true,
-			buttons = {
-				{ "Not now", "ghost", optIn },
-				{ "Rejoin", "primary", function()
-					if meowy.IsOurServer(address) then join(address) end
-				end },
-			},
+			buttons = buttons,
 			onDismiss = optIn,
 		})
 		return
@@ -1254,18 +1263,24 @@ local function startup()
 		-- connects; nothing automatic.
 		local address = crashed
 		local name = isstring(crashedName) and crashedName ~= "" and crashedName or address
+		-- JoinServer, as every other join: the engine refuses RunConsoleCommand("connect", address).
+		local rejoin = function() join(address) end
+		local buttons = { { "Not now", "ghost", optIn }, { "Rejoin", "primary", rejoin } }
+		local details = whatHappened(rejoin)
+		if details then table.insert(buttons, 1, details) end
 		UI.Prompt({
 			icon = { "signal", "accent" },
 			title = "Rejoin the server?",
 			body = "Garry's Mod closed unexpectedly while you were on " .. name .. " (" .. address .. "). Jump back in?",
 			closable = true,
-			buttons = {
-				{ "Not now", "ghost", optIn },
-				-- JoinServer, as every other join: the engine refuses RunConsoleCommand("connect", address).
-				{ "Rejoin", "primary", function() join(address) end },
-			},
+			buttons = buttons,
 			onDismiss = optIn,
 		})
+		return
+	end
+	-- A crash in the last day with no server to rejoin: said once.
+	if meowy.CrashUnseen and meowy.CrashExplain and meowy.CrashUnseen(86400) then
+		meowy.CrashExplain({ after = optIn })
 		return
 	end
 	optIn()
